@@ -1853,11 +1853,35 @@ mod tests {
     #[test]
     fn normalize_optional_artwork_url_preserves_missing_and_existing_urls() {
         assert_eq!(normalize_optional_artwork_url(None), None);
+        assert_eq!(normalize_optional_artwork_url(Some("".to_string())), None);
+        assert_eq!(
+            normalize_optional_artwork_url(Some("   ".to_string())),
+            None
+        );
         assert_eq!(
             normalize_optional_artwork_url(Some(
                 "https://artworks.thetvdb.com/banners/posters/example.jpg".to_string()
             )),
             Some("https://artworks.thetvdb.com/banners/posters/example.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_artwork_url_skips_blank_matching_artwork_urls() {
+        let artworks = vec![
+            ArtworkItem {
+                kind: "background".to_string(),
+                url: "   ".to_string(),
+            },
+            ArtworkItem {
+                kind: "background".to_string(),
+                url: "https://artworks.thetvdb.com/banners/backgrounds//usable.jpg".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            pick_artwork_url(&artworks, "background"),
+            Some("https://artworks.thetvdb.com/banners/backgrounds/usable.jpg".to_string())
         );
     }
 
@@ -2139,12 +2163,15 @@ struct TaggedAliasItem {
 fn pick_artwork_url(artworks: &[ArtworkItem], kind: &str) -> Option<String> {
     artworks
         .iter()
-        .find(|a| a.kind == kind)
-        .map(|a| normalize_artwork_url(&a.url))
+        .filter(|a| a.kind == kind)
+        .find_map(|a| normalize_optional_artwork_url(Some(a.url.clone())))
 }
 
 fn normalize_optional_artwork_url(url: Option<String>) -> Option<String> {
-    url.map(|value| normalize_artwork_url(&value))
+    url.and_then(|value| {
+        let normalized = normalize_artwork_url(&value);
+        (!normalized.trim().is_empty()).then_some(normalized)
+    })
 }
 
 fn bounded_exponential_backoff(attempt: u32, base: Duration, max: Duration) -> Duration {

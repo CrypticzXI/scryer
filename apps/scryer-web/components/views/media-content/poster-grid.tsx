@@ -226,17 +226,17 @@ const PosterCard = React.memo(function PosterCard({
               </div>
 
               {qualityLabel ? (
-                <div className="absolute right-1.5 top-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
+                <div className="absolute right-1.5 top-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
                   {qualityLabel}
                 </div>
               ) : null}
 
               {!isMovieView && title.contentStatus?.toLowerCase() === "ended" ? (
-                <div className="absolute bottom-1.5 right-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 shadow-sm">
+                <div className="absolute bottom-1.5 right-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
                   {t("title.ended")}
                 </div>
               ) : null}
-              <div className="absolute bottom-1.5 left-1.5 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
+              <div className="absolute bottom-1.5 left-1.5 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
                 <span className="block truncate">{title.libraryName ?? title.libraryId}</span>
               </div>
             </div>
