@@ -1,27 +1,20 @@
 use std::io::Cursor;
 
-use super::{
-    materialize_local_title_image_path, normalized_base_path_from_env,
-    required_persisted_variant_for_kind, synthesize_local_title_image_url,
-};
+use super::{normalized_base_path_from_env, synthesize_local_title_image_url};
 use async_trait::async_trait;
-use aws_lc_rs::digest;
 use fast_image_resize as fir;
 use image::codecs::avif::AvifEncoder;
 use image::{DynamicImage, ImageEncoder, ImageFormat, RgbaImage};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
 use scryer_application::{
-    AppError, AppResult, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
-    TitleImageStorageMode, TitleImageVariantRecord,
+    AppError, AppResult, TitleImageKind, TitleImageProcessor, TitleImageSourceResult,
+    TitleImageVariantRecord, TitleImageVariantSpec,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
-use tracing::warn;
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
-const POSTER_VARIANT_WIDTHS: [u32; 3] = [500, 250, 70];
-const FANART_VARIANT_WIDTHS: [u32; 1] = [1280];
 const AVIF_SPEED: u8 = 4;
 const AVIF_QUALITY: u8 = 85;
 const AVIF_ENCODER_THREADS: usize = 1;
@@ -152,7 +145,8 @@ impl HttpTitleImageProcessor {
         bytes: &[u8],
         source_etag: Option<String>,
         source_last_modified: Option<String>,
-    ) -> AppResult<TitleImageReplacement> {
+        variant_specs: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult> {
         let guessed_format = image::guess_format(bytes)
             .map_err(|err| AppError::Validation(format!("failed to detect image format: {err}")))?;
         let source_format = SupportedImageFormat::from_image_format(guessed_format)
@@ -161,57 +155,29 @@ impl HttpTitleImageProcessor {
             .map_err(|err| AppError::Validation(format!("failed to decode image: {err}")))?;
         let oriented = apply_orientation(decoded, read_exif_orientation(bytes).unwrap_or(1));
         let rgba = oriented.to_rgba8();
-        let (width, height) = rgba.dimensions();
+        let (source_width, source_height) = rgba.dimensions();
 
-        if width == 0 || height == 0 {
+        if source_width == 0 || source_height == 0 {
             return Err(AppError::Validation(
                 "image dimensions must be non-zero".to_string(),
             ));
         }
 
-        if self.avif_enabled {
-            match encode_avif(&rgba, AVIF_SPEED, AVIF_QUALITY) {
-                Ok(master_bytes) => {
-                    let master_sha256 = sha256_hex(&master_bytes);
-                    let variants = build_image_variants(kind, &rgba, &master_bytes)?;
-                    return Ok(TitleImageReplacement {
-                        kind,
-                        source_url: source_url.to_string(),
-                        source_etag,
-                        source_last_modified,
-                        source_format: source_format.as_str().to_string(),
-                        source_width: width as i32,
-                        source_height: height as i32,
-                        storage_mode: TitleImageStorageMode::AvifMaster,
-                        master_format: SupportedImageFormat::Avif.as_str().to_string(),
-                        master_sha256,
-                        master_width: width as i32,
-                        master_height: height as i32,
-                        master_bytes,
-                        variants,
-                    });
-                }
-                Err(error) => {
-                    warn!(error = %error, source_url = %source_url, "title image AVIF encode failed; falling back to original bytes");
-                }
-            }
-        }
+        let variants = if self.avif_enabled {
+            build_requested_variants(&rgba, &variant_specs)?
+        } else {
+            Vec::new()
+        };
 
-        Ok(TitleImageReplacement {
+        Ok(TitleImageSourceResult {
             kind,
             source_url: source_url.to_string(),
             source_etag,
             source_last_modified,
             source_format: source_format.as_str().to_string(),
-            source_width: width as i32,
-            source_height: height as i32,
-            storage_mode: TitleImageStorageMode::Original,
-            master_format: source_format.as_str().to_string(),
-            master_sha256: sha256_hex(bytes),
-            master_width: width as i32,
-            master_height: height as i32,
-            master_bytes: bytes.to_vec(),
-            variants: Vec::new(),
+            source_width: source_width as i32,
+            source_height: source_height as i32,
+            variants,
         })
     }
 
@@ -221,8 +187,9 @@ impl HttpTitleImageProcessor {
         kind: TitleImageKind,
         source_url: &str,
         bytes: &[u8],
-    ) -> AppResult<TitleImageReplacement> {
-        self.process_bytes(kind, source_url, bytes, None, None)
+        variant_specs: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult> {
+        self.process_bytes(kind, source_url, bytes, None, None, variant_specs)
     }
 }
 
@@ -292,55 +259,52 @@ impl TitleImageProcessor for HttpTitleImageProcessor {
         &self,
         kind: TitleImageKind,
         source_url: &str,
-    ) -> AppResult<TitleImageReplacement> {
+        variants: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult> {
         let (source_url, bytes, etag, last_modified) = self.fetch_source(source_url).await?;
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
             scryer_application::nice_thread();
-            this.process_bytes(kind, &source_url, &bytes, etag, last_modified)
+            this.process_bytes(kind, &source_url, &bytes, etag, last_modified, variants)
         })
         .await
         .map_err(|err| AppError::Repository(format!("image encode task failed: {err}")))?
     }
 }
 
-fn build_image_variants(
-    kind: TitleImageKind,
+fn build_requested_variants(
     rgba: &RgbaImage,
-    master_bytes: &[u8],
+    variant_specs: &[TitleImageVariantSpec],
 ) -> AppResult<Vec<TitleImageVariantRecord>> {
-    match kind {
-        TitleImageKind::Poster => build_width_variants(rgba, master_bytes, &POSTER_VARIANT_WIDTHS),
-        TitleImageKind::Fanart => build_width_variants(rgba, master_bytes, &FANART_VARIANT_WIDTHS),
-    }
-}
-
-fn build_width_variants(
-    rgba: &RgbaImage,
-    master_bytes: &[u8],
-    target_widths: &[u32],
-) -> AppResult<Vec<TitleImageVariantRecord>> {
-    let (source_width, source_height) = rgba.dimensions();
-    let mut variants = Vec::with_capacity(target_widths.len());
-    for &target_width in target_widths {
-        let actual_width = source_width.min(target_width);
-        let actual_height = scaled_height(source_width, source_height, actual_width);
-        let bytes = if actual_width == source_width {
-            master_bytes.to_vec()
-        } else {
-            let resized = resize_rgba_linear_box(rgba, actual_width, actual_height)?;
-            encode_avif(&resized, AVIF_SPEED, AVIF_QUALITY)?
-        };
-        variants.push(TitleImageVariantRecord {
-            variant_key: format!("w{target_width}"),
-            format: SupportedImageFormat::Avif.as_str().to_string(),
-            width: actual_width as i32,
-            height: actual_height as i32,
-            sha256: sha256_hex(&bytes),
-            bytes,
-        });
+    let mut variants = Vec::with_capacity(variant_specs.len());
+    for spec in variant_specs {
+        variants.push(build_width_variant(rgba, &spec.variant_key, spec.width)?);
     }
     Ok(variants)
+}
+
+fn build_width_variant(
+    rgba: &RgbaImage,
+    variant_key: &str,
+    target_width: u32,
+) -> AppResult<TitleImageVariantRecord> {
+    let (source_width, source_height) = rgba.dimensions();
+    let actual_width = source_width.min(target_width);
+    let actual_height = scaled_height(source_width, source_height, actual_width);
+    let variant_image = if actual_width == source_width {
+        rgba.clone()
+    } else {
+        resize_rgba_linear_box(rgba, actual_width, actual_height)?
+    };
+    let bytes = encode_avif(&variant_image, AVIF_SPEED, AVIF_QUALITY)?;
+    Ok(TitleImageVariantRecord {
+        variant_key: variant_key.to_string(),
+        format: SupportedImageFormat::Avif.as_str().to_string(),
+        width: actual_width as i32,
+        height: actual_height as i32,
+        digest: blake3_digest(&bytes),
+        bytes,
+    })
 }
 
 fn resize_rgba_linear_box(image: &RgbaImage, width: u32, height: u32) -> AppResult<RgbaImage> {
@@ -463,9 +427,8 @@ fn apply_orientation(image: DynamicImage, orientation: u16) -> DynamicImage {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let hash = digest::digest(&digest::SHA256, bytes);
-    hash.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+fn blake3_digest(bytes: &[u8]) -> String {
+    format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -557,13 +520,26 @@ mod tests {
                 TitleImageKind::Poster,
                 "https://example.com/poster.png",
                 &bytes,
+                vec![
+                    TitleImageVariantSpec {
+                        variant_key: "w250".to_string(),
+                        width: 250,
+                    },
+                    TitleImageVariantSpec {
+                        variant_key: "w70".to_string(),
+                        width: 70,
+                    },
+                    TitleImageVariantSpec {
+                        variant_key: "w500".to_string(),
+                        width: 500,
+                    },
+                ],
             )
             .expect("processing should succeed");
 
-        assert_eq!(processed.storage_mode, TitleImageStorageMode::AvifMaster);
-        assert_eq!(processed.master_format, "avif");
-        assert_eq!(processed.master_width, 800);
-        assert_eq!(processed.master_height, 1200);
+        assert_eq!(processed.source_format, "png");
+        assert_eq!(processed.source_width, 800);
+        assert_eq!(processed.source_height, 1200);
 
         let widths = processed
             .variants
@@ -573,6 +549,12 @@ mod tests {
         assert_eq!(widths.get("w500"), Some(&(500, 750)));
         assert_eq!(widths.get("w250"), Some(&(250, 375)));
         assert_eq!(widths.get("w70"), Some(&(70, 105)));
+        assert!(
+            processed
+                .variants
+                .iter()
+                .all(|variant| variant.digest.starts_with("blake3:"))
+        );
     }
 
     #[test]
@@ -585,11 +567,14 @@ mod tests {
                 TitleImageKind::Fanart,
                 "https://example.com/fanart.png",
                 &bytes,
+                vec![TitleImageVariantSpec {
+                    variant_key: "w1280".to_string(),
+                    width: 1280,
+                }],
             )
             .expect("processing should succeed");
 
-        assert_eq!(processed.storage_mode, TitleImageStorageMode::AvifMaster);
-        assert_eq!(processed.master_format, "avif");
+        assert_eq!(processed.source_format, "png");
 
         let widths = processed
             .variants
@@ -600,23 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_local_path_falls_back_to_original_without_preferred_variant() {
-        let path = materialize_local_title_image_path(
-            "title-1",
-            TitleImageKind::Fanart,
-            TitleImageStorageMode::AvifMaster,
-            "abcdef0123456789abcdef0123456789",
-            &[],
-        );
-
-        assert_eq!(
-            path,
-            "/images/titles/title-1/fanart/original?v=abcdef0123456789"
-        );
-    }
-
-    #[test]
-    fn original_fallback_stores_source_bytes_when_avif_disabled() {
+    fn no_variants_are_stored_when_avif_disabled() {
         let processor = HttpTitleImageProcessor::new_for_tests(false);
         let bytes = encode_test_image(ImageFormat::Jpeg);
         let processed = processor
@@ -624,12 +593,14 @@ mod tests {
                 TitleImageKind::Poster,
                 "https://example.com/poster.jpg",
                 &bytes,
+                vec![TitleImageVariantSpec {
+                    variant_key: "w250".to_string(),
+                    width: 250,
+                }],
             )
             .expect("processing should succeed");
 
-        assert_eq!(processed.storage_mode, TitleImageStorageMode::Original);
-        assert_eq!(processed.master_format, "jpeg");
-        assert_eq!(processed.master_bytes, bytes);
+        assert_eq!(processed.source_format, "jpeg");
         assert!(processed.variants.is_empty());
     }
 
@@ -654,6 +625,20 @@ mod tests {
                 TitleImageKind::Poster,
                 "https://example.com/poster-small.png",
                 &bytes,
+                vec![
+                    TitleImageVariantSpec {
+                        variant_key: "w500".to_string(),
+                        width: 500,
+                    },
+                    TitleImageVariantSpec {
+                        variant_key: "w250".to_string(),
+                        width: 250,
+                    },
+                    TitleImageVariantSpec {
+                        variant_key: "w70".to_string(),
+                        width: 70,
+                    },
+                ],
             )
             .expect("processing should succeed");
 
@@ -699,6 +684,7 @@ mod tests {
                     TitleImageKind::Poster,
                     "https://example.com/poster",
                     &bytes,
+                    Vec::new(),
                 )
                 .expect("supported image should decode");
             assert_eq!(processed.source_width, 800);

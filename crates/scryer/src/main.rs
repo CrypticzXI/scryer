@@ -37,10 +37,9 @@ use scryer_application::{
     SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
-    start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_manual_import_poller, start_background_poster_loop,
+    start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_download_queue_poller, start_notification_dispatcher,
+    start_background_title_image_loop, start_download_queue_poller, start_notification_dispatcher,
     tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
@@ -1214,11 +1213,7 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
-    tokio::spawn(start_background_poster_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_fanart_loop(
+    tokio::spawn(start_background_title_image_loop(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
@@ -1353,6 +1348,7 @@ async fn bootstrap_application(
 
 async fn title_image_handler(
     State(repository): State<Arc<dyn TitleImageRepository>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     AxumPath((title_id, kind, variant)): AxumPath<(String, String, String)>,
 ) -> Response {
@@ -1378,21 +1374,20 @@ async fn title_image_handler(
         }
     };
 
-    let quoted_etag = format!("\"{}\"", blob.etag);
+    let etag = title_image_digest_value(&blob.etag).to_string();
+    let quoted_etag = format!("\"{etag}\"");
+    let cache_control = title_image_cache_control(&etag, query.get("v").map(String::as_str));
     if headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| if_none_match_matches(value, &quoted_etag, &blob.etag))
+        .is_some_and(|value| if_none_match_matches(value, &quoted_etag, &etag))
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         let headers = response.headers_mut();
         if let Ok(value) = HeaderValue::from_str(&quoted_etag) {
             headers.insert(header::ETAG, value);
         }
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        );
+        headers.insert(header::CACHE_CONTROL, cache_control);
         return response;
     }
 
@@ -1405,14 +1400,31 @@ async fn title_image_handler(
     if let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
         headers.insert(header::CONTENT_LENGTH, value);
     }
-    if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", blob.etag)) {
+    if let Ok(value) = HeaderValue::from_str(&quoted_etag) {
         headers.insert(header::ETAG, value);
     }
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
-    );
+    headers.insert(header::CACHE_CONTROL, cache_control);
     response
+}
+
+fn title_image_cache_control(etag: &str, query_version: Option<&str>) -> HeaderValue {
+    let expected_version = title_image_version_from_etag(etag);
+    if query_version.is_some_and(|version| version == expected_version.as_str()) {
+        HeaderValue::from_static("public, max-age=31536000, immutable")
+    } else {
+        HeaderValue::from_static("public, max-age=0, must-revalidate")
+    }
+}
+
+fn title_image_version_from_etag(etag: &str) -> String {
+    title_image_digest_value(etag).chars().take(16).collect()
+}
+
+fn title_image_digest_value(value: &str) -> &str {
+    value
+        .split_once(':')
+        .map(|(_, digest)| digest)
+        .unwrap_or(value)
 }
 
 fn if_none_match_matches(raw_header: &str, quoted_etag: &str, bare_etag: &str) -> bool {
@@ -2174,7 +2186,7 @@ mod tests {
     use axum::routing::get;
     use scryer_application::{
         AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
-        TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
+        TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     };
     use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
     use tempfile::tempdir;
@@ -2231,10 +2243,10 @@ mod tests {
 
     #[async_graphql::async_trait::async_trait]
     impl TitleImageRepository for MockTitleImageRepository {
-        async fn list_titles_requiring_image_refresh(
+        async fn list_title_image_refresh_work(
             &self,
-            _kind: TitleImageKind,
             _limit: usize,
+            _skipped: &[TitleImageSyncTask],
         ) -> AppResult<Vec<TitleImageSyncTask>> {
             Ok(Vec::new())
         }
@@ -2243,33 +2255,13 @@ mod tests {
             Ok(())
         }
 
-        async fn replace_title_image(
+        async fn upsert_title_image_source_result(
             &self,
             _title_id: &str,
-            _replacement: TitleImageReplacement,
-        ) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn replace_title_image_and_append_event(
-            &self,
-            _title_id: &str,
-            _replacement: TitleImageReplacement,
-            event: scryer_domain::NewDomainEvent,
-        ) -> AppResult<scryer_domain::DomainEvent> {
-            Ok(scryer_domain::DomainEvent {
-                sequence: 1,
-                event_id: event.event_id,
-                occurred_at: event.occurred_at,
-                actor_user_id: event.actor_user_id,
-                title_id: event.title_id,
-                facet: event.facet,
-                correlation_id: event.correlation_id,
-                causation_id: event.causation_id,
-                schema_version: event.schema_version,
-                stream: event.stream,
-                payload: event.payload,
-            })
+            _result: TitleImageSourceResult,
+            _event: Option<scryer_domain::NewDomainEvent>,
+        ) -> AppResult<Option<scryer_domain::DomainEvent>> {
+            Ok(None)
         }
 
         async fn get_title_image_blob(
@@ -2614,7 +2606,7 @@ mod tests {
         let repo: Arc<dyn TitleImageRepository> = Arc::new(MockTitleImageRepository {
             blob: Some(TitleImageBlob {
                 content_type: "image/avif".to_string(),
-                etag: "abc123".to_string(),
+                etag: "blake3:abc123def4567890abc123def4567890".to_string(),
                 bytes: vec![1, 2, 3, 4],
             }),
         });
@@ -2626,7 +2618,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/images/titles/title-1/poster/w500")
+                    .uri("/images/titles/title-1/poster/w500?v=abc123def4567890")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2638,11 +2630,51 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/avif"
         );
-        assert_eq!(response.headers().get(header::ETAG).unwrap(), "\"abc123\"");
+        assert_eq!(
+            response.headers().get(header::ETAG).unwrap(),
+            "\"abc123def4567890abc123def4567890\""
+        );
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "public, max-age=31536000, immutable"
         );
+    }
+
+    #[tokio::test]
+    async fn title_image_route_revalidates_unversioned_or_mismatched_variant_urls() {
+        let repo: Arc<dyn TitleImageRepository> = Arc::new(MockTitleImageRepository {
+            blob: Some(TitleImageBlob {
+                content_type: "image/avif".to_string(),
+                etag: "blake3:abc123def4567890abc123def4567890".to_string(),
+                bytes: vec![1, 2, 3, 4],
+            }),
+        });
+        let app = Router::new().route(
+            "/images/titles/{title_id}/{kind}/{variant}",
+            get(title_image_handler).with_state(repo),
+        );
+
+        for uri in [
+            "/images/titles/title-1/poster/w70",
+            "/images/titles/title-1/poster/w70?v=w250digest",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=0, must-revalidate"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2664,6 +2696,27 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let app = Router::new().route(
+            "/images/titles/{title_id}/{kind}/{variant}",
+            get(title_image_handler).with_state(Arc::new(MockTitleImageRepository::default())),
+        );
+        for uri in [
+            "/images/titles/title-1/poster/original",
+            "/images/titles/title-1/fanart/master",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 
     #[tokio::test]
@@ -2683,7 +2736,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/images/titles/title-1/poster/w500")
+                    .uri("/images/titles/title-1/poster/w500?v=abc123")
                     .header(header::IF_NONE_MATCH, "\"abc123\"")
                     .body(Body::empty())
                     .expect("request"),

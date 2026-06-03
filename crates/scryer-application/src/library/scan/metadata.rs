@@ -359,6 +359,44 @@ fn metadata_identity_hint_from_library_scan_hint(
     identity_hint.has_external_ids().then_some(identity_hint)
 }
 
+fn external_ids_from_metadata_identity_hint(
+    identity_hint: &MetadataIdentityHint,
+) -> Vec<crate::ExternalIdHint> {
+    let mut ids = Vec::new();
+    if let Some(imdb_id) = identity_hint
+        .imdb_id
+        .as_deref()
+        .and_then(|value| crate::ExternalIdHint::normalized(ExternalIdProvider::Imdb, value))
+    {
+        ids.push(imdb_id);
+    }
+    if let Some(tmdb_id) = identity_hint
+        .tmdb_id
+        .as_deref()
+        .and_then(|value| crate::ExternalIdHint::normalized(ExternalIdProvider::Tmdb, value))
+    {
+        ids.push(tmdb_id);
+    }
+    if let Some(tvdb_id) = identity_hint
+        .tvdb_id
+        .as_deref()
+        .and_then(|value| crate::ExternalIdHint::normalized(ExternalIdProvider::Tvdb, value))
+    {
+        ids.push(tvdb_id);
+    }
+    ids
+}
+
+fn external_import_identity_hint_for_candidate(
+    scan_hints: Option<&LibraryScanHintSet>,
+    facet: LibraryScanHintFacet,
+    candidate_identity_hint: Option<&MetadataIdentityHint>,
+) -> Option<MetadataIdentityHint> {
+    let candidate_ids = external_ids_from_metadata_identity_hint(candidate_identity_hint?);
+    let scan_hint = scan_hints?.hint_for_external_ids(facet, &candidate_ids)?;
+    metadata_identity_hint_from_library_scan_hint(Some(scan_hint))
+}
+
 fn select_metadata_identity_hint(
     library_scan_hint: Option<&LibraryScanHint>,
     nfo_meta: Option<&NfoMetadata>,
@@ -1380,11 +1418,6 @@ async fn prepare_movie_library_scan_entry(
     scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedMovieLibraryScanEntry> {
     let entry_path = path_to_stored_string(&entry.path);
-    let library_scan_hint = scan_hints
-        .and_then(|hints| {
-            hints.hint_for_stored_path(LibraryScanHintFacet::Movie, entry_path.as_str())
-        })
-        .cloned();
     let mut discovered_files = if entry.is_dir {
         library_scanner
             .scan_library(path_to_stored_string(&entry.path).as_str())
@@ -1420,7 +1453,7 @@ async fn prepare_movie_library_scan_entry(
             file,
             discovered_files,
             library_path,
-            library_scan_hint,
+            scan_hints,
         )
         .await?,
     )))
@@ -1535,7 +1568,7 @@ async fn build_prepared_movie_library_scan_candidate(
     file: LibraryFile,
     discovered_files: Vec<LibraryFile>,
     library_path: String,
-    library_scan_hint: Option<LibraryScanHint>,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
     let file_path = stored_path_to_path_buf(&file.path);
@@ -1549,8 +1582,8 @@ async fn build_prepared_movie_library_scan_candidate(
     let query_variants = query_evidence.queries.clone();
     let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
-    let identity_hint = select_metadata_identity_hint(
-        library_scan_hint.as_ref(),
+    let local_identity_hint = select_metadata_identity_hint(
+        None,
         nfo_meta.as_ref(),
         None,
         query_evidence.file_walk.as_ref(),
@@ -1559,6 +1592,12 @@ async fn build_prepared_movie_library_scan_candidate(
         &fallback_query,
         extracted_year_hint,
     );
+    let identity_hint = external_import_identity_hint_for_candidate(
+        scan_hints,
+        LibraryScanHintFacet::Movie,
+        local_identity_hint.as_ref(),
+    )
+    .or(local_identity_hint);
 
     let external_import_identity_only = identity_hint
         .as_ref()

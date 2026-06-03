@@ -9,10 +9,10 @@ use scryer_application::{
     NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
     SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
-    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
+    TitleImageBlob, TitleImageKind, TitleImageRepository, TitleImageSourceResult,
+    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem,
+    WantedItemRepository, WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -443,7 +443,7 @@ async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
         source_repo: Some("https://github.com/example/email".to_string()),
         manifest_url: Some("https://example.com/email.manifest.json".to_string()),
         wasm_digest: Some("abcdef0123456789".to_string()),
-        artifact_digest: Some("sha256:artifact".to_string()),
+        artifact_digest: Some("digest:artifact".to_string()),
         descriptor_json: Some(test_descriptor_json(
             "email",
             "1.0.0",
@@ -2570,9 +2570,9 @@ async fn title_queries_prefer_local_cached_poster_url() {
     );
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
+            TitleImageSourceResult {
                 kind: TitleImageKind::Poster,
                 source_url: "https://tvdb.example/poster.jpg".to_string(),
                 source_etag: Some("\"etag-1\"".to_string()),
@@ -2580,21 +2580,16 @@ async fn title_queries_prefer_local_cached_poster_url() {
                 source_format: "jpeg".to_string(),
                 source_width: 1000,
                 source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
                 variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
+                    variant_key: "w250".to_string(),
                     format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
+                    width: 250,
+                    height: 375,
                     bytes: vec![7, 8, 9],
-                    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                    digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
                 }],
             },
+            None,
         )
         .await
         .expect("title image should insert");
@@ -2605,7 +2600,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
         .expect("title should exist");
     assert_eq!(
         after_cache.poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
     );
     assert_eq!(
         after_cache.poster_source_url.as_deref(),
@@ -2910,41 +2905,23 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
         ),
     ] {
         title_images
-            .replace_title_image(
+            .upsert_title_image_source_result(
                 &title.id,
-                TitleImageReplacement {
-                    kind: TitleImageKind::Poster,
-                    source_url: source_url.to_string(),
-                    source_etag: None,
-                    source_last_modified: None,
-                    source_format: "jpeg".to_string(),
-                    source_width: 1000,
-                    source_height: 1500,
-                    storage_mode: TitleImageStorageMode::AvifMaster,
-                    master_format: "avif".to_string(),
-                    master_sha256: sha.to_string(),
-                    master_width: 1000,
-                    master_height: 1500,
-                    master_bytes: vec![1, 2, 3],
-                    variants: vec![TitleImageVariantRecord {
-                        variant_key: "w500".to_string(),
-                        format: "avif".to_string(),
-                        width: 500,
-                        height: 750,
-                        bytes: vec![7, 8, 9],
-                        sha256: sha.to_string(),
-                    }],
-                },
+                test_title_image_source_result_with_variants(
+                    TitleImageKind::Poster,
+                    source_url,
+                    vec![test_title_image_variant_record("w250", 250, 375, sha)],
+                ),
+                None,
             )
             .await
             .expect("title image should upsert");
-
         sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
             .bind(source_url)
             .bind(&title.id)
             .execute(&services.pool)
             .await
-            .expect("source url should update");
+            .expect("source urls should update");
     }
 
     let updated = TitleRepository::get_by_id(&catalog, &title.id)
@@ -2953,11 +2930,61 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-2/poster/w500?v=2222222222222222")
+        Some("/images/titles/title-2/poster/w250?v=2222222222222222")
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_lookup_by_external_id_preserves_source_image_url() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let mut title = make_test_title(
+        "title-external-id",
+        Some("https://tvdb.example/poster-external.jpg"),
+    );
+    title.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let found = catalog
+        .find_by_external_id("tvdb", "123456")
+        .await
+        .expect("lookup should succeed")
+        .expect("title should exist");
     assert_eq!(
-        updated.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-b.jpg")
+        found.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-external.jpg")
     );
 
     let _ = std::fs::remove_file(db);
@@ -3109,31 +3136,19 @@ async fn title_queries_find_by_external_id() {
         .await
         .expect("title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-external.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 1, 1],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![2, 2, 2],
-                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3147,7 +3162,7 @@ async fn title_queries_find_by_external_id() {
     assert_eq!(found.id, title.id);
     assert_eq!(
         found.poster_url.as_deref(),
-        Some("/images/titles/title-external-id/poster/w500?v=ffffffffffffffff")
+        Some("/images/titles/title-external-id/poster/w250?v=ffffffffffffffff")
     );
     assert_eq!(
         found.poster_source_url.as_deref(),
@@ -3503,31 +3518,19 @@ async fn title_list_for_matching_keeps_source_image_urls() {
         .await
         .expect("title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "abababababababababababababababab".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3609,7 +3612,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
 }
 
 #[tokio::test]
-async fn title_queries_use_local_original_url_for_original_storage_mode() {
+async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_original_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -3626,24 +3629,14 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-original.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 400,
-                source_height: 600,
-                storage_mode: TitleImageStorageMode::Original,
-                master_format: "jpeg".to_string(),
-                master_sha256: "cccccccccccccccccccccccccccccccc".to_string(),
-                master_width: 400,
-                master_height: 600,
-                master_bytes: vec![3, 2, 1],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-original.jpg",
+                Vec::new(),
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3654,21 +3647,14 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-3/poster/original?v=cccccccccccccccc")
+        Some("https://tvdb.example/poster-original.jpg")
     );
 
     let original = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
         .await
         .expect("original blob lookup should succeed");
-    assert_eq!(
-        original,
-        Some(TitleImageBlob {
-            content_type: "image/jpeg".to_string(),
-            etag: "cccccccccccccccccccccccccccccccc".to_string(),
-            bytes: vec![3, 2, 1],
-        })
-    );
+    assert_eq!(original, None);
 
     let _ = std::fs::remove_file(db);
 }
@@ -3715,32 +3701,29 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
     };
 
     let stored = title_images
-        .replace_title_image_and_append_event(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 400,
-                source_height: 600,
-                storage_mode: TitleImageStorageMode::Original,
-                master_format: "jpeg".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 400,
-                master_height: 600,
-                master_bytes: vec![4, 5, 6],
-                variants: Vec::new(),
-            },
-            event.clone(),
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                )],
+            ),
+            Some(event.clone()),
         )
         .await
         .expect("title image and event should commit");
 
-    assert_eq!(stored.event_id, event.event_id);
+    assert_eq!(
+        stored.expect("event should be stored").event_id,
+        event.event_id
+    );
     let blob = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "w250")
         .await
         .expect("blob lookup should succeed")
         .expect("blob should exist");
@@ -3785,24 +3768,14 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-incomplete.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "dddddddddddddddddddddddddddddddd".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![9, 8, 7],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-incomplete.jpg",
+                Vec::new(),
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3813,11 +3786,11 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-4/poster/original?v=dddddddddddddddd")
+        Some("https://tvdb.example/poster-incomplete.jpg")
     );
 
     let pending = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending poster refresh should succeed");
     assert!(
@@ -3853,31 +3826,21 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         .expect("source urls should update");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Fanart,
-                source_url: "https://tvdb.example/fanart.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 2560,
-                source_height: 1440,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "22222222222222222222222222222222".to_string(),
-                master_width: 2560,
-                master_height: 1440,
-                master_bytes: vec![5, 6, 7, 8],
-                variants: vec![TitleImageVariantRecord {
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart.jpg",
+                vec![TitleImageVariantRecord {
                     variant_key: "w1280".to_string(),
                     format: "avif".to_string(),
                     width: 1280,
                     height: 720,
                     bytes: vec![9, 10, 11],
-                    sha256: "33333333333333333333333333333333".to_string(),
+                    digest: "33333333333333333333333333333333".to_string(),
                 }],
-            },
+            ),
+            None,
         )
         .await
         .expect("fanart image should insert");
@@ -3912,20 +3875,13 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
         .await
         .expect("fanart blob lookup should succeed");
-    assert_eq!(
-        fanart,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "22222222222222222222222222222222".to_string(),
-            bytes: vec![5, 6, 7, 8],
-        })
-    );
+    assert_eq!(fanart, None);
 
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
-async fn list_titles_requiring_image_refresh_requires_fanart_w1280_variant() {
+async fn title_image_refresh_work_requires_fanart_w1280_variant() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_fanart_refresh_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -3949,30 +3905,20 @@ async fn list_titles_requiring_image_refresh_requires_fanart_w1280_variant() {
         .expect("source urls should update");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Fanart,
-                source_url: "https://tvdb.example/fanart-refresh.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1920,
-                source_height: 1080,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-                master_width: 1920,
-                master_height: 1080,
-                master_bytes: vec![1, 2, 3],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                Vec::new(),
+            ),
+            None,
         )
         .await
         .expect("fanart image should insert");
 
     let pending_fanart = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending fanart refresh should succeed");
     assert!(
@@ -3981,40 +3927,288 @@ async fn list_titles_requiring_image_refresh_requires_fanart_w1280_variant() {
     );
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Fanart,
-                source_url: "https://tvdb.example/fanart-refresh.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1920,
-                source_height: 1080,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-                master_width: 1920,
-                master_height: 1080,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w1280".to_string(),
-                    format: "avif".to_string(),
-                    width: 1280,
-                    height: 720,
-                    bytes: vec![4, 5, 6],
-                    sha256: "cccccccccccccccccccccccccccccccc".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                vec![test_title_image_variant_record(
+                    "w1280",
+                    1280,
+                    720,
+                    "cccccccccccccccccccccccccccccccc",
+                )],
+            ),
+            None,
         )
         .await
         .expect("fanart image with w1280 should insert");
 
     let pending_fanart = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending fanart refresh should succeed");
     assert!(pending_fanart.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+fn test_title_image_source_result(
+    kind: TitleImageKind,
+    source_url: &str,
+    variant_key: &str,
+    width: i32,
+    height: i32,
+    digest: &str,
+) -> TitleImageSourceResult {
+    test_title_image_source_result_with_variants(
+        kind,
+        source_url,
+        vec![test_title_image_variant_record(
+            variant_key,
+            width,
+            height,
+            digest,
+        )],
+    )
+}
+
+fn test_title_image_source_result_with_variants(
+    kind: TitleImageKind,
+    source_url: &str,
+    variants: Vec<TitleImageVariantRecord>,
+) -> TitleImageSourceResult {
+    TitleImageSourceResult {
+        kind,
+        source_url: source_url.to_string(),
+        source_etag: None,
+        source_last_modified: None,
+        source_format: "jpeg".to_string(),
+        source_width: 1000,
+        source_height: 1500,
+        variants,
+    }
+}
+
+fn test_title_image_variant_record(
+    variant_key: &str,
+    width: i32,
+    height: i32,
+    digest: &str,
+) -> TitleImageVariantRecord {
+    TitleImageVariantRecord {
+        variant_key: variant_key.to_string(),
+        format: "avif".to_string(),
+        width,
+        height,
+        bytes: vec![4, 5, 6],
+        digest: digest.to_string(),
+    }
+}
+
+fn assert_variant_target(
+    task: &scryer_application::TitleImageSyncTask,
+    kind: TitleImageKind,
+    variant_key: &str,
+) {
+    assert_eq!(task.kind, kind);
+    assert!(
+        task.variants
+            .iter()
+            .any(|variant| variant.variant_key == variant_key)
+    );
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_uses_global_variant_priorities() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_priority_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let poster_source = "https://tmdb.example/poster.jpg";
+    let poster = make_test_title("title-priority-poster", Some(poster_source));
+    TitleRepository::create(&catalog, poster.clone())
+        .await
+        .expect("poster title should insert");
+
+    let fanart = make_test_title("title-priority-fanart", None);
+    TitleRepository::create(&catalog, fanart.clone())
+        .await
+        .expect("fanart title should insert");
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
+        .bind("https://tmdb.example/fanart.jpg")
+        .bind(&fanart.id)
+        .execute(&services.pool)
+        .await
+        .expect("fanart source should update");
+
+    let first = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(first[0].title_id, poster.id);
+    assert_variant_target(&first[0], TitleImageKind::Poster, "w250");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w250",
+                250,
+                375,
+                "11111111111111111111111111111111",
+            ),
+            None,
+        )
+        .await
+        .expect("w250 should upsert");
+    let updated_poster = TitleRepository::get_by_id(&catalog, &poster.id)
+        .await
+        .expect("poster title should load")
+        .expect("poster title should exist");
+    assert_eq!(
+        updated_poster.poster_url.as_deref(),
+        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+    );
+
+    let second = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(second[0].title_id, poster.id);
+    assert_variant_target(&second[0], TitleImageKind::Poster, "w70");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w70",
+                70,
+                105,
+                "22222222222222222222222222222222",
+            ),
+            None,
+        )
+        .await
+        .expect("w70 should upsert");
+
+    let third = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(third[0].title_id, fanart.id);
+    assert_variant_target(&third[0], TitleImageKind::Fanart, "w1280");
+
+    title_images
+        .upsert_title_image_source_result(
+            &fanart.id,
+            test_title_image_source_result(
+                TitleImageKind::Fanart,
+                "https://tmdb.example/fanart.jpg",
+                "w1280",
+                1280,
+                720,
+                "33333333333333333333333333333333",
+            ),
+            None,
+        )
+        .await
+        .expect("w1280 should upsert");
+
+    let fourth = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(fourth[0].title_id, poster.id);
+    assert_variant_target(&fourth[0], TitleImageKind::Poster, "w500");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w500",
+                500,
+                750,
+                "44444444444444444444444444444444",
+            ),
+            None,
+        )
+        .await
+        .expect("w500 should upsert");
+    let updated_poster = TitleRepository::get_by_id(&catalog, &poster.id)
+        .await
+        .expect("poster title should load")
+        .expect("poster title should exist");
+    assert_eq!(
+        updated_poster.poster_url.as_deref(),
+        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_skips_failed_image_sets_for_current_pass() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_skip_current_pass_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let first = make_test_title(
+        "title-skip-current-pass-1",
+        Some("https://tmdb.example/poster-1.jpg"),
+    );
+    let second = make_test_title(
+        "title-skip-current-pass-2",
+        Some("https://tmdb.example/poster-2.jpg"),
+    );
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let initial = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("initial work should list");
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].title_id, first.id);
+    assert_variant_target(&initial[0], TitleImageKind::Poster, "w250");
+
+    let skipped = initial.clone();
+    let next = title_images
+        .list_title_image_refresh_work(1, &skipped)
+        .await
+        .expect("next work should list");
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].title_id, second.id);
+    assert_variant_target(&next[0], TitleImageKind::Poster, "w250");
+
+    let retry_on_next_pass = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("retry work should list");
+    assert_eq!(retry_on_next_pass.len(), 1);
+    assert_eq!(retry_on_next_pass[0].title_id, first.id);
 
     let _ = std::fs::remove_file(db);
 }
@@ -4038,31 +4232,19 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: source_url.to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "abababababababababababababababab".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                source_url,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -4102,7 +4284,127 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
 }
 
 #[tokio::test]
-async fn list_titles_requiring_image_refresh_ignores_local_title_image_routes() {
+async fn title_artwork_url_update_clears_stale_local_paths_for_changed_sources() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_source_invalidation_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let poster_source = "https://tvdb.example/poster-old.jpg";
+    let background_source = "https://tvdb.example/background-old.jpg";
+    let mut title = make_test_title("title-source-invalidation", Some(poster_source));
+    title.background_url = Some(background_source.to_string());
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                poster_source,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("poster image should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                background_source,
+                vec![test_title_image_variant_record(
+                    "w1280",
+                    1280,
+                    720,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image should insert");
+
+    let new_poster_source = "https://image.tmdb.org/t/p/w500/poster-new.jpg";
+    let changed = catalog
+        .update_title_artwork_urls(&[TitleArtworkUrlUpdate {
+            title_id: title.id.clone(),
+            poster_url: Some(new_poster_source.to_string()),
+            background_url: Some(background_source.to_string()),
+        }])
+        .await
+        .expect("poster source update should apply");
+    assert_eq!(changed, 1);
+
+    let row = sqlx::query(
+        "SELECT poster_url, poster_local_path, background_url, background_local_path
+           FROM titles
+          WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("title row should load after poster source update");
+    let stored_poster: Option<String> = row.get("poster_url");
+    let stored_poster_local: Option<String> = row.get("poster_local_path");
+    let stored_background: Option<String> = row.get("background_url");
+    let stored_background_local: Option<String> = row.get("background_local_path");
+    assert_eq!(stored_poster.as_deref(), Some(new_poster_source));
+    assert_eq!(stored_poster_local, None);
+    assert_eq!(stored_background.as_deref(), Some(background_source));
+    assert!(
+        stored_background_local
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/images/titles/"))
+    );
+
+    let new_background_source = "https://image.tmdb.org/t/p/w1280/background-new.jpg";
+    let changed = catalog
+        .update_title_artwork_urls(&[TitleArtworkUrlUpdate {
+            title_id: title.id.clone(),
+            poster_url: Some(new_poster_source.to_string()),
+            background_url: Some(new_background_source.to_string()),
+        }])
+        .await
+        .expect("background source update should apply");
+    assert_eq!(changed, 1);
+
+    let row = sqlx::query(
+        "SELECT poster_url, poster_local_path, background_url, background_local_path
+           FROM titles
+          WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("title row should load after background source update");
+    let stored_poster: Option<String> = row.get("poster_url");
+    let stored_poster_local: Option<String> = row.get("poster_local_path");
+    let stored_background: Option<String> = row.get("background_url");
+    let stored_background_local: Option<String> = row.get("background_local_path");
+    assert_eq!(stored_poster.as_deref(), Some(new_poster_source));
+    assert_eq!(stored_poster_local, None);
+    assert_eq!(stored_background.as_deref(), Some(new_background_source));
+    assert_eq!(stored_background_local, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_ignores_local_title_image_routes() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_image_local_route_refresh_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -4130,7 +4432,7 @@ async fn list_titles_requiring_image_refresh_ignores_local_title_image_routes() 
         .expect("upstream title should insert");
 
     let pending = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending poster refresh should succeed");
     assert_eq!(pending.len(), 1);
@@ -4157,36 +4459,24 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .await
         .expect("repair title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &repaired.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: source_url.to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                source_url,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
     sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
-        .bind("/images/titles/title-cache-clear-repair/poster/w500?v=ffffffffffffffff")
+        .bind("/images/titles/title-cache-clear-repair/poster/w250?v=ffffffffffffffff")
         .bind(&repaired.id)
         .execute(&services.pool)
         .await
@@ -4237,127 +4527,6 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .expect("variant count should load");
     assert_eq!(image_count, 0);
     assert_eq!(variant_count, 0);
-
-    let _ = std::fs::remove_file(db);
-}
-
-#[tokio::test]
-async fn title_image_local_path_backfill_matches_legacy_served_path() {
-    let db = std::env::temp_dir().join(format!(
-        "scryer_title_image_backfill_{}.db",
-        chrono::Utc::now().timestamp_micros()
-    ));
-    let services = SqliteServices::new(db.to_string_lossy())
-        .await
-        .expect("db should initialize");
-    let catalog = title_store(&services);
-
-    let title = make_test_title(
-        "title-backfill",
-        Some("https://tvdb.example/poster-backfill.jpg"),
-    );
-    TitleRepository::create(&catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-backfill")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("poster")
-    .bind("https://tvdb.example/poster-backfill.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(1000i32)
-    .bind(1500i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("12121212121212121212121212121212")
-    .bind(1000i32)
-    .bind(1500i32)
-    .bind(vec![1_u8, 2, 3])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("legacy title image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-backfill")
-    .bind("img-backfill")
-    .bind("w500")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(500i32)
-    .bind(750i32)
-    .bind(vec![4_u8, 5, 6])
-    .bind("34343434343434343434343434343434")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("legacy title image variant row should insert");
-
-    sqlx::query("UPDATE titles SET poster_local_path = NULL WHERE id = ?")
-        .bind(&title.id)
-        .execute(&services.pool)
-        .await
-        .expect("local path should be cleared to simulate legacy state");
-
-    for statement in
-        include_str!("../../scryer/src/db/migrations/0075_title_image_local_paths.sql").split(";\n")
-    {
-        let statement = statement.trim();
-        if statement.is_empty() {
-            continue;
-        }
-        if statement.starts_with("ALTER TABLE titles ADD COLUMN") {
-            let _ = sqlx::query(statement).execute(&services.pool).await;
-            continue;
-        }
-        sqlx::query(statement)
-            .execute(&services.pool)
-            .await
-            .expect("backfill statement should succeed");
-    }
-
-    let materialized_path: Option<String> =
-        sqlx::query_scalar("SELECT poster_local_path FROM titles WHERE id = ?")
-            .bind(&title.id)
-            .fetch_one(&services.pool)
-            .await
-            .expect("materialized local path should exist");
-    assert_eq!(
-        materialized_path.as_deref(),
-        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
-    );
-
-    let hydrated = TitleRepository::get_by_id(&catalog, &title.id)
-        .await
-        .expect("title lookup should succeed")
-        .expect("title should exist");
-    assert_eq!(
-        hydrated.poster_url.as_deref(),
-        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
-    );
-    assert_eq!(
-        hydrated.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-backfill.jpg")
-    );
 
     let _ = std::fs::remove_file(db);
 }

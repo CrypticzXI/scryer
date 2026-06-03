@@ -43,10 +43,10 @@ struct BlockingTitleImageRepo {
 
 #[async_trait]
 impl TitleImageRepository for BlockingTitleImageRepo {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        _kind: TitleImageKind,
         _limit: usize,
+        _skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>> {
         Ok(Vec::new())
     }
@@ -57,33 +57,13 @@ impl TitleImageRepository for BlockingTitleImageRepo {
         Ok(())
     }
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         _title_id: &str,
-        _replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        _title_id: &str,
-        _replacement: TitleImageReplacement,
-        event: NewDomainEvent,
-    ) -> AppResult<DomainEvent> {
-        Ok(DomainEvent {
-            sequence: 1,
-            event_id: event.event_id,
-            occurred_at: event.occurred_at,
-            actor_user_id: event.actor_user_id,
-            title_id: event.title_id,
-            facet: event.facet,
-            correlation_id: event.correlation_id,
-            causation_id: event.causation_id,
-            schema_version: event.schema_version,
-            stream: event.stream,
-            payload: event.payload,
-        })
+        _result: TitleImageSourceResult,
+        _event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>> {
+        Ok(None)
     }
 
     async fn get_title_image_blob(
@@ -20857,6 +20837,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
         MediaFacet::Series,
         vec![ExternalImportMonitorSeriesEntry {
             tvdb_id: Some("4242".to_string()),
+            path: None,
             monitored: false,
             seasons: vec![],
             episodes: vec![],
@@ -20880,6 +20861,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
         MediaFacet::Series,
         vec![ExternalImportMonitorSeriesEntry {
             tvdb_id: Some("4242".to_string()),
+            path: None,
             monitored: false,
             seasons: vec![],
             episodes: vec![],
@@ -20982,6 +20964,7 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         MediaFacet::Series,
         vec![ExternalImportMonitorSeriesEntry {
             tvdb_id: Some("5150".to_string()),
+            path: None,
             monitored: true,
             seasons: vec![ExternalImportMonitorSeasonEntry {
                 season_number: 1,
@@ -21076,6 +21059,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_for_child_only_cha
         MediaFacet::Series,
         vec![ExternalImportMonitorSeriesEntry {
             tvdb_id: Some("6262".to_string()),
+            path: None,
             monitored: true,
             seasons: vec![ExternalImportMonitorSeasonEntry {
                 season_number: 1,
@@ -21194,6 +21178,7 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
         MediaFacet::Series,
         vec![ExternalImportMonitorSeriesEntry {
             tvdb_id: Some("7373".to_string()),
+            path: None,
             monitored: false,
             seasons: vec![],
             episodes: vec![ExternalImportMonitorEpisodeEntry {

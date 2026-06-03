@@ -36,8 +36,8 @@ use crate::{
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
+    TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
     VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
     WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
@@ -343,10 +343,10 @@ pub struct NullTitleImageRepository;
 
 #[async_trait]
 impl TitleImageRepository for NullTitleImageRepository {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        _kind: TitleImageKind,
         _limit: usize,
+        _skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>> {
         Ok(vec![])
     }
@@ -355,22 +355,12 @@ impl TitleImageRepository for NullTitleImageRepository {
         Ok(())
     }
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         _title_id: &str,
-        _replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        Err(AppError::Repository(
-            "title image repository is not configured".to_string(),
-        ))
-    }
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        _title_id: &str,
-        _replacement: TitleImageReplacement,
-        _event: NewDomainEvent,
-    ) -> AppResult<DomainEvent> {
+        _result: TitleImageSourceResult,
+        _event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>> {
         Err(AppError::Repository(
             "title image repository is not configured".to_string(),
         ))
@@ -395,7 +385,8 @@ impl TitleImageProcessor for NullTitleImageProcessor {
         &self,
         _kind: TitleImageKind,
         _source_url: &str,
-    ) -> AppResult<TitleImageReplacement> {
+        _variants: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult> {
         Err(AppError::Repository(
             "title image processor is not configured".to_string(),
         ))

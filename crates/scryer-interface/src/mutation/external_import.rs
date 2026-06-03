@@ -1096,6 +1096,7 @@ fn movie_monitor_entry_from_arr(movie: &ArrMovie) -> ExternalImportMonitorMovieE
     ExternalImportMonitorMovieEntry {
         tmdb_id: movie.tmdb_id.clone(),
         imdb_id: movie.imdb_id.clone(),
+        path: movie.path.clone(),
         monitored: movie.monitored,
     }
 }
@@ -1113,6 +1114,7 @@ fn series_monitor_entry_from_arr(
 
     ExternalImportMonitorSeriesEntry {
         tvdb_id: series.tvdb_id,
+        path: series.path,
         monitored: title_monitored,
         seasons: series
             .seasons

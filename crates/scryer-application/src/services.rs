@@ -986,7 +986,7 @@ impl AppRuntimeState {
                 title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
-                image_processing_limit: Arc::new(Semaphore::new(2)),
+                image_processing_limit: Arc::new(Semaphore::new(4)),
                 title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
                 title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
                     false,

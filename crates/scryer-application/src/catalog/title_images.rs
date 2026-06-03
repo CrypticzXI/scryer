@@ -9,27 +9,17 @@ use tracing::{debug, info, warn};
 const IMAGE_COLLECT_WINDOW: Duration = Duration::from_millis(50);
 const IMAGE_MAX_BATCH: usize = 256;
 const IMAGE_WRITE_CHUNK_SIZE: usize = 8;
-const IMAGE_RETRY_BASE: Duration = Duration::from_secs(10);
-const IMAGE_RETRY_MAX: Duration = Duration::from_secs(300);
 
-pub async fn start_background_poster_loop(
+pub async fn start_background_title_image_loop(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    start_background_image_loop(app, token, TitleImageKind::Poster).await
-}
-
-pub async fn start_background_fanart_loop(
-    app: AppUseCase,
-    token: tokio_util::sync::CancellationToken,
-) {
-    start_background_image_loop(app, token, TitleImageKind::Fanart).await
+    start_background_image_loop(app, token).await
 }
 
 async fn wait_for_image_loop_to_resume(
     app: &AppUseCase,
     token: &tokio_util::sync::CancellationToken,
-    kind: TitleImageKind,
 ) -> bool {
     let active_scans = app.runtime.library.library_scan_tracker.list_active().await;
     if active_scans.is_empty() {
@@ -37,7 +27,6 @@ async fn wait_for_image_loop_to_resume(
     }
 
     debug!(
-        kind = kind.as_str(),
         active_scans = active_scans.len(),
         "image loop: pausing while library scan is active"
     );
@@ -45,24 +34,38 @@ async fn wait_for_image_loop_to_resume(
     tokio::select! {
         _ = token.cancelled() => false,
         _ = app.runtime.library.library_scan_tracker.wait_until_idle() => {
-            debug!(kind = kind.as_str(), "image loop: resuming after library scan");
+            debug!("image loop: resuming after library scan");
             true
         }
     }
 }
 
+fn image_task_label(task: &TitleImageSyncTask) -> String {
+    let variants = task
+        .variants
+        .iter()
+        .map(|variant| variant.variant_key.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}:{variants}", task.kind.as_str())
+}
+
+fn should_append_title_update_event(task: &TitleImageSyncTask) -> bool {
+    task.kind == TitleImageKind::Poster
+        && task
+            .variants
+            .iter()
+            .any(|variant| variant.variant_key == "w250")
+}
+
 async fn process_image_refresh_chunk(
     app: &AppUseCase,
-    kind: TitleImageKind,
-    label: &str,
     chunk: &[TitleImageSyncTask],
-) -> (usize, usize) {
+) -> (usize, Vec<TitleImageSyncTask>, usize) {
     let mut join_set = tokio::task::JoinSet::new();
-    let label = label.to_string();
 
     for task in chunk.iter().cloned() {
         let app = app.clone();
-        let label = label.clone();
         join_set.spawn(async move {
             let _permit = app
                 .runtime
@@ -73,17 +76,18 @@ async fn process_image_refresh_chunk(
                 .await
                 .expect("image processing semaphore should not be closed");
             let started_at = std::time::Instant::now();
-            match kind {
+            let label = image_task_label(&task);
+            match task.kind {
                 TitleImageKind::Poster => debug!(
                     title_id = %task.title_id,
                     poster_url = %task.source_url,
-                    kind = %label,
+                    target = %label,
                     "image loop: refreshing"
                 ),
                 TitleImageKind::Fanart => debug!(
                     title_id = %task.title_id,
                     background_url = %task.source_url,
-                    kind = %label,
+                    target = %label,
                     "image loop: refreshing"
                 ),
             }
@@ -91,95 +95,27 @@ async fn process_image_refresh_chunk(
                 .services
                 .library
                 .title_image_processor
-                .fetch_and_process_image(kind, &task.source_url)
+                .fetch_and_process_image(task.kind, &task.source_url, task.variants.clone())
                 .await
             {
-                Ok(replacement) => {
-                    let stored_event = if kind == TitleImageKind::Poster {
-                        let title = match app
-                            .services
-                            .catalog
-                            .titles
-                            .get_by_id(&task.title_id)
-                            .await
-                        {
-                            Ok(Some(title)) => title,
-                            Ok(None) => {
-                                warn!(
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    kind = %label,
-                                    "image loop: cached image for missing title"
-                                );
-                                return false;
-                            }
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    kind = %label,
-                                    "image loop: failed to load title for cached image refresh event"
-                                );
-                                return false;
-                            }
-                        };
-                        let event = new_title_domain_event(
-                            None,
-                            &title,
-                            DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
-                                title: title_context_snapshot(&title),
-                            }),
-                        );
-                        match app
-                            .services
-                            .library
-                            .title_images
-                            .replace_title_image_and_append_event(
-                                &task.title_id,
-                                replacement,
-                                event,
-                            )
-                            .await
-                        {
-                            Ok(event) => Some(event),
-                            Err(error) => {
-                                match kind {
-                                    TitleImageKind::Poster => warn!(
-                                        error = %error,
-                                        elapsed_ms = started_at.elapsed().as_millis(),
-                                        title_id = %task.title_id,
-                                        poster_url = %task.source_url,
-                                        kind = %label,
-                                        "image loop: failed to store processed image and append refresh event"
-                                    ),
-                                    TitleImageKind::Fanart => warn!(
-                                        error = %error,
-                                        elapsed_ms = started_at.elapsed().as_millis(),
-                                        title_id = %task.title_id,
-                                        background_url = %task.source_url,
-                                        kind = %label,
-                                        "image loop: failed to store processed image and append refresh event"
-                                    ),
-                                }
-                                return false;
-                            }
-                        }
-                    } else {
-                        if let Err(error) = app
-                            .services
-                            .library
-                            .title_images
-                            .replace_title_image(&task.title_id, replacement)
-                            .await
-                        {
-                            match kind {
+                Ok(result) => {
+                    let should_emit_title_update = should_append_title_update_event(&task);
+                    match app
+                        .services
+                        .library
+                        .title_images
+                        .upsert_title_image_source_result(&task.title_id, result, None)
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(error) => {
+                            match task.kind {
                                 TitleImageKind::Poster => warn!(
                                     error = %error,
                                     elapsed_ms = started_at.elapsed().as_millis(),
                                     title_id = %task.title_id,
                                     poster_url = %task.source_url,
-                                    kind = %label,
+                                    target = %label,
                                     "image loop: failed to store processed image"
                                 ),
                                 TitleImageKind::Fanart => warn!(
@@ -187,82 +123,116 @@ async fn process_image_refresh_chunk(
                                     elapsed_ms = started_at.elapsed().as_millis(),
                                     title_id = %task.title_id,
                                     background_url = %task.source_url,
-                                    kind = %label,
+                                    target = %label,
                                     "image loop: failed to store processed image"
                                 ),
                             }
-                            return false;
+                            return (task, false);
                         }
-                        None
                     };
 
                     debug!(
                         elapsed_ms = started_at.elapsed().as_millis(),
                         title_id = %task.title_id,
-                        kind = %label,
+                        target = %label,
                         "image loop: cached"
                     );
-                    if let Some(event) = stored_event {
-                        app.publish_stored_domain_event(&event).await;
+                    if should_emit_title_update {
+                        match app
+                            .services
+                            .catalog
+                            .titles
+                            .get_by_id(&task.title_id)
+                            .await
+                        {
+                            Ok(Some(title)) => {
+                                let event = new_title_domain_event(
+                                    None,
+                                    &title,
+                                    DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
+                                        title: title_context_snapshot(&title),
+                                    }),
+                                );
+                                if let Err(error) = app.append_domain_event(event).await {
+                                    warn!(
+                                        error = %error,
+                                        elapsed_ms = started_at.elapsed().as_millis(),
+                                        title_id = %task.title_id,
+                                        target = %label,
+                                        "image loop: failed to append cached image refresh event"
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    target = %label,
+                                    "image loop: cached image for missing title"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    target = %label,
+                                    "image loop: failed to load title for cached image refresh event"
+                                );
+                            }
+                        }
                     }
-                    true
+                    (task, true)
                 }
                 Err(error) => {
-                    match kind {
+                    match task.kind {
                         TitleImageKind::Poster => warn!(
                             error = %error,
                             title_id = %task.title_id,
                             poster_url = %task.source_url,
-                            kind = %label,
+                            target = %label,
                             "image loop: fetch/process failed"
                         ),
                         TitleImageKind::Fanart => warn!(
                             error = %error,
                             title_id = %task.title_id,
                             background_url = %task.source_url,
-                            kind = %label,
+                            target = %label,
                             "image loop: fetch/process failed"
                         ),
                     }
-                    false
+                    (task, false)
                 }
             }
         });
     }
 
     let mut succeeded = 0usize;
-    let mut failed = 0usize;
+    let mut failed = Vec::new();
+    let mut unknown_failures = 0usize;
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok(true) => {
+            Ok((_, true)) => {
                 succeeded += 1;
             }
-            Ok(false) => {
-                failed += 1;
+            Ok((task, false)) => {
+                failed.push(task);
             }
             Err(err) => {
-                warn!(error = %err, kind = label, "image loop: task panicked");
-                failed += 1;
+                warn!(error = %err, "image loop: task panicked");
+                unknown_failures += 1;
             }
         }
     }
 
-    (succeeded, failed)
+    (succeeded, failed, unknown_failures)
 }
 
-async fn start_background_image_loop(
-    app: AppUseCase,
-    token: tokio_util::sync::CancellationToken,
-    kind: TitleImageKind,
-) {
-    let label: &'static str = kind.as_str();
-    let wake: Arc<Notify> = match kind {
-        TitleImageKind::Poster => app.runtime.catalog.poster_wake.clone(),
-        TitleImageKind::Fanart => app.runtime.catalog.fanart_wake.clone(),
-    };
+async fn start_background_image_loop(app: AppUseCase, token: tokio_util::sync::CancellationToken) {
+    let poster_wake: Arc<Notify> = app.runtime.catalog.poster_wake.clone();
+    let fanart_wake: Arc<Notify> = app.runtime.catalog.fanart_wake.clone();
 
     info!(
-        kind = label,
         collect_window_ms = IMAGE_COLLECT_WINDOW.as_millis(),
         max_batch = IMAGE_MAX_BATCH,
         write_chunk_size = IMAGE_WRITE_CHUNK_SIZE,
@@ -271,23 +241,22 @@ async fn start_background_image_loop(
             .catalog
             .image_processing_limit
             .available_permits(),
-        retry_base_secs = IMAGE_RETRY_BASE.as_secs(),
-        retry_max_secs = IMAGE_RETRY_MAX.as_secs(),
-        "background image loop started"
+        "background title image loop started"
     );
 
     loop {
         tokio::select! {
             _ = token.cancelled() => {
-                info!(kind = label, "background image loop shutting down");
+                info!("background title image loop shutting down");
                 return;
             }
-            _ = wake.notified() => {}
+            _ = poster_wake.notified() => {}
+            _ = fanart_wake.notified() => {}
         }
 
-        let mut retry_delay = IMAGE_RETRY_BASE;
+        let mut skipped_work = Vec::new();
         'drain: loop {
-            if !wait_for_image_loop_to_resume(&app, &token, kind).await {
+            if !wait_for_image_loop_to_resume(&app, &token).await {
                 return;
             }
 
@@ -296,11 +265,11 @@ async fn start_background_image_loop(
                 _ = tokio::time::sleep(IMAGE_COLLECT_WINDOW) => {}
             }
 
-            if !wait_for_image_loop_to_resume(&app, &token, kind).await {
+            if !wait_for_image_loop_to_resume(&app, &token).await {
                 return;
             }
 
-            let (batch_len, succeeded, failed) = {
+            let (batch_len, succeeded, failed, unknown_failures) = {
                 let _maintenance_guard = tokio::select! {
                     _ = token.cancelled() => return,
                     guard = app.runtime.catalog.title_image_maintenance_lock.read() => guard,
@@ -310,12 +279,12 @@ async fn start_background_image_loop(
                     .services
                     .library
                     .title_images
-                    .list_titles_requiring_image_refresh(kind, IMAGE_MAX_BATCH)
+                    .list_title_image_refresh_work(IMAGE_MAX_BATCH, &skipped_work)
                     .await
                 {
                     Ok(batch) => batch,
                     Err(error) => {
-                        warn!(error = %error, kind = label, "image loop: failed to list pending image sync work");
+                        warn!(error = %error, "image loop: failed to list pending image sync work");
                         drop(_maintenance_guard);
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue 'drain;
@@ -323,68 +292,61 @@ async fn start_background_image_loop(
                 };
 
                 if batch.is_empty() {
-                    debug!(kind = label, "image loop: no pending work");
+                    debug!("image loop: no pending work");
                     break 'drain;
                 }
 
                 let batch_len = batch.len();
                 debug!(
                     count = batch_len,
-                    kind = label,
+                    target = %image_task_label(&batch[0]),
                     "image loop: processing batch"
                 );
 
                 let mut succeeded = 0usize;
-                let mut failed = 0usize;
+                let mut failed = Vec::new();
+                let mut unknown_failures = 0usize;
                 for chunk in batch.chunks(IMAGE_WRITE_CHUNK_SIZE) {
-                    if !wait_for_image_loop_to_resume(&app, &token, kind).await {
+                    if !wait_for_image_loop_to_resume(&app, &token).await {
                         return;
                     }
 
-                    let (chunk_succeeded, chunk_failed) =
-                        process_image_refresh_chunk(&app, kind, label, chunk).await;
+                    let (chunk_succeeded, mut chunk_failed, chunk_unknown_failures) =
+                        process_image_refresh_chunk(&app, chunk).await;
                     succeeded += chunk_succeeded;
-                    failed += chunk_failed;
+                    failed.append(&mut chunk_failed);
+                    unknown_failures += chunk_unknown_failures;
                 }
 
+                let failed_count = failed.len() + unknown_failures;
                 debug!(
                     processed = batch_len,
                     succeeded,
-                    failed,
-                    kind = label,
+                    failed = failed_count,
+                    skipped_until_next_wake = failed.len(),
+                    target = %image_task_label(&batch[0]),
                     "image loop: batch complete"
                 );
 
-                (batch_len, succeeded, failed)
+                (batch_len, succeeded, failed, unknown_failures)
             };
 
-            let had_failures = failed > 0;
-
-            if had_failures {
+            if !failed.is_empty() || unknown_failures > 0 {
                 info!(
-                    retry_secs = retry_delay.as_secs(),
                     processed = batch_len,
                     succeeded,
-                    failed,
-                    kind = label,
-                    "image loop: some images failed, scheduling retry"
+                    failed = failed.len() + unknown_failures,
+                    skipped_until_next_wake = failed.len(),
+                    unknown_failures,
+                    "image loop: some images failed, skipping failed work until next wake"
                 );
-                let new_work = tokio::select! {
-                    _ = token.cancelled() => return,
-                    _ = tokio::time::sleep(retry_delay) => false,
-                    _ = wake.notified() => true,
-                };
-
-                if new_work {
-                    retry_delay = IMAGE_RETRY_BASE;
-                } else {
-                    retry_delay = (retry_delay * 2).min(IMAGE_RETRY_MAX);
-                }
-
-                continue 'drain;
+                skipped_work.extend(failed);
             }
         }
 
-        debug!(kind = label, "image loop: queue drained, parking");
+        debug!(
+            skipped_until_next_wake = skipped_work.len(),
+            "image loop: queue drained, parking"
+        );
     }
 }

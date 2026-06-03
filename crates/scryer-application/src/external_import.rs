@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use crate::{AppError, AppResult};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    external_arr_reqwest_client,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -221,7 +222,7 @@ impl ExternalArrClient {
     }
 
     fn new(base_url: String, api_key: String, api_bucket: ExternalArrApiBucket) -> Self {
-        let http_client = generic_reqwest_client();
+        let http_client = external_arr_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,

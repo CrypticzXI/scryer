@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageStorageMode, TitleImageSyncTask,
+    AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageRepository,
+    TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec,
 };
 use scryer_domain::{DomainEvent, DomainEventStream, Id, MediaFacet, NewDomainEvent};
 use serde_json::Value as JsonValue;
@@ -27,13 +27,12 @@ impl TitleImageStore {
 
 #[async_trait]
 impl TitleImageRepository for TitleImageStore {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        kind: TitleImageKind,
         limit: usize,
+        skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>> {
-        let (sql, args) = build_refresh_sql(kind, limit);
-        fetch_refresh_tasks(self.datastore.read_exec(), &sql, &args).await
+        list_prioritized_refresh_work(&self.datastore, limit, skipped).await
     }
 
     async fn clear_title_image_cache(&self) -> AppResult<()> {
@@ -43,37 +42,23 @@ impl TitleImageRepository for TitleImageStore {
         .await
     }
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         title_id: &str,
-        replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        let title_id = title_id.to_string();
-        SqlRuntime::run_in_transaction(&self.datastore, "replace_title_image", move |tx| {
-            let title_id = title_id.clone();
-            let replacement = replacement.clone();
-            Box::pin(async move { replace_title_image_tx(tx, &title_id, &replacement).await })
-        })
-        .await
-    }
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-        event: NewDomainEvent,
-    ) -> AppResult<DomainEvent> {
+        result: TitleImageSourceResult,
+        event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>> {
         let title_id = title_id.to_string();
         SqlRuntime::run_in_transaction(
             &self.datastore,
-            "replace_title_image_and_append_event",
+            "upsert_title_image_source_result",
             move |tx| {
                 let title_id = title_id.clone();
-                let replacement = replacement.clone();
+                let result = result.clone();
                 let event = event.clone();
                 Box::pin(async move {
-                    replace_title_image_tx(tx, &title_id, &replacement).await?;
-                    append_domain_event_tx(tx, &event).await
+                    upsert_title_image_source_result_tx(tx, &title_id, &result, event.as_ref())
+                        .await
                 })
             },
         )
@@ -90,60 +75,95 @@ impl TitleImageRepository for TitleImageStore {
     }
 }
 
-fn build_refresh_sql(kind: TitleImageKind, limit: usize) -> (String, Vec<SqlArg>) {
+const IMAGE_REFRESH_PRIORITIES: &[(TitleImageKind, &str, u32)] = &[
+    (TitleImageKind::Poster, "w250", 250),
+    (TitleImageKind::Poster, "w70", 70),
+    (TitleImageKind::Fanart, "w1280", 1280),
+    (TitleImageKind::Poster, "w500", 500),
+];
+
+async fn list_prioritized_refresh_work(
+    datastore: &StoreDatastore,
+    limit: usize,
+    skipped: &[TitleImageSyncTask],
+) -> AppResult<Vec<TitleImageSyncTask>> {
+    for &(kind, variant_key, _) in IMAGE_REFRESH_PRIORITIES {
+        let (sql, args) = build_variant_refresh_sql(kind, variant_key, limit, skipped);
+        let candidates = fetch_refresh_candidates(datastore.read_exec(), &sql, &args, kind).await?;
+        let mut tasks = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let variants = missing_variant_specs(
+                datastore.read_exec(),
+                candidate.kind,
+                &candidate.title_id,
+                &candidate.source_url,
+            )
+            .await?;
+            if !variants.is_empty() {
+                tasks.push(TitleImageSyncTask {
+                    title_id: candidate.title_id,
+                    kind: candidate.kind,
+                    source_url: candidate.source_url,
+                    variants,
+                });
+            }
+        }
+        if !tasks.is_empty() {
+            return Ok(tasks);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn build_variant_refresh_sql(
+    kind: TitleImageKind,
+    variant_key: &str,
+    limit: usize,
+    skipped: &[TitleImageSyncTask],
+) -> (String, Vec<SqlArg>) {
     let source_col = match kind {
         TitleImageKind::Poster => "poster_url",
         TitleImageKind::Fanart => "background_url",
     };
-    let required_variant = crate::title_images::required_persisted_variant_for_kind(kind);
+    let skipped_for_kind = skipped
+        .iter()
+        .filter(|task| task.kind == kind)
+        .collect::<Vec<_>>();
+    let skipped_clause = skipped_for_kind
+        .iter()
+        .map(|_| format!("AND NOT (t.id = {{}} AND t.{source_col} = {{}})"))
+        .collect::<Vec<_>>()
+        .join("\n           ");
 
-    let mut sql = format!(
+    let sql = format!(
         "SELECT t.id AS title_id, t.{source_col} AS source_url, ti.source_url AS cached_source_url
          FROM titles t
          LEFT JOIN title_images ti
            ON ti.title_id = t.id
-          AND ti.kind = {{}}",
-    );
-    if let Some(required_variant) = required_variant {
-        sql.push_str(&format!(
-            "
+          AND ti.kind = {{}}
          LEFT JOIN title_image_variants pv
            ON pv.title_image_id = ti.id
-          AND pv.variant_key = '{required_variant}'"
-        ));
-    }
-    sql.push_str(&format!(
-        "
+          AND pv.variant_key = {{}}
          WHERE NULLIF(TRIM(t.{source_col}), '') IS NOT NULL
            AND TRIM(t.{source_col}) NOT LIKE {{}}
            AND (
                 ti.id IS NULL
-                OR ti.source_url <> t.{source_col}"
-    ));
-    if required_variant.is_some() {
-        sql.push_str(
-            "
-                OR (
-                    ti.storage_mode = {}
-                    AND pv.id IS NULL
-                )",
-        );
-    }
-    sql.push_str(
-        "
+                OR ti.source_url <> t.{source_col}
+                OR pv.id IS NULL
            )
+           {skipped_clause}
          ORDER BY t.created_at ASC
-         LIMIT {}",
+         LIMIT {{}}"
     );
 
     let mut args = vec![
         SqlArg::Text(kind.as_str().to_string()),
+        SqlArg::Text(variant_key.to_string()),
         SqlArg::Text(local_title_image_route_pattern().to_string()),
     ];
-    if required_variant.is_some() {
-        args.push(SqlArg::Text(
-            TitleImageStorageMode::AvifMaster.as_str().to_string(),
-        ));
+    for task in skipped_for_kind {
+        args.push(SqlArg::Text(task.title_id.clone()));
+        args.push(SqlArg::Text(task.source_url.clone()));
     }
     args.push(SqlArg::I64(limit as i64));
     (sql, args)
@@ -157,18 +177,78 @@ async fn fetch_refresh_tasks(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
-) -> AppResult<Vec<TitleImageSyncTask>> {
+    kind: TitleImageKind,
+) -> AppResult<Vec<RefreshCandidate>> {
     SqlRuntime::fetch_all(exec, sql, args)
         .await?
         .into_iter()
         .map(|row| {
-            Ok(TitleImageSyncTask {
+            Ok(RefreshCandidate {
                 title_id: row.text("title_id")?,
+                kind,
                 source_url: row.text("source_url")?,
-                cached_source_url: row.opt_text("cached_source_url")?,
             })
         })
         .collect()
+}
+
+async fn fetch_refresh_candidates(
+    exec: SqlExec<'_, '_>,
+    sql: &str,
+    args: &[SqlArg],
+    kind: TitleImageKind,
+) -> AppResult<Vec<RefreshCandidate>> {
+    fetch_refresh_tasks(exec, sql, args, kind).await
+}
+
+#[derive(Clone, Debug)]
+struct RefreshCandidate {
+    title_id: String,
+    kind: TitleImageKind,
+    source_url: String,
+}
+
+fn variant_specs_for_kind(kind: TitleImageKind) -> Vec<TitleImageVariantSpec> {
+    IMAGE_REFRESH_PRIORITIES
+        .iter()
+        .filter_map(|(candidate_kind, variant_key, width)| {
+            (*candidate_kind == kind).then(|| TitleImageVariantSpec {
+                variant_key: (*variant_key).to_string(),
+                width: *width,
+            })
+        })
+        .collect()
+}
+
+async fn missing_variant_specs(
+    exec: SqlExec<'_, '_>,
+    kind: TitleImageKind,
+    title_id: &str,
+    source_url: &str,
+) -> AppResult<Vec<TitleImageVariantSpec>> {
+    let rows = SqlRuntime::fetch_all(
+        exec,
+        "SELECT ti.source_url, tiv.variant_key
+           FROM title_images ti
+           LEFT JOIN title_image_variants tiv ON tiv.title_image_id = ti.id
+          WHERE ti.title_id = {} AND ti.kind = {}",
+        &[
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(kind.as_str().to_string()),
+        ],
+    )
+    .await?;
+    let stored_source = rows.first().map(|row| row.text("source_url")).transpose()?;
+    let source_changed = stored_source.is_none_or(|stored_source| stored_source != source_url);
+    let existing_keys = rows
+        .iter()
+        .filter_map(|row| row.opt_text("variant_key").transpose())
+        .collect::<AppResult<std::collections::HashSet<_>>>()?;
+
+    Ok(variant_specs_for_kind(kind)
+        .into_iter()
+        .filter(|spec| source_changed || !existing_keys.contains(spec.variant_key.as_str()))
+        .collect())
 }
 
 async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
@@ -266,58 +346,126 @@ async fn clear_unrecoverable_local_title_image_source_tx(
     Ok(())
 }
 
-async fn replace_title_image_tx(
+async fn upsert_title_image_source_result_tx(
     tx: &mut SqlTx<'_>,
     title_id: &str,
-    replacement: &TitleImageReplacement,
-) -> AppResult<()> {
+    result: &TitleImageSourceResult,
+    event: Option<&NewDomainEvent>,
+) -> AppResult<Option<DomainEvent>> {
     let now = Utc::now();
+    let existing = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT id, source_url FROM title_images WHERE title_id = {} AND kind = {}",
+        &[
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(result.kind.as_str().to_string()),
+        ],
+    )
+    .await?
+    .map(|row| Ok((row.text("id")?, row.text("source_url")?)))
+    .transpose()?;
+    let source_changed = existing
+        .as_ref()
+        .is_some_and(|(_, source_url)| source_url != &result.source_url);
     let image_id = match tx {
-        SqlTx::Sqlite(_) => upsert_title_image_sqlite_tx(tx, title_id, replacement, now).await?,
-        SqlTx::Postgres(_) => {
-            upsert_title_image_postgres_tx(tx, title_id, replacement, now).await?
-        }
+        SqlTx::Sqlite(_) => upsert_title_image_sqlite_tx(tx, title_id, result, now).await?,
+        SqlTx::Postgres(_) => upsert_title_image_postgres_tx(tx, title_id, result, now).await?,
     };
 
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "DELETE FROM title_image_variants WHERE title_image_id = {}",
-        &[SqlArg::Text(image_id.clone())],
-    )
-    .await?;
-
-    for variant in &replacement.variants {
+    if source_changed {
         SqlRuntime::execute(
             SqlExec::Tx(tx),
-            "INSERT INTO title_image_variants (
-                id, title_image_id, variant_key, path, format, width, height, bytes, sha256,
-                created_at, updated_at
-             ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            &[
-                SqlArg::Text(Id::new().0),
-                SqlArg::Text(image_id.clone()),
-                SqlArg::Text(variant.variant_key.clone()),
-                SqlArg::OptText(None),
-                SqlArg::Text(variant.format.clone()),
-                SqlArg::I32(variant.width),
-                SqlArg::I32(variant.height),
-                SqlArg::OptBytes(Some(variant.bytes.clone())),
-                SqlArg::Text(variant.sha256.clone()),
-                SqlArg::Timestamp(now),
-                SqlArg::Timestamp(now),
-            ],
+            "DELETE FROM title_image_variants WHERE title_image_id = {}",
+            &[SqlArg::Text(image_id.clone())],
         )
         .await?;
     }
 
-    let local_path = crate::title_images::materialize_local_title_image_path(
-        title_id,
-        replacement.kind,
-        replacement.storage_mode,
-        &replacement.master_sha256,
-        &replacement.variants,
-    );
-    let local_path_column = match replacement.kind {
+    for variant in &result.variants {
+        upsert_title_image_variant_tx(tx, &image_id, variant, now).await?;
+    }
+
+    if let Some(local_path) = preferred_local_variant_path(title_id, result.kind, &result.variants)
+    {
+        update_title_local_image_path_tx(tx, title_id, result.kind, local_path).await?;
+    }
+
+    if let Some(event) = event {
+        append_domain_event_tx(tx, event).await.map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn preferred_local_variant_path(
+    title_id: &str,
+    kind: TitleImageKind,
+    variants: &[TitleImageVariantRecord],
+) -> Option<String> {
+    let preferred_key = match kind {
+        TitleImageKind::Poster => "w250",
+        TitleImageKind::Fanart => "w1280",
+    };
+    variants
+        .iter()
+        .find(|variant| variant.variant_key == preferred_key)
+        .map(|variant| {
+            super::synthesize_local_title_image_url(
+                "",
+                title_id,
+                kind,
+                &variant.variant_key,
+                &variant.digest,
+            )
+        })
+}
+
+async fn upsert_title_image_variant_tx(
+    tx: &mut SqlTx<'_>,
+    image_id: &str,
+    variant: &TitleImageVariantRecord,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<()> {
+    let variant_id = Id::new().0;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO title_image_variants (
+            id, title_image_id, variant_key, path, format, width, height, bytes, digest,
+            created_at, updated_at
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT (title_image_id, variant_key) DO UPDATE SET
+            path = excluded.path,
+            format = excluded.format,
+            width = excluded.width,
+            height = excluded.height,
+            bytes = excluded.bytes,
+            digest = excluded.digest,
+            updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(variant_id),
+            SqlArg::Text(image_id.to_string()),
+            SqlArg::Text(variant.variant_key.clone()),
+            SqlArg::OptText(None),
+            SqlArg::Text(variant.format.clone()),
+            SqlArg::I32(variant.width),
+            SqlArg::I32(variant.height),
+            SqlArg::OptBytes(Some(variant.bytes.clone())),
+            SqlArg::Text(variant.digest.clone()),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn update_title_local_image_path_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    kind: TitleImageKind,
+    local_path: String,
+) -> AppResult<()> {
+    let local_path_column = match kind {
         TitleImageKind::Poster => "poster_local_path",
         TitleImageKind::Fanart => "background_local_path",
     };
@@ -331,14 +479,13 @@ async fn replace_title_image_tx(
     if rows == 0 {
         return Err(AppError::NotFound(format!("title {title_id}")));
     }
-
     Ok(())
 }
 
 async fn upsert_title_image_sqlite_tx(
     tx: &mut SqlTx<'_>,
     title_id: &str,
-    replacement: &TitleImageReplacement,
+    result: &TitleImageSourceResult,
     now: chrono::DateTime<Utc>,
 ) -> AppResult<String> {
     let existing = SqlRuntime::fetch_optional(
@@ -346,7 +493,7 @@ async fn upsert_title_image_sqlite_tx(
         "SELECT id FROM title_images WHERE title_id = {} AND kind = {}",
         &[
             SqlArg::Text(title_id.to_string()),
-            SqlArg::Text(replacement.kind.as_str().to_string()),
+            SqlArg::Text(result.kind.as_str().to_string()),
         ],
     )
     .await?
@@ -363,15 +510,9 @@ async fn upsert_title_image_sqlite_tx(
                 source_format = {},
                 source_width = {},
                 source_height = {},
-                storage_mode = {},
-                master_format = {},
-                master_sha256 = {},
-                master_width = {},
-                master_height = {},
-                bytes = {},
                 updated_at = {}
              WHERE id = {}",
-            &title_image_update_args(&image_id, replacement, now),
+            &title_image_update_args(&image_id, result, now),
         )
         .await?;
         Ok(image_id)
@@ -381,11 +522,10 @@ async fn upsert_title_image_sqlite_tx(
             SqlExec::Tx(tx),
             "INSERT INTO title_images (
                 id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-                source_last_modified, source_format, source_width, source_height, storage_mode,
-                master_path, master_format, master_sha256, master_width, master_height, bytes,
+                source_last_modified, source_format, source_width, source_height,
                 created_at, updated_at
-            ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            &title_image_insert_args(&image_id, title_id, replacement, now),
+            ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            &title_image_insert_args(&image_id, title_id, result, now),
         )
         .await?;
         Ok(image_id)
@@ -395,7 +535,7 @@ async fn upsert_title_image_sqlite_tx(
 async fn upsert_title_image_postgres_tx(
     tx: &mut SqlTx<'_>,
     title_id: &str,
-    replacement: &TitleImageReplacement,
+    result: &TitleImageSourceResult,
     now: chrono::DateTime<Utc>,
 ) -> AppResult<String> {
     let image_id = Id::new().0;
@@ -403,10 +543,9 @@ async fn upsert_title_image_postgres_tx(
         SqlExec::Tx(tx),
         "INSERT INTO title_images (
             id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
+            source_last_modified, source_format, source_width, source_height,
             created_at, updated_at
-         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
          ON CONFLICT (title_id, kind) DO UPDATE SET
             source_url = excluded.source_url,
             source_etag = excluded.source_etag,
@@ -414,15 +553,9 @@ async fn upsert_title_image_postgres_tx(
             source_format = excluded.source_format,
             source_width = excluded.source_width,
             source_height = excluded.source_height,
-            storage_mode = excluded.storage_mode,
-            master_format = excluded.master_format,
-            master_sha256 = excluded.master_sha256,
-            master_width = excluded.master_width,
-            master_height = excluded.master_height,
-            bytes = excluded.bytes,
             updated_at = excluded.updated_at
          RETURNING id",
-        &title_image_insert_args(&image_id, title_id, replacement, now),
+        &title_image_insert_args(&image_id, title_id, result, now),
     )
     .await?
     .ok_or_else(|| AppError::Repository("failed to upsert title image".into()))?;
@@ -432,7 +565,7 @@ async fn upsert_title_image_postgres_tx(
 fn title_image_insert_args(
     image_id: &str,
     title_id: &str,
-    replacement: &TitleImageReplacement,
+    result: &TitleImageSourceResult,
     now: chrono::DateTime<Utc>,
 ) -> Vec<SqlArg> {
     vec![
@@ -440,20 +573,13 @@ fn title_image_insert_args(
         SqlArg::Text(title_id.to_string()),
         SqlArg::Text("tvdb".to_string()),
         SqlArg::OptText(None),
-        SqlArg::Text(replacement.kind.as_str().to_string()),
-        SqlArg::Text(replacement.source_url.clone()),
-        SqlArg::OptText(replacement.source_etag.clone()),
-        SqlArg::OptText(replacement.source_last_modified.clone()),
-        SqlArg::Text(replacement.source_format.clone()),
-        SqlArg::I32(replacement.source_width),
-        SqlArg::I32(replacement.source_height),
-        SqlArg::Text(replacement.storage_mode.as_str().to_string()),
-        SqlArg::OptText(None),
-        SqlArg::Text(replacement.master_format.clone()),
-        SqlArg::Text(replacement.master_sha256.clone()),
-        SqlArg::I32(replacement.master_width),
-        SqlArg::I32(replacement.master_height),
-        SqlArg::OptBytes(Some(replacement.master_bytes.clone())),
+        SqlArg::Text(result.kind.as_str().to_string()),
+        SqlArg::Text(result.source_url.clone()),
+        SqlArg::OptText(result.source_etag.clone()),
+        SqlArg::OptText(result.source_last_modified.clone()),
+        SqlArg::Text(result.source_format.clone()),
+        SqlArg::I32(result.source_width),
+        SqlArg::I32(result.source_height),
         SqlArg::Timestamp(now),
         SqlArg::Timestamp(now),
     ]
@@ -461,22 +587,16 @@ fn title_image_insert_args(
 
 fn title_image_update_args(
     image_id: &str,
-    replacement: &TitleImageReplacement,
+    result: &TitleImageSourceResult,
     now: chrono::DateTime<Utc>,
 ) -> Vec<SqlArg> {
     vec![
-        SqlArg::Text(replacement.source_url.clone()),
-        SqlArg::OptText(replacement.source_etag.clone()),
-        SqlArg::OptText(replacement.source_last_modified.clone()),
-        SqlArg::Text(replacement.source_format.clone()),
-        SqlArg::I32(replacement.source_width),
-        SqlArg::I32(replacement.source_height),
-        SqlArg::Text(replacement.storage_mode.as_str().to_string()),
-        SqlArg::Text(replacement.master_format.clone()),
-        SqlArg::Text(replacement.master_sha256.clone()),
-        SqlArg::I32(replacement.master_width),
-        SqlArg::I32(replacement.master_height),
-        SqlArg::OptBytes(Some(replacement.master_bytes.clone())),
+        SqlArg::Text(result.source_url.clone()),
+        SqlArg::OptText(result.source_etag.clone()),
+        SqlArg::OptText(result.source_last_modified.clone()),
+        SqlArg::Text(result.source_format.clone()),
+        SqlArg::I32(result.source_width),
+        SqlArg::I32(result.source_height),
         SqlArg::Timestamp(now),
         SqlArg::Text(image_id.to_string()),
     ]
@@ -488,25 +608,9 @@ async fn fetch_title_image_blob(
     kind: TitleImageKind,
     variant_key: &str,
 ) -> AppResult<Option<TitleImageBlob>> {
-    if variant_key == "original"
-        || (variant_key == "master" && matches!(kind, TitleImageKind::Fanart))
-    {
-        return fetch_optional_blob(
-            exec,
-            "SELECT master_format AS format, master_sha256 AS sha256, bytes
-             FROM title_images
-             WHERE title_id = {} AND kind = {}",
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(kind.as_str().to_string()),
-            ],
-        )
-        .await;
-    }
-
     fetch_optional_blob(
         exec,
-        "SELECT tiv.format, tiv.sha256, tiv.bytes
+        "SELECT tiv.format, tiv.digest, tiv.bytes
          FROM title_image_variants tiv
          INNER JOIN title_images ti ON ti.id = tiv.title_image_id
          WHERE ti.title_id = {} AND ti.kind = {} AND tiv.variant_key = {}",
@@ -529,7 +633,7 @@ async fn fetch_optional_blob(
         .map(|row| {
             Ok(TitleImageBlob {
                 content_type: crate::title_images::content_type_for_format(row.text("format")?),
-                etag: row.text("sha256")?,
+                etag: row.text("digest")?,
                 bytes: row
                     .opt_bytes("bytes")?
                     .ok_or_else(|| AppError::Repository("title image blob missing bytes".into()))?,

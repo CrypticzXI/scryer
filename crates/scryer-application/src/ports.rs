@@ -295,26 +295,20 @@ pub trait MediaRequestRepository: Send + Sync {
 
 #[async_trait]
 pub trait TitleImageRepository: Send + Sync {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        kind: TitleImageKind,
         limit: usize,
+        skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>>;
 
     async fn clear_title_image_cache(&self) -> AppResult<()>;
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         title_id: &str,
-        replacement: TitleImageReplacement,
-    ) -> AppResult<()>;
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-        event: NewDomainEvent,
-    ) -> AppResult<DomainEvent>;
+        result: TitleImageSourceResult,
+        event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>>;
 
     async fn get_title_image_blob(
         &self,
@@ -330,7 +324,8 @@ pub trait TitleImageProcessor: Send + Sync {
         &self,
         kind: TitleImageKind,
         source_url: &str,
-    ) -> AppResult<TitleImageReplacement>;
+        variants: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult>;
 }
 
 #[async_trait]

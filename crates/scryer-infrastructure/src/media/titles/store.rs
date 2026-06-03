@@ -64,7 +64,15 @@ ON CONFLICT (id) DO UPDATE SET
     created_at = excluded.created_at,
     year = excluded.year,
     overview = excluded.overview,
+    poster_local_path = CASE
+        WHEN COALESCE(titles.poster_url, '') <> COALESCE(excluded.poster_url, '') THEN NULL
+        ELSE titles.poster_local_path
+    END,
     poster_url = excluded.poster_url,
+    background_local_path = CASE
+        WHEN COALESCE(titles.background_url, '') <> COALESCE(excluded.background_url, '') THEN NULL
+        ELSE titles.background_local_path
+    END,
     background_url = excluded.background_url,
     sort_title = excluded.sort_title,
     slug = excluded.slug,
@@ -265,7 +273,15 @@ impl TitleRepository for TitleStore {
                     let rows = tx
                         .execute(
                             "UPDATE titles
-                                SET poster_url = {},
+                                SET poster_local_path = CASE
+                                        WHEN COALESCE(poster_url, '') <> COALESCE({}, '') THEN NULL
+                                        ELSE poster_local_path
+                                    END,
+                                    poster_url = {},
+                                    background_local_path = CASE
+                                        WHEN COALESCE(background_url, '') <> COALESCE({}, '') THEN NULL
+                                        ELSE background_local_path
+                                    END,
                                     background_url = {}
                               WHERE id = {}
                                 AND (
@@ -274,6 +290,8 @@ impl TitleRepository for TitleStore {
                                 )",
                             &[
                                 SqlArg::OptText(update.poster_url.clone()),
+                                SqlArg::OptText(update.poster_url.clone()),
+                                SqlArg::OptText(update.background_url.clone()),
                                 SqlArg::OptText(update.background_url.clone()),
                                 SqlArg::Text(update.title_id.clone()),
                                 SqlArg::OptText(update.poster_url),

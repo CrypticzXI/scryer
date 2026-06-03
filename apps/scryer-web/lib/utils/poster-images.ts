@@ -23,6 +23,7 @@ export function selectPosterVariantUrl(
     }
 
     parsed.pathname = `${prefix}${desiredVariant}`;
+    parsed.searchParams.delete("v");
     return isRelativeUrl(posterUrl)
       ? `${parsed.pathname}${parsed.search}${parsed.hash}`
       : parsed.toString();

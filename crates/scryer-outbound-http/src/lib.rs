@@ -256,6 +256,17 @@ pub fn generic_reqwest_client() -> Client {
     CLIENT.clone()
 }
 
+pub fn external_arr_reqwest_client() -> Client {
+    let mut builder = reqwest_client_builder().timeout(Duration::from_secs(15));
+    if let Ok(proxy_url) = std::env::var("SCRYER_EXTERNAL_ARR_PROXY_URL")
+        && !proxy_url.trim().is_empty()
+        && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
+    {
+        builder = builder.proxy(proxy);
+    }
+    builder.build().unwrap_or_else(|_| generic_reqwest_client())
+}
+
 pub fn plugin_reqwest_client() -> Client {
     static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         reqwest_client_builder()

@@ -160,8 +160,7 @@ pub use catalog::facets::movie::MovieFacetHandler;
 pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
 pub use catalog::title_hydration::start_background_title_hydration_loop;
-pub use catalog::title_images::start_background_fanart_loop;
-pub use catalog::title_images::start_background_poster_loop;
+pub use catalog::title_images::start_background_title_image_loop;
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
@@ -411,8 +410,8 @@ pub use types::{
     PrimaryCollectionSummary, RecycleBinSettings, RecycledItem, ReleaseDecision,
     ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
     ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageSourceResult,
+    TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile,
     TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
     TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
     TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,

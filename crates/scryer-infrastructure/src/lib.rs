@@ -208,10 +208,7 @@ pub(crate) mod title_image_store {
 pub(crate) mod title_images {
     #[cfg(feature = "image-processing")]
     pub(crate) use crate::media::images::processor::*;
-    pub(crate) use crate::media::images::{
-        content_type_for_format, materialize_local_title_image_path, normalized_base_path_from_env,
-        required_persisted_variant_for_kind,
-    };
+    pub(crate) use crate::media::images::{content_type_for_format, normalized_base_path_from_env};
 }
 
 pub(crate) mod title_store {

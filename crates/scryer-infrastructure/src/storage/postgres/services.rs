@@ -113,9 +113,9 @@ mod tests {
         InsertMediaFileInput, LibraryRepository, LibraryScanUnmatchedItem,
         LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileAnalysis,
         MediaFileRepository, PendingImportStatus, QualityProfileRepository, SettingsRepository,
-        ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageReplacement,
-        TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-        TitleRepository, UserRepository, default_quality_profile_for_search,
+        ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+        TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
+        UserRepository, default_quality_profile_for_search,
     };
     use scryer_domain::{
         Collection, CollectionType, ExternalId, Id, InterstitialMovieMetadata, LibraryGrant,
@@ -272,7 +272,7 @@ mod tests {
                 .await?;
 
             let poster_tasks = images
-                .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+                .list_title_image_refresh_work(10, &[])
                 .await?;
             assert_eq!(
                 poster_tasks.len(),
@@ -286,9 +286,9 @@ mod tests {
             );
 
             images
-                .replace_title_image(
+                .upsert_title_image_source_result(
                     &title.id,
-                    TitleImageReplacement {
+                    TitleImageSourceResult {
                         kind: TitleImageKind::Poster,
                         source_url: "https://example.com/poster.jpg".to_string(),
                         source_etag: Some("source-etag".to_string()),
@@ -296,39 +296,26 @@ mod tests {
                         source_format: "jpeg".to_string(),
                         source_width: 1200,
                         source_height: 1800,
-                        storage_mode: TitleImageStorageMode::Original,
-                        master_format: "jpeg".to_string(),
-                        master_sha256: "poster-master-sha256".to_string(),
-                        master_width: 1200,
-                        master_height: 1800,
-                        master_bytes: vec![1, 2, 3, 4],
                         variants: vec![TitleImageVariantRecord {
-                            variant_key: "thumb".to_string(),
+                            variant_key: "w250".to_string(),
                             format: "avif".to_string(),
-                            width: 240,
-                            height: 360,
+                            width: 250,
+                            height: 375,
                             bytes: vec![5, 6, 7, 8],
-                            sha256: "poster-thumb-sha256".to_string(),
+                            digest: "blake3:poster-thumb".to_string(),
                         }],
                     },
+                    None,
                 )
                 .await?;
 
             let original_blob = images
                 .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
-                .await?
-                .ok_or_else(|| {
-                    AppError::Repository(
-                        "expected PostgreSQL blank install to persist title image master blob"
-                            .to_string(),
-                    )
-                })?;
-            assert_eq!(original_blob.content_type, "image/jpeg");
-            assert_eq!(original_blob.etag, "poster-master-sha256");
-            assert_eq!(original_blob.bytes, vec![1, 2, 3, 4]);
+                .await?;
+            assert!(original_blob.is_none());
 
             let thumb_blob = images
-                .get_title_image_blob(&title.id, TitleImageKind::Poster, "thumb")
+                .get_title_image_blob(&title.id, TitleImageKind::Poster, "w250")
                 .await?
                 .ok_or_else(|| {
                     AppError::Repository(
@@ -337,7 +324,7 @@ mod tests {
                     )
                 })?;
             assert_eq!(thumb_blob.content_type, "image/avif");
-            assert_eq!(thumb_blob.etag, "poster-thumb-sha256");
+            assert_eq!(thumb_blob.etag, "blake3:poster-thumb");
             assert_eq!(thumb_blob.bytes, vec![5, 6, 7, 8]);
 
             services.pool().close().await;

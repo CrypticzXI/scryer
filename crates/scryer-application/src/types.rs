@@ -139,6 +139,8 @@ pub struct PendingTitleHydration {
 pub struct ExternalImportMonitorMovieEntry {
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub monitored: bool,
 }
 
@@ -159,6 +161,8 @@ pub struct ExternalImportMonitorEpisodeEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSeriesEntry {
     pub tvdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub monitored: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seasons: Vec<ExternalImportMonitorSeasonEntry>,
@@ -265,13 +269,15 @@ impl LibraryScanHintSet {
     }
 
     pub fn push(&mut self, hint: LibraryScanHint) {
-        if hint.ids.is_empty() || hint.path_key.trim().is_empty() {
+        if hint.ids.is_empty() {
             return;
         }
         if let Some(existing) = self.hints.iter_mut().find(|existing| {
-            existing.facet == hint.facet
-                && stored_path_keys_match(&existing.path_key, &hint.path_key)
+            existing.facet == hint.facet && external_ids_overlap(&existing.ids, &hint.ids)
         }) {
+            if existing.path_key.trim().is_empty() && !hint.path_key.trim().is_empty() {
+                existing.path_key = hint.path_key.clone();
+            }
             for id in hint.ids {
                 if !existing.ids.iter().any(|existing_id| existing_id == &id) {
                     existing.ids.push(id);
@@ -286,20 +292,26 @@ impl LibraryScanHintSet {
         self.hints.is_empty()
     }
 
-    pub fn hint_for_stored_path(
+    pub fn hint_for_external_ids(
         &self,
         facet: LibraryScanHintFacet,
-        candidate_path_key: &str,
+        candidate_ids: &[ExternalIdHint],
     ) -> Option<&LibraryScanHint> {
+        if candidate_ids.is_empty() {
+            return None;
+        }
         self.hints.iter().find(|hint| {
-            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
+            hint.facet == facet && external_ids_overlap(&hint.ids, candidate_ids)
         })
     }
 }
 
-fn stored_path_keys_match(left: &str, right: &str) -> bool {
-    crate::stored_paths::stored_path_to_path_buf(left)
-        == crate::stored_paths::stored_path_to_path_buf(right)
+fn external_ids_overlap(left: &[ExternalIdHint], right: &[ExternalIdHint]) -> bool {
+    left.iter().any(|left_id| {
+        right
+            .iter()
+            .any(|right_id| left_id.provider == right_id.provider && left_id.value == right_id.value)
+    })
 }
 
 fn normalize_strict_imdb_id(raw: &str) -> Option<String> {
@@ -358,30 +370,6 @@ impl TitleImageKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TitleImageStorageMode {
-    Original,
-    AvifMaster,
-}
-
-impl TitleImageStorageMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Original => "original",
-            Self::AvifMaster => "avif_master",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "original" => Some(Self::Original),
-            "avif_master" => Some(Self::AvifMaster),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct TitleImageVariantRecord {
     pub variant_key: String,
@@ -389,11 +377,17 @@ pub struct TitleImageVariantRecord {
     pub width: i32,
     pub height: i32,
     pub bytes: Vec<u8>,
-    pub sha256: String,
+    pub digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleImageVariantSpec {
+    pub variant_key: String,
+    pub width: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct TitleImageReplacement {
+pub struct TitleImageSourceResult {
     pub kind: TitleImageKind,
     pub source_url: String,
     pub source_etag: Option<String>,
@@ -401,20 +395,15 @@ pub struct TitleImageReplacement {
     pub source_format: String,
     pub source_width: i32,
     pub source_height: i32,
-    pub storage_mode: TitleImageStorageMode,
-    pub master_format: String,
-    pub master_sha256: String,
-    pub master_width: i32,
-    pub master_height: i32,
-    pub master_bytes: Vec<u8>,
     pub variants: Vec<TitleImageVariantRecord>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TitleImageSyncTask {
     pub title_id: String,
+    pub kind: TitleImageKind,
     pub source_url: String,
-    pub cached_source_url: Option<String>,
+    pub variants: Vec<TitleImageVariantSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

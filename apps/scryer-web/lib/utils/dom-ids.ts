@@ -120,6 +120,17 @@ export function globalSearchConfigureAddId(
   );
 }
 
+export function globalSearchRequestId(
+  facet: string,
+  result: MetadataSearchSelectorInput,
+): string {
+  return selectorId(
+    "global-search-request",
+    facet,
+    ...metadataSearchSelectorParts(result),
+  );
+}
+
 export function mediaRequestRowId(requestId: string): string {
   return selectorId("media-request-row", requestId);
 }

@@ -34,6 +34,7 @@ import { buildViewPath } from "@/lib/utils/routing";
 import {
   globalSearchConfigureAddId,
   globalSearchMetadataResultId,
+  globalSearchRequestId,
   selectorId,
 } from "@/lib/utils/dom-ids";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
@@ -496,7 +497,11 @@ export const RootHeader = React.memo(function RootHeader({
               </div>
               <div className="flex items-center self-center">
                 <Button
-                  id={globalSearchConfigureAddId(facet, result)}
+                  id={
+                    opensRequestDialog
+                      ? globalSearchRequestId(facet, result)
+                      : globalSearchConfigureAddId(facet, result)
+                  }
                   type="button"
                   variant={disabled ? "secondary" : "default"}
                   className={
