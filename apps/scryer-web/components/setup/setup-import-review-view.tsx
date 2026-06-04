@@ -246,6 +246,7 @@ export function SetupImportReviewView({
             return (
               <div key={dc.dedupKey}>
                 <label
+                  id={selectorId("setup-import-download-client-row", dc.dedupKey)}
                   className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
                     dc.supported
                       ? "cursor-pointer hover:bg-muted"

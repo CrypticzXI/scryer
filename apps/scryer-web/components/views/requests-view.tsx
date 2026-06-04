@@ -91,6 +91,15 @@ function requesterLabel(request: MediaRequestRecord): string {
     .join(", ");
 }
 
+function requestExternalIdValue(
+  request: MediaRequestRecord,
+  source: string,
+): string | undefined {
+  return request.externalIds.find(
+    (externalId) => externalId.source.toLowerCase() === source,
+  )?.value;
+}
+
 function RequesterAvatarStack({ request }: { request: MediaRequestRecord }) {
   const avatarRequesters = request.requesters.filter((requester) =>
     requester.avatarUrl?.trim(),
@@ -422,6 +431,10 @@ export function RequestsView({
               id={mediaRequestRowId(request.id)}
               data-request-status={request.status}
               data-request-title={request.title}
+              data-request-facet={request.facet}
+              data-request-imdb-id={requestExternalIdValue(request, "imdb")}
+              data-request-tvdb-id={requestExternalIdValue(request, "tvdb")}
+              data-request-tmdb-id={requestExternalIdValue(request, "tmdb")}
               className="rounded-lg border border-border bg-card/60 p-3"
             >
               <div className="flex gap-3">
