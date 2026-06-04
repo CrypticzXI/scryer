@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, TitleArtworkUrlUpdate,
-    TitleMetadataUpdate, TitleRepository,
+    TitleDeletePreviewInfo, TitleMetadataUpdate, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -245,6 +245,30 @@ impl TitleRepository for TitleStore {
             false,
         )
         .await
+    }
+
+    async fn list_delete_preview_info(&self) -> AppResult<Vec<TitleDeletePreviewInfo>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, library_id, name, facet, folder_path FROM titles ORDER BY id",
+            &[],
+        )
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let facet = parse_facet(&row.text("facet")?);
+                Ok(TitleDeletePreviewInfo {
+                    title_id: row.text("id")?,
+                    library_id: row
+                        .opt_text("library_id")?
+                        .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet)),
+                    title_name: row.text("name")?,
+                    facet,
+                    folder_path: row.opt_text("folder_path")?,
+                })
+            })
+            .collect()
     }
 
     async fn list_page_after_id(

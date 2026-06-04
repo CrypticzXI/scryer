@@ -291,6 +291,57 @@ file = "postgres/migrations/0125_0_16_release_rollup_post_notification_target_ho
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 126
+description = "download submission identity"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0126_download_submission_identity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0126_download_submission_identity.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 127
+description = "download identity states"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0127_download_identity_states.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0127_download_identity_states.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 128
+description = "import identity dedupe"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0128_import_identity_dedupe.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0128_import_identity_dedupe.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

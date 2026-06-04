@@ -3,8 +3,8 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, DownloadSourceIdentity, ImportArtifact, ImportArtifactRepository,
-    ImportRepository,
+    AppError, AppResult, DownloadSourceIdentity, DownloadSubmissionIdentity, ImportArtifact,
+    ImportArtifactRepository, ImportRepository,
 };
 use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType};
 
@@ -30,6 +30,23 @@ impl ImportRepository for ImportStore {
         payload_json: String,
     ) -> AppResult<String> {
         queue_import_request(&self.datastore, source_identity, import_type, payload_json).await
+    }
+
+    async fn queue_import_request_with_identity(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        submission_identity: Option<DownloadSubmissionIdentity>,
+    ) -> AppResult<String> {
+        queue_import_request_with_identity(
+            &self.datastore,
+            source_identity,
+            import_type,
+            payload_json,
+            submission_identity,
+        )
+        .await
     }
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
@@ -172,6 +189,50 @@ impl ImportRepository for ImportStore {
         )
         .await?
         .ok_or_else(|| AppError::Repository("missing import count".into()))?;
+        Ok(row.i64("count")? > 0)
+    }
+
+    async fn is_already_imported_by_submission_identity(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        let mut clauses = Vec::new();
+        let mut args = Vec::new();
+        if let Some(request_id) = identity
+            .download_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("download_request_id = {}");
+            args.push(SqlArg::Text(request_id.to_string()));
+        }
+        if let Some(fingerprint) = identity
+            .download_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            clauses.push("download_fingerprint = {}");
+            args.push(SqlArg::Text(fingerprint.to_string()));
+        }
+        if clauses.is_empty() {
+            return Ok(false);
+        }
+
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT COUNT(1) AS count
+                 FROM imports
+                 WHERE status IN ('completed', 'skipped')
+                   AND ({})",
+                clauses.join(" OR ")
+            ),
+            &args,
+        )
+        .await?
+        .ok_or_else(|| AppError::Repository("missing import identity count".into()))?;
         Ok(row.i64("count")? > 0)
     }
 

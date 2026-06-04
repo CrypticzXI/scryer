@@ -20,7 +20,11 @@ import { useClient } from "urql";
 import type { LibraryRecord, UserRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import { APP_PERMISSIONS, LIBRARY_PERMISSIONS } from "@/lib/utils/permissions";
+import {
+  APP_PERMISSIONS,
+  LIBRARY_PERMISSIONS,
+  normalizeLibraryPermissionsForStorage,
+} from "@/lib/utils/permissions";
 
 type LibraryGrantDrafts = Record<string, string[]>;
 
@@ -34,7 +38,7 @@ function grantsToDrafts(
   return Object.fromEntries(
     (grants ?? []).map((grant) => [
       grant.libraryId,
-      normalizePermissions(grant.permissions),
+      normalizeLibraryPermissionsForStorage(normalizePermissions(grant.permissions)),
     ]),
   );
 }
@@ -113,7 +117,9 @@ export function SettingsUsersContainer() {
         appPermissions: normalizePermissions(user.appPermissions),
         libraryPermissions: (user.libraryPermissions ?? []).map((grant) => ({
           libraryId: grant.libraryId,
-          permissions: normalizePermissions(grant.permissions),
+          permissions: normalizeLibraryPermissionsForStorage(
+            normalizePermissions(grant.permissions),
+          ),
         })),
       }));
       setSettingsUsers(users);
@@ -159,8 +165,11 @@ export function SettingsUsersContainer() {
           appPermissions: canManagePermissions ? newAppPermissions : [],
           libraryPermissions: canManagePermissions
             ? Object.entries(newLibraryPermissionDrafts)
-                .filter(([, permissions]) => permissions.length > 0)
-                .map(([libraryId, permissions]) => ({ libraryId, permissions }))
+                .map(([libraryId, permissions]) => ({
+                  libraryId,
+                  permissions: normalizeLibraryPermissionsForStorage(permissions),
+                }))
+                .filter((grant) => grant.permissions.length > 0)
             : [],
         },
       }).toPromise();
@@ -247,11 +256,11 @@ export function SettingsUsersContainer() {
       [libraryId]: normalizePermissions(permissions ?? currentDrafts[libraryId]),
     };
     const grants = Object.entries(nextDrafts)
-      .filter(([, grantPermissions]) => grantPermissions.length > 0)
       .map(([grantLibraryId, grantPermissions]) => ({
         libraryId: grantLibraryId,
-        permissions: grantPermissions,
-      }));
+        permissions: normalizeLibraryPermissionsForStorage(grantPermissions),
+      }))
+      .filter((grant) => grant.permissions.length > 0);
     setMutatingUserId(userId);
     try {
       const { error } = await client.mutation(setUserLibraryPermissionsMutation, {

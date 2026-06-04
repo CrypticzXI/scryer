@@ -13808,7 +13808,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
                 setUserLibraryPermissions(input: {{
                     userId: "{user_id}",
-                    grants: [{{ libraryId: "{library_id}", permissions: [view, manageTitles] }}]
+                    grants: [{{ libraryId: "{library_id}", permissions: [view, request, autoApproveRequests, manageTitles] }}]
                 }}) {{
                     id
                     libraryPermissions {{ libraryId permissions }}
@@ -13822,6 +13822,17 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
         update_body["errors"].is_null(),
         "setUserLibraryPermissions should succeed: {update_body}"
     );
+    let permissions =
+        update_body["data"]["setUserLibraryPermissions"]["libraryPermissions"][0]["permissions"]
+            .as_array()
+            .expect("permissions should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("permission string"))
+            .collect::<Vec<_>>();
+    assert!(permissions.contains(&"view"));
+    assert!(permissions.contains(&"manageTitles"));
+    assert!(permissions.contains(&"request"));
+    assert!(permissions.contains(&"autoApproveRequests"));
 
     let old_result = ctx.app.authenticate_token(&old_token).await;
     assert!(
@@ -13857,6 +13868,10 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
     assert!(
         authorization
             .has_library_permission(&library_id, scryer_domain::LibraryPermission::ManageTitles,)
+    );
+    assert!(
+        !authorization
+            .has_library_permission(&library_id, scryer_domain::LibraryPermission::Request)
     );
 }
 

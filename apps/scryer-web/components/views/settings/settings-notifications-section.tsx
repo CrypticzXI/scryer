@@ -132,6 +132,10 @@ const NOTIFICATION_EVENT_LABEL_KEYS: Record<string, string> = {
   post_processing_completed: "settings.notificationEvent.postProcessingCompleted",
   subtitle_downloaded: "settings.notificationEvent.subtitleDownloaded",
   subtitle_search_failed: "settings.notificationEvent.subtitleSearchFailed",
+  media_request_submitted: "settings.notificationEvent.mediaRequestSubmitted",
+  media_request_approved: "settings.notificationEvent.mediaRequestApproved",
+  media_request_rejected: "settings.notificationEvent.mediaRequestRejected",
+  media_request_canceled: "settings.notificationEvent.mediaRequestCanceled",
   health_issue: "settings.notificationEvent.healthIssue",
   health_restored: "settings.notificationEvent.healthRestored",
   application_update: "settings.notificationEvent.applicationUpdate",
@@ -940,6 +944,15 @@ export function SettingsNotificationsSection({
                     sub.scope,
                     sub.scopeId,
                   )}
+                  data-notification-target-name={notificationTargetName(
+                    notificationTargets,
+                    sub.targetKind,
+                    sub.targetId,
+                  )}
+                  data-notification-target-kind={sub.targetKind}
+                  data-notification-events={orderedSubscriptionEventTypes(sub.eventTypes).join(",")}
+                  data-notification-scope={sub.scope}
+                  data-notification-scope-id={sub.scopeId ?? ""}
                 >
                   <TableCell>
                     <div className="space-y-1">

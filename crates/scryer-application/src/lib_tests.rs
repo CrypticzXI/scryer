@@ -2,8 +2,9 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
     Collection, CollectionType, DomainEventFilter, DomainEventPayload, DomainEventType, Episode,
-    EpisodeType, EventType, ImportType, JobRunCompletedEventData, JobRunStartedEventData,
-    MediaRequestRequester, MediaRequestStatus, RootFolderEntry, TrackedDownloadState,
+    EpisodeType, EventType, ImportSkipReason, ImportType, JobRunCompletedEventData,
+    JobRunStartedEventData, MediaRequestRequester, MediaRequestStatus, RootFolderEntry,
+    TrackedDownloadState,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -15,6 +16,10 @@ type DeleteOperationLog = Arc<Mutex<Vec<String>>>;
 type OptionalDeleteOperationLog = Arc<Mutex<Option<DeleteOperationLog>>>;
 type TrackedDownloadStateKey = (String, String, String);
 type TrackedDownloadStates = Arc<Mutex<HashMap<TrackedDownloadStateKey, String>>>;
+type DownloadSubmissionIdentities =
+    Arc<Mutex<HashMap<TrackedDownloadStateKey, DownloadSubmissionIdentity>>>;
+type DownloadIdentityStates = Arc<Mutex<HashMap<String, String>>>;
+type ImportIdentities = Arc<Mutex<HashMap<String, DownloadSubmissionIdentity>>>;
 type DeletedDownloadRequest = (Option<String>, Option<String>, String, bool);
 type DeletedDownloadRequests = Arc<Mutex<Vec<DeletedDownloadRequest>>>;
 
@@ -23,6 +28,105 @@ struct MockTitleRepo {
     store: Arc<Mutex<Vec<Title>>>,
     create_or_get_existing_error: Arc<Mutex<Option<String>>>,
     delete_operation_log: OptionalDeleteOperationLog,
+}
+
+#[derive(Default)]
+struct RecordingJobRunRepo {
+    runs: Arc<Mutex<Vec<JobRunRecord>>>,
+}
+
+impl RecordingJobRunRepo {
+    async fn seed(&self, run: JobRunRecord) {
+        self.runs.lock().await.push(run);
+    }
+}
+
+#[async_trait]
+impl JobRunRepository for RecordingJobRunRepo {
+    async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        let mut runs = self.runs.lock().await;
+        runs.push(run.clone());
+        Ok(run.clone())
+    }
+
+    async fn update_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        let mut runs = self.runs.lock().await;
+        if let Some(existing) = runs.iter_mut().find(|candidate| candidate.id == run.id) {
+            *existing = run.clone();
+        } else {
+            runs.push(run.clone());
+        }
+        Ok(run.clone())
+    }
+
+    async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>> {
+        Ok(self
+            .runs
+            .lock()
+            .await
+            .iter()
+            .find(|run| run.id == run_id)
+            .cloned())
+    }
+
+    async fn list_job_runs(
+        &self,
+        job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        Ok(sorted_limited_job_runs(
+            self.runs
+                .lock()
+                .await
+                .iter()
+                .filter(|run| job_key.is_none_or(|job_key| run.job_key == job_key))
+                .cloned()
+                .collect(),
+            limit,
+        ))
+    }
+
+    async fn list_job_runs_for_actor(
+        &self,
+        job_key: Option<JobKey>,
+        actor_user_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        Ok(sorted_limited_job_runs(
+            self.runs
+                .lock()
+                .await
+                .iter()
+                .filter(|run| job_key.is_none_or(|job_key| run.job_key == job_key))
+                .filter(|run| run.actor_user_id.as_deref() == Some(actor_user_id))
+                .cloned()
+                .collect(),
+            limit,
+        ))
+    }
+
+    async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
+        Ok(self
+            .runs
+            .lock()
+            .await
+            .iter()
+            .filter(|run| !run.status.is_terminal())
+            .cloned()
+            .collect())
+    }
+}
+
+fn sorted_limited_job_runs(mut runs: Vec<JobRunRecord>, limit: usize) -> Vec<JobRunRecord> {
+    runs.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    runs.truncate(limit);
+    runs
 }
 
 impl MockTitleRepo {
@@ -765,6 +869,7 @@ impl MediaFileRepository for MockMediaFileRepo {
 #[derive(Default, Clone)]
 struct TrackingImportRepo {
     records: Arc<Mutex<Vec<ImportRecord>>>,
+    identities: ImportIdentities,
 }
 
 #[async_trait]
@@ -775,6 +880,45 @@ impl ImportRepository for TrackingImportRepo {
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
+        self.queue_import_request_with_identity(source_identity, import_type, payload_json, None)
+            .await
+    }
+
+    async fn queue_import_request_with_identity(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        submission_identity: Option<DownloadSubmissionIdentity>,
+    ) -> AppResult<String> {
+        if let Some(submission_identity) = submission_identity.as_ref() {
+            let records = self.records.lock().await;
+            let identities = self.identities.lock().await;
+            if let Some(record) = records.iter().rev().find(|record| {
+                record.status.is_active()
+                    && identities.get(&record.id).is_some_and(|record_identity| {
+                        submission_identity
+                            .download_request_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .is_some_and(|request_id| {
+                                record_identity.download_request_id.as_deref() == Some(request_id)
+                            })
+                            || submission_identity
+                                .download_fingerprint
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .is_some_and(|fingerprint| {
+                                    record_identity.download_fingerprint.as_deref()
+                                        == Some(fingerprint)
+                                })
+                    })
+            }) {
+                return Ok(record.id.clone());
+            }
+        }
         let id = Id::new().0;
         let now = Utc::now().to_rfc3339();
         self.records.lock().await.push(ImportRecord {
@@ -791,6 +935,12 @@ impl ImportRepository for TrackingImportRepo {
             created_at: now.clone(),
             updated_at: now,
         });
+        if let Some(submission_identity) = submission_identity {
+            self.identities
+                .lock()
+                .await
+                .insert(id.clone(), submission_identity);
+        }
         Ok(id)
     }
 
@@ -905,6 +1055,41 @@ impl ImportRepository for TrackingImportRepo {
                     ImportStatus::Completed | ImportStatus::Skipped
                 )
             }))
+    }
+
+    async fn is_already_imported_by_submission_identity(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        let records = self.records.lock().await;
+        let identities = self.identities.lock().await;
+        Ok(records.iter().rev().any(|record| {
+            if !matches!(
+                record.status,
+                ImportStatus::Completed | ImportStatus::Skipped
+            ) {
+                return false;
+            }
+            let Some(record_identity) = identities.get(&record.id) else {
+                return false;
+            };
+            identity
+                .download_request_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some_and(|request_id| {
+                    record_identity.download_request_id.as_deref() == Some(request_id)
+                })
+                || identity
+                    .download_fingerprint
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some_and(|fingerprint| {
+                        record_identity.download_fingerprint.as_deref() == Some(fingerprint)
+                    })
+        }))
     }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
@@ -3739,6 +3924,8 @@ impl BlocklistRepository for MockBlocklistRepo {
 #[derive(Default, Clone)]
 struct TrackingDownloadSubmissionRepo {
     store: Arc<Mutex<Vec<DownloadSubmission>>>,
+    identities: DownloadSubmissionIdentities,
+    identity_states: DownloadIdentityStates,
     tracked_states: TrackedDownloadStates,
     deleted_title_ids: Arc<Mutex<Vec<String>>>,
     list_for_title_calls: Arc<Mutex<Vec<String>>>,
@@ -4099,6 +4286,49 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
     }
 }
 
+fn download_submission_key(submission: &DownloadSubmission) -> TrackedDownloadStateKey {
+    (
+        submission
+            .download_client_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        submission.download_client_type.clone(),
+        submission.download_client_item_id.clone(),
+    )
+}
+
+fn download_source_identity_key(identity: &DownloadSourceIdentity) -> TrackedDownloadStateKey {
+    (
+        identity
+            .client_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        identity.client_type.clone(),
+        identity.item_id.clone(),
+    )
+}
+
+fn download_identity_state_key(identity: &DownloadSubmissionIdentity) -> Option<String> {
+    identity
+        .download_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("request:{value}"))
+        .or_else(|| {
+            identity
+                .download_fingerprint
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("fingerprint:{value}"))
+        })
+}
+
 #[async_trait]
 impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
@@ -4111,6 +4341,31 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             *existing = submission;
         } else {
             entries.push(submission);
+        }
+        Ok(())
+    }
+
+    async fn record_submission_with_identity(
+        &self,
+        submission: DownloadSubmission,
+        submission_identity: DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        let identity = DownloadSourceIdentity::from_submission(&submission);
+        self.record_submission(submission).await?;
+        self.record_submission_identity(&identity, &submission_identity)
+            .await
+    }
+
+    async fn record_submission_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+        submission_identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        let key = download_source_identity_key(identity);
+        let mut identities = self.identities.lock().await;
+        let previous = identities.insert(key.clone(), submission_identity.clone());
+        if previous.as_ref() != Some(submission_identity) {
+            self.tracked_states.lock().await.remove(&key);
         }
         Ok(())
     }
@@ -4129,6 +4384,95 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                     && entry.download_client_item_id == identity.item_id.as_str()
             })
             .cloned())
+    }
+
+    async fn list_by_request_id(
+        &self,
+        download_request_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let keys = self
+            .identities
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, identity)| {
+                identity.download_request_id.as_deref() == Some(download_request_id)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let entries = self.store.lock().await;
+        Ok(entries
+            .iter()
+            .filter(|entry| {
+                keys.iter()
+                    .any(|key| *key == download_submission_key(entry))
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_by_fingerprint(
+        &self,
+        download_fingerprint: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let keys = self
+            .identities
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, identity)| {
+                identity.download_fingerprint.as_deref() == Some(download_fingerprint)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let entries = self.store.lock().await;
+        Ok(entries
+            .iter()
+            .filter(|entry| {
+                keys.iter()
+                    .any(|key| *key == download_submission_key(entry))
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn get_submission_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionIdentity>> {
+        Ok(self
+            .identities
+            .lock()
+            .await
+            .get(&download_source_identity_key(identity))
+            .cloned())
+    }
+
+    async fn record_identity_tracked_state(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        _reason: Option<&str>,
+        _detail: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(key) = download_identity_state_key(identity) {
+            self.identity_states
+                .lock()
+                .await
+                .insert(key, tracked_state.to_string());
+        }
+        Ok(())
+    }
+
+    async fn get_identity_tracked_state(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<Option<String>> {
+        let Some(key) = download_identity_state_key(identity) else {
+            return Ok(None);
+        };
+        Ok(self.identity_states.lock().await.get(&key).cloned())
     }
 
     async fn list_for_client_items(
@@ -4189,13 +4533,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .await
             .iter()
             .filter(|entry| entry.title_id == title_id)
-            .map(|entry| {
-                (
-                    entry.download_client_id.clone().unwrap_or_default(),
-                    entry.download_client_type.clone(),
-                    entry.download_client_item_id.clone(),
-                )
-            })
+            .map(download_submission_key)
             .collect();
         self.store
             .lock()
@@ -4205,15 +4543,15 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .lock()
             .await
             .retain(|key, _| !removed_keys.iter().any(|removed| removed == key));
+        self.identities
+            .lock()
+            .await
+            .retain(|key, _| !removed_keys.iter().any(|removed| removed == key));
         Ok(())
     }
 
     async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
-        let key = (
-            identity.client_id.as_deref().unwrap_or("").to_string(),
-            identity.client_type.clone(),
-            identity.item_id.clone(),
-        );
+        let key = download_source_identity_key(identity);
         self.store.lock().await.retain(|entry| {
             entry.download_client_id.as_deref().unwrap_or("").trim()
                 != identity.client_id.as_deref().unwrap_or("")
@@ -4221,6 +4559,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 || entry.download_client_item_id != identity.item_id.as_str()
         });
         self.tracked_states.lock().await.remove(&key);
+        self.identities.lock().await.remove(&key);
         Ok(())
     }
 
@@ -4229,11 +4568,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         identity: &DownloadSourceIdentity,
         tracked_state: &str,
     ) -> AppResult<()> {
-        let key = (
-            identity.client_id.as_deref().unwrap_or("").to_string(),
-            identity.client_type.clone(),
-            identity.item_id.clone(),
-        );
+        let key = download_source_identity_key(identity);
         self.tracked_states
             .lock()
             .await
@@ -4270,11 +4605,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .tracked_states
             .lock()
             .await
-            .get(&(
-                identity.client_id.as_deref().unwrap_or("").to_string(),
-                identity.client_type.clone(),
-                identity.item_id.clone(),
-            ))
+            .get(&download_source_identity_key(identity))
             .cloned())
     }
 }
@@ -5825,6 +6156,7 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
 struct MediaRequestTestHarness {
     app: AppUseCase,
     user: User,
+    manager: User,
     titles: Arc<MockTitleRepo>,
     libraries: Arc<MockLibraryRepo>,
     media_requests: Arc<MockMediaRequestRepo>,
@@ -5886,6 +6218,16 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         scryer_domain::MediaFacet::Anime,
     )));
 
+    let mut requester = User::new_admin("requester");
+    requester.authorization = scryer_domain::UserAuthorization {
+        app: AppPermissionMask::MANAGE_CATALOG_SETTINGS,
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::Request,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+
     MediaRequestTestHarness {
         app: AppUseCase::new(
             services,
@@ -5896,7 +6238,8 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
             },
             Arc::new(registry),
         ),
-        user: test_admin_user(),
+        user: requester,
+        manager: test_admin_user(),
         titles,
         libraries,
         media_requests,
@@ -5937,13 +6280,27 @@ fn library_permission_user(
     library_id: &str,
     permissions: &[scryer_domain::LibraryPermission],
 ) -> User {
+    library_permission_user_with_grants(username, &[(library_id, permissions)])
+}
+
+fn library_permission_user_with_grants(
+    username: &str,
+    grants: &[(&str, &[scryer_domain::LibraryPermission])],
+) -> User {
     let mut user = User::new_admin(username);
     user.authorization = scryer_domain::UserAuthorization {
         app: AppPermissionMask::NONE,
-        libraries: HashMap::from([(
-            library_id.to_string(),
-            scryer_domain::LibraryPermissionMask::from_permissions(permissions.iter().copied()),
-        )]),
+        libraries: grants
+            .iter()
+            .map(|(library_id, permissions)| {
+                (
+                    (*library_id).to_string(),
+                    scryer_domain::LibraryPermissionMask::from_permissions(
+                        permissions.iter().copied(),
+                    ),
+                )
+            })
+            .collect(),
         default_library: scryer_domain::LibraryPermissionMask::NONE,
         loaded: true,
     };
@@ -5957,6 +6314,81 @@ fn custom_movie_library(id: &str, name: &str) -> Library {
     library.slug = name.to_ascii_lowercase().replace(' ', "-");
     library.is_default = false;
     library
+}
+
+#[test]
+fn library_permission_request_shadowing_expands_and_normalizes_masks() {
+    let request = scryer_domain::LibraryPermissionMask::from_permissions([
+        scryer_domain::LibraryPermission::Request,
+    ]);
+    assert!(request.is_strictly_requestable());
+    assert_eq!(request.normalized_for_storage(), request);
+
+    let auto_approve = scryer_domain::LibraryPermissionMask::from_permissions([
+        scryer_domain::LibraryPermission::AutoApproveRequests,
+    ]);
+    assert!(auto_approve.is_strictly_requestable());
+    assert!(auto_approve.can_auto_approve_requests());
+    assert!(
+        auto_approve
+            .with_request_shadowing()
+            .contains(scryer_domain::LibraryPermissionMask::REQUEST)
+    );
+    assert_eq!(auto_approve.normalized_for_storage(), auto_approve);
+
+    let manage_titles = scryer_domain::LibraryPermissionMask::from_permissions([
+        scryer_domain::LibraryPermission::ManageTitles,
+        scryer_domain::LibraryPermission::AutoApproveRequests,
+        scryer_domain::LibraryPermission::Request,
+    ]);
+    assert!(!manage_titles.is_strictly_requestable());
+    assert!(!manage_titles.can_auto_approve_requests());
+    assert!(
+        manage_titles
+            .with_request_shadowing()
+            .contains(scryer_domain::LibraryPermissionMask::AUTO_APPROVE_REQUESTS)
+    );
+    assert_eq!(
+        manage_titles.normalized_for_storage(),
+        scryer_domain::LibraryPermissionMask::MANAGE_TITLES
+    );
+}
+
+#[tokio::test]
+async fn list_libraries_for_manage_titles_ignores_app_settings_override() {
+    let harness = bootstrap_media_request_app();
+    let actor = test_user_with_app_permissions(
+        "catalog-settings-only",
+        AppPermissionMask::MANAGE_CATALOG_SETTINGS,
+    );
+
+    let manageable_libraries = harness
+        .app
+        .list_libraries_for_permission(
+            &actor,
+            Some(MediaFacet::Movie),
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
+        .expect("manageable libraries should load");
+    assert!(
+        manageable_libraries.is_empty(),
+        "app-level catalog settings must not imply title queue management"
+    );
+
+    let visible_libraries = harness
+        .app
+        .list_libraries_for_permission(
+            &actor,
+            Some(MediaFacet::Movie),
+            scryer_domain::LibraryPermission::View,
+        )
+        .await
+        .expect("view libraries should still use app-level settings override");
+    assert!(
+        !visible_libraries.is_empty(),
+        "catalog settings override should continue to expose visible libraries"
+    );
 }
 
 #[tokio::test]
@@ -6027,10 +6459,7 @@ async fn submit_media_request_auto_approves_for_requester_with_auto_approve_perm
     let requester = library_permission_user(
         "auto-approved-requester",
         &library_id,
-        &[
-            scryer_domain::LibraryPermission::Request,
-            scryer_domain::LibraryPermission::AutoApproveRequests,
-        ],
+        &[scryer_domain::LibraryPermission::AutoApproveRequests],
     );
 
     let outcome = harness
@@ -6444,6 +6873,97 @@ async fn submit_media_request_requires_request_permission_and_matching_facet() {
 }
 
 #[tokio::test]
+async fn submit_media_request_rejects_manage_titles_shadowed_request_permission() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let manager = library_permission_user(
+        "manage-title-requester",
+        &library_id,
+        &[
+            scryer_domain::LibraryPermission::ManageTitles,
+            scryer_domain::LibraryPermission::Request,
+            scryer_domain::LibraryPermission::AutoApproveRequests,
+        ],
+    );
+
+    let error = harness
+        .app
+        .submit_media_request(&manager, media_request_input(library_id, 9037))
+        .await
+        .expect_err("manage titles should suppress personal request submission");
+
+    assert!(
+        matches!(error, AppError::Unauthorized(_)),
+        "unexpected error: {error:?}"
+    );
+    assert!(harness.media_requests.requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn submit_media_request_allows_mixed_manage_and_request_libraries() {
+    let harness = bootstrap_media_request_app();
+    let managed_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let request_library_id = "movie-library-requestable".to_string();
+    harness
+        .libraries
+        .libraries
+        .lock()
+        .await
+        .push(custom_movie_library(
+            &request_library_id,
+            "Movie Requestable",
+        ));
+    let actor = library_permission_user_with_grants(
+        "mixed-requester",
+        &[
+            (
+                managed_library_id.as_str(),
+                &[scryer_domain::LibraryPermission::ManageTitles][..],
+            ),
+            (
+                request_library_id.as_str(),
+                &[scryer_domain::LibraryPermission::Request][..],
+            ),
+        ],
+    );
+
+    harness
+        .app
+        .submit_media_request(
+            &actor,
+            media_request_input(request_library_id.clone(), 9038),
+        )
+        .await
+        .expect("request-only library should accept submission");
+    let managed_error = harness
+        .app
+        .submit_media_request(&actor, media_request_input(managed_library_id, 9039))
+        .await
+        .expect_err("managed library should reject personal submission");
+
+    assert!(
+        matches!(managed_error, AppError::Unauthorized(_)),
+        "unexpected managed-library error: {managed_error:?}"
+    );
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].library_id, request_library_id);
+    drop(requests);
+
+    let requestable_libraries = harness
+        .app
+        .list_libraries_for_permission(
+            &actor,
+            Some(MediaFacet::Movie),
+            scryer_domain::LibraryPermission::Request,
+        )
+        .await
+        .expect("requestable libraries should load");
+    assert_eq!(requestable_libraries.len(), 1);
+    assert_eq!(requestable_libraries[0].id, request_library_id);
+}
+
+#[tokio::test]
 async fn list_media_requests_filters_by_facet_and_manageable_libraries() {
     let harness = bootstrap_media_request_app();
     let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
@@ -6708,7 +7228,7 @@ async fn requester_cannot_update_or_cancel_after_manager_resolution() {
     let request_id = harness.media_requests.requests.lock().await[0].id.clone();
     harness
         .app
-        .dismiss_media_request(&harness.user, &request_id)
+        .dismiss_media_request(&harness.manager, &request_id)
         .await
         .expect("manager should reject request");
 
@@ -6760,7 +7280,7 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
     let request_id = harness.media_requests.requests.lock().await[0].id.clone();
     let outcome = harness
         .app
-        .approve_media_request(&harness.user, &request_id, "1080p", None)
+        .approve_media_request(&harness.manager, &request_id, "1080p", None)
         .await
         .expect("approval should create the title");
 
@@ -6796,7 +7316,7 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
         request.created_title_id.as_deref() == Some(outcome.title_id.as_str())
             && request.approved_quality_profile_id.as_deref() == Some("1080p")
             && request.approved_quality_profile_name.as_deref() == Some("1080P")
-            && request.resolved_by_user_id.as_deref() == Some(harness.user.id.as_str())
+            && request.resolved_by_user_id.as_deref() == Some(harness.manager.id.as_str())
             && request.resolved_at.is_some()
     }));
 }
@@ -6823,7 +7343,7 @@ async fn approve_series_media_request_applies_requested_monitor_type() {
 
     let outcome = harness
         .app
-        .approve_media_request(&harness.user, &request.id, "1080p", None)
+        .approve_media_request(&harness.manager, &request.id, "1080p", None)
         .await
         .expect("approval should create the series title");
 
@@ -6859,7 +7379,7 @@ async fn approve_series_media_request_can_override_requested_monitor_type() {
     let outcome = harness
         .app
         .approve_media_request(
-            &harness.user,
+            &harness.manager,
             &request.id,
             "1080p",
             Some("none".to_string()),
@@ -6901,7 +7421,7 @@ async fn dismiss_media_request_resolves_overlapping_pending_requests_without_tit
     let request_id = harness.media_requests.requests.lock().await[0].id.clone();
     let removed = harness
         .app
-        .dismiss_media_request(&harness.user, &request_id)
+        .dismiss_media_request(&harness.manager, &request_id)
         .await
         .expect("dismiss should remove the request group");
 
@@ -6916,7 +7436,7 @@ async fn dismiss_media_request_resolves_overlapping_pending_requests_without_tit
     assert!(requests.iter().all(|request| {
         request.created_title_id.is_none()
             && request.approved_quality_profile_id.is_none()
-            && request.resolved_by_user_id.as_deref() == Some(harness.user.id.as_str())
+            && request.resolved_by_user_id.as_deref() == Some(harness.manager.id.as_str())
             && request.resolved_at.is_some()
     }));
     drop(requests);
@@ -6942,7 +7462,7 @@ async fn pending_media_request_counts_deduplicate_duplicate_identity_requests() 
 
     let counts = harness
         .app
-        .pending_media_request_counts(&harness.user)
+        .pending_media_request_counts(&harness.manager)
         .await
         .expect("request counts should load");
 
@@ -7239,6 +7759,63 @@ fn bootstrap_with_cleanup_tracking(
         pending_releases,
         Arc::new(MockIndexerClient),
     )
+}
+
+fn bootstrap_with_cleanup_tracking_and_queue_commands(
+    download_client: Arc<StubDownloadClient>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    pending_releases: Arc<TrackingPendingReleaseRepo>,
+    download_queue_commands: Arc<TrackingDownloadQueueCommandRepo>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        Arc::new(MockIndexerClient),
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions)
+    .with_pending_releases(pending_releases)
+    .with_download_queue_commands(download_queue_commands)
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_cleanup_tracking_and_tracked_handle(
@@ -12159,6 +12736,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
                 episode_ids: vec!["episode-a".to_string(), "episode-b".to_string()],
             },
         },
+        download_submission_identity: None,
         grabbed_pending_release_id: Some("pending-grabbed".to_string()),
         grabbed_at: Some(now),
     })
@@ -13689,14 +14267,144 @@ async fn delete_title_removes_title_from_catalog() {
 }
 
 #[tokio::test]
-async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
+async fn start_delete_titles_job_requires_preview_for_disk_delete() {
+    let (app, user) = bootstrap();
+
+    let created = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Keep Me".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let result = app
+        .start_delete_titles_job(
+            &user,
+            DeleteTitlesJobRequest {
+                items: vec![DeleteTitlesJobItem {
+                    title_id: created.id.clone(),
+                    preview_fingerprint: None,
+                }],
+                delete_files_on_disk: true,
+                typed_confirmation: None,
+            },
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        app.get_title(&user, &created.id)
+            .await
+            .expect("get title")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn title_deletion_job_runs_are_visible_to_actor_without_system_settings() {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let (base_app, admin) = bootstrap();
+    let app = base_app.with_test_overrides(|services| services.with_job_runs(job_runs.clone()));
+    let manager = create_user_with_permissions(
+        &app,
+        &admin,
+        "title-manager",
+        "password123",
+        vec![TestPermissionPreset::TitleManagement],
+    )
+    .await
+    .expect("create manager");
+    let other_manager = create_user_with_permissions(
+        &app,
+        &admin,
+        "other-title-manager",
+        "password123",
+        vec![TestPermissionPreset::TitleManagement],
+    )
+    .await
+    .expect("create other manager");
+    let now = chrono::Utc::now();
+    let make_run = |id: &str, job_key: JobKey, actor_user_id: Option<String>| JobRunRecord {
+        id: id.to_string(),
+        job_key,
+        operation_type: format!("{}:test", job_key.as_str()),
+        status: JobRunStatus::Completed,
+        trigger_source: JobTriggerSource::Manual,
+        actor_user_id,
+        progress_json: None,
+        summary_json: None,
+        summary_text: None,
+        error_text: None,
+        started_at: now,
+        completed_at: Some(now),
+        created_at: now,
+        updated_at: now,
+    };
+
+    job_runs
+        .seed(make_run(
+            "own-title-delete",
+            JobKey::TitleDeletion,
+            Some(manager.id.clone()),
+        ))
+        .await;
+    job_runs
+        .seed(make_run(
+            "other-title-delete",
+            JobKey::TitleDeletion,
+            Some(other_manager.id.clone()),
+        ))
+        .await;
+    job_runs
+        .seed(make_run(
+            "own-housekeeping",
+            JobKey::Housekeeping,
+            Some(manager.id.clone()),
+        ))
+        .await;
+
+    let manager_runs = app
+        .list_job_runs(&manager, JobKey::TitleDeletion, 10)
+        .await
+        .expect("manager can list own title deletion runs");
+    assert_eq!(manager_runs.len(), 1);
+    assert_eq!(manager_runs[0].id, "own-title-delete");
+
+    let denied = app.list_job_runs(&manager, JobKey::Housekeeping, 10).await;
+    assert!(matches!(denied, Err(AppError::Unauthorized(_))));
+
+    let admin_runs = app
+        .list_job_runs(&admin, JobKey::TitleDeletion, 10)
+        .await
+        .expect("admin can list all title deletion runs");
+    let admin_run_ids = admin_runs
+        .into_iter()
+        .map(|run| run.id)
+        .collect::<HashSet<_>>();
+    assert!(admin_run_ids.contains("own-title-delete"));
+    assert!(admin_run_ids.contains("other-title-delete"));
+}
+
+#[tokio::test]
+async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let (app, user) = bootstrap_with_cleanup_tracking(
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking_and_queue_commands(
         download_client.clone(),
         download_submissions.clone(),
         pending_releases.clone(),
+        download_queue_commands.clone(),
     );
 
     let created = app
@@ -13716,21 +14424,52 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         .await
         .expect("create title");
 
+    let active_submission = DownloadSubmission {
+        title_id: created.id.clone(),
+        facet: "movie".to_string(),
+        download_client_id: Some("primary".to_string()),
+        download_client_type: "sabnzbd".to_string(),
+        download_client_item_id: "queue-active".to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some(created.name.clone()),
+        request_signature: None,
+        scope: SubmissionScope::Title,
+    };
+    let terminal_submission = DownloadSubmission {
+        title_id: created.id.clone(),
+        facet: "movie".to_string(),
+        download_client_id: Some("primary".to_string()),
+        download_client_type: "sabnzbd".to_string(),
+        download_client_item_id: "queue-imported".to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some(created.name.clone()),
+        request_signature: None,
+        scope: SubmissionScope::Title,
+    };
     download_submissions
-        .record_submission(DownloadSubmission {
-            title_id: created.id.clone(),
-            facet: "movie".to_string(),
-            download_client_id: Some("primary".to_string()),
-            download_client_type: "sabnzbd".to_string(),
-            download_client_item_id: "queue-fallback".to_string(),
-            source_hint: None,
-            source_kind: None,
-            source_title: Some(created.name.clone()),
-            request_signature: None,
-            scope: SubmissionScope::Title,
-        })
+        .record_submission(active_submission.clone())
         .await
-        .expect("record submission");
+        .expect("record active submission");
+    download_submissions
+        .update_tracked_state(
+            &DownloadSourceIdentity::from_submission(&active_submission),
+            "downloading",
+        )
+        .await
+        .expect("track active submission");
+    download_submissions
+        .record_submission(terminal_submission.clone())
+        .await
+        .expect("record terminal submission");
+    download_submissions
+        .update_tracked_state(
+            &DownloadSourceIdentity::from_submission(&terminal_submission),
+            "imported",
+        )
+        .await
+        .expect("track terminal submission");
 
     *download_client.queue_items.lock().await = vec![
         DownloadQueueItem {
@@ -13751,6 +14490,8 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "queue-direct".to_string(),
+            download_request_id: None,
+            download_fingerprint: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -13780,7 +14521,9 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             last_updated_at: None,
             attention_required: false,
             attention_reason: None,
-            download_client_item_id: "queue-fallback".to_string(),
+            download_client_item_id: "queue-active".to_string(),
+            download_request_id: None,
+            download_fingerprint: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -13811,6 +14554,8 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "queue-unrelated".to_string(),
+            download_request_id: None,
+            download_fingerprint: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -13829,13 +14574,18 @@ async fn delete_title_cancels_queue_items_linked_via_submission_metadata() {
         .await
         .expect("delete title");
 
-    let deleted_items = download_client.deleted_items.lock().await.clone();
+    assert_eq!(*download_client.queue_calls.lock().await, 0);
+    assert_eq!(*download_client.history_calls.lock().await, 0);
+    assert!(download_client.deleted_items.lock().await.is_empty());
+    let queued_commands = download_queue_commands.queued.lock().await.clone();
+    assert_eq!(queued_commands.len(), 1);
+    assert_eq!(queued_commands[0].client_id.as_deref(), Some("primary"));
+    assert_eq!(queued_commands[0].client_type, "sabnzbd");
+    assert_eq!(queued_commands[0].download_client_item_id, "queue-active");
+    assert!(!queued_commands[0].is_history);
     assert_eq!(
-        deleted_items,
-        vec![
-            ("queue-direct".to_string(), false),
-            ("queue-fallback".to_string(), false),
-        ]
+        queued_commands[0].requested_by_user_id.as_deref(),
+        Some(user.id.as_str())
     );
     assert_eq!(
         pending_releases.deleted_title_ids.lock().await.clone(),
@@ -13913,6 +14663,8 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "foreign-stub".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -13979,6 +14731,8 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "history-1".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14073,6 +14827,8 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "job-1".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14142,6 +14898,8 @@ fn queue_history_fixture_item(
         attention_required: false,
         attention_reason: None,
         download_client_item_id: download_client_item_id.to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14166,6 +14924,8 @@ fn completed_download_fixture_item(
         client_type: "nzbget".to_string(),
         client_id: "primary".to_string(),
         download_client_item_id: download_client_item_id.to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         name: name.to_string(),
         dest_dir: dest_dir.to_string(),
         category: Some("movie".to_string()),
@@ -14969,7 +15729,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let (base_app, user) = bootstrap_with_cleanup_tracking(
         download_client.clone(),
-        download_submissions,
+        download_submissions.clone(),
         pending_releases,
     );
     let import_repo = Arc::new(TrackingImportRepo::default());
@@ -14997,6 +15757,21 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
 
     let now = Utc::now().to_rfc3339();
     let item_id = "legacy-completed-1";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Legacy.Cleanup.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("seed compatible legacy submission");
     import_repo.records.lock().await.push(ImportRecord {
         id: Id::new().0,
         source_client_id: Some(config.id.clone()),
@@ -15077,6 +15852,339 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
 
     assert!(!processed.contains(item_id));
     assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn import_completed_download_ignores_stale_item_id_import_when_request_identity_is_fresh() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fresh Identity".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let item_id = "10010";
+    let client_id = "weaver-client";
+    let now = Utc::now().to_rfc3339();
+    import_repo.records.lock().await.push(ImportRecord {
+        id: Id::new().0,
+        source_client_id: Some(client_id.to_string()),
+        source_system: "weaver".to_string(),
+        source_ref: item_id.to_string(),
+        import_type: ImportType::MovieDownload,
+        status: ImportStatus::Completed,
+        payload_json: String::new(),
+        result_json: None,
+        started_at: Some(now.clone()),
+        finished_at: Some(now.clone()),
+        created_at: now.clone(),
+        updated_at: now,
+    });
+
+    download_submissions
+        .record_submission_with_identity(
+            DownloadSubmission {
+                title_id: title.id.clone(),
+                facet: "movie".to_string(),
+                download_client_id: Some(client_id.to_string()),
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Fresh.Identity.2026.1080p.WEB-DL".to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Title,
+            },
+            DownloadSubmissionIdentity {
+                download_request_id: Some("scryer-request:fresh".to_string()),
+                download_fingerprint: Some("sha256:fresh".to_string()),
+            },
+        )
+        .await
+        .expect("record fresh identity");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        "Fresh.Identity.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = client_id.to_string();
+    completed.client_type = "weaver".to_string();
+    completed.parameters.push((
+        "*scryer_request_id".to_string(),
+        "scryer-request:fresh".to_string(),
+    ));
+    completed.parameters.push((
+        "*scryer_download_fingerprint".to_string(),
+        "sha256:fresh".to_string(),
+    ));
+
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("completed import should run");
+
+    assert_ne!(result.skip_reason, Some(ImportSkipReason::AlreadyImported));
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles));
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_legacy_item_id() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let app = base_app;
+
+    let client_id = "weaver-client";
+    let item_id = "10010";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = client_id.to_string();
+    item.client_type = "weaver".to_string();
+    item.title_id = Some("title-current".to_string());
+    item.title_name = "Fresh Identity".to_string();
+    item.facet = Some("movie".to_string());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Fresh.Identity.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = client_id.to_string();
+    completed.client_type = "weaver".to_string();
+    completed.parameters.clear();
+    completed.parameters.push((
+        "*scryer_download_fingerprint".to_string(),
+        "sha256:ambiguous".to_string(),
+    ));
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    for (request_id, submitted_item_id, submitted_title_id) in [
+        ("scryer-request:old-one", item_id, "title-current"),
+        ("scryer-request:old-two", "other-item", "title-other"),
+    ] {
+        download_submissions
+            .record_submission_with_identity(
+                DownloadSubmission {
+                    title_id: submitted_title_id.to_string(),
+                    facet: "movie".to_string(),
+                    download_client_id: Some(client_id.to_string()),
+                    download_client_type: "weaver".to_string(),
+                    download_client_item_id: submitted_item_id.to_string(),
+                    source_hint: None,
+                    source_kind: None,
+                    source_title: Some("Fresh.Identity.2026.1080p.WEB-DL".to_string()),
+                    request_signature: None,
+                    scope: SubmissionScope::Title,
+                },
+                DownloadSubmissionIdentity {
+                    download_request_id: Some(request_id.to_string()),
+                    download_fingerprint: Some("sha256:ambiguous".to_string()),
+                },
+            )
+            .await
+            .expect("record ambiguous identity");
+    }
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    let state = download_submissions
+        .get_identity_tracked_state(&DownloadSubmissionIdentity {
+            download_request_id: None,
+            download_fingerprint: Some("sha256:ambiguous".to_string()),
+        })
+        .await
+        .expect("identity state lookup");
+    assert_eq!(
+        state.as_deref(),
+        Some(TrackedDownloadState::ImportBlocked.as_str())
+    );
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_blocks_missing_durable_identity_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let client_id = "weaver-client";
+    let item_id = "missing-durable-identity";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = client_id.to_string();
+    item.client_type = "weaver".to_string();
+    item.title_id = Some("title-current".to_string());
+    item.title_name = "Missing Durable".to_string();
+    item.facet = Some("movie".to_string());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Missing.Durable.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = client_id.to_string();
+    completed.client_type = "weaver".to_string();
+    completed.parameters.push((
+        "*scryer_request_id".to_string(),
+        "scryer-request:missing".to_string(),
+    ));
+    completed.parameters.push((
+        "*scryer_download_fingerprint".to_string(),
+        "sha256:missing".to_string(),
+    ));
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    let state = download_submissions
+        .get_identity_tracked_state(&DownloadSubmissionIdentity {
+            download_request_id: Some("scryer-request:missing".to_string()),
+            download_fingerprint: Some("sha256:missing".to_string()),
+        })
+        .await
+        .expect("identity state lookup");
+    assert_eq!(
+        state.as_deref(),
+        Some(TrackedDownloadState::ImportBlocked.as_str())
+    );
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_dedupes_same_request_when_item_id_changes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let config = create_enabled_download_client_config(&app, &user, "Weaver", "weaver").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Stable Identity".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let old_item_id = "stable-old-item";
+    let new_item_id = "stable-new-item";
+    let request_id = "scryer-request:stable";
+    let fingerprint = "sha256:stable";
+    download_submissions
+        .record_submission_with_identity(
+            DownloadSubmission {
+                title_id: title.id.clone(),
+                facet: "movie".to_string(),
+                download_client_id: Some(config.id.clone()),
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: old_item_id.to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Stable.Identity.2026.1080p.WEB-DL".to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Title,
+            },
+            DownloadSubmissionIdentity {
+                download_request_id: Some(request_id.to_string()),
+                download_fingerprint: Some(fingerprint.to_string()),
+            },
+        )
+        .await
+        .expect("record identity");
+    download_submissions
+        .update_tracked_state(
+            &DownloadSourceIdentity::new(Some(config.id.as_str()), "weaver", old_item_id),
+            TrackedDownloadState::Imported.as_str(),
+        )
+        .await
+        .expect("persist imported state");
+
+    let mut item = queue_history_fixture_item(new_item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        new_item_id,
+        &title.id,
+        "Stable.Identity.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "weaver".to_string();
+    completed
+        .parameters
+        .push(("*scryer_request_id".to_string(), request_id.to_string()));
+    completed.parameters.push((
+        "*scryer_download_fingerprint".to_string(),
+        fingerprint.to_string(),
+    ));
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(processed.contains(new_item_id));
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, new_item_id.to_string(), true)]
+    );
 }
 
 #[tokio::test]
@@ -15162,7 +16270,10 @@ async fn try_import_completed_downloads_uses_download_submission_fallback_for_un
             download_client_item_id: item_id.to_string(),
             source_hint: None,
             source_kind: None,
-            source_title: Some(title.name.clone()),
+            source_title: Some(
+                "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator"
+                    .to_string(),
+            ),
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -15243,7 +16354,10 @@ async fn try_import_completed_downloads_retries_terminal_cleanup_for_untagged_qb
             download_client_item_id: item_id.to_string(),
             source_hint: None,
             source_kind: None,
-            source_title: Some(title.name.clone()),
+            source_title: Some(
+                "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator"
+                    .to_string(),
+            ),
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -15720,6 +16834,8 @@ async fn download_queue_subscription_bootstraps_from_live_queue_without_history_
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "queue-1".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -16051,6 +17167,8 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
         attention_required: true,
         attention_reason: Some("corrupt archive".to_string()),
         download_client_item_id: download_client_item_id.to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -17854,6 +18972,8 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "episode-one-active".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -18057,6 +19177,8 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "season-one-pack".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -19056,6 +20178,8 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "movie-active".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -23502,6 +24626,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         app_permissions: vec![],
         library_permissions: vec![],
         mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -23545,6 +24670,54 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
     assert_eq!(decoded.id, user.id);
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
     assert_eq!(claims.mfa_verified_until, None);
+    assert_eq!(claims.mfa_step_up_verified_until, None);
+}
+
+#[tokio::test]
+async fn login_mfa_claim_does_not_imply_step_up_claim() {
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-jwt-login-mfa".to_string(),
+        username: "jwt_login_mfa".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
+
+    let login_mfa_until = app.mfa_freshness_verified_until();
+    let token = app
+        .issue_access_token_with_mfa(&user, Some(login_mfa_until), None)
+        .await
+        .expect("issue login MFA token");
+    let (_, claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("authenticate login MFA token");
+
+    assert_eq!(claims.mfa_verified_until, Some(login_mfa_until.timestamp()));
+    assert_eq!(claims.mfa_step_up_verified_until, None);
+
+    let step_up_until = app.mfa_freshness_verified_until();
+    let token = app
+        .issue_access_token_with_mfa(&user, Some(login_mfa_until), Some(step_up_until))
+        .await
+        .expect("issue step-up MFA token");
+    let (_, claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("authenticate step-up MFA token");
+
+    assert_eq!(claims.mfa_verified_until, Some(login_mfa_until.timestamp()));
+    assert_eq!(
+        claims.mfa_step_up_verified_until,
+        Some(step_up_until.timestamp())
+    );
 }
 
 #[tokio::test]
@@ -24125,6 +25298,7 @@ async fn expired_token_returns_unauthorized() {
         app_permissions: vec![],
         library_permissions: vec![],
         mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -24160,6 +25334,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         app_permissions: vec![],
         library_permissions: vec![],
         mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -24379,6 +25554,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         app_permissions: vec!["manageSystemSettings".to_string()],
         library_permissions: vec![],
         mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);

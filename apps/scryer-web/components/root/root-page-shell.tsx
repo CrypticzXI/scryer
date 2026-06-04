@@ -71,6 +71,53 @@ import {
 } from "@/lib/events/navigation-badges";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
 
+function scheduleAfterFirstPaint(callback: () => void) {
+  if (typeof window === "undefined") {
+    callback();
+    return () => {};
+  }
+
+  let cancelled = false;
+  let frameId = 0;
+  let idleId: number | null = null;
+  let timeoutId: number | null = null;
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (
+      callback: IdleRequestCallback,
+      options?: IdleRequestOptions,
+    ) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+
+  const run = () => {
+    if (!cancelled) {
+      callback();
+    }
+  };
+
+  frameId = window.requestAnimationFrame(() => {
+    if (idleWindow.requestIdleCallback) {
+      idleId = idleWindow.requestIdleCallback(run, { timeout: 1_500 });
+      return;
+    }
+
+    timeoutId = window.setTimeout(run, 250);
+  });
+
+  return () => {
+    cancelled = true;
+    if (frameId !== 0) {
+      window.cancelAnimationFrame(frameId);
+    }
+    if (idleId != null) {
+      idleWindow.cancelIdleCallback?.(idleId);
+    }
+    if (timeoutId != null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+}
+
 const mediaContainers = () => import("@/components/containers/media-containers");
 
 const MediaContentContainer = lazy(() =>
@@ -742,7 +789,9 @@ function AuthenticatedHomePage({
 
   useEffect(() => {
     if (!serviceRestarting) {
-      void refreshScryerVersion();
+      return scheduleAfterFirstPaint(() => {
+        void refreshScryerVersion();
+      });
     }
   }, [refreshScryerVersion, serviceRestarting]);
 
@@ -764,7 +813,9 @@ function AuthenticatedHomePage({
   }, []);
 
   useEffect(() => {
-    void refreshSmgVersionCompatibilityNotice();
+    return scheduleAfterFirstPaint(() => {
+      void refreshSmgVersionCompatibilityNotice();
+    });
   }, [refreshSmgVersionCompatibilityNotice]);
 
   useSettingsSubscription(useCallback((changedKeys) => {
@@ -820,7 +871,9 @@ function AuthenticatedHomePage({
   }, []);
 
   useEffect(() => {
-    void refreshNavigationBadges();
+    return scheduleAfterFirstPaint(() => {
+      void refreshNavigationBadges();
+    });
   }, [refreshNavigationBadges]);
 
   useEffect(() => {

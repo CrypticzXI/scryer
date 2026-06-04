@@ -34,6 +34,570 @@ async fn remap_completed_download_for_client(app: &AppUseCase, completed: &mut C
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DownloadSubmissionMatchKind {
+    RequestId,
+    Fingerprint,
+    LegacyClientItemId,
+}
+
+#[derive(Clone, Debug)]
+struct CompletedDownloadSubmissionMatch {
+    submission: DownloadSubmission,
+    kind: DownloadSubmissionMatchKind,
+    identity: Option<DownloadSubmissionIdentity>,
+}
+
+#[derive(Clone, Debug)]
+enum CompletedDownloadSubmissionResolution {
+    Matched(CompletedDownloadSubmissionMatch),
+    Foreign,
+    MissingDurableIdentity {
+        identity: DownloadSubmissionIdentity,
+    },
+    AmbiguousFingerprint { fingerprint: String, matches: usize },
+    ConflictingIdentity {
+        request_id: Option<String>,
+        fingerprint: Option<String>,
+    },
+    IncompatibleLegacyClientItem { submission: DownloadSubmission },
+}
+
+fn completed_download_observed_identity(completed: &CompletedDownload) -> DownloadSubmissionIdentity {
+    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
+        download_request_id: completed.download_request_id.as_deref(),
+        download_fingerprint: completed.download_fingerprint.as_deref(),
+        parameters: &completed.parameters,
+        info_hash_hint: None,
+    })
+}
+
+fn download_queue_item_observed_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
+    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
+        download_request_id: item.download_request_id.as_deref(),
+        download_fingerprint: item.download_fingerprint.as_deref(),
+        parameters: &[],
+        info_hash_hint: None,
+    })
+}
+
+fn identity_field(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn find_completed_download_for_queue_item(
+    completed_downloads: &[CompletedDownload],
+    item: &DownloadQueueItem,
+) -> Option<CompletedDownload> {
+    let item_identity = download_queue_item_observed_identity(item);
+    if let Some(request_id) = identity_field(item_identity.download_request_id.as_deref()) {
+        let matches = completed_downloads
+            .iter()
+            .filter(|completed| {
+                let completed_identity = completed_download_observed_identity(completed);
+                identity_field(completed_identity.download_request_id.as_deref())
+                    == Some(request_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return None;
+        }
+        if let Some(completed) =
+            crate::download_identity::coalesce_completed_downloads_by_release_observation(&matches)
+        {
+            return Some(completed);
+        }
+        if matches.len() > 1 {
+            tracing::warn!(
+                source_ref = %item.download_client_item_id,
+                request_id,
+                "import: queue item request id matched multiple completed downloads"
+            );
+        }
+        return None;
+    }
+    if let Some(fingerprint) = identity_field(item_identity.download_fingerprint.as_deref()) {
+        let matches = completed_downloads
+            .iter()
+            .filter(|completed| {
+                let completed_identity = completed_download_observed_identity(completed);
+                identity_field(completed_identity.download_fingerprint.as_deref())
+                    == Some(fingerprint)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return None;
+        }
+        if let Some(completed) =
+            crate::download_identity::coalesce_completed_downloads_by_release_observation(&matches)
+        {
+            return Some(completed);
+        }
+        if matches.len() > 1 {
+            tracing::warn!(
+                source_ref = %item.download_client_item_id,
+                fingerprint,
+                "import: queue item fingerprint matched multiple completed downloads"
+            );
+        }
+        return None;
+    }
+
+    completed_downloads.iter().find(|completed| {
+        completed_download_identity(completed)
+            == DownloadSourceIdentity::new(
+                Some(item.client_id.as_str()),
+                &item.client_type,
+                &item.download_client_item_id,
+            )
+    }).cloned()
+}
+
+fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) -> bool {
+    identity
+        .download_request_id
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        && identity
+            .download_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+}
+
+fn completed_download_has_durable_identity(completed: &CompletedDownload) -> bool {
+    !download_submission_identity_is_empty(&completed_download_observed_identity(completed))
+}
+
+fn submission_source_identity(submission: &DownloadSubmission) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::from_submission(submission)
+}
+
+fn submission_matches_completed_download_legacy_evidence(
+    submission: &DownloadSubmission,
+    completed: &CompletedDownload,
+    item: Option<&DownloadQueueItem>,
+) -> bool {
+    let completed_title_id = extract_parameter(&completed.parameters, "*scryer_title_id");
+    let title_id = completed_title_id
+        .as_deref()
+        .or_else(|| item.and_then(|item| item.title_id.as_deref()));
+    let episode_id = item.and_then(|item| item.episode_id.as_deref());
+    crate::download_identity::download_submission_is_compatible_with_evidence(
+        submission,
+        crate::download_identity::DownloadSubmissionCompatibilityEvidence {
+            title_id,
+            episode_id,
+            source_title: Some(completed.name.as_str()),
+        },
+    )
+}
+
+async fn resolve_completed_download_submission(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    item: Option<&DownloadQueueItem>,
+) -> AppResult<CompletedDownloadSubmissionResolution> {
+    let observed_identity = completed_download_observed_identity(completed);
+    let request_id = observed_identity.download_request_id.clone();
+    let fingerprint = observed_identity.download_fingerprint.clone();
+
+    let request_submissions = if let Some(request_id) = request_id.as_deref() {
+        app.services
+            .workflow
+            .download_submissions
+            .list_by_request_id(request_id)
+            .await?
+    } else {
+        Vec::new()
+    };
+
+    let fingerprint_submissions = if let Some(fingerprint) = fingerprint.as_deref() {
+        app.services
+            .workflow
+            .download_submissions
+            .list_by_fingerprint(fingerprint)
+            .await?
+    } else {
+        Vec::new()
+    };
+
+    if !request_submissions.is_empty() {
+        let Some(submission) =
+            crate::download_identity::coalesce_download_submissions_by_release_attempt(
+                &request_submissions,
+            )
+        else {
+            return Ok(CompletedDownloadSubmissionResolution::ConflictingIdentity {
+                request_id,
+                fingerprint,
+            });
+        };
+        let stored_identity = submission_identity_for_submission(app, &submission).await?;
+        if !submission_identity_is_compatible_with_observed(&stored_identity, &observed_identity) {
+            return Ok(CompletedDownloadSubmissionResolution::ConflictingIdentity {
+                request_id,
+                fingerprint,
+            });
+        }
+        if !fingerprint_submissions.is_empty() {
+            let all_same_release = fingerprint_submissions
+                .iter()
+                .all(|candidate| {
+                    crate::download_identity::coalesce_download_submissions_by_release_attempt(&[
+                        submission.clone(),
+                        candidate.clone(),
+                    ])
+                    .is_some()
+                });
+            if !all_same_release {
+                return Ok(CompletedDownloadSubmissionResolution::ConflictingIdentity {
+                    request_id,
+                    fingerprint,
+                });
+            }
+        }
+        return matched_completed_download_submission(
+            app,
+            submission,
+            DownloadSubmissionMatchKind::RequestId,
+            &observed_identity,
+        )
+        .await;
+    }
+
+    if let Some(fingerprint) = fingerprint.as_deref() {
+        if fingerprint_submissions.is_empty() {
+            return Ok(
+                CompletedDownloadSubmissionResolution::MissingDurableIdentity {
+                    identity: observed_identity,
+                },
+            );
+        }
+        if let Some(submission) =
+            crate::download_identity::coalesce_download_submissions_by_release_attempt(
+                &fingerprint_submissions,
+            )
+        {
+            return matched_completed_download_submission(
+                app,
+                submission,
+                DownloadSubmissionMatchKind::Fingerprint,
+                &observed_identity,
+            )
+            .await;
+        }
+        return Ok(
+        CompletedDownloadSubmissionResolution::AmbiguousFingerprint {
+            fingerprint: fingerprint.to_string(),
+            matches: fingerprint_submissions.len(),
+        },
+        );
+    }
+
+    if !download_submission_identity_is_empty(&observed_identity) {
+        return Ok(
+            CompletedDownloadSubmissionResolution::MissingDurableIdentity {
+                identity: observed_identity,
+            },
+        );
+    }
+
+    let submission = app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            Some(completed.client_id.as_str()),
+            &completed.client_type,
+            &completed.download_client_item_id,
+        ))
+        .await?;
+
+    let Some(submission) = submission else {
+        return Ok(CompletedDownloadSubmissionResolution::Foreign);
+    };
+
+    if submission_matches_completed_download_legacy_evidence(&submission, completed, item) {
+        return matched_completed_download_submission(
+            app,
+            submission,
+            DownloadSubmissionMatchKind::LegacyClientItemId,
+            &observed_identity,
+        )
+        .await;
+    }
+
+    Ok(CompletedDownloadSubmissionResolution::IncompatibleLegacyClientItem { submission })
+}
+
+async fn submission_identity_for_submission(
+    app: &AppUseCase,
+    submission: &DownloadSubmission,
+) -> AppResult<DownloadSubmissionIdentity> {
+    Ok(app
+        .services
+        .workflow
+        .download_submissions
+        .get_submission_identity(&submission_source_identity(submission))
+        .await?
+        .unwrap_or_default())
+}
+
+async fn matched_completed_download_submission(
+    app: &AppUseCase,
+    submission: DownloadSubmission,
+    kind: DownloadSubmissionMatchKind,
+    observed_identity: &DownloadSubmissionIdentity,
+) -> AppResult<CompletedDownloadSubmissionResolution> {
+    let stored_identity = submission_identity_for_submission(app, &submission).await?;
+    let identity = if download_submission_identity_is_empty(&stored_identity) {
+        (!download_submission_identity_is_empty(observed_identity)).then_some(observed_identity.clone())
+    } else {
+        Some(stored_identity)
+    };
+    Ok(CompletedDownloadSubmissionResolution::Matched(
+        CompletedDownloadSubmissionMatch {
+            submission,
+            kind,
+            identity,
+        },
+    ))
+}
+
+fn submission_identity_is_compatible_with_observed(
+    stored: &DownloadSubmissionIdentity,
+    observed: &DownloadSubmissionIdentity,
+) -> bool {
+    if let Some(observed_request_id) = observed
+        .download_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(stored_request_id) = stored
+            .download_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        && stored_request_id != observed_request_id
+    {
+        return false;
+    }
+
+    if let Some(observed_fingerprint) = observed
+        .download_fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(stored_fingerprint) = stored
+            .download_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        && stored_fingerprint != observed_fingerprint
+    {
+        return false;
+    }
+
+    true
+}
+
+async fn completed_download_already_imported_for_current_attempt(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> AppResult<bool> {
+    if matches!(
+        resolution,
+        CompletedDownloadSubmissionResolution::AmbiguousFingerprint { .. }
+            | CompletedDownloadSubmissionResolution::ConflictingIdentity { .. }
+            | CompletedDownloadSubmissionResolution::MissingDurableIdentity { .. }
+            | CompletedDownloadSubmissionResolution::IncompatibleLegacyClientItem { .. }
+            | CompletedDownloadSubmissionResolution::Foreign
+    ) {
+        return Ok(false);
+    }
+
+    if completed_download_terminal_state_for_resolution(app, resolution).await?
+        == Some(TrackedDownloadState::Imported)
+    {
+        return Ok(true);
+    }
+
+    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
+        return Ok(false);
+    };
+
+    if let Some(identity) = matched.identity.as_ref()
+        && app
+            .services
+            .workflow
+            .imports
+            .is_already_imported_by_submission_identity(identity)
+            .await?
+    {
+        return Ok(true);
+    }
+
+    if matched.kind == DownloadSubmissionMatchKind::LegacyClientItemId
+        && !completed_download_has_durable_identity(completed)
+    {
+        return app
+            .services
+            .workflow
+            .imports
+            .is_already_imported(&submission_source_identity(&matched.submission))
+            .await;
+    }
+
+    Ok(false)
+}
+
+async fn completed_download_terminal_state_for_resolution(
+    app: &AppUseCase,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> AppResult<Option<TrackedDownloadState>> {
+    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
+        return Ok(None);
+    };
+
+    Ok(app
+        .services
+        .workflow
+        .download_submissions
+        .get_tracked_state(&submission_source_identity(&matched.submission))
+        .await?
+        .and_then(|value| TrackedDownloadState::from_str_opt(&value)))
+}
+
+fn completed_download_import_identity_for_resolution(
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> Option<DownloadSubmissionIdentity> {
+    let observed_identity = completed_download_observed_identity(completed);
+    if !download_submission_identity_is_empty(&observed_identity) {
+        return Some(observed_identity);
+    }
+
+    match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched) => matched.identity.clone(),
+        _ => None,
+    }
+}
+
+async fn block_completed_download_identity_for_manual_review(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    reason: &str,
+    detail: &str,
+) {
+    tracing::warn!(
+        client_id = completed.client_id.as_str(),
+        client_type = completed.client_type.as_str(),
+        download_client_item_id = completed.download_client_item_id.as_str(),
+        reason,
+        detail,
+        "import: download identity is unresolved; blocking import for manual review"
+    );
+    let observed_identity = completed_download_observed_identity(completed);
+    if !download_submission_identity_is_empty(&observed_identity) {
+        if let Err(error) = app
+            .services
+            .workflow
+            .download_submissions
+            .record_identity_tracked_state(
+                &observed_identity,
+                Some(&completed_download_identity(completed)),
+                TrackedDownloadState::ImportBlocked.as_str(),
+                Some(reason),
+                Some(detail),
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                client_id = completed.client_id.as_str(),
+                client_type = completed.client_type.as_str(),
+                download_client_item_id = completed.download_client_item_id.as_str(),
+                reason,
+                "failed to persist durable download identity manual-review state"
+            );
+        }
+        return;
+    }
+
+    if let Err(error) = app
+        .services
+        .workflow
+        .download_submissions
+        .update_tracked_state(
+            &completed_download_identity(completed),
+            TrackedDownloadState::ImportBlocked.as_str(),
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            client_id = completed.client_id.as_str(),
+            client_type = completed.client_type.as_str(),
+            download_client_item_id = completed.download_client_item_id.as_str(),
+            reason,
+            "failed to persist download identity manual-review state"
+        );
+    }
+}
+
+async fn block_download_queue_item_identity_for_manual_review(
+    app: &AppUseCase,
+    item: &DownloadQueueItem,
+    reason: &str,
+    detail: &str,
+) {
+    let observed_identity = download_queue_item_observed_identity(item);
+    if download_submission_identity_is_empty(&observed_identity) {
+        return;
+    }
+    tracing::warn!(
+        client_id = item.client_id.as_str(),
+        client_type = item.client_type.as_str(),
+        download_client_item_id = item.download_client_item_id.as_str(),
+        reason,
+        detail,
+        "import: queue item durable identity is unresolved; blocking import for manual review"
+    );
+    let source_identity = DownloadSourceIdentity::new(
+        Some(item.client_id.as_str()),
+        &item.client_type,
+        &item.download_client_item_id,
+    );
+    if let Err(error) = app
+        .services
+        .workflow
+        .download_submissions
+        .record_identity_tracked_state(
+            &observed_identity,
+            Some(&source_identity),
+            TrackedDownloadState::ImportBlocked.as_str(),
+            Some(reason),
+            Some(detail),
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            client_id = item.client_id.as_str(),
+            client_type = item.client_type.as_str(),
+            download_client_item_id = item.download_client_item_id.as_str(),
+            reason,
+            "failed to persist durable queue item manual-review state"
+        );
+    }
+}
+
 /// Attempts to import completed items from the current queue/history snapshot.
 /// Returns the set of `download_client_item_id`s that were conclusively processed
 /// (imported, failed permanently, or intentionally ignored). Temporary defer
@@ -107,34 +671,11 @@ pub async fn try_import_completed_downloads(
         }
     };
 
-    let completed_downloads_by_identity = completed_downloads
-        .iter()
-        .map(|completed| (completed_download_identity(completed), completed))
-        .collect::<HashMap<_, _>>();
-
     for item in completed_items {
         let source_ref = &item.download_client_item_id;
-        let item_identity = DownloadSourceIdentity::new(
-            Some(item.client_id.as_str()),
-            &item.client_type,
-            &item.download_client_item_id,
-        );
-        let already_imported = match app
-            .services
-            .workflow
-            .imports
-            .is_already_imported(&item_identity)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
-                continue;
-            }
-        };
 
         // Find the matching CompletedDownload
-        let completed = match completed_downloads_by_identity.get(&item_identity).copied() {
+        let completed = match find_completed_download_for_queue_item(&completed_downloads, item) {
             Some(completed) => completed,
             None => {
                 tracing::debug!(
@@ -142,6 +683,16 @@ pub async fn try_import_completed_downloads(
                     title = %item.title_name,
                     "import: no matching CompletedDownload from client history (item may still be processing or status != Completed)"
                 );
+                if !download_submission_identity_is_empty(&download_queue_item_observed_identity(item))
+                {
+                    block_download_queue_item_identity_for_manual_review(
+                        app,
+                        item,
+                        "missing_completed_history_identity",
+                        "completed queue item carried durable identity but completed history did not contain a compatible identity",
+                    )
+                    .await;
+                }
                 continue;
             }
         };
@@ -150,52 +701,9 @@ pub async fn try_import_completed_downloads(
         // NZBGet embeds *scryer_title_id via PPParameters. SABnzbd has no
         // equivalent, so we fall back to the download_submissions table which
         // records the (title_id, facet) at grab time.
-        let completed = if has_scryer_origin(&completed.parameters) {
-            completed.clone()
-        } else {
-            // Fallback: look up the download_submissions table
-            match app
-                .services
-                .workflow
-                .download_submissions
-                .find_by_client_item_id(&DownloadSourceIdentity::new(
-                    Some(completed.client_id.as_str()),
-                    &completed.client_type,
-                    &completed.download_client_item_id,
-                ))
-                .await
-            {
-                Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
-                    let collection_id = submission.scope.collection_id().map(str::to_string);
-                    let mut patched = completed.clone();
-                    merge_scryer_origin_parameters(
-                        &mut patched.parameters,
-                        submission.title_id,
-                        submission.facet,
-                        collection_id,
-                    );
-                    patched
-                }
-                Ok(Some(_)) => {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: ignoring stub download_submissions row without scryer origin metadata"
-                    );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
-                }
-                Ok(None) => {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: no scryer origin — not in parameters or download_submissions table"
-                    );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
-                }
+        let submission_resolution =
+            match resolve_completed_download_submission(app, &completed, Some(item)).await {
+                Ok(resolution) => resolution,
                 Err(error) => {
                     tracing::debug!(
                         source_ref = %source_ref,
@@ -205,6 +713,125 @@ pub async fn try_import_completed_downloads(
                     );
                     continue;
                 }
+            };
+
+        if let CompletedDownloadSubmissionResolution::AmbiguousFingerprint {
+            fingerprint,
+            matches,
+        } = &submission_resolution
+        {
+            block_completed_download_identity_for_manual_review(
+                app,
+                &completed,
+                "ambiguous_fingerprint",
+                &format!(
+                    "download fingerprint matched {matches} submissions: {fingerprint}"
+                ),
+            )
+            .await;
+            continue;
+        }
+        if let CompletedDownloadSubmissionResolution::MissingDurableIdentity { identity } =
+            &submission_resolution
+        {
+            block_completed_download_identity_for_manual_review(
+                app,
+                &completed,
+                "missing_durable_identity",
+                &format!(
+                    "request_id={:?} fingerprint={:?}",
+                    identity.download_request_id, identity.download_fingerprint
+                ),
+            )
+            .await;
+            continue;
+        }
+        if let CompletedDownloadSubmissionResolution::ConflictingIdentity {
+            request_id,
+            fingerprint,
+        } = &submission_resolution
+        {
+            block_completed_download_identity_for_manual_review(
+                app,
+                &completed,
+                "conflicting_durable_identity",
+                &format!("request_id={request_id:?} fingerprint={fingerprint:?}"),
+            )
+            .await;
+            continue;
+        }
+
+        let completed = if has_scryer_origin(&completed.parameters) {
+            completed.clone()
+        } else {
+            match &submission_resolution {
+                CompletedDownloadSubmissionResolution::Matched(matched)
+                    if submission_has_scryer_origin(&matched.submission) =>
+                {
+                    let collection_id =
+                        matched.submission.scope.collection_id().map(str::to_string);
+                    let mut patched = completed.clone();
+                    merge_scryer_origin_parameters(
+                        &mut patched.parameters,
+                        matched.submission.title_id.clone(),
+                        matched.submission.facet.clone(),
+                        collection_id,
+                    );
+                    patched
+                }
+                CompletedDownloadSubmissionResolution::Matched(_) => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: ignoring stub download_submissions row without scryer origin metadata"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                    continue;
+                }
+                CompletedDownloadSubmissionResolution::IncompatibleLegacyClientItem {
+                    submission,
+                } => {
+                    tracing::warn!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_id = %completed.client_id,
+                        client_type = %completed.client_type,
+                        download_client_item_id = %completed.download_client_item_id,
+                        submission_title_id = %submission.title_id,
+                        "download_client_item_id_reused"
+                    );
+                    continue;
+                }
+                CompletedDownloadSubmissionResolution::Foreign => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: no scryer origin — not in parameters or download_submissions table"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                    continue;
+                }
+                CompletedDownloadSubmissionResolution::AmbiguousFingerprint { .. }
+                | CompletedDownloadSubmissionResolution::MissingDurableIdentity { .. }
+                | CompletedDownloadSubmissionResolution::ConflictingIdentity { .. } => {
+                    unreachable!()
+                }
+            }
+        };
+
+        let already_imported = match completed_download_already_imported_for_current_attempt(
+            app,
+            &completed,
+            &submission_resolution,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
+                continue;
             }
         };
 
@@ -226,7 +853,8 @@ pub async fn try_import_completed_downloads(
             continue;
         }
 
-        if let Some(state) = completed_download_tracked_state(app, &completed).await
+        if let Ok(Some(state)) =
+            completed_download_terminal_state_for_resolution(app, &submission_resolution).await
             && matches!(
                 state,
                 TrackedDownloadState::Imported | TrackedDownloadState::Failed
@@ -302,7 +930,13 @@ pub async fn try_import_completed_downloads(
                     .record(import_start.elapsed().as_secs_f64());
 
                 if let Some(state) = terminal_tracked_state_for_import_result(&result) {
-                    persist_completed_download_tracked_state(app, &completed, state).await;
+                    persist_completed_download_tracked_state(
+                        app,
+                        &completed,
+                        &submission_resolution,
+                        state,
+                    )
+                    .await;
                     let cleanup =
                         reconcile_terminal_download_cleanup_for_completed(app, &completed, state)
                             .await;

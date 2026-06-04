@@ -834,6 +834,7 @@ pub struct AppRuntimeLibraryState {
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
     pub backup_execution_guards: BackupExecutionGuardTable,
+    pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -1014,6 +1015,7 @@ impl AppRuntimeState {
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
                 backup_execution_guards: BackupExecutionGuardTable::default(),
+                title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),

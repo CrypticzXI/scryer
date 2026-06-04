@@ -25,7 +25,7 @@ const DEFAULT_TOTP_PROFILE: TotpProfile = TotpProfile {
 };
 const TOTP_SECRET_BYTES: usize = 20;
 const TOTP_ENROLLMENT_TTL_MINUTES: i64 = 10;
-pub(super) const TOTP_STEP_UP_TTL_MINUTES: i64 = 60;
+pub(super) const MFA_FRESHNESS_TTL_MINUTES: i64 = 60;
 const TOTP_ALLOWED_DRIFT_STEPS: i64 = 1;
 const TOTP_FAILED_ATTEMPT_LIMIT: i64 = 5;
 const TOTP_FAILED_ATTEMPT_WINDOW_MINUTES: i64 = 5;
@@ -258,17 +258,18 @@ impl AppUseCase {
         })
     }
 
-    pub async fn require_totp_step_up(
+    pub async fn require_mfa_step_up(
         &self,
         actor: &User,
-        mfa_verified_until: Option<i64>,
+        mfa_step_up_verified_until: Option<i64>,
     ) -> AppResult<()> {
         let settings = self.security_settings().await?;
         if !settings.totp_require_config_step_up {
             return Ok(());
         }
 
-        if mfa_verified_until.is_some_and(|expires_at| expires_at > Utc::now().timestamp()) {
+        if mfa_step_up_verified_until.is_some_and(|expires_at| expires_at > Utc::now().timestamp())
+        {
             return Ok(());
         }
 
@@ -280,12 +281,12 @@ impl AppUseCase {
             .await?;
         if credential.is_none() {
             return Err(AppError::TotpEnrollmentRequired(
-                "TOTP enrollment is required before changing system configuration".into(),
+                "MFA enrollment is required before changing system configuration".into(),
             ));
         }
 
         Err(AppError::TotpStepUpRequired(
-            "TOTP verification is required before changing system configuration".into(),
+            "MFA verification is required before changing system configuration".into(),
         ))
     }
 
@@ -313,7 +314,7 @@ impl AppUseCase {
                     .totp
                     .clear_failed_attempts(&actor.id)
                     .await?;
-                Ok(Utc::now() + Duration::minutes(TOTP_STEP_UP_TTL_MINUTES))
+                Ok(Utc::now() + Duration::minutes(MFA_FRESHNESS_TTL_MINUTES))
             }
             Err(error) => {
                 self.record_totp_failed_attempt(&actor.id).await?;

@@ -143,12 +143,12 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const { user } = useAuth();
-  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
-  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
+  const canManageAnyTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
   const [mode, setMode] = React.useState<RequestsMode>(
-    canManageTitle ? "admin" : "mine",
+    canManageAnyTitle ? "admin" : "mine",
   );
-  const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
+  const [adminLibraries, setAdminLibraries] = React.useState<LibraryRecord[]>([]);
+  const [requesterLibraries, setRequesterLibraries] = React.useState<LibraryRecord[]>([]);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const [requests, setRequests] = React.useState<MediaRequestRecord[]>([]);
   const [qualityProfileOptions, setQualityProfileOptions] = React.useState<
@@ -160,6 +160,9 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const librariesRef = React.useRef<LibraryRecord[]>([]);
   const refreshContextKey = `${user?.id ?? ""}|${facet}|${mode}`;
   const refreshContextRef = React.useRef(refreshContextKey);
+  const libraries = mode === "admin" ? adminLibraries : requesterLibraries;
+  const canShowAdminMode = adminLibraries.length > 0;
+  const canShowRequesterMode = requesterLibraries.length > 0;
 
   React.useEffect(() => {
     librariesRef.current = libraries;
@@ -170,43 +173,23 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   }, [refreshContextKey]);
 
   React.useEffect(() => {
-    setMode(canManageTitle ? "admin" : "mine");
-  }, [canManageTitle, user?.id]);
-
-  React.useEffect(() => {
-    if (mode === "admin" && !canManageTitle) {
-      setMode("mine");
-    } else if (mode === "mine" && !canRequestMedia && canManageTitle) {
-      setMode("admin");
-    }
-  }, [canManageTitle, canRequestMedia, mode]);
+    setMode(canManageAnyTitle ? "admin" : "mine");
+    setAdminLibraries([]);
+    setRequesterLibraries([]);
+    setRequests([]);
+  }, [canManageAnyTitle, facet, user?.id]);
 
   const refresh = React.useCallback(async () => {
     const refreshSeq = ++refreshSeqRef.current;
     const refreshContext = refreshContextKey;
     setLoading(true);
     try {
-      const librariesQuery =
-        mode === "admin"
-          ? mediaRequestAdminLibrariesQuery
-          : mediaRequestRequesterLibrariesQuery;
-      const requestsQuery = mode === "admin" ? mediaRequestsQuery : myMediaRequestsQuery;
-      const requestStatus = mode === "admin" ? "pending" : null;
-      const normalizedSelectedLibraryIds = normalizeLibraryFilterSelection(
-        selectedLibraryIds,
-        librariesRef.current,
-      );
-      const [librariesResult, requestsResult] = await Promise.all([
-        client.query(librariesQuery, {
+      const [adminLibrariesResult, requesterLibrariesResult] = await Promise.all([
+        client.query(mediaRequestAdminLibrariesQuery, {
           facet,
         }).toPromise(),
-        client.query(requestsQuery, {
+        client.query(mediaRequestRequesterLibrariesQuery, {
           facet,
-          libraryIds:
-            normalizedSelectedLibraryIds.length > 0
-              ? normalizedSelectedLibraryIds
-              : null,
-          status: requestStatus,
         }).toPromise(),
       ]);
       if (
@@ -216,30 +199,68 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
         return;
       }
 
-      if (librariesResult.error) {
-        setGlobalStatus(librariesResult.error.message || t("status.apiError"));
-      } else {
-        const nextLibraries = (librariesResult.data?.libraries ?? []) as LibraryRecord[];
-        setLibraries(nextLibraries);
-        const nextSelectedLibraryIds = normalizeLibraryFilterSelection(
-          selectedLibraryIds,
-          nextLibraries,
+      if (adminLibrariesResult.error || requesterLibrariesResult.error) {
+        setGlobalStatus(
+          adminLibrariesResult.error?.message ||
+            requesterLibrariesResult.error?.message ||
+            t("status.apiError"),
         );
-        if (!sameStringArray(nextSelectedLibraryIds, selectedLibraryIds)) {
-          setSelectedLibraryIds(nextSelectedLibraryIds);
-        }
+        return;
       }
 
+      const nextAdminLibraries = (adminLibrariesResult.data?.libraries ?? []) as LibraryRecord[];
+      const nextRequesterLibraries = (requesterLibrariesResult.data?.libraries ?? []) as LibraryRecord[];
+      setAdminLibraries(nextAdminLibraries);
+      setRequesterLibraries(nextRequesterLibraries);
+
+      const nextMode =
+        mode === "admin" && nextAdminLibraries.length === 0 && nextRequesterLibraries.length > 0
+          ? "mine"
+          : mode === "mine" && nextRequesterLibraries.length === 0 && nextAdminLibraries.length > 0
+            ? "admin"
+            : mode;
+      if (nextMode !== mode) {
+        setMode(nextMode);
+        setSelectedLibraryIds([]);
+        setRequests([]);
+        return;
+      }
+
+      const nextLibraries = nextMode === "admin" ? nextAdminLibraries : nextRequesterLibraries;
+      const normalizedSelectedLibraryIds = normalizeLibraryFilterSelection(
+        selectedLibraryIds,
+        nextLibraries,
+      );
+      if (!sameStringArray(normalizedSelectedLibraryIds, selectedLibraryIds)) {
+        setSelectedLibraryIds(normalizedSelectedLibraryIds);
+      }
+
+      const requestsQuery = nextMode === "admin" ? mediaRequestsQuery : myMediaRequestsQuery;
+      const requestStatus = nextMode === "admin" ? "pending" : null;
+      const requestsResult = await client.query(requestsQuery, {
+        facet,
+        libraryIds:
+          normalizedSelectedLibraryIds.length > 0
+            ? normalizedSelectedLibraryIds
+            : null,
+        status: requestStatus,
+      }).toPromise();
+      if (
+        refreshSeq !== refreshSeqRef.current ||
+        refreshContext !== refreshContextRef.current
+      ) {
+        return;
+      }
       if (requestsResult.error) {
         setGlobalStatus(requestsResult.error.message || t("status.apiError"));
         return;
       }
       const loadedRequests =
-        mode === "admin"
+        nextMode === "admin"
           ? requestsResult.data?.mediaRequests
           : requestsResult.data?.myMediaRequests;
       setRequests(
-        mode === "admin"
+        nextMode === "admin"
           ? collapseMediaRequests((loadedRequests ?? []) as MediaRequestRecord[])
           : ((loadedRequests ?? []) as MediaRequestRecord[]),
       );
@@ -434,8 +455,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   return (
     <RequestsView
       mode={mode}
-      canShowAdminMode={canManageTitle}
-      canShowRequesterMode={canRequestMedia}
+      canShowAdminMode={canShowAdminMode}
+      canShowRequesterMode={canShowRequesterMode}
       onModeChange={changeMode}
       libraries={libraries}
       selectedLibraryIds={selectedLibraryIds}

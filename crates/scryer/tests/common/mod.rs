@@ -1092,6 +1092,7 @@ async fn test_graphql_handler(
                     user,
                     AuthenticatedTokenClaims {
                         mfa_verified_until: Some(i64::MAX),
+                        mfa_step_up_verified_until: Some(i64::MAX),
                         ..AuthenticatedTokenClaims::default()
                     },
                 )
@@ -1110,6 +1111,7 @@ async fn test_graphql_handler(
     if let Some((user, claims)) = actor {
         request = request.data(MfaVerification {
             verified_until: claims.mfa_verified_until,
+            step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.session_scope,
         });
         request = request.data(user);

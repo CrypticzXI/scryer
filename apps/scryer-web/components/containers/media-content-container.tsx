@@ -3,7 +3,6 @@ import { RequestsContainer } from "@/components/containers/requests-container";
 import { MediaContentView } from "@/components/views/media-content-view";
 import {
   addTitleMutation,
-  buildDeleteTitleBatchMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
   createLibraryMutation,
@@ -11,17 +10,19 @@ import {
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
-  deleteTitleMutation,
+  deleteTitlesMutation,
   setTitleMonitoredMutation,
   updateLibraryMutation,
   updateRuleSetMutation,
 } from "@/lib/graphql/mutations";
 import {
-  buildDeleteTitlePreviewBatchQuery,
   browsePathQuery,
   deleteTitlePreviewQuery,
+  deleteTitlesPreviewQuery,
   downloadClientRoutingQuery,
   downloadClientsInitQuery,
+  jobRunEventsSubscription,
+  jobRunsQuery,
   librariesQuery,
   librarySettingsQuery,
   ruleSetsQuery,
@@ -54,6 +55,7 @@ import { useTitleManagementState } from "@/lib/hooks/use-title-management-state"
 import type {
   DownloadClientRecord,
   DownloadClientRoutingEntry,
+  JobRun,
   LibraryRecord,
   LibrarySettingsDraft,
   LibrarySettingsRecord,
@@ -62,7 +64,7 @@ import type {
   TitleRecord,
   RuleSetRecord,
 } from "@/lib/types";
-import type { DeletePreview } from "@/lib/types/delete-preview";
+import type { DeletePreview, DeleteTitlesPreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
@@ -75,9 +77,12 @@ import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-cont
 import { useSearchContext } from "@/lib/context/search-context";
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { useTitleListReactiveRefresh } from "@/lib/hooks/use-title-list-reactive-refresh";
+import { useJobRunToasts } from "@/components/root/job-run-provider";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import { isTerminalJobRunStatus, normalizeJobRun } from "@/lib/utils/job-runs";
 import { toast } from "sonner";
 import { BulkTitleEditDialog } from "@/components/views/media-content/bulk-title-edit-dialog";
 import {
@@ -96,6 +101,7 @@ import {
 
 const HYDRATION_POSTER_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const HYDRATION_POSTER_REFRESH_INTERVAL_MS = 2_500;
+const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [10_000, 60_000, 180_000] as const;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
@@ -347,14 +353,6 @@ function inferTitleUpdateBatchOutcome(
   });
 }
 
-function inferTitleDeleteBatchOutcome(
-  targets: TitleRecord[],
-  refreshedTitles: TitleRecord[],
-): { succeededIds: string[]; failedIds: string[] } {
-  const remainingIds = new Set(refreshedTitles.map((title) => title.id));
-  return splitSucceededTitleIds(targets, (title) => !remainingIds.has(title.id));
-}
-
 function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | null {
   if (previews.length === 0) {
     return null;
@@ -366,6 +364,10 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
   const typedPrompt =
     previews.find((preview) => preview.requiresTypedConfirmation)
       ?.typedConfirmationPrompt ?? null;
+  const mediaCount = previews.reduce((sum, preview) => sum + preview.mediaCount, 0);
+  const requiresTypedConfirmation =
+    mediaCount > 50 ||
+    previews.some((preview) => preview.requiresTypedConfirmation);
 
   return {
     fingerprint: "",
@@ -373,7 +375,7 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
       (sum, preview) => sum + preview.totalFileCount,
       0,
     ),
-    mediaCount: previews.reduce((sum, preview) => sum + preview.mediaCount, 0),
+    mediaCount,
     subtitleCount: previews.reduce(
       (sum, preview) => sum + preview.subtitleCount,
       0,
@@ -384,10 +386,9 @@ function aggregateDeletePreviews(previews: DeletePreview[]): DeletePreview | nul
       (sum, preview) => sum + preview.directoryCount,
       0,
     ),
-    requiresTypedConfirmation: previews.some(
-      (preview) => preview.requiresTypedConfirmation,
-    ),
-    typedConfirmationPrompt: typedPrompt,
+    requiresTypedConfirmation,
+    typedConfirmationPrompt:
+      typedPrompt ?? (requiresTypedConfirmation ? "Type DELETE to confirm this large delete." : null),
     targetLabel: "",
     samplePaths,
   };
@@ -409,11 +410,19 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { registerInteractiveJobRun } = useJobRunToasts();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
   const { queueCatalogTitleRefresh } = useReactiveRefresh();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
+  const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const deletionJobIdsRef = React.useRef(new Set<string>());
+  const deletionFallbackTimersRef = React.useRef<ReturnType<typeof setTimeout>[]>(
+    [],
+  );
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
@@ -574,8 +583,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [libraryNameById, librarySlugById, monitoredTitles],
   );
   const visibleTitles = React.useMemo(
-    () => filterTitlesByQuickFilters(monitoredTitlesWithLibraries, effectiveTitleQuickFilters),
-    [effectiveTitleQuickFilters, monitoredTitlesWithLibraries],
+    () =>
+      filterTitlesByQuickFilters(
+        monitoredTitlesWithLibraries.filter(
+          (title) => !pendingDeletedTitleIds.has(title.id),
+        ),
+        effectiveTitleQuickFilters,
+      ),
+    [effectiveTitleQuickFilters, monitoredTitlesWithLibraries, pendingDeletedTitleIds],
   );
   const selectedTitles = React.useMemo(
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
@@ -990,6 +1005,105 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const refreshTitles = React.useCallback(async (query?: string) => {
     await reloadTitles(query ?? titleFilter);
   }, [reloadTitles, titleFilter]);
+
+  const clearDeletionFallbackTimers = React.useCallback(() => {
+    for (const timer of deletionFallbackTimersRef.current) {
+      clearTimeout(timer);
+    }
+    deletionFallbackTimersRef.current = [];
+  }, []);
+
+  const handleTitleDeletionJobSnapshot = React.useCallback(
+    (run: JobRun | null) => {
+      if (
+        !run ||
+        run.jobKey !== "title_deletion" ||
+        !deletionJobIdsRef.current.has(run.id) ||
+        !isTerminalJobRunStatus(run.status)
+      ) {
+        return false;
+      }
+
+      deletionJobIdsRef.current.delete(run.id);
+      if (deletionJobIdsRef.current.size === 0) {
+        clearDeletionFallbackTimers();
+      }
+      setPendingDeletedTitleIds(new Set());
+      void refreshTitles();
+      return true;
+    },
+    [clearDeletionFallbackTimers, refreshTitles],
+  );
+
+  const refreshTrackedDeletionJobs = React.useCallback(async () => {
+    if (deletionJobIdsRef.current.size === 0) {
+      return;
+    }
+
+    try {
+      const { data, error } = await client
+        .query<{ jobRuns?: unknown[] }>(
+          jobRunsQuery,
+          { jobKey: "title_deletion", limit: 10 },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+
+      for (const rawRun of data?.jobRuns ?? []) {
+        if (handleTitleDeletionJobSnapshot(normalizeJobRun(rawRun))) {
+          break;
+        }
+      }
+    } catch (error) {
+      console.error("[title-deletion-job-runs] refresh failed:", error);
+    }
+  }, [client, handleTitleDeletionJobSnapshot]);
+
+  const scheduleDeletionJobFallbackChecks = React.useCallback(() => {
+    clearDeletionFallbackTimers();
+    deletionFallbackTimersRef.current = TITLE_DELETION_JOB_FALLBACK_DELAYS_MS.map(
+      (delayMs) =>
+        setTimeout(() => {
+          void refreshTrackedDeletionJobs();
+        }, delayMs),
+    );
+  }, [clearDeletionFallbackTimers, refreshTrackedDeletionJobs]);
+
+  React.useEffect(() => clearDeletionFallbackTimers, [clearDeletionFallbackTimers]);
+
+  React.useEffect(() => {
+    const refreshIfTrackingDeletion = () => {
+      if (deletionJobIdsRef.current.size > 0) {
+        void refreshTrackedDeletionJobs();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshIfTrackingDeletion();
+      }
+    };
+
+    window.addEventListener("focus", refreshIfTrackingDeletion);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", refreshIfTrackingDeletion);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshTrackedDeletionJobs]);
+
+  useDeferredWsSubscription<{ data?: { jobRunEvents?: unknown } }>({
+    requestKey: "mediaContentTitleDeletionJobRuns",
+    request: { query: jobRunEventsSubscription },
+    onNext(result) {
+      handleTitleDeletionJobSnapshot(normalizeJobRun(result.data?.jobRunEvents));
+    },
+    onError(error) {
+      console.error("[title-deletion-job-runs] subscription error:", error);
+    },
+  });
 
   const applyRefreshedTitleRecord = React.useCallback(
     (titleId: string, title: TitleRecord | null) => {
@@ -1646,16 +1760,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     const loadPreviews = async () => {
       try {
-        const variables = Object.fromEntries(
-          targets.map((title, index) => [
-            `input${index}`,
-            { titleId: title.id },
-          ]),
-        );
         const result = await client
-          .query<Record<string, DeletePreview>>(
-            buildDeleteTitlePreviewBatchQuery(targets.length),
-            variables,
+          .query<{ deleteTitlesPreview: DeleteTitlesPreview }>(
+            deleteTitlesPreviewQuery,
+            { input: { titleIds: targets.map((title) => title.id) } },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -1663,49 +1771,28 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           return;
         }
 
-        let payload = result.data ?? {};
-        if (Object.keys(payload).length === 0 && result.error) {
-          const settled = await Promise.allSettled(
-            targets.map(async (title) => {
-              const single = await client
-                .query<{ deleteTitlePreview: DeletePreview }>(
-                  deleteTitlePreviewQuery,
-                  { input: { titleId: title.id } },
-                  { requestPolicy: "network-only" },
-                )
-                .toPromise();
-              if (single.error || !single.data?.deleteTitlePreview) {
-                throw single.error ?? new Error("delete title preview failed");
-              }
-              return [title.id, single.data.deleteTitlePreview] as const;
-            }),
-          );
-
-          payload = {};
-          settled.forEach((outcome, index) => {
-            if (outcome.status === "fulfilled") {
-              payload[batchItemAlias(index)] = outcome.value[1];
-            }
-          });
+        if (result.error || !result.data?.deleteTitlesPreview) {
+          throw result.error ?? new Error("delete title preview failed");
         }
+        const payload = result.data.deleteTitlesPreview;
         const nextPreviewsByTitleId: Record<string, DeletePreview> = {};
-        let failedCount = 0;
+        const failedTitles: string[] = [];
 
-        targets.forEach((title, index) => {
-          const preview = payload[batchItemAlias(index)] as DeletePreview | undefined;
-          if (preview) {
-            nextPreviewsByTitleId[title.id] = preview;
+        for (const item of payload.items) {
+          if (item.preview) {
+            nextPreviewsByTitleId[item.titleId] = item.preview;
           } else {
-            failedCount += 1;
+            const title = targets.find((target) => target.id === item.titleId);
+            failedTitles.push(title?.name ?? item.titleId);
           }
-        });
+        }
 
         setBulkDeletePreviewsByTitleId(nextPreviewsByTitleId);
-        if (failedCount > 0) {
+        if (payload.failedCount > 0) {
           setBulkDeletePreviewError(
             withFailureDetail(
-              t("status.bulkDeletePreviewFailed", { failed: failedCount }),
-              batchFailureDetail(result.error),
+              t("status.bulkDeletePreviewFailed", { failed: payload.failedCount }),
+              failedTitles.slice(0, 5).join(", "),
             ),
           );
         } else {
@@ -1770,80 +1857,55 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     setBulkActionBusy(true);
     try {
-      const variables = Object.fromEntries(
-        targets.map((title, index) => {
-          const preview = bulkDeletePreviewsByTitleId[title.id];
-          return [
-            `input${index}`,
-            {
-              titleId: title.id,
-              ...(bulkDeleteFilesOnDisk
-                ? {
-                    deleteFilesOnDisk: true,
-                    previewFingerprint: preview?.fingerprint,
-                    ...(bulkDeleteTypedConfirmation.trim()
-                      ? {
-                          typedConfirmation:
-                            bulkDeleteTypedConfirmation.trim(),
-                        }
-                      : {}),
-                  }
-                : {}),
-            },
-          ];
-        }),
-      );
+      const items = targets.map((title) => {
+        const preview = bulkDeletePreviewsByTitleId[title.id];
+        if (bulkDeleteFilesOnDisk && !preview) {
+          throw new Error("Delete preview is not ready yet.");
+        }
+        return {
+          titleId: title.id,
+          ...(bulkDeleteFilesOnDisk
+            ? { previewFingerprint: preview?.fingerprint }
+            : {}),
+        };
+      });
       const result = await client
-        .mutation<Record<string, boolean>>(
-          buildDeleteTitleBatchMutation(targets.length),
-          variables,
-        )
-        .toPromise();
-      const payload = result.data ?? {};
-      const refreshedTitles = await reloadTitles();
-      let { succeededIds, failedIds } = refreshedTitles
-        ? inferTitleDeleteBatchOutcome(targets, refreshedTitles)
-        : {
-            succeededIds: [] as string[],
-            failedIds: [...targets.map((title) => title.id)],
+        .mutation<{
+          deleteTitles?: {
+            acceptedTitleIds?: string[];
+            jobRun?: unknown;
           };
-      if (!refreshedTitles && !result.error) {
-        succeededIds = [];
-        failedIds = [];
-        targets.forEach((title, index) => {
-          if (payload[batchItemAlias(index)]) {
-            succeededIds.push(title.id);
-          } else {
-            failedIds.push(title.id);
-          }
-        });
+        }>(deleteTitlesMutation, {
+          input: {
+            items,
+            deleteFilesOnDisk: bulkDeleteFilesOnDisk,
+            ...(bulkDeleteFilesOnDisk && bulkDeleteTypedConfirmation.trim()
+              ? { typedConfirmation: bulkDeleteTypedConfirmation.trim() }
+              : {}),
+          },
+        })
+        .toPromise();
+      if (result.error) {
+        throw result.error;
       }
-      setSelectedTitleIds(new Set(failedIds));
-
-      const detail = batchFailureDetail(result.error);
-      if (succeededIds.length === 0) {
-        setGlobalStatus(
-          withFailureDetail(t("status.bulkTitleDeleteFailed"), detail),
-        );
-        return;
+      const acceptedIds = result.data?.deleteTitles?.acceptedTitleIds ?? [];
+      const run = normalizeJobRun(result.data?.deleteTitles?.jobRun);
+      if (run) {
+        deletionJobIdsRef.current.add(run.id);
+        registerInteractiveJobRun(run);
+        scheduleDeletionJobFallbackChecks();
       }
-
+      setPendingDeletedTitleIds((current) => {
+        const next = new Set(current);
+        for (const id of acceptedIds) {
+          next.add(id);
+        }
+        return next;
+      });
+      setSelectedTitleIds(new Set());
       closeBulkDeleteDialog();
-      if (failedIds.length > 0) {
-        setGlobalStatus(
-          withFailureDetail(
-            t("status.bulkTitleDeletePartial", {
-              count: succeededIds.length,
-              failed: failedIds.length,
-            }),
-            detail,
-          ),
-        );
-        return;
-      }
-
       setGlobalStatus(
-        t("status.bulkTitleDeleteSuccess", { count: succeededIds.length }),
+        `Queued deletion for ${acceptedIds.length} title${acceptedIds.length === 1 ? "" : "s"}.`,
       );
     } catch (error) {
       setGlobalStatus(
@@ -1862,7 +1924,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     bulkDeleteTypedConfirmation,
     client,
     closeBulkDeleteDialog,
-    reloadTitles,
+    registerInteractiveJobRun,
+    scheduleDeletionJobFallbackChecks,
     selectedTitles,
     setGlobalStatus,
     t,
@@ -1928,34 +1991,51 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }));
 
     try {
-      const payload: {
-        titleId: string;
-        deleteFilesOnDisk?: boolean;
-        previewFingerprint?: string;
-        typedConfirmation?: string;
-      } = {
-        titleId,
-      };
-
+      let previewFingerprint: string | undefined;
       if (deleteFilesOnDisk) {
         if (!titleDeletePreview) {
           throw new Error("Delete preview is not ready yet.");
         }
-        payload.deleteFilesOnDisk = true;
-        payload.previewFingerprint = titleDeletePreview.fingerprint;
-        if (titleDeleteTypedConfirmation.trim()) {
-          payload.typedConfirmation = titleDeleteTypedConfirmation.trim();
-        }
+        previewFingerprint = titleDeletePreview.fingerprint;
       }
 
-      const { error } = await client
-        .mutation(deleteTitleMutation, {
-          input: payload,
+      const result = await client
+        .mutation<{
+          deleteTitles?: {
+            acceptedTitleIds?: string[];
+            jobRun?: unknown;
+          };
+        }>(deleteTitlesMutation, {
+          input: {
+            items: [
+              {
+                titleId,
+                ...(deleteFilesOnDisk ? { previewFingerprint } : {}),
+              },
+            ],
+            deleteFilesOnDisk,
+            ...(deleteFilesOnDisk && titleDeleteTypedConfirmation.trim()
+              ? { typedConfirmation: titleDeleteTypedConfirmation.trim() }
+              : {}),
+          },
         })
         .toPromise();
-      if (error) throw error;
-      setGlobalStatus(t("status.titleDeleted", { name: titleToDelete.name }));
-      await refreshTitles();
+      if (result.error) throw result.error;
+      const acceptedIds = result.data?.deleteTitles?.acceptedTitleIds ?? [];
+      const run = normalizeJobRun(result.data?.deleteTitles?.jobRun);
+      if (run) {
+        deletionJobIdsRef.current.add(run.id);
+        registerInteractiveJobRun(run);
+        scheduleDeletionJobFallbackChecks();
+      }
+      setPendingDeletedTitleIds((current) => {
+        const next = new Set(current);
+        for (const id of acceptedIds) {
+          next.add(id);
+        }
+        return next;
+      });
+      setGlobalStatus(`Queued deletion for ${titleToDelete.name}.`);
     } catch (error) {
       setGlobalStatus(
         error instanceof Error ? error.message : t("status.failedToDelete"),
@@ -1971,8 +2051,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [
     closeDeleteTitleDialog,
     deleteFilesOnDisk,
-    refreshTitles,
     client,
+    registerInteractiveJobRun,
+    scheduleDeletionJobFallbackChecks,
     titleDeletePreview,
     titleDeleteTypedConfirmation,
     t,

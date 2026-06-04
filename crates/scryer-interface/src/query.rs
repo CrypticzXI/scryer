@@ -15,15 +15,15 @@ use crate::context::{
     current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_delete_preview, from_domain_event,
-    from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
-    from_job_definition, from_job_run, from_library, from_library_scan_session,
-    from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
-    from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
-    from_pending_release, from_provider_type, from_smg_version_compatibility_notice,
-    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_history_record, from_title_release_blocklist_entry,
-    from_user_with_auth_factor_status, from_wanted_item,
+    from_activity_event, from_backup_info, from_delete_preview, from_delete_titles_preview,
+    from_domain_event, from_download_queue_item, from_episode,
+    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
+    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
+    from_media_request, from_media_request_counts, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type,
+    from_smg_version_compatibility_notice, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
+    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -493,6 +493,20 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_delete_preview(preview))
+    }
+
+    async fn delete_titles_preview(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteTitlesPreviewInput,
+    ) -> GqlResult<DeleteTitlesPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let preview = app
+            .preview_delete_titles_files(&actor, &input.title_ids)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_delete_titles_preview(preview))
     }
 
     async fn delete_media_file_preview(

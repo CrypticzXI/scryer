@@ -751,11 +751,11 @@ fn normalize_default_library_grants(
                     existing.library_id == library_id
                 })
         {
-            existing.permissions = grant.permissions;
+            existing.permissions = grant.permissions.normalized_for_storage();
         } else {
             normalized.push(MediaServerDefaultLibraryGrant {
                 library_id,
-                permissions: grant.permissions,
+                permissions: grant.permissions.normalized_for_storage(),
             });
         }
     }

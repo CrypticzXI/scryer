@@ -4,6 +4,12 @@ mod catalog;
 mod contracts;
 mod download_client_config;
 mod download_client_path_mappings;
+mod download_identity;
+pub use download_identity::{
+    DOWNLOAD_FINGERPRINT_PARAMETER, DOWNLOAD_REQUEST_ID_PARAMETER, DownloadFingerprintInput,
+    ObservedDownloadIdentityInput, build_download_fingerprint, download_fingerprint_from_info_hash,
+    download_submission_identity_is_empty, observed_download_identity,
+};
 mod events;
 pub mod external_import;
 mod health;
@@ -84,7 +90,7 @@ pub use download_client_config::resolve_download_client_base_url_from_config_jso
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
     EpisodeImageUrlUpdate, MediaRequestResolution, SubtitleSyncClient, SubtitleSyncJob,
-    TitleArtworkUrlUpdate,
+    TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
 };
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
@@ -161,15 +167,16 @@ pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
 pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
+pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, EpisodeUpdate, ImportArtifact,
-    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan,
-    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
-    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, NewBlocklistEntry,
-    NotificationScopeIdUpdate, PendingStagedNzb, QueueDownloadOutcome, QueuedDownloadResult,
-    QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity, EpisodeUpdate,
+    ImportArtifact, IndexerConfigSyncResult, IndexerConfigUpdate, IndexerRoutingEntry,
+    IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput,
+    ManagedIndexerChildPlan, ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis,
+    NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueueDownloadOutcome,
+    QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef,
     SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
     SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
     SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
@@ -271,7 +278,7 @@ pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
 };
-pub use library::user_delete::DeletePreview;
+pub use library::user_delete::{DeletePreview, DeleteTitlesPreview};
 pub use library_scan::{
     AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkArtworkUrlResult, BulkMetadataResult,
     EpisodeArtworkUrls, EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,

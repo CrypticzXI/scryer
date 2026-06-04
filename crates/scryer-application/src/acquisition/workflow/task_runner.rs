@@ -588,6 +588,36 @@ async fn process_single_wanted_item(
                                 pack_title.as_deref(),
                                 best_pack.source_kind,
                             );
+                            let info_hash_hint = best_pack
+                                .extra
+                                .get("info_hash")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string);
+                            let download_request_id =
+                                crate::download_identity::new_download_request_id();
+                            let download_fingerprint =
+                                crate::download_identity::build_download_fingerprint(
+                                    crate::download_identity::DownloadFingerprintInput {
+                                        request_id: Some(download_request_id.as_str()),
+                                        title_id: Some(title.id.as_str()),
+                                        facet: Some(title.facet.as_str()),
+                                        scope: None,
+                                        source_kind: best_pack.source_kind,
+                                        source_hint: pack_url.as_deref(),
+                                        source_title: pack_title.as_deref(),
+                                        info_hash_hint: info_hash_hint.as_deref(),
+                                        indexer_name: Some(best_pack.source.as_str()),
+                                        size_bytes: None,
+                                        client_type: None,
+                                        output_path: None,
+                                        category: Some(download_cat.as_str()),
+                                        completed_at: None,
+                                    },
+                                );
+                            let submission_identity = DownloadSubmissionIdentity {
+                                download_request_id: Some(download_request_id.clone()),
+                                download_fingerprint: download_fingerprint.clone(),
+                            };
 
                             let grab_result = app
                                 .services
@@ -595,6 +625,8 @@ async fn process_single_wanted_item(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
+                                    download_request_id: Some(download_request_id),
+                                    download_fingerprint,
                                     source_hint: pack_url.clone(),
                                     staged_nzb: None,
                                     source_kind: best_pack.source_kind,
@@ -605,11 +637,7 @@ async fn process_single_wanted_item(
                                     download_directory: None,
                                     release_title: Some(best_pack.title.clone()),
                                     indexer_name: Some(best_pack.source.clone()),
-                                    info_hash_hint: best_pack
-                                        .extra
-                                        .get("info_hash")
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_string),
+                                    info_hash_hint,
                                     seed_goal_ratio: None,
                                     seed_goal_seconds: None,
                                     is_recent,
@@ -677,15 +705,16 @@ async fn process_single_wanted_item(
                                             download_submission: DownloadSubmission {
                                                 title_id: title.id.clone(),
                                                 facet: facet_str.trim_matches('"').to_string(),
-                                                download_client_id: grab.client_id,
-                                                download_client_type: grab.client_type,
-                                                download_client_item_id: grab.job_id,
+                                                download_client_id: grab.client_id.clone(),
+                                                download_client_type: grab.client_type.clone(),
+                                                download_client_item_id: grab.job_id.clone(),
                                                 source_hint: None,
                                                 source_kind: None,
                                                 source_title: Some(best_pack.title.clone()),
                                                 request_signature: request_signature.clone(),
                                                 scope: submission_scope,
                                             },
+                                            download_submission_identity: Some(submission_identity),
                                             grabbed_pending_release_id: None,
                                             grabbed_at: Some(now.to_rfc3339()),
                                         })
@@ -1086,12 +1115,46 @@ async fn process_single_wanted_item(
             "auto-grabbing release"
         );
 
+        let info_hash_hint = candidate
+            .extra
+            .get("info_hash")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let download_request_id = crate::download_identity::new_download_request_id();
+        let download_fingerprint = crate::download_identity::build_download_fingerprint(
+            crate::download_identity::DownloadFingerprintInput {
+                request_id: Some(download_request_id.as_str()),
+                title_id: Some(title.id.as_str()),
+                facet: Some(title.facet.as_str()),
+                scope: Some(&direct_download_submission_scope_for_wanted_item(
+                    item,
+                    episode.as_ref(),
+                )),
+                source_kind: candidate.source_kind,
+                source_hint: source_hint.as_deref(),
+                source_title: source_title.as_deref(),
+                info_hash_hint: info_hash_hint.as_deref(),
+                indexer_name: Some(candidate.source.as_str()),
+                size_bytes: None,
+                client_type: None,
+                output_path: None,
+                category: Some(download_cat.as_str()),
+                completed_at: None,
+            },
+        );
+        let submission_identity = DownloadSubmissionIdentity {
+            download_request_id: Some(download_request_id.clone()),
+            download_fingerprint: download_fingerprint.clone(),
+        };
+
         let grab_result = app
             .services
             .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                download_request_id: Some(download_request_id),
+                download_fingerprint,
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind: candidate.source_kind,
@@ -1102,11 +1165,7 @@ async fn process_single_wanted_item(
                 download_directory: None,
                 release_title: Some(candidate.title.clone()),
                 indexer_name: Some(candidate.source.clone()),
-                info_hash_hint: candidate
-                    .extra
-                    .get("info_hash")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
+                info_hash_hint,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 is_recent,
@@ -1200,15 +1259,16 @@ async fn process_single_wanted_item(
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id,
-                            download_client_type: grab.client_type,
-                            download_client_item_id: grab.job_id,
+                            download_client_id: grab.client_id.clone(),
+                            download_client_type: grab.client_type.clone(),
+                            download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
+                        download_submission_identity: Some(submission_identity),
                         grabbed_pending_release_id: None,
                         grabbed_at: Some(now.to_rfc3339()),
                     })

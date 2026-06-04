@@ -751,6 +751,7 @@ impl AppUseCase {
         &self,
         title: &scryer_domain::Title,
         purge_recycle_bin_entries: bool,
+        actor_user_id: Option<&str>,
     ) -> AppResult<()> {
         let title_id = title.id.as_str();
 
@@ -775,73 +776,76 @@ impl AppUseCase {
             }
         }
 
-        let queued_submission_keys = match self
+        let download_submissions = match self
             .services
             .workflow
             .download_submissions
             .list_for_title(title_id)
             .await
         {
-            Ok(submissions) => submissions
-                .into_iter()
-                .map(|submission| {
-                    (
-                        submission.download_client_type,
-                        submission.download_client_item_id,
-                    )
-                })
-                .collect::<HashSet<_>>(),
+            Ok(submissions) => submissions,
             Err(err) => {
                 warn!(
                     title_id = %title_id,
                     error = %err,
-                    "failed to list download submissions while deleting title; falling back to embedded queue metadata only"
+                    "failed to list download submissions while deleting title; skipping download cancellation"
                 );
-                HashSet::new()
+                Vec::new()
             }
         };
 
-        match self
-            .services
-            .integrations
-            .download_client
-            .list_queue()
-            .await
-        {
-            Ok(queue_items) => {
-                for item in queue_items {
-                    let matches_title = item.title_id.as_deref() == Some(title_id)
-                        || queued_submission_keys.contains(&(
-                            item.client_type.clone(),
-                            item.download_client_item_id.clone(),
-                        ));
-                    if matches_title
-                        && let Err(err) = self
-                            .services
-                            .integrations
-                            .download_client
-                            .delete_queue_item_for_client(
-                                &item.client_type,
-                                &item.download_client_item_id,
-                                false,
-                            )
-                            .await
-                    {
-                        warn!(
-                            title_id = %title_id,
-                            download_item_id = %item.download_client_item_id,
-                            error = %err,
-                            "failed to cancel inflight download while deleting title"
-                        );
-                    }
-                }
+        let mut seen_downloads = HashSet::new();
+        for submission in download_submissions {
+            let identity = DownloadSourceIdentity::from_submission(&submission);
+            if !seen_downloads.insert(identity.clone()) {
+                continue;
             }
-            Err(err) => {
-                warn!(
+
+            let tracked_state = self
+                .services
+                .workflow
+                .download_submissions
+                .get_tracked_state(&identity)
+                .await
+                .ok()
+                .flatten();
+            if !tracked_download_state_is_active(tracked_state.as_deref()) {
+                debug!(
                     title_id = %title_id,
-                    error = %err,
-                    "failed to list download queue while deleting title; skipping download cancellation"
+                    client_type = %identity.client_type,
+                    download_item_id = %identity.item_id,
+                    tracked_state = tracked_state.as_deref().unwrap_or("none"),
+                    "skipping recorded download during title deletion because it is not active"
                 );
+                continue;
+            }
+
+            match self
+                .services
+                .workflow
+                .download_queue_commands
+                .queue_delete_command(
+                    identity.client_id.as_deref(),
+                    &identity.client_type,
+                    &identity.item_id,
+                    false,
+                    actor_user_id,
+                )
+                .await
+            {
+                Ok(_) => debug!(
+                    title_id = %title_id,
+                    client_type = %identity.client_type,
+                    download_item_id = %identity.item_id,
+                    "queued targeted download cancellation for deleted title"
+                ),
+                Err(err) => warn!(
+                    title_id = %title_id,
+                    client_type = %identity.client_type,
+                    download_item_id = %identity.item_id,
+                    error = %err,
+                    "failed to queue targeted download cancellation while deleting title"
+                ),
             }
         }
 
@@ -888,6 +892,14 @@ impl AppUseCase {
         Ok(title)
     }
 }
+
+fn tracked_download_state_is_active(state: Option<&str>) -> bool {
+    matches!(
+        state.map(str::trim),
+        Some("downloading" | "import_pending" | "importing")
+    )
+}
+
 impl AppUseCase {
     pub async fn get_title_without_external_ids(
         &self,

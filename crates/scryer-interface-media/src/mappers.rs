@@ -378,6 +378,29 @@ pub fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
     }
 }
 
+pub fn from_delete_titles_preview(
+    preview: scryer_application::DeleteTitlesPreview,
+) -> DeleteTitlesPreviewPayload {
+    let failed_count = preview
+        .items
+        .iter()
+        .filter(|item| item.error.is_some())
+        .count() as i32;
+    DeleteTitlesPreviewPayload {
+        preview: from_delete_preview(preview.preview),
+        items: preview
+            .items
+            .into_iter()
+            .map(|item| DeleteTitlePreviewResultPayload {
+                title_id: item.title_id,
+                preview: item.preview.map(from_delete_preview),
+                error: item.error,
+            })
+            .collect(),
+        failed_count,
+    }
+}
+
 pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPayload {
     let seeders = result
         .extra
@@ -835,6 +858,8 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         attention_required: item.attention_required,
         attention_reason: item.attention_reason,
         download_client_item_id: item.download_client_item_id,
+        download_request_id: item.download_request_id,
+        download_fingerprint: item.download_fingerprint,
         import_status: item.import_status.map(ImportStatusValue::from_domain),
         import_error_code: item
             .import_error_code
@@ -1458,6 +1483,7 @@ pub fn from_user_with_auth_factor_status(
             |(library_id, permissions)| UserLibraryPermissionGrantPayload {
                 library_id,
                 permissions: permissions
+                    .with_request_shadowing()
                     .to_permissions()
                     .into_iter()
                     .map(LibraryPermissionValue::from_domain)
@@ -1524,6 +1550,7 @@ pub fn from_media_server_connection(
                 library_id: grant.library_id,
                 permissions: grant
                     .permissions
+                    .with_request_shadowing()
                     .to_permissions()
                     .into_iter()
                     .map(LibraryPermissionValue::from_domain)

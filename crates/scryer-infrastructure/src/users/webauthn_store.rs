@@ -139,6 +139,44 @@ impl WebauthnRepository for WebauthnStore {
         .await
     }
 
+    async fn update_credential_if_current(
+        &self,
+        credential: WebauthnCredentialRecord,
+        expected_credential_json: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        let expected_credential_json = expected_credential_json.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "update_webauthn_credential_if_current",
+            move |tx| {
+                let credential = credential.clone();
+                let expected_credential_json = expected_credential_json.clone();
+                Box::pin(async move {
+                    let rows = tx
+                        .execute(
+                            "UPDATE webauthn_credentials
+                             SET credential_json = {}, friendly_name = {}, last_used_at = {}
+                             WHERE id = {} AND user_id = {} AND credential_json = {}",
+                            &[
+                                SqlArg::Text(credential.credential_json.clone()),
+                                SqlArg::OptText(credential.friendly_name.clone()),
+                                opt_timestamp_arg(credential.last_used_at.as_deref())?,
+                                SqlArg::Text(credential.id.clone()),
+                                SqlArg::Text(credential.user_id.clone()),
+                                SqlArg::Text(expected_credential_json),
+                            ],
+                        )
+                        .await?;
+                    if rows == 0 {
+                        return Ok(None);
+                    }
+                    load_credential_by_id_tx(tx, &credential.id, &credential.user_id).await
+                })
+            },
+        )
+        .await
+    }
+
     async fn delete_credential_for_user(
         &self,
         credential_record_id: &str,
@@ -203,6 +241,25 @@ impl WebauthnRepository for WebauthnStore {
         )
         .await?;
         row.as_ref().map(row_to_challenge_record).transpose()
+    }
+
+    async fn take_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "take_webauthn_challenge", move |tx| {
+            let id = id.clone();
+            Box::pin(async move {
+                let row = SqlRuntime::fetch_optional(
+                    SqlExec::Tx(tx),
+                    "DELETE FROM webauthn_challenges
+                     WHERE id = {}
+                     RETURNING id, user_id, challenge_type, state_json, created_at, expires_at",
+                    &[SqlArg::Text(id)],
+                )
+                .await?;
+                row.as_ref().map(row_to_challenge_record).transpose()
+            })
+        })
+        .await
     }
 
     async fn delete_challenge(&self, id: &str) -> AppResult<()> {

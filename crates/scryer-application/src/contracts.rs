@@ -86,6 +86,12 @@ pub struct DownloadSubmission {
     pub scope: SubmissionScope,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DownloadSubmissionIdentity {
+    pub download_request_id: Option<String>,
+    pub download_fingerprint: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DownloadSourceIdentity {
     pub client_id: Option<String>,
@@ -136,6 +142,7 @@ pub struct SuccessfulGrabCommit {
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
     pub download_submission: DownloadSubmission,
+    pub download_submission_identity: Option<DownloadSubmissionIdentity>,
     pub grabbed_pending_release_id: Option<String>,
     pub grabbed_at: Option<String>,
 }
@@ -642,6 +649,8 @@ pub struct IndexerRoutingPlan {
 #[derive(Clone, Debug)]
 pub struct DownloadClientAddRequest {
     pub title: Title,
+    pub download_request_id: Option<String>,
+    pub download_fingerprint: Option<String>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
     pub source_kind: Option<DownloadSourceKind>,
@@ -670,6 +679,8 @@ impl DownloadClientAddRequest {
     ) -> Self {
         Self {
             title: title.clone(),
+            download_request_id: None,
+            download_fingerprint: None,
             source_hint,
             staged_nzb: None,
             source_kind,

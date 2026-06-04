@@ -197,6 +197,8 @@ pub struct DownloadQueueItemPayload {
     pub attention_required: bool,
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
+    pub download_request_id: Option<String>,
+    pub download_fingerprint: Option<String>,
     pub import_status: Option<ImportStatusValue>,
     pub import_error_code: Option<ImportErrorCodeValue>,
     pub import_error_message: Option<String>,

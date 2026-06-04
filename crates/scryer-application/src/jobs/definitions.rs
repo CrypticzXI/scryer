@@ -156,6 +156,7 @@ pub enum JobKey {
     PendingReleaseProcessing,
     StagedNzbPrune,
     TitleImageCacheRefresh,
+    TitleDeletion,
 }
 
 impl JobKey {
@@ -179,6 +180,7 @@ impl JobKey {
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
             Self::TitleImageCacheRefresh => "title_image_cache_refresh",
+            Self::TitleDeletion => "title_deletion",
         }
     }
 
@@ -202,6 +204,7 @@ impl JobKey {
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
             "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
+            "title_deletion" => Some(Self::TitleDeletion),
             _ => None,
         }
     }
@@ -226,6 +229,7 @@ impl JobKey {
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
             Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
+            Self::TitleDeletion => "Title Deletion",
         }
     }
 
@@ -263,6 +267,7 @@ impl JobKey {
             Self::TitleImageCacheRefresh => {
                 "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
             }
+            Self::TitleDeletion => "Delete selected titles from the catalog.",
         }
     }
 
@@ -279,7 +284,8 @@ impl JobKey {
             Self::PluginRegistryRefresh
             | Self::HealthChecks
             | Self::AutoBackup
-            | Self::TitleImageCacheRefresh => JobCategory::System,
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => JobCategory::System,
             Self::Housekeeping
             | Self::WantedSync
             | Self::PendingReleaseProcessing
@@ -315,7 +321,8 @@ impl JobKey {
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
-            | Self::TitleImageCacheRefresh => JobScheduleKind::Manual,
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => JobScheduleKind::Manual,
         }
     }
 
@@ -338,7 +345,8 @@ impl JobKey {
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
-            | Self::TitleImageCacheRefresh => "Manual only",
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => "Manual only",
         }
     }
 
@@ -371,7 +379,7 @@ impl JobKey {
     }
 
     pub fn manual_trigger_allowed(self) -> bool {
-        !matches!(self, Self::AutoBackup)
+        !matches!(self, Self::AutoBackup | Self::TitleDeletion)
     }
 
     pub fn uses_library_scan_progress(self) -> bool {

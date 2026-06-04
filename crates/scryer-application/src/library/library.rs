@@ -587,7 +587,8 @@ impl AppUseCase {
         let title_ids: Vec<String> = titles.iter().map(|title| title.id.clone()).collect();
 
         for title in &titles {
-            self.purge_title_logical_dependents(title, false).await?;
+            self.purge_title_logical_dependents(title, false, None)
+                .await?;
         }
 
         if !title_ids.is_empty() {

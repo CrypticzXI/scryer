@@ -16,6 +16,7 @@ use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
 use crate::rate_limit::{
     RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
+    should_precheck_graphql_login,
 };
 
 #[derive(Clone, Debug)]
@@ -340,7 +341,8 @@ pub(crate) async fn graphql_handler(
         actor.as_ref().map(|actor| actor.user.id.as_str()),
     );
     let rate_limit_class = classify_graphql(&batch);
-    if rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login
+    let precheck_login = should_precheck_graphql_login(&batch);
+    if (rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login || precheck_login)
         && let Err(decision) = state
             .rate_limiter
             .check_graphql(rate_limit_class, &rate_limit_key)
@@ -375,6 +377,7 @@ pub(crate) async fn graphql_handler(
     let body_stream = futures_util::stream::once(async move {
         let mut batch_response = schema.execute_batch(batch).await;
         if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
+            && !precheck_login
             && !batch_response.is_ok()
             && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
         {
@@ -407,6 +410,7 @@ impl ResolvedActor {
     fn mfa_verification(&self) -> MfaVerification {
         MfaVerification {
             verified_until: self.token_claims.mfa_verified_until,
+            step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
         }
     }
@@ -503,6 +507,7 @@ async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain
 fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {
     AuthenticatedTokenClaims {
         mfa_verified_until: Some(i64::MAX),
+        mfa_step_up_verified_until: Some(i64::MAX),
         ..AuthenticatedTokenClaims::default()
     }
 }
@@ -771,12 +776,7 @@ fn skip_http_rate_limit(_method: &Method, path: &str) -> bool {
 }
 
 fn is_rate_limited_http_api_path(path: &str) -> bool {
-    path == "/admin"
-        || path.starts_with("/admin/")
-        || path == "/api"
-        || path.starts_with("/api/")
-        || path == "/images"
-        || path.starts_with("/images/")
+    path == "/admin" || path.starts_with("/admin/") || path == "/api" || path.starts_with("/api/")
 }
 
 pub(crate) fn map_app_error(error: AppError) -> Response {
@@ -1080,12 +1080,26 @@ mod tests {
     }
 
     #[test]
-    fn admin_and_image_routes_still_consume_http_api_quota() {
+    fn admin_routes_still_consume_http_api_quota() {
         assert!(!skip_http_rate_limit(&Method::GET, "/admin/settings"));
-        assert!(!skip_http_rate_limit(
+        assert!(!skip_http_rate_limit(&Method::GET, "/api/system/jobs"));
+    }
+
+    #[test]
+    fn title_images_and_static_assets_do_not_consume_http_api_quota() {
+        assert!(skip_http_rate_limit(
             &Method::GET,
             "/images/titles/title-1/poster/original"
         ));
+        assert!(skip_http_rate_limit(
+            &Method::GET,
+            "/images/titles/title-1/fanart/w1280"
+        ));
+        assert!(skip_http_rate_limit(
+            &Method::GET,
+            "/assets/index-B3b5rA.js"
+        ));
+        assert!(skip_http_rate_limit(&Method::GET, "/manifest.json"));
     }
 
     #[test]

@@ -1645,6 +1645,11 @@ const fr: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Sous-titre téléchargé",
   "settings.notificationEvent.subtitleSearchFailed":
     "Échec de la recherche de sous-titres",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Demande média envoyée",
+  "settings.notificationEvent.mediaRequestApproved": "Demande média approuvée",
+  "settings.notificationEvent.mediaRequestRejected": "Demande média rejetée",
+  "settings.notificationEvent.mediaRequestCanceled": "Demande média annulée",
   "settings.notificationEvent.healthIssue": "Problème de santé",
   "settings.notificationEvent.healthRestored": "Santé restaurée",
   "settings.notificationEvent.applicationUpdate":

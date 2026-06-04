@@ -3,16 +3,17 @@ use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, EpisodeUpdate, HousekeepingRepository, ImportRepository,
-    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
-    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
-    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
-    TitleImageBlob, TitleImageKind, TitleImageRepository, TitleImageSourceResult,
-    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem,
-    WantedItemRepository, WantedItemsQuery, WantedStatus,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
+    HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
+    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
+    SubmissionScope, SubtitleDownloadRepository, SubtitleProviderConfigRepository,
+    SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
+    WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -661,6 +662,8 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
             payload_json TEXT NOT NULL,
             result_json TEXT,
             rename_plan_json TEXT,
+            download_request_id TEXT,
+            download_fingerprint TEXT,
             started_at TEXT,
             finished_at TEXT,
             created_at TEXT NOT NULL,
@@ -736,6 +739,31 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
     .await
     .expect("import count should load");
     assert_eq!(row_count, 1);
+
+    let durable_identity = DownloadSubmissionIdentity {
+        download_request_id: Some("scryer-request:store-test".to_string()),
+        download_fingerprint: Some("sha256:store-test".to_string()),
+    };
+    let durable_import_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10001"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":1}".to_string(),
+            Some(durable_identity.clone()),
+        )
+        .await
+        .expect("durable import should queue");
+    workflow
+        .update_import_status(&durable_import_id, ImportStatus::Completed, None)
+        .await
+        .expect("durable import should complete");
+
+    assert!(
+        workflow
+            .is_already_imported_by_submission_identity(&durable_identity)
+            .await
+            .expect("identity import lookup should succeed")
+    );
 }
 
 #[test]
@@ -857,6 +885,80 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
         .expect("legacy lookup should succeed")
         .expect("legacy row should still be discoverable by a legacy identity");
     assert_eq!(legacy_lookup.title_id, "legacy-title");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_item_id() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_reused_item_identity_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSourceIdentity::new(None, "weaver", "10010");
+
+    workflow
+        .record_submission(DownloadSubmission {
+            title_id: "title-1".to_string(),
+            facet: "series".to_string(),
+            download_client_id: None,
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "10010".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Old.Release.S01E05".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Episode {
+                episode_id: "episode-5".to_string(),
+            },
+        })
+        .await
+        .expect("old submission should persist");
+    workflow
+        .update_tracked_state(&identity, "imported")
+        .await
+        .expect("old terminal state should persist");
+
+    workflow
+        .record_submission_with_identity(
+            DownloadSubmission {
+                title_id: "title-1".to_string(),
+                facet: "series".to_string(),
+                download_client_id: None,
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: "10010".to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Fresh.Release.S01E07".to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: "episode-7".to_string(),
+                },
+            },
+            DownloadSubmissionIdentity {
+                download_request_id: Some("scryer-request:fresh".to_string()),
+                download_fingerprint: Some("sha256:fresh".to_string()),
+            },
+        )
+        .await
+        .expect("fresh submission identity should persist");
+
+    let tracked_state = workflow
+        .get_tracked_state(&identity)
+        .await
+        .expect("tracked state lookup should succeed");
+    assert_eq!(tracked_state, None);
+
+    let fresh = workflow
+        .find_by_request_id("scryer-request:fresh")
+        .await
+        .expect("request lookup should succeed")
+        .expect("fresh request should be indexed");
+    assert_eq!(fresh.source_title.as_deref(), Some("Fresh.Release.S01E07"));
 
     let _ = std::fs::remove_file(db);
 }
@@ -6261,6 +6363,70 @@ async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
     assert_eq!(media_file.audio_profile.as_deref(), Some("LC"));
     assert_eq!(media_file.num_chapters, Some(4));
 
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_request_id: Some("scryer-request:blocked".to_string()),
+        download_fingerprint: Some("sha256:blocked".to_string()),
+    };
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(
+            &identity,
+            Some(&source_identity),
+            "import_blocked",
+            Some("unresolved_durable_identity"),
+            Some("request/fingerprint observed without a matching submission"),
+        )
+        .await
+        .expect("identity tracked state should persist");
+
+    let tracked_state = workflow_store
+        .get_identity_tracked_state(&identity)
+        .await
+        .expect("identity tracked state lookup should succeed");
+    assert_eq!(tracked_state.as_deref(), Some("import_blocked"));
+
+    let submission_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_submissions WHERE download_client_type = ? AND download_client_item_id = ?",
+    )
+    .bind("weaver")
+    .bind("10010")
+    .fetch_one(services.pool())
+    .await
+    .expect("submission count should load");
+    assert_eq!(submission_count, 0);
+
+    let row = sqlx::query(
+        "SELECT client_id, client_type, download_client_item_id, reason \
+         FROM download_identity_states WHERE download_request_id = ?",
+    )
+    .bind("scryer-request:blocked")
+    .fetch_one(services.pool())
+    .await
+    .expect("identity state row should exist");
+    let client_id: String = row.get("client_id");
+    let client_type: String = row.get("client_type");
+    let item_id: String = row.get("download_client_item_id");
+    let reason: String = row.get("reason");
+    assert_eq!(client_id, "client-a");
+    assert_eq!(client_type, "weaver");
+    assert_eq!(item_id, "10010");
+    assert_eq!(reason, "unresolved_durable_identity");
+
+    drop(services);
     let _ = std::fs::remove_file(db);
 }
 

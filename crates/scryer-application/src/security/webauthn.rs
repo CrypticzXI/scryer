@@ -223,14 +223,13 @@ impl AppUseCase {
         _form_login_enabled: bool,
     ) -> AppResult<PasskeySummary> {
         self.ensure_passkey_management_enabled()?;
-        self.cleanup_expired_webauthn_challenges().await?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
         let challenge = self
             .services
             .identity
             .webauthn
-            .get_challenge(challenge_id)
+            .take_challenge(challenge_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("passkey challenge {challenge_id}")))?;
 
@@ -245,19 +244,8 @@ impl AppUseCase {
             ));
         }
         if Self::challenge_expired(&challenge) {
-            self.services
-                .identity
-                .webauthn
-                .delete_challenge(challenge_id)
-                .await?;
             return Err(AppError::Validation("passkey challenge has expired".into()));
         }
-
-        self.services
-            .identity
-            .webauthn
-            .delete_challenge(challenge_id)
-            .await?;
 
         let registration = serde_json::from_str::<RegisterPublicKeyCredential>(response_json)
             .map_err(|error| {
@@ -445,13 +433,12 @@ impl AppUseCase {
         form_login_enabled: bool,
     ) -> AppResult<User> {
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
-        self.cleanup_expired_webauthn_challenges().await?;
 
         let challenge = self
             .services
             .identity
             .webauthn
-            .get_challenge(challenge_id)
+            .take_challenge(challenge_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("passkey challenge {challenge_id}")))?;
 
@@ -461,19 +448,8 @@ impl AppUseCase {
             ));
         }
         if Self::challenge_expired(&challenge) {
-            self.services
-                .identity
-                .webauthn
-                .delete_challenge(challenge_id)
-                .await?;
             return Err(AppError::Validation("passkey challenge has expired".into()));
         }
-
-        self.services
-            .identity
-            .webauthn
-            .delete_challenge(challenge_id)
-            .await?;
 
         let credential =
             serde_json::from_str::<PublicKeyCredential>(response_json).map_err(|error| {
@@ -501,40 +477,31 @@ impl AppUseCase {
                     AppError::Repository("authentication challenge missing user id".into())
                 })?;
                 let user = self.load_password_backed_user(user_id).await?;
-                let records = self
+                let requested_credential_id = Self::encode_credential_id(&credential.raw_id);
+                let mut record = self
                     .services
                     .identity
                     .webauthn
-                    .list_credentials_for_user(&user.id)
-                    .await?;
-                let mut passkeys = records
-                    .iter()
-                    .map(Self::deserialize_passkey)
-                    .collect::<AppResult<Vec<_>>>()?;
+                    .get_credential_by_credential_id(&requested_credential_id)
+                    .await?
+                    .ok_or_else(|| AppError::Unauthorized("passkey credential not found".into()))?;
+                if record.user_id != user.id {
+                    return Err(AppError::Unauthorized(
+                        "passkey credential does not belong to the challenge user".into(),
+                    ));
+                }
+                let original_credential_json = record.credential_json.clone();
+                let mut passkey = Self::deserialize_passkey(&record)?;
                 let auth_result = self
                     .webauthn_runtime()?
-                    .finish_passkey_authentication(&credential, &state)
+                    .finish_passkey_authentication(&credential, &state, &passkey)
                     .map_err(|error| {
                         AppError::Unauthorized(format!(
                             "failed to finish passkey authentication: {error}"
                         ))
                     })?;
-                let used_credential_id = Self::encode_credential_id(auth_result.cred_id());
-
-                let updated_record = records
-                    .into_iter()
-                    .zip(passkeys.iter_mut())
-                    .find_map(|(record, passkey)| {
-                        (record.credential_id == used_credential_id).then_some((record, passkey))
-                    })
-                    .ok_or_else(|| {
-                        AppError::Repository(format!(
-                            "authenticated passkey credential {used_credential_id} was not found"
-                        ))
-                    })?;
-                let (mut record, passkey) = updated_record;
                 passkey.update_credential(&auth_result);
-                record.credential_json = serde_json::to_string(passkey).map_err(|error| {
+                record.credential_json = serde_json::to_string(&passkey).map_err(|error| {
                     AppError::Repository(format!(
                         "failed to persist updated passkey credential state: {error}"
                     ))
@@ -543,8 +510,13 @@ impl AppUseCase {
                 self.services
                     .identity
                     .webauthn
-                    .update_credential(record)
-                    .await?;
+                    .update_credential_if_current(record, &original_credential_json)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Unauthorized(
+                            "passkey credential changed during authentication".into(),
+                        )
+                    })?;
                 Ok(user)
             }
             StoredAuthenticationState::Discoverable(state) => {
@@ -577,6 +549,7 @@ impl AppUseCase {
                             .into(),
                     ));
                 }
+                let original_credential_json = record.credential_json.clone();
                 let mut passkey = Self::deserialize_passkey(&record)?;
                 let discoverable_key: DiscoverableKey = passkey.clone().into();
                 let auth_result = self
@@ -597,8 +570,13 @@ impl AppUseCase {
                 self.services
                     .identity
                     .webauthn
-                    .update_credential(record)
-                    .await?;
+                    .update_credential_if_current(record, &original_credential_json)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Unauthorized(
+                            "discoverable passkey credential changed during authentication".into(),
+                        )
+                    })?;
                 Ok(user)
             }
         }

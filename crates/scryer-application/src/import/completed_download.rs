@@ -31,7 +31,12 @@ const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
-pub(crate) type CompletedDownloadLookup = HashMap<(String, String, String), CompletedDownload>;
+#[derive(Default)]
+pub(crate) struct CompletedDownloadLookup {
+    by_source: HashMap<(String, String, String), CompletedDownload>,
+    by_request_id: HashMap<String, Vec<CompletedDownload>>,
+    by_fingerprint: HashMap<String, Vec<CompletedDownload>>,
+}
 
 enum ExpectedEpisodeResolution {
     NotApplicable,
@@ -86,6 +91,17 @@ pub(crate) async fn check_with_lookup(
     }
 
     let Some(completed) = find_completed_download(app, td, completed_lookup).await else {
+        if !crate::download_submission_identity_is_empty(&observed_queue_item_identity(
+            &td.client_item,
+        )) {
+            block_tracked_download_identity_for_manual_review(
+                app,
+                td,
+                "missing_completed_history_identity",
+                "completed queue item carried durable identity but completed history did not contain a compatible identity",
+            )
+            .await;
+        }
         return;
     };
 
@@ -427,19 +443,86 @@ pub(crate) async fn load_completed_download_lookup_for_items(
 }
 
 fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDownloadLookup {
-    downloads
-        .into_iter()
-        .map(|completed| {
-            (
-                completed_download_lookup_key(
-                    Some(&completed.client_id),
-                    &completed.client_type,
-                    &completed.download_client_item_id,
-                ),
-                completed,
-            )
-        })
-        .collect()
+    let mut lookup = CompletedDownloadLookup::default();
+    for completed in downloads {
+        let observed_identity = observed_completed_download_identity(&completed);
+        if let Some(request_id) = observed_identity
+            .download_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lookup
+                .by_request_id
+                .entry(request_id.to_string())
+                .or_default()
+                .push(completed.clone());
+        }
+        if let Some(fingerprint) = observed_identity
+            .download_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lookup
+                .by_fingerprint
+                .entry(fingerprint.to_string())
+                .or_default()
+                .push(completed.clone());
+        }
+        lookup.by_source.insert(
+            completed_download_lookup_key(
+                Some(&completed.client_id),
+                &completed.client_type,
+                &completed.download_client_item_id,
+            ),
+            completed,
+        );
+    }
+    lookup
+}
+
+fn observed_queue_item_identity(item: &DownloadQueueItem) -> crate::DownloadSubmissionIdentity {
+    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
+        download_request_id: item.download_request_id.as_deref(),
+        download_fingerprint: item.download_fingerprint.as_deref(),
+        parameters: &[],
+        info_hash_hint: None,
+    })
+}
+
+fn observed_completed_download_identity(
+    completed: &CompletedDownload,
+) -> crate::DownloadSubmissionIdentity {
+    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
+        download_request_id: completed.download_request_id.as_deref(),
+        download_fingerprint: completed.download_fingerprint.as_deref(),
+        parameters: &completed.parameters,
+        info_hash_hint: None,
+    })
+}
+
+fn single_completed_download_identity_match(
+    matches: Option<&Vec<CompletedDownload>>,
+    label: &str,
+    value: &str,
+) -> Option<CompletedDownload> {
+    let matches = matches?;
+    if matches.len() == 1 {
+        return matches.first().cloned();
+    }
+    if let Some(completed) =
+        crate::download_identity::coalesce_completed_downloads_by_release_observation(matches)
+    {
+        return Some(completed);
+    }
+    tracing::warn!(
+        identity_kind = label,
+        identity_value = value,
+        matches = matches.len(),
+        "find_completed_download: durable identity matched multiple completed downloads"
+    );
+    None
 }
 
 fn completed_download_lookup_key(
@@ -538,12 +621,38 @@ fn find_completed_download_in_lookup(
     lookup: &CompletedDownloadLookup,
     td: &TrackedDownload,
 ) -> Option<CompletedDownload> {
+    let observed_identity = observed_queue_item_identity(&td.client_item);
+    if let Some(request_id) = observed_identity
+        .download_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return single_completed_download_identity_match(
+            lookup.by_request_id.get(request_id),
+            "request_id",
+            request_id,
+        );
+    }
+    if let Some(fingerprint) = observed_identity
+        .download_fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return single_completed_download_identity_match(
+            lookup.by_fingerprint.get(fingerprint),
+            "fingerprint",
+            fingerprint,
+        );
+    }
+
     let key = completed_download_lookup_key(
         Some(&td.client_id),
         &td.client_type,
         &td.client_item.download_client_item_id,
     );
-    if let Some(completed) = lookup.get(&key) {
+    if let Some(completed) = lookup.by_source.get(&key) {
         return Some(completed.clone());
     }
 
@@ -552,6 +661,7 @@ fn find_completed_download_in_lookup(
     }
 
     let mut legacy_matches = lookup
+        .by_source
         .iter()
         .filter(|((_, client_type, item_id), _)| {
             client_type == &td.client_type && item_id == &td.client_item.download_client_item_id
@@ -1035,6 +1145,50 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
     };
 
     let _ = app.append_domain_event(event).await;
+}
+
+async fn block_tracked_download_identity_for_manual_review(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    reason: &str,
+    detail: &str,
+) {
+    let observed_identity = observed_queue_item_identity(&td.client_item);
+    if crate::download_submission_identity_is_empty(&observed_identity) {
+        return;
+    }
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
+    if let Err(error) = app
+        .services
+        .workflow
+        .download_submissions
+        .record_identity_tracked_state(
+            &observed_identity,
+            Some(&source_identity),
+            TrackedDownloadState::ImportBlocked.as_str(),
+            Some(reason),
+            Some(detail),
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            client_id = td.client_id.as_str(),
+            client_type = td.client_type.as_str(),
+            download_client_item_id = td.client_item.download_client_item_id.as_str(),
+            reason,
+            "failed to persist durable tracked-download manual-review state"
+        );
+    }
+    if !td.status_messages.iter().any(|message| message == detail) {
+        td.status_messages.clear();
+        td.status_messages.push(detail.to_string());
+    }
+    set_state_to_import_blocked(app, td).await;
 }
 
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
@@ -2150,6 +2304,8 @@ mod tests {
                 attention_required: false,
                 attention_reason: None,
                 download_client_item_id: "dl-1".to_string(),
+                download_request_id: None,
+                download_fingerprint: None,
                 import_status: None,
                 import_error_code: None,
                 import_error_message: None,
@@ -2188,6 +2344,8 @@ mod tests {
             client_type: "nzbget".to_string(),
             client_id: "client-1".to_string(),
             download_client_item_id: "dl-1".to_string(),
+            download_request_id: None,
+            download_fingerprint: None,
             name: name.to_string(),
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
@@ -2207,17 +2365,25 @@ mod tests {
 
         let lookup = index_completed_downloads(vec![first, second]);
 
-        assert_eq!(lookup.len(), 2);
-        assert!(lookup.contains_key(&completed_download_lookup_key(
-            Some("client-1"),
-            "nzbget",
-            "dl-1"
-        )));
-        assert!(lookup.contains_key(&completed_download_lookup_key(
-            Some("client-2"),
-            "nzbget",
-            "dl-1"
-        )));
+        assert_eq!(lookup.by_source.len(), 2);
+        assert!(
+            lookup
+                .by_source
+                .contains_key(&completed_download_lookup_key(
+                    Some("client-1"),
+                    "nzbget",
+                    "dl-1"
+                ))
+        );
+        assert!(
+            lookup
+                .by_source
+                .contains_key(&completed_download_lookup_key(
+                    Some("client-2"),
+                    "nzbget",
+                    "dl-1"
+                ))
+        );
     }
 
     #[test]
@@ -2457,7 +2623,7 @@ mod tests {
         .await
         .expect("completed lookup should load");
 
-        assert_eq!(lookup.len(), 1);
+        assert_eq!(lookup.by_source.len(), 1);
         assert_eq!(
             download_client
                 .completed_download_calls
@@ -2906,6 +3072,8 @@ mod tests {
                 attention_required: false,
                 attention_reason: None,
                 download_client_item_id: "dl-2".to_string(),
+                download_request_id: None,
+                download_fingerprint: None,
                 import_status: None,
                 import_error_code: None,
                 import_error_message: None,

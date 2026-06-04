@@ -34,14 +34,85 @@ async fn prepare_completed_import_request(
     remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_identity = completed_download_identity(&completed);
+    let submission_resolution =
+        resolve_completed_download_submission(app, &completed, None).await?;
+
+    if let CompletedDownloadSubmissionResolution::AmbiguousFingerprint {
+        fingerprint,
+        matches,
+    } = &submission_resolution
+    {
+        block_completed_download_identity_for_manual_review(
+            app,
+            &completed,
+            "ambiguous_fingerprint",
+            &format!("download fingerprint matched {matches} submissions: {fingerprint}"),
+        )
+        .await;
+        let result = ImportResult {
+            decision: ImportDecision::Rejected,
+            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
+            error_message: Some(format!(
+                "Download fingerprint matched {matches} submissions; manual review is required: {fingerprint}"
+            )),
+            ..base_completed_import_result("", &completed, started_at)
+        };
+        return Ok(CompletedImportProgress::Finished(result));
+    }
+    if let CompletedDownloadSubmissionResolution::MissingDurableIdentity { identity } =
+        &submission_resolution
+    {
+        block_completed_download_identity_for_manual_review(
+            app,
+            &completed,
+            "missing_durable_identity",
+            &format!(
+                "request_id={:?} fingerprint={:?}",
+                identity.download_request_id, identity.download_fingerprint
+            ),
+        )
+        .await;
+        let result = ImportResult {
+            decision: ImportDecision::Rejected,
+            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
+            error_message: Some(format!(
+                "Download has durable identity but no matching Scryer submission; manual review is required: request_id={:?} fingerprint={:?}",
+                identity.download_request_id, identity.download_fingerprint
+            )),
+            ..base_completed_import_result("", &completed, started_at)
+        };
+        return Ok(CompletedImportProgress::Finished(result));
+    }
+    if let CompletedDownloadSubmissionResolution::ConflictingIdentity {
+        request_id,
+        fingerprint,
+    } = &submission_resolution
+    {
+        block_completed_download_identity_for_manual_review(
+            app,
+            &completed,
+            "conflicting_durable_identity",
+            &format!("request_id={request_id:?} fingerprint={fingerprint:?}"),
+        )
+        .await;
+        let result = ImportResult {
+            decision: ImportDecision::Rejected,
+            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
+            error_message: Some(format!(
+                "Download request identity conflicts with fingerprint identity; manual review is required: request_id={request_id:?} fingerprint={fingerprint:?}"
+            )),
+            ..base_completed_import_result("", &completed, started_at)
+        };
+        return Ok(CompletedImportProgress::Finished(result));
+    }
 
     // 1. DEDUP CHECK
-    if app
-        .services
-        .workflow
-        .imports
-        .is_already_imported(&source_identity)
-        .await?
+    if completed_download_already_imported_for_current_attempt(
+        app,
+        &completed,
+        &submission_resolution,
+    )
+    .await?
     {
         let result = ImportResult {
             decision: ImportDecision::Skipped,
@@ -68,10 +139,11 @@ async fn prepare_completed_import_request(
         .services
         .workflow
         .imports
-        .queue_import_request(
+        .queue_import_request_with_identity(
             source_identity,
             import_type.as_str().to_string(),
             serde_json::to_string(&completed).unwrap_or_default(),
+            completed_download_import_identity_for_resolution(&completed, &submission_resolution),
         )
         .await?;
 

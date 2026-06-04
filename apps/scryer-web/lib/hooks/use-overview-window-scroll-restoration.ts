@@ -134,12 +134,14 @@ function useOverviewScrollRestoration({
   storageKeySuffix,
   kind,
   getTarget,
+  restoreScrollTop,
 }: {
   enabled: boolean;
   ready: boolean;
   storageKeySuffix: string;
   kind: ScrollTargetKind;
   getTarget: () => ScrollTarget | null;
+  restoreScrollTop?: (nextTop: number) => void;
 }) {
   const location = useLocation();
   const pendingScrollTopRef = React.useRef<number | null>(null);
@@ -205,7 +207,11 @@ function useOverviewScrollRestoration({
 
       const nextMaxScroll = maxScrollTop(target, kind);
       const nextTop = Math.min(pendingScrollTop, nextMaxScroll);
-      writeScrollTop(target, kind, nextTop);
+      if (restoreScrollTop) {
+        restoreScrollTop(nextTop);
+      } else {
+        writeScrollTop(target, kind, nextTop);
+      }
 
       const canFullyRestore = nextMaxScroll >= pendingScrollTop - 4;
       const reachedTarget =
@@ -224,13 +230,13 @@ function useOverviewScrollRestoration({
       frameId = window.requestAnimationFrame(restore);
     };
 
-    frameId = window.requestAnimationFrame(restore);
+    restore();
     return () => {
       if (frameId !== 0) {
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [enabled, getTarget, kind, ready]);
+  }, [enabled, getTarget, kind, ready, restoreScrollTop]);
 }
 
 export function useOverviewWindowScrollRestoration({
@@ -261,11 +267,13 @@ export function useOverviewElementScrollRestoration({
   ready,
   storageKeySuffix,
   scrollRef,
+  restoreScrollTop,
 }: {
   enabled: boolean;
   ready: boolean;
   storageKeySuffix: string;
   scrollRef: React.RefObject<HTMLElement | null>;
+  restoreScrollTop?: (nextTop: number) => void;
 }) {
   const getTarget = React.useCallback(() => scrollRef.current, [scrollRef]);
 
@@ -275,5 +283,6 @@ export function useOverviewElementScrollRestoration({
     storageKeySuffix,
     kind: "element",
     getTarget,
+    restoreScrollTop,
   });
 }

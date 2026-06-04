@@ -1314,6 +1314,15 @@ impl JobRunRepository for NullJobRunRepository {
         Ok(Vec::new())
     }
 
+    async fn list_job_runs_for_actor(
+        &self,
+        _job_key: Option<JobKey>,
+        _actor_user_id: &str,
+        _limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         Ok(Vec::new())
     }
@@ -1583,6 +1592,14 @@ impl WebauthnRepository for NullWebauthnRepository {
         Err(AppError::Repository("not configured".into()))
     }
 
+    async fn update_credential_if_current(
+        &self,
+        _: WebauthnCredentialRecord,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
     async fn delete_credential_for_user(&self, _: &str, _: &str) -> AppResult<()> {
         Ok(())
     }
@@ -1595,6 +1612,10 @@ impl WebauthnRepository for NullWebauthnRepository {
     }
 
     async fn get_challenge(&self, _: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn take_challenge(&self, _: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
         Ok(None)
     }
 

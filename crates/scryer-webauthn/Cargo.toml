@@ -1,0 +1,16 @@
+[package]
+name = "scryer-webauthn"
+version = "0.16.0"
+edition.workspace = true
+
+[dependencies]
+aws-lc-rs = { workspace = true }
+base64 = "0.22"
+ciborium = "0.2"
+coset = "0.4"
+passkey-types = { version = "0.5", features = ["serialize_bytes_as_base64_string"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = "2"
+uuid = { workspace = true }

@@ -1,8 +1,11 @@
 use async_graphql::{Context, Object, Result as GqlResult};
-use scryer_application::{DeleteExecutionConfirmation, QueuedReleaseSelection};
+use scryer_application::{
+    DeleteExecutionConfirmation, DeleteTitlesJobItem, DeleteTitlesJobRequest,
+    QueuedReleaseSelection,
+};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::{from_library_scan_summary, from_title};
+use crate::mappers::{from_job_run, from_library_scan_summary, from_title};
 use crate::types::*;
 use crate::utils::{
     map_add_input, merge_title_option_tags, normalize_title_tags, parse_download_source_kind,
@@ -180,6 +183,37 @@ impl TitleMutations {
         .await
         .map(|_| true)
         .map_err(to_gql_error)
+    }
+
+    async fn delete_titles(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteTitlesInput,
+    ) -> GqlResult<DeleteTitlesPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let accepted = app
+            .start_delete_titles_job(
+                &actor,
+                DeleteTitlesJobRequest {
+                    items: input
+                        .items
+                        .into_iter()
+                        .map(|item| DeleteTitlesJobItem {
+                            title_id: item.title_id,
+                            preview_fingerprint: item.preview_fingerprint,
+                        })
+                        .collect(),
+                    delete_files_on_disk: input.delete_files_on_disk.unwrap_or(false),
+                    typed_confirmation: input.typed_confirmation,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(DeleteTitlesPayload {
+            job_run: from_job_run(accepted.job_run),
+            accepted_title_ids: accepted.accepted_title_ids,
+        })
     }
 
     async fn clear_title_release_blocklist_entry(

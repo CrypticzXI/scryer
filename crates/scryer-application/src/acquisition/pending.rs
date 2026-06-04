@@ -547,12 +547,38 @@ impl AppUseCase {
             "persisted candidate: grabbing"
         );
 
+        let download_request_id = crate::download_identity::new_download_request_id();
+        let download_fingerprint = crate::download_identity::build_download_fingerprint(
+            crate::download_identity::DownloadFingerprintInput {
+                request_id: Some(download_request_id.as_str()),
+                title_id: Some(title.id.as_str()),
+                facet: Some(title.facet.as_str()),
+                scope: None,
+                source_kind,
+                source_hint: source_hint.as_deref(),
+                source_title: source_title.as_deref(),
+                info_hash_hint: pr.info_hash.as_deref(),
+                indexer_name: pr.indexer_source.as_deref(),
+                size_bytes: None,
+                client_type: None,
+                output_path: None,
+                category: Some(download_cat.as_str()),
+                completed_at: None,
+            },
+        );
+        let submission_identity = DownloadSubmissionIdentity {
+            download_request_id: Some(download_request_id.clone()),
+            download_fingerprint: download_fingerprint.clone(),
+        };
+
         let grab_result = self
             .services
             .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                download_request_id: Some(download_request_id),
+                download_fingerprint,
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind,
@@ -679,15 +705,16 @@ impl AppUseCase {
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id,
-                            download_client_type: grab.client_type,
-                            download_client_item_id: grab.job_id,
+                            download_client_id: grab.client_id.clone(),
+                            download_client_type: grab.client_type.clone(),
+                            download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
+                        download_submission_identity: Some(submission_identity),
                         grabbed_pending_release_id: Some(pr.id.clone()),
                         grabbed_at: Some(now.to_rfc3339()),
                     })

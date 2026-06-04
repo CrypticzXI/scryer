@@ -14,8 +14,9 @@ use crate::types::{
     PluginNotificationApp, PluginNotificationApplicationUpdate, PluginNotificationDownload,
     PluginNotificationEpisode, PluginNotificationExternalIds, PluginNotificationFile,
     PluginNotificationHealth, PluginNotificationImport, PluginNotificationManualInteraction,
-    PluginNotificationMediaFile, PluginNotificationMediaUpdate, PluginNotificationRequest,
-    PluginNotificationResponse, PluginNotificationTitle, decode_plugin_result,
+    PluginNotificationMediaFile, PluginNotificationMediaRequest, PluginNotificationMediaUpdate,
+    PluginNotificationRequest, PluginNotificationResponse, PluginNotificationTitle,
+    decode_plugin_result,
 };
 
 pub struct WasmNotificationClient {
@@ -210,6 +211,20 @@ impl NotificationClient for WasmNotificationClient {
                     link: manual.link.clone(),
                 }
             }),
+            media_request: payload.media_request.as_ref().map(|request| {
+                PluginNotificationMediaRequest {
+                    request_id: request.request_id.clone(),
+                    library_id: request.library_id.clone(),
+                    status: request.status.clone(),
+                    facet: request.facet.clone(),
+                    requested_quality_profile_id: request.requested_quality_profile_id.clone(),
+                    requested_quality_profile_name: request.requested_quality_profile_name.clone(),
+                    requested_monitor_type: request.requested_monitor_type.clone(),
+                    approved_quality_profile_id: request.approved_quality_profile_id.clone(),
+                    approved_quality_profile_name: request.approved_quality_profile_name.clone(),
+                    created_title_id: request.created_title_id.clone(),
+                }
+            }),
         };
 
         let input = serde_json::to_string(&request).map_err(|e| {
@@ -323,6 +338,18 @@ fn map_event_type(event_type: DomainNotificationEventType) -> NotificationEventT
         }
         DomainNotificationEventType::SubtitleSearchFailed => {
             NotificationEventType::SubtitleSearchFailed
+        }
+        DomainNotificationEventType::MediaRequestSubmitted => {
+            NotificationEventType::MediaRequestSubmitted
+        }
+        DomainNotificationEventType::MediaRequestApproved => {
+            NotificationEventType::MediaRequestApproved
+        }
+        DomainNotificationEventType::MediaRequestRejected => {
+            NotificationEventType::MediaRequestRejected
+        }
+        DomainNotificationEventType::MediaRequestCanceled => {
+            NotificationEventType::MediaRequestCanceled
         }
         DomainNotificationEventType::HealthIssue => NotificationEventType::HealthIssue,
         DomainNotificationEventType::HealthRestored => NotificationEventType::HealthRestored,

@@ -1367,6 +1367,7 @@ pub enum JwtSessionScope {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AuthenticatedTokenClaims {
     pub mfa_verified_until: Option<i64>,
+    pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
 }
 
@@ -1384,6 +1385,8 @@ pub(crate) struct JwtClaims {
     pub library_permissions: Vec<JwtLibraryPermissionClaim>,
     #[serde(default, rename = "mfaVerifiedUntil")]
     pub mfa_verified_until: Option<i64>,
+    #[serde(default, rename = "mfaStepUpVerifiedUntil")]
+    pub mfa_step_up_verified_until: Option<i64>,
     #[serde(default, rename = "authScope")]
     pub auth_scope: JwtSessionScope,
 }

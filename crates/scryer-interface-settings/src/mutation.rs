@@ -223,7 +223,8 @@ fn media_server_library_grants(
                     .permissions
                     .into_iter()
                     .map(LibraryPermissionValue::into_domain),
-            ),
+            )
+            .normalized_for_storage(),
         })
         .collect()
 }
@@ -367,13 +368,14 @@ async fn login_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
+    mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until)
+        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -427,7 +429,7 @@ async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<()> {
     let app = app_from_ctx(ctx)?;
     let actor = actor_from_ctx(ctx)?;
     let mfa = mfa_verification_from_ctx(ctx);
-    app.require_totp_step_up(&actor, mfa.verified_until)
+    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
         .await
         .map_err(to_gql_error)
 }
@@ -1313,7 +1315,8 @@ impl SettingsMutations {
             .await
             .map_err(to_gql_error)?;
         let login =
-            login_payload_from_user(&app, actor, Some(app.totp_step_up_verified_until())).await?;
+            login_payload_from_user(&app, actor, Some(app.mfa_freshness_verified_until()), None)
+                .await?;
         Ok(LoginMfaEnrollmentCompletePayload {
             status: from_totp_status(complete.status),
             recovery_codes: complete.recovery_codes,
@@ -1332,7 +1335,13 @@ impl SettingsMutations {
             .totp_verify_step_up(&actor, &input.code)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, actor, Some(mfa_verified_until)).await
+        login_payload_from_user(
+            &app,
+            actor,
+            Some(mfa_verified_until),
+            Some(mfa_verified_until),
+        )
+        .await
     }
 
     async fn totp_disable(
@@ -1422,7 +1431,8 @@ impl SettingsMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None).await
+        let mfa_verified_until = app.mfa_freshness_verified_until();
+        login_payload_from_user(&app, user, Some(mfa_verified_until), None).await
     }
 
     async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
@@ -1474,7 +1484,7 @@ impl SettingsMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until).await
+        login_payload_from_user(&app, user, mfa_verified_until, None).await
     }
 
     /// Mark the setup wizard as complete.

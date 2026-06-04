@@ -218,6 +218,27 @@ export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInpu
   deleteTitle(input: $input)
 }`;
 
+export const deleteTitlesMutation = `mutation DeleteTitles($input: DeleteTitlesInput!) {
+  deleteTitles(input: $input) {
+    acceptedTitleIds
+    jobRun {
+      id
+      jobKey
+      displayName
+      category
+      section
+      status
+      triggerSource
+      startedAt
+      completedAt
+      summaryJson
+      summaryText
+      errorText
+      progressJson
+    }
+  }
+}`;
+
 export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndexerConfigInput!) {
   createIndexerConfig(input: $input) {
     id

@@ -465,6 +465,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
+            download_submission_identity: None,
             grabbed_pending_release_id: None,
             grabbed_at: Some(grabbed_at.clone()),
         })
@@ -570,6 +571,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
+            download_submission_identity: None,
             grabbed_pending_release_id: Some(claimed.id.clone()),
             grabbed_at: Some(grabbed_at.clone()),
         })

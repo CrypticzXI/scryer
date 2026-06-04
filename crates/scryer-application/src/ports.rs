@@ -14,6 +14,15 @@ pub struct TitleArtworkUrlUpdate {
     pub background_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleDeletePreviewInfo {
+    pub title_id: String,
+    pub library_id: String,
+    pub title_name: String,
+    pub facet: MediaFacet,
+    pub folder_path: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct EpisodeImageUrlUpdate {
     pub episode_id: String,
@@ -30,6 +39,20 @@ pub trait TitleRepository: Send + Sync {
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         self.list(facet, query).await
+    }
+    async fn list_delete_preview_info(&self) -> AppResult<Vec<TitleDeletePreviewInfo>> {
+        Ok(self
+            .list_without_external_ids(None, None)
+            .await?
+            .into_iter()
+            .map(|title| TitleDeletePreviewInfo {
+                title_id: title.id,
+                library_id: title.library_id,
+                title_name: title.name,
+                facet: title.facet,
+                folder_path: title.folder_path,
+            })
+            .collect())
     }
     async fn list_for_libraries(
         &self,
@@ -579,6 +602,11 @@ pub trait WebauthnRepository: Send + Sync {
         &self,
         credential: WebauthnCredentialRecord,
     ) -> AppResult<WebauthnCredentialRecord>;
+    async fn update_credential_if_current(
+        &self,
+        credential: WebauthnCredentialRecord,
+        expected_credential_json: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
     async fn delete_credential_for_user(
         &self,
         credential_record_id: &str,
@@ -589,6 +617,7 @@ pub trait WebauthnRepository: Send + Sync {
         challenge: WebauthnChallengeRecord,
     ) -> AppResult<WebauthnChallengeRecord>;
     async fn get_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
+    async fn take_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
     async fn delete_challenge(&self, id: &str) -> AppResult<()>;
     async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
 }
@@ -881,10 +910,79 @@ pub trait AcquisitionStateRepository: Send + Sync {
 pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
 
+    async fn record_submission_identity(
+        &self,
+        _identity: &DownloadSourceIdentity,
+        _submission_identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_submission_with_identity(
+        &self,
+        submission: DownloadSubmission,
+        submission_identity: DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        let identity = DownloadSourceIdentity::from_submission(&submission);
+        self.record_submission(submission).await?;
+        self.record_submission_identity(&identity, &submission_identity)
+            .await
+    }
+
     async fn find_by_client_item_id(
         &self,
         identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>>;
+
+    async fn find_by_request_id(
+        &self,
+        download_request_id: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(self
+            .list_by_request_id(download_request_id)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    async fn list_by_request_id(
+        &self,
+        _download_request_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_by_fingerprint(
+        &self,
+        _download_fingerprint: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_submission_identity(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionIdentity>> {
+        Ok(None)
+    }
+
+    async fn record_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+        _tracked_state: &str,
+        _reason: Option<&str>,
+        _detail: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
 
     async fn list_for_client_items(
         &self,
@@ -941,6 +1039,13 @@ pub trait JobRunRepository: Send + Sync {
     async fn list_job_runs(
         &self,
         job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>>;
+
+    async fn list_job_runs_for_actor(
+        &self,
+        job_key: Option<JobKey>,
+        actor_user_id: &str,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>>;
 
@@ -1025,6 +1130,17 @@ pub trait ImportRepository: Send + Sync {
         payload_json: String,
     ) -> AppResult<String>;
 
+    async fn queue_import_request_with_identity(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        _submission_identity: Option<DownloadSubmissionIdentity>,
+    ) -> AppResult<String> {
+        self.queue_import_request(source_identity, import_type, payload_json)
+            .await
+    }
+
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
 
     async fn update_import_status(
@@ -1055,6 +1171,13 @@ pub trait ImportRepository: Send + Sync {
     ) -> AppResult<Vec<ImportRecord>>;
 
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
+
+    async fn is_already_imported_by_submission_identity(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
 }
@@ -2013,6 +2136,20 @@ pub struct NotificationManualInteractionPayload {
     pub link: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationMediaRequestPayload {
+    pub request_id: Option<String>,
+    pub library_id: Option<String>,
+    pub status: Option<String>,
+    pub facet: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
+    pub created_title_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationPayload {
     pub schema_version: u32,
@@ -2037,6 +2174,7 @@ pub struct NotificationPayload {
     pub media_files: Vec<NotificationMediaFilePayload>,
     pub application_update: Option<NotificationApplicationUpdatePayload>,
     pub manual_interaction: Option<NotificationManualInteractionPayload>,
+    pub media_request: Option<NotificationMediaRequestPayload>,
 }
 
 #[async_trait]

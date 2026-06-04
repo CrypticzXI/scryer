@@ -1579,6 +1579,14 @@ const ja: LocaleDictionary = {
   "settings.notificationEvent.postProcessingCompleted": "後処理が完了しました",
   "settings.notificationEvent.subtitleDownloaded": "字幕をダウンロードしました",
   "settings.notificationEvent.subtitleSearchFailed": "字幕検索に失敗しました",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "メディアリクエストが送信されました",
+  "settings.notificationEvent.mediaRequestApproved":
+    "メディアリクエストが承認されました",
+  "settings.notificationEvent.mediaRequestRejected":
+    "メディアリクエストが拒否されました",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "メディアリクエストがキャンセルされました",
   "settings.notificationEvent.healthIssue": "健康問題",
   "settings.notificationEvent.healthRestored": "健康が回復しました",
   "settings.notificationEvent.applicationUpdate":

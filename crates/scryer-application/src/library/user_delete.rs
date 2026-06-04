@@ -3,15 +3,17 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use scryer_domain::{
     MediaFacet, RootFolderEntry, Title, is_image_file, is_subtitle_file, is_video_file,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 
 const DELETE_PREVIEW_SAMPLE_PATH_LIMIT: usize = 5;
 const LARGE_DELETE_MEDIA_THRESHOLD: usize = 50;
 const DELETE_TYPED_CONFIRMATION_VALUE: &str = "DELETE";
 const DELETE_TYPED_CONFIRMATION_PROMPT: &str = "Type DELETE to confirm this large delete.";
+const BULK_DELETE_PREVIEW_CONCURRENCY: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeletePreview {
@@ -26,6 +28,19 @@ pub struct DeletePreview {
     pub typed_confirmation_prompt: Option<String>,
     pub target_label: String,
     pub sample_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteTitlePreviewResult {
+    pub title_id: String,
+    pub preview: Option<DeletePreview>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteTitlesPreview {
+    pub preview: DeletePreview,
+    pub items: Vec<DeleteTitlePreviewResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +62,7 @@ struct TitleDeleteContext {
 
 #[derive(Clone, Debug)]
 struct TrackedTitleFolder {
+    title_id: String,
     title_name: String,
     folder_path: String,
 }
@@ -164,6 +180,149 @@ impl AppUseCase {
         self.require_delete_context_permission(actor, &context)
             .await?;
         let manifest = self.build_delete_manifest(context).await?;
+        Ok(manifest.to_preview())
+    }
+
+    pub async fn preview_delete_titles_files(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<DeleteTitlesPreview> {
+        let mut items = Vec::with_capacity(title_ids.len());
+        let title_infos = self
+            .services
+            .catalog
+            .titles
+            .list_delete_preview_info()
+            .await?;
+        let titles_by_id = title_infos
+            .into_iter()
+            .map(|title| (title.title_id.clone(), title))
+            .collect::<HashMap<_, _>>();
+        let requested_facets = title_ids
+            .iter()
+            .filter_map(|title_id| titles_by_id.get(title_id).map(|title| title.facet.clone()))
+            .collect::<HashSet<_>>();
+        let mut root_folders_by_facet = HashMap::new();
+        for facet in requested_facets {
+            let root_folders = self
+                .root_folders_for_facet(&facet)
+                .await
+                .map_err(|error| error.to_string());
+            root_folders_by_facet.insert(facet, root_folders);
+        }
+        let tracked_title_folders = titles_by_id
+            .values()
+            .cloned()
+            .filter_map(tracked_title_folder_from_preview_info)
+            .collect::<Vec<_>>();
+
+        let titles_by_id = Arc::new(titles_by_id);
+        let root_folders_by_facet = Arc::new(root_folders_by_facet);
+        let tracked_title_folders = Arc::new(tracked_title_folders);
+
+        for chunk in title_ids.chunks(BULK_DELETE_PREVIEW_CONCURRENCY) {
+            let mut tasks = Vec::with_capacity(chunk.len());
+            for title_id in chunk {
+                let app = self.clone();
+                let actor = actor.clone();
+                let title_id = title_id.clone();
+                let titles_by_id = Arc::clone(&titles_by_id);
+                let root_folders_by_facet = Arc::clone(&root_folders_by_facet);
+                let tracked_title_folders = Arc::clone(&tracked_title_folders);
+                tasks.push(tokio::spawn(async move {
+                    let result = app
+                        .preview_delete_title_files_with_shared_context(
+                            &actor,
+                            &title_id,
+                            &titles_by_id,
+                            &root_folders_by_facet,
+                            &tracked_title_folders,
+                        )
+                        .await;
+                    DeleteTitlePreviewResult {
+                        title_id,
+                        preview: result.as_ref().ok().cloned(),
+                        error: result.err().map(|error| error.to_string()),
+                    }
+                }));
+            }
+
+            for task in tasks {
+                let item = task.await.map_err(|error| {
+                    AppError::Repository(format!("delete preview task failed: {error}"))
+                })?;
+                items.push(item);
+            }
+        }
+
+        let preview = aggregate_delete_title_previews(&items);
+        Ok(DeleteTitlesPreview { preview, items })
+    }
+
+    async fn preview_delete_title_files_with_shared_context(
+        &self,
+        actor: &User,
+        title_id: &str,
+        titles_by_id: &HashMap<String, TitleDeletePreviewInfo>,
+        root_folders_by_facet: &HashMap<MediaFacet, Result<Vec<RootFolderEntry>, String>>,
+        tracked_title_folders: &[TrackedTitleFolder],
+    ) -> AppResult<DeletePreview> {
+        let title = titles_by_id
+            .get(title_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+        let root_folders = match root_folders_by_facet.get(&title.facet) {
+            Some(Ok(root_folders)) => root_folders.clone(),
+            Some(Err(error)) => {
+                return Err(AppError::Repository(format!(
+                    "failed to load {} root folders for delete preview: {error}",
+                    title.facet.as_str()
+                )));
+            }
+            None => {
+                return Err(AppError::Repository(format!(
+                    "missing {} root folders for delete preview",
+                    title.facet.as_str()
+                )));
+            }
+        };
+        let other_titles = tracked_title_folders
+            .iter()
+            .filter(|candidate| candidate.title_id.as_str() != title.title_id.as_str())
+            .cloned()
+            .collect();
+        let folder_path =
+            if let Some(folder_path) = normalize_optional_path_string(title.folder_path) {
+                Some(folder_path)
+            } else {
+                self.services
+                    .library
+                    .media_files
+                    .list_media_files_for_title(&title.title_id)
+                    .await
+                    .ok()
+                    .and_then(|media_files| {
+                        infer_title_folder_path_from_media_files(&root_folders, &media_files)
+                    })
+            };
+
+        let manifest = self
+            .build_delete_manifest(UserDeleteContext::Title(TitleDeleteContext {
+                title_id: title.title_id,
+                title_name: title.title_name,
+                facet: title.facet,
+                folder_path,
+                root_folders,
+                other_titles,
+            }))
+            .await?;
         Ok(manifest.to_preview())
     }
 
@@ -498,7 +657,19 @@ impl AppUseCase {
 fn tracked_title_folder_from_title(title: Title) -> Option<TrackedTitleFolder> {
     let folder_path = normalize_optional_path_string(title.folder_path)?;
     Some(TrackedTitleFolder {
+        title_id: title.id,
         title_name: title.name,
+        folder_path,
+    })
+}
+
+fn tracked_title_folder_from_preview_info(
+    title: TitleDeletePreviewInfo,
+) -> Option<TrackedTitleFolder> {
+    let folder_path = normalize_optional_path_string(title.folder_path)?;
+    Some(TrackedTitleFolder {
+        title_id: title.title_id,
+        title_name: title.title_name,
         folder_path,
     })
 }
@@ -914,6 +1085,59 @@ fn finalize_manifest(
         image_count,
         other_count,
         directory_count,
+    }
+}
+
+fn aggregate_delete_title_previews(items: &[DeleteTitlePreviewResult]) -> DeletePreview {
+    let mut total_file_count = 0i32;
+    let mut media_count = 0i32;
+    let mut subtitle_count = 0i32;
+    let mut image_count = 0i32;
+    let mut other_count = 0i32;
+    let mut directory_count = 0i32;
+    let mut requires_typed_confirmation = false;
+    let mut sample_paths = Vec::new();
+    let mut fingerprint_parts = vec!["intent:bulk_title_delete".to_string()];
+
+    for item in items {
+        fingerprint_parts.push(format!("title:{}", item.title_id));
+        let Some(preview) = item.preview.as_ref() else {
+            fingerprint_parts.push("preview:failed".to_string());
+            continue;
+        };
+        fingerprint_parts.push(format!("preview:{}", preview.fingerprint));
+        total_file_count += preview.total_file_count;
+        media_count += preview.media_count;
+        subtitle_count += preview.subtitle_count;
+        image_count += preview.image_count;
+        other_count += preview.other_count;
+        directory_count += preview.directory_count;
+        requires_typed_confirmation |= preview.requires_typed_confirmation;
+        for path in &preview.sample_paths {
+            if sample_paths.len() >= DELETE_PREVIEW_SAMPLE_PATH_LIMIT {
+                break;
+            }
+            sample_paths.push(path.clone());
+        }
+    }
+
+    if media_count as usize > LARGE_DELETE_MEDIA_THRESHOLD {
+        requires_typed_confirmation = true;
+    }
+
+    DeletePreview {
+        fingerprint: sha256_hex(fingerprint_parts.join("\n")),
+        total_file_count,
+        media_count,
+        subtitle_count,
+        image_count,
+        other_count,
+        directory_count,
+        requires_typed_confirmation,
+        typed_confirmation_prompt: requires_typed_confirmation
+            .then(|| DELETE_TYPED_CONFIRMATION_PROMPT.to_string()),
+        target_label: format!("{} selected titles", items.len()),
+        sample_paths,
     }
 }
 

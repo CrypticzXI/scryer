@@ -1626,6 +1626,14 @@ const pt_BR: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Legenda baixada",
   "settings.notificationEvent.subtitleSearchFailed":
     "Falha na pesquisa de legendas",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Solicitação de mídia enviada",
+  "settings.notificationEvent.mediaRequestApproved":
+    "Solicitação de mídia aprovada",
+  "settings.notificationEvent.mediaRequestRejected":
+    "Solicitação de mídia rejeitada",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "Solicitação de mídia cancelada",
   "settings.notificationEvent.healthIssue": "Problema de saúde",
   "settings.notificationEvent.healthRestored": "Saúde restaurada",
   "settings.notificationEvent.applicationUpdate": "Atualização do aplicativo",

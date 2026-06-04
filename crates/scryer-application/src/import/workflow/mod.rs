@@ -1,8 +1,8 @@
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, SubmissionScope, WantedCompleteTransition,
-    WantedItemsQuery,
+    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionIdentity, ImportArtifact, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    SubmissionScope, WantedCompleteTransition, WantedItemsQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     apply_remote_path_mappings_to_completed_download,
@@ -27,7 +27,7 @@ use scryer_domain::{
     ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
     TrackedDownloadState, User, is_video_file,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // This facade keeps the previous module scope while the former junk drawer is

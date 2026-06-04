@@ -1145,6 +1145,10 @@
         "post_processing_completed",
         "subtitle_downloaded",
         "subtitle_search_failed",
+        "media_request_submitted",
+        "media_request_approved",
+        "media_request_rejected",
+        "media_request_canceled",
         "health_issue",
         "health_restored",
         "application_update",
@@ -2848,6 +2852,18 @@
     "PluginDownloadRelease": {
       "type": "object",
       "properties": {
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "release_title": {
           "type": [
             "string",
@@ -3204,6 +3220,18 @@
         "client_item_id": {
           "type": "string"
         },
+        "download_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "info_hash": {
           "type": [
             "string",
@@ -3495,6 +3523,18 @@
       "properties": {
         "client_item_id": {
           "type": "string"
+        },
+        "download_request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "info_hash": {
           "type": [
@@ -3915,6 +3955,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PluginNotificationManualInteraction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginNotificationMediaRequest"
             },
             {
               "type": "null"
@@ -4677,6 +4727,71 @@
           ]
         },
         "link": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PluginNotificationMediaRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "library_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "facet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_quality_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_quality_profile_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_monitor_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approved_quality_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approved_quality_profile_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_title_id": {
           "type": [
             "string",
             "null"

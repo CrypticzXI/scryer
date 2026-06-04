@@ -360,6 +360,38 @@ impl LibraryPermissionMask {
         .collect()
     }
 
+    pub fn with_request_shadowing(self) -> Self {
+        let mut mask = self;
+        if mask.contains(Self::MANAGE_TITLES) {
+            mask.insert(Self::AUTO_APPROVE_REQUESTS);
+            mask.insert(Self::REQUEST);
+        } else if mask.contains(Self::AUTO_APPROVE_REQUESTS) {
+            mask.insert(Self::REQUEST);
+        }
+        mask
+    }
+
+    pub fn normalized_for_storage(self) -> Self {
+        if self.contains(Self::MANAGE_TITLES) {
+            Self(self.0 & !Self::AUTO_APPROVE_REQUESTS.0 & !Self::REQUEST.0)
+        } else if self.contains(Self::AUTO_APPROVE_REQUESTS) {
+            Self(self.0 & !Self::REQUEST.0)
+        } else {
+            self
+        }
+    }
+
+    pub fn is_strictly_requestable(self) -> bool {
+        !self.contains(Self::MANAGE_TITLES) && self.with_request_shadowing().contains(Self::REQUEST)
+    }
+
+    pub fn can_auto_approve_requests(self) -> bool {
+        !self.contains(Self::MANAGE_TITLES)
+            && self
+                .with_request_shadowing()
+                .contains(Self::AUTO_APPROVE_REQUESTS)
+    }
+
     pub fn contains(self, required: Self) -> bool {
         (self.0 & required.0) == required.0
     }
@@ -442,17 +474,44 @@ impl UserAuthorization {
     }
 
     pub fn has_library_permission(&self, library_id: &str, permission: LibraryPermission) -> bool {
-        self.library_permissions(library_id)
-            .contains(LibraryPermissionMask::from_permission(permission))
+        match permission {
+            LibraryPermission::Request => self
+                .library_permissions(library_id)
+                .is_strictly_requestable(),
+            LibraryPermission::AutoApproveRequests => self
+                .library_permissions(library_id)
+                .can_auto_approve_requests(),
+            _ => self
+                .library_permissions(library_id)
+                .contains(LibraryPermissionMask::from_permission(permission)),
+        }
     }
 
     pub fn has_any_library_permission(&self, permission: LibraryPermission) -> bool {
-        let required = LibraryPermissionMask::from_permission(permission);
-        self.default_library.contains(required)
-            || self
-                .libraries
-                .values()
-                .any(|permissions| permissions.contains(required))
+        match permission {
+            LibraryPermission::Request => {
+                self.default_library.is_strictly_requestable()
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.is_strictly_requestable())
+            }
+            LibraryPermission::AutoApproveRequests => {
+                self.default_library.can_auto_approve_requests()
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.can_auto_approve_requests())
+            }
+            _ => {
+                let required = LibraryPermissionMask::from_permission(permission);
+                self.default_library.contains(required)
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.contains(required))
+            }
+        }
     }
 }
 
@@ -1002,6 +1061,10 @@ pub struct DownloadQueueItem {
     pub attention_required: bool,
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
+    #[serde(default)]
+    pub download_request_id: Option<String>,
+    #[serde(default)]
+    pub download_fingerprint: Option<String>,
     pub import_status: Option<ImportStatus>,
     pub import_error_code: Option<ImportErrorCode>,
     pub import_error_message: Option<String>,
@@ -1112,6 +1175,10 @@ pub struct CompletedDownload {
     pub client_type: String,
     pub client_id: String,
     pub download_client_item_id: String,
+    #[serde(default)]
+    pub download_request_id: Option<String>,
+    #[serde(default)]
+    pub download_fingerprint: Option<String>,
     pub name: String,
     pub dest_dir: String,
     pub category: Option<String>,
@@ -3485,6 +3552,10 @@ pub enum NotificationEventType {
     PostProcessingCompleted,
     SubtitleDownloaded,
     SubtitleSearchFailed,
+    MediaRequestSubmitted,
+    MediaRequestApproved,
+    MediaRequestRejected,
+    MediaRequestCanceled,
     HealthIssue,
     HealthRestored,
     ApplicationUpdate,
@@ -3508,6 +3579,10 @@ impl NotificationEventType {
             Self::PostProcessingCompleted => "post_processing_completed",
             Self::SubtitleDownloaded => "subtitle_downloaded",
             Self::SubtitleSearchFailed => "subtitle_search_failed",
+            Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestApproved => "media_request_approved",
+            Self::MediaRequestRejected => "media_request_rejected",
+            Self::MediaRequestCanceled => "media_request_canceled",
             Self::HealthIssue => "health_issue",
             Self::HealthRestored => "health_restored",
             Self::ApplicationUpdate => "application_update",
@@ -3531,6 +3606,10 @@ impl NotificationEventType {
             Self::PostProcessingCompleted,
             Self::SubtitleDownloaded,
             Self::SubtitleSearchFailed,
+            Self::MediaRequestSubmitted,
+            Self::MediaRequestApproved,
+            Self::MediaRequestRejected,
+            Self::MediaRequestCanceled,
             Self::HealthIssue,
             Self::HealthRestored,
             Self::ApplicationUpdate,
@@ -3554,6 +3633,10 @@ impl NotificationEventType {
             "post_processing_completed" => Some(Self::PostProcessingCompleted),
             "subtitle_downloaded" => Some(Self::SubtitleDownloaded),
             "subtitle_search_failed" => Some(Self::SubtitleSearchFailed),
+            "media_request_submitted" => Some(Self::MediaRequestSubmitted),
+            "media_request_approved" => Some(Self::MediaRequestApproved),
+            "media_request_rejected" => Some(Self::MediaRequestRejected),
+            "media_request_canceled" => Some(Self::MediaRequestCanceled),
             "health_issue" => Some(Self::HealthIssue),
             "health_restored" => Some(Self::HealthRestored),
             "application_update" => Some(Self::ApplicationUpdate),

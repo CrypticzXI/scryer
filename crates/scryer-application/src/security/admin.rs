@@ -346,6 +346,7 @@ impl AppUseCase {
             .into_iter()
             .map(|mut grant| {
                 grant.user_id = user.id.clone();
+                grant.permissions = grant.permissions.normalized_for_storage();
                 grant
             })
             .collect();
@@ -562,6 +563,13 @@ impl AppUseCase {
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
+        let grants = grants
+            .into_iter()
+            .map(|mut grant| {
+                grant.permissions = grant.permissions.normalized_for_storage();
+                grant
+            })
+            .collect();
         self.services
             .catalog
             .libraries

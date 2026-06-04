@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
     ExternalImportMonitorSnapshotEntryKind, ImportArtifact, ImportArtifactRepository,
     ImportRepository, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, PendingReleaseStatus,
     SubmissionScope, SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo,
@@ -126,6 +126,10 @@ pub(crate) async fn commit_successful_grab_tx(
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
     record_download_submission_tx(tx, &commit.download_submission).await?;
+    if let Some(submission_identity) = commit.download_submission_identity.as_ref() {
+        let identity = DownloadSourceIdentity::from_submission(&commit.download_submission);
+        record_download_submission_identity_tx(tx, &identity, submission_identity).await?;
+    }
     let mut wanted_item_ids = commit.covered_wanted_item_ids.clone();
     if !wanted_item_ids
         .iter()
@@ -249,6 +253,58 @@ pub(crate) async fn record_download_submission_tx(
     .await
 }
 
+pub(crate) async fn record_download_submission_identity_tx(
+    tx: &mut SqlTx<'_>,
+    identity: &DownloadSourceIdentity,
+    submission_identity: &DownloadSubmissionIdentity,
+) -> AppResult<()> {
+    let download_client_id = normalize_download_client_id(identity.client_id.as_deref());
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "UPDATE download_submissions
+         SET tracked_state = CASE
+                 WHEN COALESCE(download_request_id, '') != COALESCE({}, '')
+                   OR COALESCE(download_fingerprint, '') != COALESCE({}, '')
+                 THEN NULL
+                 ELSE tracked_state
+             END,
+             tracked_state_at = CASE
+                 WHEN COALESCE(download_request_id, '') != COALESCE({}, '')
+                   OR COALESCE(download_fingerprint, '') != COALESCE({}, '')
+                 THEN NULL
+                 ELSE tracked_state_at
+             END,
+             download_request_id = {},
+             download_fingerprint = {}
+         WHERE download_client_id = {}
+           AND download_client_type = {}
+           AND download_client_item_id = {}",
+        &[
+            SqlArg::OptText(submission_identity.download_request_id.clone()),
+            SqlArg::OptText(submission_identity.download_fingerprint.clone()),
+            SqlArg::OptText(submission_identity.download_request_id.clone()),
+            SqlArg::OptText(submission_identity.download_fingerprint.clone()),
+            SqlArg::OptText(submission_identity.download_request_id.clone()),
+            SqlArg::OptText(submission_identity.download_fingerprint.clone()),
+            SqlArg::Text(download_client_id),
+            SqlArg::Text(identity.client_type.clone()),
+            SqlArg::Text(identity.item_id.clone()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_download_submission_with_identity_tx(
+    tx: &mut SqlTx<'_>,
+    submission: &DownloadSubmission,
+    submission_identity: &DownloadSubmissionIdentity,
+) -> AppResult<()> {
+    record_download_submission_tx(tx, submission).await?;
+    let identity = DownloadSourceIdentity::from_submission(submission);
+    record_download_submission_identity_tx(tx, &identity, submission_identity).await
+}
+
 pub(crate) async fn replace_download_submission_episode_links_tx(
     tx: &mut SqlTx<'_>,
     download_client_id: &str,
@@ -294,6 +350,17 @@ pub(crate) async fn queue_import_request(
     import_type: String,
     payload_json: String,
 ) -> AppResult<String> {
+    queue_import_request_with_identity(datastore, source_identity, import_type, payload_json, None)
+        .await
+}
+
+pub(crate) async fn queue_import_request_with_identity(
+    datastore: &StoreDatastore,
+    source_identity: DownloadSourceIdentity,
+    import_type: String,
+    payload_json: String,
+    submission_identity: Option<DownloadSubmissionIdentity>,
+) -> AppResult<String> {
     let normalized_client_id = source_identity
         .client_id
         .as_deref()
@@ -306,6 +373,20 @@ pub(crate) async fn queue_import_request(
     let payload_arg = json_arg_for_datastore(datastore, Some(&payload_json))?;
     let rename_arg = json_arg_for_datastore(datastore, rename_plan_json.as_deref())?;
     let result_arg = json_arg_for_datastore(datastore, None::<&str>)?;
+    let download_request_id = submission_identity
+        .as_ref()
+        .and_then(|identity| identity.download_request_id.clone());
+    let download_fingerprint = submission_identity
+        .as_ref()
+        .and_then(|identity| identity.download_fingerprint.clone());
+    let has_durable_identity = download_request_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || download_fingerprint
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
     let id = Id::new().0;
     let now = Utc::now();
 
@@ -317,15 +398,32 @@ pub(crate) async fn queue_import_request(
         let payload_arg = payload_arg.clone();
         let rename_arg = rename_arg.clone();
         let result_arg = result_arg.clone();
+        let download_request_id = download_request_id.clone();
+        let download_fingerprint = download_fingerprint.clone();
+        let has_durable_identity = has_durable_identity;
         let id = id.clone();
         Box::pin(async move {
             let source_system = source_identity.client_type.clone();
             let source_ref = source_identity.item_id.clone();
             let import_type_key = import_type.clone();
-            let upsert_sql = import_request_upsert_sql(tx);
+            if has_durable_identity
+                && let Some(existing_id) = find_active_import_by_submission_identity_tx(
+                    tx,
+                    download_request_id.as_deref(),
+                    download_fingerprint.as_deref(),
+                )
+                .await?
+            {
+                return Ok(existing_id);
+            }
+            let import_sql = if has_durable_identity {
+                import_request_insert_sql()
+            } else {
+                import_request_upsert_sql(tx)
+            };
             SqlRuntime::execute(
                 SqlExec::Tx(tx),
-                &upsert_sql,
+                &import_sql,
                 &[
                     SqlArg::Text(id.clone()),
                     SqlArg::OptText(normalized_client_id),
@@ -336,6 +434,8 @@ pub(crate) async fn queue_import_request(
                     payload_arg,
                     rename_arg,
                     result_arg,
+                    SqlArg::OptText(download_request_id),
+                    SqlArg::OptText(download_fingerprint),
                     SqlArg::OptTimestamp(None),
                     SqlArg::OptTimestamp(None),
                     SqlArg::Timestamp(now),
@@ -343,6 +443,10 @@ pub(crate) async fn queue_import_request(
                 ],
             )
             .await?;
+
+            if has_durable_identity {
+                return Ok(id);
+            }
 
             let row = SqlRuntime::fetch_optional(
                 SqlExec::Tx(tx),
@@ -367,27 +471,76 @@ pub(crate) async fn queue_import_request(
     .await
 }
 
+async fn find_active_import_by_submission_identity_tx(
+    tx: &mut SqlTx<'_>,
+    download_request_id: Option<&str>,
+    download_fingerprint: Option<&str>,
+) -> AppResult<Option<String>> {
+    let mut clauses = Vec::new();
+    let mut args = Vec::new();
+    if let Some(request_id) = download_request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        clauses.push("download_request_id = {}");
+        args.push(SqlArg::Text(request_id.to_string()));
+    }
+    if let Some(fingerprint) = download_fingerprint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        clauses.push("download_fingerprint = {}");
+        args.push(SqlArg::Text(fingerprint.to_string()));
+    }
+    if clauses.is_empty() {
+        return Ok(None);
+    }
+
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        &format!(
+            "SELECT id
+             FROM imports
+             WHERE status IN ('pending', 'running', 'processing')
+               AND ({})
+             ORDER BY updated_at DESC, created_at DESC, id DESC
+             LIMIT 1",
+            clauses.join(" OR ")
+        ),
+        &args,
+    )
+    .await?;
+    row.map(|row| row.text("id")).transpose()
+}
+
+pub(crate) fn import_request_insert_sql() -> String {
+    "INSERT INTO imports
+     (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, download_request_id, download_fingerprint, started_at, finished_at, created_at, updated_at)
+     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})"
+        .to_string()
+}
+
 pub(crate) fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
     let conflict_clause = match tx {
         SqlTx::Sqlite(_) => "ON CONFLICT DO UPDATE",
         SqlTx::Postgres(_) => {
-            "ON CONFLICT ((COALESCE(source_client_id, '')), source_system, source_ref, import_type) DO UPDATE"
+            "ON CONFLICT ((COALESCE(source_client_id, '')), source_system, source_ref, import_type) WHERE download_request_id IS NULL AND download_fingerprint IS NULL DO UPDATE"
         }
     };
 
     format!(
-        "INSERT INTO imports
-         (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, started_at, finished_at, created_at, updated_at)
-         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
-         {conflict_clause} SET
+        "{} {conflict_clause} SET
             source_client_id = excluded.source_client_id,
             status = excluded.status,
             payload_json = excluded.payload_json,
             rename_plan_json = excluded.rename_plan_json,
             result_json = NULL,
+            download_request_id = excluded.download_request_id,
+            download_fingerprint = excluded.download_fingerprint,
             started_at = NULL,
             finished_at = NULL,
-            updated_at = excluded.updated_at"
+            updated_at = excluded.updated_at",
+        import_request_insert_sql()
     )
 }
 

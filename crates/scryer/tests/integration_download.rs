@@ -326,6 +326,8 @@ fn request_with_staged_nzb(
 ) -> DownloadClientAddRequest {
     DownloadClientAddRequest {
         title,
+        download_request_id: None,
+        download_fingerprint: None,
         source_hint: None,
         staged_nzb: Some(staged_nzb),
         source_kind: Some(DownloadSourceKind::NzbFile),

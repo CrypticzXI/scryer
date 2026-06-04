@@ -1600,6 +1600,12 @@ const de: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Untertitel heruntergeladen",
   "settings.notificationEvent.subtitleSearchFailed":
     "Untertitelsuche fehlgeschlagen",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Medienanfrage eingereicht",
+  "settings.notificationEvent.mediaRequestApproved": "Medienanfrage genehmigt",
+  "settings.notificationEvent.mediaRequestRejected": "Medienanfrage abgelehnt",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "Medienanfrage abgebrochen",
   "settings.notificationEvent.healthIssue": "Gesundheitsproblem",
   "settings.notificationEvent.healthRestored": "Gesundheit wiederhergestellt",
   "settings.notificationEvent.applicationUpdate": "Anwendungsaktualisierung",

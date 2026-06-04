@@ -121,6 +121,7 @@ pub struct ConnectionAuthEpoch(pub u64);
 #[derive(Clone, Copy, Default)]
 pub struct MfaVerification {
     pub verified_until: Option<i64>,
+    pub step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
 }
 

@@ -528,6 +528,20 @@ export const deleteTitlePreviewQuery = `query DeleteTitlePreview($input: DeleteT
   }
 }`;
 
+export const deleteTitlesPreviewQuery = `query DeleteTitlesPreview($input: DeleteTitlesPreviewInput!) {
+  deleteTitlesPreview(input: $input) {
+    preview {${DELETE_PREVIEW_FIELDS}
+    }
+    items {
+      titleId
+      error
+      preview {${DELETE_PREVIEW_FIELDS}
+      }
+    }
+    failedCount
+  }
+}`;
+
 export function buildDeleteTitlePreviewBatchQuery(count: number): string {
   const variables = Array.from(
     { length: count },

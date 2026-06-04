@@ -1643,6 +1643,14 @@ const es: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Subtítulo descargado",
   "settings.notificationEvent.subtitleSearchFailed":
     "Error en la búsqueda de subtítulos",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Solicitud de medios enviada",
+  "settings.notificationEvent.mediaRequestApproved":
+    "Solicitud de medios aprobada",
+  "settings.notificationEvent.mediaRequestRejected":
+    "Solicitud de medios rechazada",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "Solicitud de medios cancelada",
   "settings.notificationEvent.healthIssue": "Problema de salud",
   "settings.notificationEvent.healthRestored": "Salud restaurada",
   "settings.notificationEvent.applicationUpdate":

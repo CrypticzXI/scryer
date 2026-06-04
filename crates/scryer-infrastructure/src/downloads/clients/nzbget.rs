@@ -665,16 +665,16 @@ impl NzbgetDownloadClient {
                     .unwrap_or("Unnamed download")
                     .to_string();
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(group);
+                let scryer_parameters = extract_nzbget_parameters(group);
                 let queue_progress = progress_percent_from_sizes(size_mb, remaining_mb);
                 let remaining_seconds = extract_remaining_seconds_from_entry(group);
 
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -702,13 +702,15 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: nzb_id.to_string(),
+                    download_request_id: scryer_parameters.download_request_id,
+                    download_fingerprint: scryer_parameters.download_fingerprint,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -783,7 +785,7 @@ impl NzbgetDownloadClient {
                     .unwrap_or("Unnamed download")
                     .to_string();
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(entry);
+                let scryer_parameters = extract_nzbget_parameters(entry);
                 let updated_at = extract_i64_value(
                     entry
                         .get("PostTime")
@@ -801,10 +803,18 @@ impl NzbgetDownloadClient {
                         existing.last_updated_at = updated_at;
                     }
                     if existing.title_id.is_none() {
-                        existing.title_id = param_title_id;
+                        existing.title_id = scryer_parameters.title_id.clone();
                     }
                     if existing.facet.is_none() {
-                        existing.facet = param_facet;
+                        existing.facet = scryer_parameters.facet.clone();
+                    }
+                    if existing.download_request_id.is_none() {
+                        existing.download_request_id =
+                            scryer_parameters.download_request_id.clone();
+                    }
+                    if existing.download_fingerprint.is_none() {
+                        existing.download_fingerprint =
+                            scryer_parameters.download_fingerprint.clone();
                     }
                     if existing.size_bytes.is_none() || existing.size_bytes == Some(0) {
                         existing.size_bytes = size_to_bytes(size_mb);
@@ -825,16 +835,17 @@ impl NzbgetDownloadClient {
                     {
                         existing.attention_reason = None;
                     }
-                    existing.is_scryer_origin = existing.is_scryer_origin || is_scryer;
+                    existing.is_scryer_origin =
+                        existing.is_scryer_origin || scryer_parameters.is_scryer;
                     continue;
                 }
 
                 items.push(DownloadQueueItem {
                     id: id.clone(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -851,13 +862,15 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: id.clone(),
+                    download_request_id: scryer_parameters.download_request_id,
+                    download_fingerprint: scryer_parameters.download_fingerprint,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -938,14 +951,14 @@ impl NzbgetDownloadClient {
                     extract_f64_value(entry.get("FileSizeMB").or_else(|| entry.get("fileSizeMB")))
                         .unwrap_or(0.0);
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(entry);
+                let scryer_parameters = extract_nzbget_parameters(entry);
 
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -962,13 +975,15 @@ impl NzbgetDownloadClient {
                     attention_required: matches!(state, DownloadQueueState::Failed),
                     attention_reason,
                     download_client_item_id: nzb_id.to_string(),
+                    download_request_id: scryer_parameters.download_request_id,
+                    download_fingerprint: scryer_parameters.download_fingerprint,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -1141,6 +1156,12 @@ impl DownloadClient for NzbgetDownloadClient {
             json!({"*scryer_title_id": title.id.clone()}),
             json!({"*scryer_facet": facet_str}),
         ];
+        if let Some(download_request_id) = request.download_request_id.as_deref() {
+            parameters.push(json!({"*scryer_request_id": download_request_id}));
+        }
+        if let Some(download_fingerprint) = request.download_fingerprint.as_deref() {
+            parameters.push(json!({"*scryer_download_fingerprint": download_fingerprint}));
+        }
 
         if let Some(imdb_id) = title
             .external_ids
@@ -1395,11 +1416,21 @@ impl DownloadClient for NzbgetDownloadClient {
 
                 let completed_at =
                     history_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
+                let observed_identity = scryer_application::observed_download_identity(
+                    scryer_application::ObservedDownloadIdentityInput {
+                        download_request_id: None,
+                        download_fingerprint: None,
+                        parameters: &parameters,
+                        info_hash_hint: None,
+                    },
+                );
 
                 Some(scryer_domain::CompletedDownload {
                     client_type: "nzbget".to_string(),
                     client_id: String::new(),
                     download_client_item_id: nzb_id.to_string(),
+                    download_request_id: observed_identity.download_request_id,
+                    download_fingerprint: observed_identity.download_fingerprint,
                     name,
                     dest_dir,
                     category,
@@ -1412,20 +1443,35 @@ impl DownloadClient for NzbgetDownloadClient {
     }
 }
 
-fn extract_nzbget_parameters(
-    entry: &serde_json::Map<String, Value>,
-) -> (Option<String>, Option<String>, bool) {
+struct ExtractedNzbgetParameters {
+    title_id: Option<String>,
+    facet: Option<String>,
+    is_scryer: bool,
+    download_request_id: Option<String>,
+    download_fingerprint: Option<String>,
+}
+
+fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> ExtractedNzbgetParameters {
     let params = entry
         .get("Parameters")
         .or_else(|| entry.get("parameters"))
         .and_then(Value::as_array);
     let params = match params {
         Some(params) => params,
-        None => return (None, None, false),
+        None => {
+            return ExtractedNzbgetParameters {
+                title_id: None,
+                facet: None,
+                is_scryer: false,
+                download_request_id: None,
+                download_fingerprint: None,
+            };
+        }
     };
     let mut title_id: Option<String> = None;
     let mut facet: Option<String> = None;
     let mut is_scryer = false;
+    let mut parameters = Vec::new();
     for p in params {
         let obj = match p.as_object() {
             Some(obj) => obj,
@@ -1441,6 +1487,9 @@ fn extract_nzbget_parameters(
             .or_else(|| obj.get("value"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        if !key.is_empty() {
+            parameters.push((key.to_string(), value.to_string()));
+        }
         match key {
             "*scryer_title_id" => {
                 is_scryer = true;
@@ -1454,7 +1503,21 @@ fn extract_nzbget_parameters(
             _ => {}
         }
     }
-    (title_id, facet, is_scryer)
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_request_id: None,
+            download_fingerprint: None,
+            parameters: &parameters,
+            info_hash_hint: None,
+        },
+    );
+    ExtractedNzbgetParameters {
+        title_id,
+        facet,
+        is_scryer,
+        download_request_id: observed_identity.download_request_id,
+        download_fingerprint: observed_identity.download_fingerprint,
+    }
 }
 
 fn extract_result_array(value: Value, preferred_key: &str) -> Option<Vec<Value>> {
@@ -2051,6 +2114,8 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "42".to_string(),
+            download_request_id: None,
+            download_fingerprint: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -2082,6 +2147,31 @@ mod tests {
             ),
             Some(42)
         );
+    }
+
+    #[test]
+    fn extract_nzbget_parameters_maps_durable_identity() {
+        let entry = json!({
+            "Parameters": [
+                { "Name": "*scryer_title_id", "Value": "title-1" },
+                { "Name": "*scryer_facet", "Value": "anime" },
+                { "Name": "*scryer_request_id", "Value": " scryer-request:nzbget-1 " },
+                { "Name": "*scryer_download_fingerprint", "Value": " sha256:nzbget-release " }
+            ]
+        });
+        let params = extract_nzbget_parameters(entry.as_object().expect("object"));
+
+        assert_eq!(params.title_id.as_deref(), Some("title-1"));
+        assert_eq!(params.facet.as_deref(), Some("anime"));
+        assert_eq!(
+            params.download_request_id.as_deref(),
+            Some("scryer-request:nzbget-1")
+        );
+        assert_eq!(
+            params.download_fingerprint.as_deref(),
+            Some("sha256:nzbget-release")
+        );
+        assert!(params.is_scryer);
     }
 
     #[test]

@@ -111,10 +111,20 @@ fn map_queue_item(
             .as_ref()
             .and_then(|torrent| torrent.info_hash_v1.clone())
     });
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_request_id: item.download_request_id.as_deref(),
+            download_fingerprint: item.download_fingerprint.as_deref(),
+            parameters: &[],
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     DownloadQueueItem {
         id: format!(
             "{client_type}:{}",
-            info_hash.unwrap_or_else(|| item.client_item_id.clone())
+            info_hash
+                .clone()
+                .unwrap_or_else(|| item.client_item_id.clone())
         ),
         title_id: None,
         episode_id: None,
@@ -132,6 +142,8 @@ fn map_queue_item(
         attention_required: attention,
         attention_reason,
         download_client_item_id: item.client_item_id,
+        download_request_id: observed_identity.download_request_id,
+        download_fingerprint: observed_identity.download_fingerprint,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -152,10 +164,20 @@ fn map_completed_download(
     client_type: &str,
 ) -> CompletedDownload {
     let info_hash = item.info_hash.clone();
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_request_id: item.download_request_id.as_deref(),
+            download_fingerprint: item.download_fingerprint.as_deref(),
+            parameters: &item.parameters,
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     CompletedDownload {
         client_type: client_type.to_string(),
         client_id: client_id.to_string(),
         download_client_item_id: info_hash.unwrap_or(item.client_item_id),
+        download_request_id: observed_identity.download_request_id,
+        download_fingerprint: observed_identity.download_fingerprint,
         name: item.name,
         dest_dir: item.dest_dir,
         category: item.category,
@@ -172,6 +194,14 @@ fn map_history_item_from_completed(
     client_type: &str,
 ) -> DownloadQueueItem {
     let info_hash = item.info_hash.clone();
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_request_id: item.download_request_id.as_deref(),
+            download_fingerprint: item.download_fingerprint.as_deref(),
+            parameters: &item.parameters,
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     let download_client_item_id = info_hash.unwrap_or_else(|| item.client_item_id.clone());
     DownloadQueueItem {
         id: format!("{client_type}:{download_client_item_id}"),
@@ -191,6 +221,8 @@ fn map_history_item_from_completed(
         attention_required: false,
         attention_reason: None,
         download_client_item_id,
+        download_request_id: observed_identity.download_request_id,
+        download_fingerprint: observed_identity.download_fingerprint,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -321,6 +353,8 @@ fn build_plugin_add_request(
             source_password: request.source_password.clone(),
         },
         release: PluginDownloadRelease {
+            request_id: request.download_request_id.clone(),
+            fingerprint: request.download_fingerprint.clone(),
             release_title: request
                 .release_title
                 .clone()
@@ -828,6 +862,8 @@ mod tests {
                 digital_release_date: None,
                 folder_path: None,
             },
+            download_request_id: None,
+            download_fingerprint: None,
             source_hint: Some("https://tracker.example/release.torrent".to_string()),
             staged_nzb: None,
             source_kind: Some(DownloadSourceKind::TorrentFile),
@@ -941,6 +977,8 @@ mod tests {
         let queue_item = map_history_item_from_completed(
             PluginCompletedDownload {
                 client_item_id: "native-1".to_string(),
+                download_request_id: None,
+                download_fingerprint: None,
                 info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
                 name: "Example Release".to_string(),
                 dest_dir: "/downloads/series".to_string(),
@@ -972,6 +1010,8 @@ mod tests {
         let queue_item = map_queue_item(
             PluginDownloadItem {
                 client_item_id: "native-id-1".to_string(),
+                download_request_id: None,
+                download_fingerprint: None,
                 info_hash: None,
                 title: "Decypharr Queue Item".to_string(),
                 state: DownloadItemState::Seeding,
@@ -1009,10 +1049,51 @@ mod tests {
     }
 
     #[test]
+    fn queue_item_prefers_explicit_plugin_download_identity() {
+        let queue_item = map_queue_item(
+            PluginDownloadItem {
+                client_item_id: "native-id-3".to_string(),
+                download_request_id: Some("scryer-request:plugin-1".to_string()),
+                download_fingerprint: Some("sha256:plugin-release".to_string()),
+                info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                title: "Plugin Queue Item".to_string(),
+                state: DownloadItemState::Downloading,
+                message: None,
+                category: Some("series".to_string()),
+                remote_output_path: Some("/downloads/series".to_string()),
+                torrent: None,
+                total_size_bytes: Some(2048),
+                remaining_size_bytes: Some(1024),
+                eta_seconds: Some(60),
+                progress_percent: Some(50),
+                can_move_files: Some(true),
+                can_remove: Some(true),
+                removed: Some(false),
+                raw_state: None,
+                completed_at: None,
+            },
+            "client-1",
+            "Plugin Client",
+            "plugin-client",
+        );
+
+        assert_eq!(
+            queue_item.download_request_id.as_deref(),
+            Some("scryer-request:plugin-1")
+        );
+        assert_eq!(
+            queue_item.download_fingerprint.as_deref(),
+            Some("sha256:plugin-release")
+        );
+    }
+
+    #[test]
     fn completed_download_prefers_info_hash_identity_for_qbit_facades() {
         let completed = map_completed_download(
             PluginCompletedDownload {
                 client_item_id: "native-id-2".to_string(),
+                download_request_id: None,
+                download_fingerprint: None,
                 info_hash: Some("fedcba9876543210fedcba9876543210fedcba98".to_string()),
                 name: "Decypharr Completed".to_string(),
                 dest_dir: "/downloads/movies".to_string(),

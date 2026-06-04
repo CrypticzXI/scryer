@@ -177,6 +177,12 @@ pub(crate) fn classify_graphql(batch: &BatchRequest) -> GraphqlRateLimitClass {
     class
 }
 
+pub(crate) fn should_precheck_graphql_login(batch: &BatchRequest) -> bool {
+    batch
+        .iter()
+        .any(|request| query_contains_webauthn_authenticate_start(&request.query))
+}
+
 pub(crate) fn rate_limited_graphql_response(decision: &RateLimitDecision) -> BatchResponse {
     let mut extensions = ErrorExtensionValues::default();
     extensions.set("code", "RATE_LIMITED");
@@ -215,6 +221,12 @@ fn classify_query(query: &str) -> GraphqlRateLimitClass {
         return GraphqlRateLimitClass::Mutation;
     }
     GraphqlRateLimitClass::Api
+}
+
+fn query_contains_webauthn_authenticate_start(query: &str) -> bool {
+    let compact = query.split_whitespace().collect::<String>();
+    let lower = compact.to_ascii_lowercase();
+    lower.contains("mutation") && lower.contains("webauthnauthenticatestart")
 }
 
 fn contains_expensive_field(query: &str) -> bool {
@@ -365,6 +377,7 @@ mod tests {
             "mutation PasskeyStart { webauthnAuthenticateStart(username: \"a\") { challengeId } }",
         ));
         assert_eq!(classify_graphql(&start_batch), GraphqlRateLimitClass::Login);
+        assert!(should_precheck_graphql_login(&start_batch));
 
         let complete_batch = BatchRequest::Single(async_graphql::Request::new(
             "mutation PasskeyComplete { webauthnAuthenticateComplete(input: { challengeId: \"c\", responseJson: \"{}\" }) { token } }",
@@ -373,6 +386,7 @@ mod tests {
             classify_graphql(&complete_batch),
             GraphqlRateLimitClass::Login
         );
+        assert!(!should_precheck_graphql_login(&complete_batch));
     }
 
     #[test]

@@ -44,17 +44,24 @@ fn upsert_parameter(parameters: &mut Vec<(String, String)>, key: &str, value: St
 async fn persist_completed_download_tracked_state(
     app: &AppUseCase,
     completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
     state: TrackedDownloadState,
 ) {
     if !state.is_terminal() {
         return;
     }
+    let state_identity = match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched) => {
+            submission_source_identity(&matched.submission)
+        }
+        _ => completed_download_identity(completed),
+    };
 
     if let Err(error) = app
         .services
         .workflow
         .download_submissions
-        .update_tracked_state(&completed_download_identity(completed), state.as_str())
+        .update_tracked_state(&state_identity, state.as_str())
         .await
     {
         tracing::warn!(
@@ -62,6 +69,7 @@ async fn persist_completed_download_tracked_state(
             client_id = completed.client_id.as_str(),
             client_type = completed.client_type.as_str(),
             download_client_item_id = completed.download_client_item_id.as_str(),
+            tracked_state_client_item_id = state_identity.item_id.as_str(),
             state = state.as_str(),
             "failed to persist completed download terminal state"
         );
@@ -171,19 +179,6 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
         state,
     )
     .await
-}
-async fn completed_download_tracked_state(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-) -> Option<TrackedDownloadState> {
-    app.services
-        .workflow
-        .download_submissions
-        .get_tracked_state(&completed_download_identity(completed))
-        .await
-        .ok()
-        .flatten()
-        .and_then(|value| TrackedDownloadState::from_str_opt(&value))
 }
 fn media_file_score(file: &crate::TitleMediaFile) -> i32 {
     file.acquisition_score.unwrap_or(0)

@@ -14,9 +14,10 @@ use crate::contracts::{
 use crate::domain_events::{deleted_media_update, new_title_domain_event, title_context_snapshot};
 use crate::settings::settings::root_folder_entries_from_library_roots;
 use scryer_domain::{
-    DomainEventPayload, InterstitialMovieMetadata, MediaFileDeletedEventData,
-    MediaFileDeletedReason, MetadataHydrationState, ReleaseGrabbedEventData, TitleAddedEventData,
-    TitleDeletedEventData, TitleRematchedEventData,
+    DomainEventPayload, InterstitialMovieMetadata, JobRunCompletedEventData, JobRunFailedEventData,
+    JobRunStartedEventData, MediaFileDeletedEventData, MediaFileDeletedReason,
+    MetadataHydrationState, ReleaseGrabbedEventData, TitleAddedEventData, TitleDeletedEventData,
+    TitleRematchedEventData,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;

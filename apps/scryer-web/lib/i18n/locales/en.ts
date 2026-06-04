@@ -2357,6 +2357,11 @@ const en: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Subtitle Downloaded",
   "settings.notificationEvent.subtitleSearchFailed":
     "Subtitle Search Failed",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Media Request Submitted",
+  "settings.notificationEvent.mediaRequestApproved": "Media Request Approved",
+  "settings.notificationEvent.mediaRequestRejected": "Media Request Rejected",
+  "settings.notificationEvent.mediaRequestCanceled": "Media Request Canceled",
   "settings.notificationEvent.healthIssue": "Health Issue",
   "settings.notificationEvent.healthRestored": "Health Restored",
   "settings.notificationEvent.applicationUpdate": "Application Update",

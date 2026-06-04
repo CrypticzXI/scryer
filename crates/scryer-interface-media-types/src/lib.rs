@@ -1249,6 +1249,7 @@ pub enum JobKeyValue {
     PendingReleaseProcessing,
     StagedNzbPrune,
     TitleImageCacheRefresh,
+    TitleDeletion,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -1802,6 +1803,26 @@ pub struct DeletePreviewPayload {
     pub typed_confirmation_prompt: Option<String>,
     pub target_label: String,
     pub sample_paths: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteTitlePreviewResultPayload {
+    pub title_id: String,
+    pub preview: Option<DeletePreviewPayload>,
+    pub error: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteTitlesPreviewPayload {
+    pub preview: DeletePreviewPayload,
+    pub items: Vec<DeleteTitlePreviewResultPayload>,
+    pub failed_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteTitlesPayload {
+    pub job_run: JobRunPayload,
+    pub accepted_title_ids: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2813,6 +2834,19 @@ pub struct DeleteTitleInput {
 }
 
 #[derive(InputObject)]
+pub struct DeleteTitlesInput {
+    pub items: Vec<DeleteTitlesItemInput>,
+    pub delete_files_on_disk: Option<bool>,
+    pub typed_confirmation: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct DeleteTitlesItemInput {
+    pub title_id: String,
+    pub preview_fingerprint: Option<String>,
+}
+
+#[derive(InputObject)]
 pub struct ClearTitleReleaseBlocklistEntryInput {
     pub id: String,
 }
@@ -2820,6 +2854,11 @@ pub struct ClearTitleReleaseBlocklistEntryInput {
 #[derive(InputObject)]
 pub struct DeleteTitlePreviewInput {
     pub title_id: String,
+}
+
+#[derive(InputObject)]
+pub struct DeleteTitlesPreviewInput {
+    pub title_ids: Vec<String>,
 }
 
 #[derive(InputObject)]

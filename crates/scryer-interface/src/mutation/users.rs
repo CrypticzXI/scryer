@@ -29,13 +29,14 @@ async fn login_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
+    mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until)
+        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
         .await
         .map_err(to_gql_error)?;
     let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
@@ -95,7 +96,8 @@ impl UserMutations {
                         .permissions
                         .into_iter()
                         .map(|permission| permission.into_domain()),
-                );
+                )
+                .normalized_for_storage();
                 scryer_domain::LibraryGrant {
                     user_id: String::new(),
                     library_id: grant.library_id,
@@ -189,7 +191,8 @@ impl UserMutations {
                         .permissions
                         .into_iter()
                         .map(|permission| permission.into_domain()),
-                );
+                )
+                .normalized_for_storage();
                 scryer_domain::LibraryGrant {
                     user_id: input.user_id.clone(),
                     library_id: grant.library_id,
@@ -315,7 +318,7 @@ impl UserMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None).await
+        login_payload_from_user(&app, user, None, None).await
     }
 
     async fn login_with_jellyfin(
@@ -366,6 +369,6 @@ impl UserMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until).await
+        login_payload_from_user(&app, user, mfa_verified_until, None).await
     }
 }

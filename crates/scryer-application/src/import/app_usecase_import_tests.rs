@@ -88,6 +88,8 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
         client_type: "weaver".to_string(),
         client_id: "client-1".to_string(),
         download_client_item_id: "job-1".to_string(),
+        download_request_id: None,
+        download_fingerprint: None,
         name: name.to_string(),
         dest_dir: dest_dir.to_string_lossy().to_string(),
         category: None,

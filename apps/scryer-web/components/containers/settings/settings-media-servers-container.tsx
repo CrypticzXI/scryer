@@ -29,6 +29,7 @@ import type {
   PlexServerDiscovery,
 } from "@/lib/types";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
+import { normalizeLibraryPermissionsForStorage } from "@/lib/utils/permissions";
 
 type SettingsMediaServersSectionProps = ComponentProps<typeof SettingsMediaServersSection>;
 
@@ -96,6 +97,17 @@ function parsePathMappings(value: string): MediaServerPathMapping[] {
     .filter((mapping) => mapping.sourcePath.length > 0 && mapping.destinationPath.length > 0);
 }
 
+function normalizeDefaultLibraryGrants(
+  grants: MediaServerConnectionDraft["defaultLibraryGrants"],
+): MediaServerConnectionDraft["defaultLibraryGrants"] {
+  return grants
+    .map((grant) => ({
+      libraryId: grant.libraryId,
+      permissions: normalizeLibraryPermissionsForStorage(grant.permissions),
+    }))
+    .filter((grant) => grant.permissions.length > 0);
+}
+
 function draftFromConnection(connection: MediaServerConnection): MediaServerConnectionDraft {
   return {
     provider: connection.provider,
@@ -108,7 +120,7 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
     defaultAppPermissions: [...connection.defaultAppPermissions],
     defaultLibraryGrants: connection.defaultLibraryGrants.map((grant) => ({
       libraryId: grant.libraryId,
-      permissions: [...grant.permissions],
+      permissions: normalizeLibraryPermissionsForStorage(grant.permissions),
     })),
     machineIdPresent: connection.machineIdPresent,
     plexServerId: "",
@@ -132,7 +144,9 @@ function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: stri
     linkingEnabled: supportsAuth && draft.linkingEnabled,
     autoAddEnabled: supportsAuth && draft.autoAddEnabled,
     defaultAppPermissions: supportsAuth ? draft.defaultAppPermissions : [],
-    defaultLibraryGrants: supportsAuth ? draft.defaultLibraryGrants : [],
+    defaultLibraryGrants: supportsAuth
+      ? normalizeDefaultLibraryGrants(draft.defaultLibraryGrants)
+      : [],
     pathMappings: parsePathMappings(draft.pathMappingsText),
   };
 

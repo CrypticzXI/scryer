@@ -9,12 +9,6 @@ import {
 } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { Button } from "@/components/ui/button";
 import { ArrowDown, ArrowUp, Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
@@ -42,6 +36,7 @@ import {
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
+  TitleTableLazyTooltipActionButton,
   TitleTableLoadingState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
@@ -127,12 +122,6 @@ export function TitleTable({
     React.useState<TitleTableSortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
-  useOverviewElementScrollRestoration({
-    enabled: true,
-    ready: !titleLoading && titles.length > 0,
-    storageKeySuffix: "poster-table",
-    scrollRef: titleTableScrollRef,
-  });
   const sortedTitles = React.useMemo(
     () =>
       sortTitlesForTable({
@@ -154,12 +143,31 @@ export function TitleTable({
       titles,
     ],
   );
+  const initialScrollOffset = React.useMemo(
+    () => readOverviewSavedScroll(location.pathname, "poster-table") ?? 0,
+    [location.pathname],
+  );
 
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
+    getItemKey: (index) => sortedTitles[index]?.id ?? index,
     estimateSize: () => 112,
+    initialOffset: initialScrollOffset,
     overscan: 5,
+  });
+  const restoreTitleTableScroll = React.useCallback(
+    (nextTop: number) => {
+      titleVirtualizer.scrollToOffset(nextTop);
+    },
+    [titleVirtualizer],
+  );
+  useOverviewElementScrollRestoration({
+    enabled: true,
+    ready: !titleLoading && titles.length > 0,
+    storageKeySuffix: "poster-table",
+    scrollRef: titleTableScrollRef,
+    restoreScrollTop: restoreTitleTableScroll,
   });
 
   const handleOpenOverview = React.useCallback(
@@ -173,40 +181,6 @@ export function TitleTable({
     },
     [location.pathname, onOpenOverview, overviewTargetView, titleVirtualizer.scrollOffset],
   );
-
-  React.useLayoutEffect(() => {
-    if (titleLoading || titles.length === 0) {
-      return;
-    }
-
-    const savedScrollTop = readOverviewSavedScroll(
-      location.pathname,
-      "poster-table",
-    );
-    if (savedScrollTop == null) {
-      return;
-    }
-
-    let frameId = 0;
-    let attempts = 0;
-    const restore = () => {
-      titleVirtualizer.scrollToOffset(savedScrollTop);
-      const currentScrollTop = titleTableScrollRef.current?.scrollTop ?? 0;
-      if (Math.abs(currentScrollTop - savedScrollTop) <= 2 || attempts >= 12) {
-        return;
-      }
-
-      attempts += 1;
-      frameId = window.requestAnimationFrame(restore);
-    };
-
-    frameId = window.requestAnimationFrame(restore);
-    return () => {
-      if (frameId !== 0) {
-        window.cancelAnimationFrame(frameId);
-      }
-    };
-  }, [location.pathname, titleLoading, titleVirtualizer, titles.length]);
 
   const handleSort = React.useCallback((nextKey: TitleTableSortKey) => {
     if (sortKey === nextKey) {
@@ -395,50 +369,31 @@ export function TitleTable({
             {bytesToReadable(item.sizeBytes)}
           </TableCell>
           <TableCell className="text-center align-middle">
-            <TooltipProvider>
-              <div data-ui="row-actions" className="inline-flex items-center justify-end gap-2">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <TitleTableActionButton
-                        id={titleOverviewSearchButtonId(item.id)}
-                        tone="auto"
-                        label={t("label.search")}
-                        showTitleAttribute={false}
-                        onClick={() => handleQueueExisting(item)}
-                        disabled={autoQueueLoading}
-                        className={posterActionButtonClassName}
-                      >
-                        {autoQueueLoading ? (
-                          <Loader2 className={cn(posterActionIconClassName, "animate-spin text-emerald-500")} />
-                        ) : (
-                          <Zap className={posterActionIconClassName} />
-                        )}
-                      </TitleTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.autoSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <TitleTableActionButton
-                        tone="search"
-                        label={t("label.interactiveSearch")}
-                        showTitleAttribute={false}
-                        onClick={() => handleToggleInteractiveSearch(item)}
-                        className={posterActionButtonClassName}
-                      >
-                        <Search className={posterActionIconClassName} />
-                      </TitleTableActionButton>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={8} className="max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug">
-                    {t("help.interactiveSearchTooltip")}
-                  </TooltipContent>
-                </Tooltip>
+            <div data-ui="row-actions" className="inline-flex items-center justify-end gap-2">
+              <TitleTableLazyTooltipActionButton
+                id={titleOverviewSearchButtonId(item.id)}
+                tone="auto"
+                label={t("label.search")}
+                tooltip={t("help.autoSearchTooltip")}
+                onClick={() => handleQueueExisting(item)}
+                disabled={autoQueueLoading}
+                className={posterActionButtonClassName}
+              >
+                {autoQueueLoading ? (
+                  <Loader2 className={cn(posterActionIconClassName, "animate-spin text-emerald-500")} />
+                ) : (
+                  <Zap className={posterActionIconClassName} />
+                )}
+              </TitleTableLazyTooltipActionButton>
+              <TitleTableLazyTooltipActionButton
+                tone="search"
+                label={t("label.interactiveSearch")}
+                tooltip={t("help.interactiveSearchTooltip")}
+                onClick={() => handleToggleInteractiveSearch(item)}
+                className={posterActionButtonClassName}
+              >
+                <Search className={posterActionIconClassName} />
+              </TitleTableLazyTooltipActionButton>
               {onToggleMonitored ? (
                 <TitleTableActionButton
                   tone={item.monitored ? "disabled" : "enabled"}
@@ -469,8 +424,7 @@ export function TitleTable({
                   <Trash2 className={posterActionIconClassName} />
                 )}
               </TitleTableActionButton>
-              </div>
-            </TooltipProvider>
+            </div>
           </TableCell>
         </TableRow>
         {isPanelOpen ? (
@@ -537,7 +491,13 @@ export function TitleTable({
   );
 
   const virtualItems = titleVirtualizer.getVirtualItems();
-
+  const totalVirtualSize = titleVirtualizer.getTotalSize();
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems[virtualItems.length - 1];
+  const topSpacerHeight = firstVirtualItem?.start ?? 0;
+  const bottomSpacerHeight = lastVirtualItem
+    ? Math.max(totalVirtualSize - lastVirtualItem.end, 0)
+    : 0;
 
   return (
     <div
@@ -549,58 +509,48 @@ export function TitleTable({
         {titleTableColGroup}
         {titleTableHeader}
         {virtualItems.length > 0 ? (
-          <>
-            {virtualItems[0].start > 0 ? (
-              <tbody aria-hidden>
-                <tr><td style={{ height: virtualItems[0].start, padding: 0 }} /></tr>
-              </tbody>
+          <TableBody className="[&_tr:last-child]:border-0">
+            {topSpacerHeight > 0 ? (
+              <tr aria-hidden>
+                <td colSpan={columnCount} style={{ height: topSpacerHeight, padding: 0 }} />
+              </tr>
             ) : null}
             {virtualItems.map((virtualRow) => {
               const item = sortedTitles[virtualRow.index];
-              return (
-                <tbody
-                  key={virtualRow.key}
-                  ref={titleVirtualizer.measureElement}
-                  data-index={virtualRow.index}
-                  className="[&_tr:last-child]:border-0"
-                >
-                  {renderTitleRow(item)}
-                </tbody>
-              );
+              return <React.Fragment key={virtualRow.key}>{renderTitleRow(item)}</React.Fragment>;
             })}
-            {virtualItems[virtualItems.length - 1].end < titleVirtualizer.getTotalSize() ? (
-              <tbody aria-hidden>
-                <tr>
-                  <td
-                    style={{
-                      height: titleVirtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end,
-                      padding: 0,
-                    }}
-                  />
-                </tr>
-              </tbody>
+            {bottomSpacerHeight > 0 ? (
+              <tr aria-hidden>
+                <td
+                  colSpan={columnCount}
+                  style={{
+                    height: bottomSpacerHeight,
+                    padding: 0,
+                  }}
+                />
+              </tr>
             ) : null}
-          </>
-          ) : titleLoading ? (
-            <TableBody>
-              <TitleTableLoadingState colSpan={columnCount} />
-            </TableBody>
-          ) : (
-            <TableBody>
-              <TitleTableEmptyState
-                colSpan={columnCount}
-                t={t}
-                showScanAction={showScanLibraryAction}
-                showConfigureRootsAction={showConfigureRootsAction}
-                configureRootsReason={configureRootsReason}
-                configureRootsHref={configureRootsHref}
-                onScan={onScanLibrary}
-                scanLoading={scanLibraryLoading}
-                scanDisabled={scanLibraryDisabled}
-                scanNotice={scanLibraryNotice}
-              />
-            </TableBody>
-          )}
+          </TableBody>
+        ) : titleLoading ? (
+          <TableBody>
+            <TitleTableLoadingState colSpan={columnCount} />
+          </TableBody>
+        ) : (
+          <TableBody>
+            <TitleTableEmptyState
+              colSpan={columnCount}
+              t={t}
+              showScanAction={showScanLibraryAction}
+              showConfigureRootsAction={showConfigureRootsAction}
+              configureRootsReason={configureRootsReason}
+              configureRootsHref={configureRootsHref}
+              onScan={onScanLibrary}
+              scanLoading={scanLibraryLoading}
+              scanDisabled={scanLibraryDisabled}
+              scanNotice={scanLibraryNotice}
+            />
+          </TableBody>
+        )}
       </table>
     </div>
   );

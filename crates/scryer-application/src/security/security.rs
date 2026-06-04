@@ -389,22 +389,24 @@ impl AppUseCase {
         Self::MFA_ENROLLMENT_TOKEN_TTL_SECONDS
     }
 
-    pub fn totp_step_up_verified_until(&self) -> chrono::DateTime<Utc> {
-        Utc::now() + Duration::minutes(super::totp::TOTP_STEP_UP_TTL_MINUTES)
+    pub fn mfa_freshness_verified_until(&self) -> chrono::DateTime<Utc> {
+        Utc::now() + Duration::minutes(super::totp::MFA_FRESHNESS_TTL_MINUTES)
     }
 
     pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
-        self.issue_access_token_with_mfa(actor, None).await
+        self.issue_access_token_with_mfa(actor, None, None).await
     }
 
     pub async fn issue_access_token_with_mfa(
         &self,
         actor: &User,
         mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
     ) -> AppResult<String> {
         self.issue_access_token_with_mfa_and_scope(
             actor,
             mfa_verified_until,
+            mfa_step_up_verified_until,
             JwtSessionScope::Full,
             self.token_lifetime(),
         )
@@ -414,6 +416,7 @@ impl AppUseCase {
     pub async fn issue_mfa_enrollment_token(&self, actor: &User) -> AppResult<String> {
         self.issue_access_token_with_mfa_and_scope(
             actor,
+            None,
             None,
             JwtSessionScope::MfaEnrollment,
             self.mfa_enrollment_token_lifetime(),
@@ -425,6 +428,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
         auth_scope: JwtSessionScope,
         ttl_seconds: i64,
     ) -> AppResult<String> {
@@ -450,6 +454,7 @@ impl AppUseCase {
             app_permissions,
             library_permissions,
             mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
+            mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
             auth_scope,
         };
 
@@ -860,6 +865,7 @@ impl AppUseCase {
                     user,
                     AuthenticatedTokenClaims {
                         mfa_verified_until: claims.mfa_verified_until,
+                        mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
                         session_scope: claims.auth_scope,
                     },
                 )

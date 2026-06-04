@@ -416,6 +416,7 @@ impl AppUseCase {
                 media_files: Vec::new(),
                 application_update: None,
                 manual_interaction: None,
+                media_request: None,
             })
             .await
     }

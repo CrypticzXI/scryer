@@ -4,6 +4,12 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
@@ -520,6 +526,12 @@ export function StatusBadge({
   return null;
 }
 
+type TitleTableActionButtonProps = React.ComponentProps<typeof Button> & {
+  label: string;
+  tone: BoxedActionButtonTone;
+  showTitleAttribute?: boolean;
+};
+
 export function TitleTableActionButton({
   label,
   tone,
@@ -527,11 +539,7 @@ export function TitleTableActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
-  label: string;
-  tone: BoxedActionButtonTone;
-  showTitleAttribute?: boolean;
-}) {
+}: TitleTableActionButtonProps) {
   return (
     <Button
       type="button"
@@ -548,6 +556,54 @@ export function TitleTableActionButton({
     >
       {children}
     </Button>
+  );
+}
+
+export function TitleTableLazyTooltipActionButton({
+  tooltip,
+  tooltipClassName,
+  showTitleAttribute = false,
+  ...buttonProps
+}: TitleTableActionButtonProps & {
+  tooltip: React.ReactNode;
+  tooltipClassName?: string;
+}) {
+  const [active, setActive] = React.useState(false);
+  const trigger = (
+    <span
+      className="inline-flex"
+      onPointerEnter={() => setActive(true)}
+      onPointerLeave={() => setActive(false)}
+      onFocus={() => setActive(true)}
+      onBlur={() => setActive(false)}
+    >
+      <TitleTableActionButton
+        {...buttonProps}
+        showTitleAttribute={showTitleAttribute}
+      />
+    </span>
+  );
+
+  if (!active) {
+    return trigger;
+  }
+
+  return (
+    <TooltipProvider>
+      <Tooltip open={active} onOpenChange={setActive}>
+        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={8}
+          className={cn(
+            "max-w-[18rem] whitespace-normal break-words text-left text-sm leading-snug",
+            tooltipClassName,
+          )}
+        >
+          {tooltip}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

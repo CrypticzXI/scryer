@@ -8,6 +8,8 @@ import type { LibraryRecord } from "@/lib/types";
 import {
   APP_PERMISSIONS,
   LIBRARY_PERMISSIONS,
+  libraryPermissionShadowSource,
+  libraryPermissionsWithRequestShadowing,
   type AppPermission,
   type LibraryPermission,
 } from "@/lib/utils/permissions";
@@ -76,6 +78,10 @@ export function togglePermissionValue(current: string[], value: string): string[
     next.add(value);
   }
   return Array.from(next);
+}
+
+function shadowTitle(source: string | null): string | undefined {
+  return source ? `Included by ${source}` : undefined;
 }
 
 function selectedCountLabel(count: number) {
@@ -189,7 +195,9 @@ function FacetPermissionDropdown({
   const options = permissionOptions(permissions, LIBRARY_PERMISSION_OPTIONS);
   const facetLibraries = libraries.filter((library) => library.facet === facet);
   const selectedCount = facetLibraries.reduce(
-    (count, library) => count + (selectedByLibrary[library.id]?.length ?? 0),
+    (count, library) =>
+      count +
+      libraryPermissionsWithRequestShadowing(selectedByLibrary[library.id] ?? []).length,
     0,
   );
 
@@ -211,6 +219,7 @@ function FacetPermissionDropdown({
         <div className="flex max-h-80 flex-col gap-3 overflow-y-auto">
           {facetLibraries.map((library) => {
             const selected = selectedByLibrary[library.id] ?? [];
+            const effectiveSelected = libraryPermissionsWithRequestShadowing(selected);
             return (
               <div key={library.id} className="space-y-1">
                 <div className="truncate px-2 text-xs font-semibold uppercase text-muted-foreground">
@@ -218,7 +227,12 @@ function FacetPermissionDropdown({
                 </div>
                 <div className="space-y-0.5">
                   {options.map((permission) => {
-                    const checked = selected.includes(permission.value);
+                    const checked = effectiveSelected.includes(permission.value);
+                    const shadowSource = libraryPermissionShadowSource(
+                      selected,
+                      permission.value,
+                    );
+                    const permissionDisabled = disabled || shadowSource !== null;
                     return (
                       <button
                         id={
@@ -235,12 +249,13 @@ function FacetPermissionDropdown({
                             permission.value,
                           )
                         }
-                        disabled={disabled}
+                        disabled={permissionDisabled}
+                        title={shadowTitle(shadowSource)}
                         className="flex min-w-max items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
                       >
                         <Checkbox
                           checked={checked}
-                          disabled={disabled}
+                          disabled={permissionDisabled}
                           className="pointer-events-none"
                         />
                         <span className="whitespace-nowrap">{permission.label}</span>
