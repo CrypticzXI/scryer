@@ -131,6 +131,9 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                     current_tag = name.clone();
                     current_text.clear();
                     current_depth = depth;
+                    if name == "id" && root_kind != NfoRootKind::Episode {
+                        apply_id_attribute_provider_ids(e, meta);
+                    }
                     uniqueid_type = e
                         .attributes()
                         .filter_map(|a| a.ok())
@@ -178,14 +181,22 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                         "uniqueid" => {
                             if let Some(ref uid_type) = uniqueid_type {
                                 match uid_type.as_str() {
-                                    "tvdb" if meta.tvdb_id.is_none() => {
+                                    "tvdb"
+                                        if root_kind != NfoRootKind::Episode
+                                            && meta.tvdb_id.is_none()
+                                            && looks_like_numeric_id(&text) =>
+                                    {
                                         meta.tvdb_id = Some(text);
                                     }
-                                    "imdb" if meta.imdb_id.is_none() => {
+                                    "imdb"
+                                        if root_kind != NfoRootKind::Episode
+                                            && meta.imdb_id.is_none() =>
+                                    {
                                         meta.imdb_id = normalize_imdb(&text);
                                     }
                                     "tmdb"
-                                        if meta.tmdb_id.is_none()
+                                        if root_kind != NfoRootKind::Episode
+                                            && meta.tmdb_id.is_none()
                                             && looks_like_numeric_id(&text) =>
                                     {
                                         meta.tmdb_id = Some(text);
@@ -194,13 +205,23 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                                 }
                             }
                         }
-                        "tvdbid" if meta.tvdb_id.is_none() && looks_like_numeric_id(&text) => {
+                        "tvdbid"
+                            if root_kind != NfoRootKind::Episode
+                                && meta.tvdb_id.is_none()
+                                && looks_like_numeric_id(&text) =>
+                        {
                             meta.tvdb_id = Some(text);
                         }
-                        "imdbid" | "imdb_id" if meta.imdb_id.is_none() => {
+                        "imdbid" | "imdb_id"
+                            if root_kind != NfoRootKind::Episode && meta.imdb_id.is_none() =>
+                        {
                             meta.imdb_id = normalize_imdb(&text);
                         }
-                        "tmdbid" if meta.tmdb_id.is_none() && looks_like_numeric_id(&text) => {
+                        "tmdbid"
+                            if root_kind != NfoRootKind::Episode
+                                && meta.tmdb_id.is_none()
+                                && looks_like_numeric_id(&text) =>
+                        {
                             meta.tmdb_id = Some(text);
                         }
                         "id" if legacy_id.is_none() => {
@@ -233,12 +254,14 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     // Apply legacy <id> only if higher-priority tags didn't provide the value.
     // Numeric movie <id> values are intentionally ignored: too many tools have
     // used that field for different providers, so it is not safe identity.
-    if let Some(id_val) = legacy_id {
+    if root_kind != NfoRootKind::Episode
+        && let Some(id_val) = legacy_id
+    {
         if id_val.starts_with("tt") && meta.imdb_id.is_none() {
             meta.imdb_id = normalize_imdb(&id_val);
         } else if looks_like_numeric_id(&id_val) {
             match root_kind {
-                NfoRootKind::TvShow | NfoRootKind::Episode if meta.tvdb_id.is_none() => {
+                NfoRootKind::TvShow if meta.tvdb_id.is_none() => {
                     meta.tvdb_id = Some(id_val);
                 }
                 _ => {}
@@ -246,7 +269,34 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
         }
     }
 
-    apply_url_ids_from_text(&url_fallback_text, meta);
+    if root_kind != NfoRootKind::Episode {
+        apply_url_ids_from_text(&url_fallback_text, meta);
+    }
+}
+
+fn apply_id_attribute_provider_ids(event: &BytesStart<'_>, meta: &mut NfoMetadata) {
+    for attr in event.attributes().filter_map(|attr| attr.ok()) {
+        let key = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+        let value = String::from_utf8_lossy(attr.value.as_ref())
+            .trim()
+            .to_string();
+        if value.is_empty() {
+            continue;
+        }
+
+        match key.as_str() {
+            "imdb" if meta.imdb_id.is_none() => {
+                meta.imdb_id = normalize_imdb(&value);
+            }
+            "tmdb" if meta.tmdb_id.is_none() => {
+                meta.tmdb_id = crate::normalize::normalize_numeric_id(&value);
+            }
+            "tvdb" if meta.tvdb_id.is_none() => {
+                meta.tvdb_id = crate::normalize::normalize_numeric_id(&value);
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(crate) fn parse_plexmatch(content: &str) -> NfoMetadata {
@@ -872,6 +922,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_jellyfin_id_attributes() {
+        let nfo = r#"<movie><id TMDB="2502" TVDB="842" IMDB="tt0372183">ignored</id></movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tmdb_id, Some("2502".into()));
+        assert_eq!(meta.tvdb_id, Some("842".into()));
+        assert_eq!(meta.imdb_id, Some("tt0372183".into()));
+    }
+
+    #[test]
     fn parse_legacy_id_imdb() {
         let nfo = "<movie><id>tt1234567</id></movie>";
         let meta = parse_nfo(nfo);
@@ -1142,8 +1201,27 @@ Pattern: Bonus/Bonus {sp,1-3,+4}.mp4
   <uniqueid type="tvdb" default="true">349232</uniqueid>
 </episodedetails>"#;
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.tvdb_id, Some("349232".into()));
+        assert_eq!(meta.tvdb_id, None);
         assert_eq!(meta.title, Some("Pilot".into()));
+    }
+
+    #[test]
+    fn parse_episode_details_ids_are_not_title_identity() {
+        let nfo = r#"<episodedetails>
+  <title>Pilot</title>
+  <uniqueid type="tvdb" default="true">349232</uniqueid>
+  <uniqueid type="imdb">tt0959621</uniqueid>
+  <uniqueid type="tmdb">62085</uniqueid>
+  <tvdbid>349232</tvdbid>
+  <imdbid>tt0959621</imdbid>
+  <tmdbid>62085</tmdbid>
+  <id TVDB="349232" IMDB="tt0959621" TMDB="62085">349232</id>
+</episodedetails>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.title, Some("Pilot".into()));
+        assert_eq!(meta.tvdb_id, None);
+        assert_eq!(meta.imdb_id, None);
+        assert_eq!(meta.tmdb_id, None);
     }
 
     #[test]
