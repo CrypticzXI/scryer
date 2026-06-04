@@ -1060,7 +1060,8 @@ export function buildIgnoreTrackedDownloadBatchMutation(count: number): string {
   ).join(", ");
   const fields = Array.from(
     { length: count },
-    (_, index) => `item${index}: ignoreTrackedDownload(input: $input${index}) { kind }`,
+    (_, index) =>
+      `item${index}: ignoreTrackedDownload(input: $input${index}) { kind }`,
   ).join("\n");
 
   return `mutation IgnoreTrackedDownloads(${variables}) {
@@ -1075,7 +1076,8 @@ export function buildDeleteDownloadBatchMutation(count: number): string {
   ).join(", ");
   const fields = Array.from(
     { length: count },
-    (_, index) => `item${index}: deleteDownload(input: $input${index}) { kind removed commandId }`,
+    (_, index) =>
+      `item${index}: deleteDownload(input: $input${index}) { kind removed commandId }`,
   ).join("\n");
 
   return `mutation DeleteDownloads(${variables}) {
@@ -1799,6 +1801,11 @@ export const togglePostProcessingScriptMutation = `mutation TogglePostProcessing
 export type DownloadClientApiKeyOverride = {
   dedupKey: string;
   apiKey: string;
+};
+
+export type DownloadClientPasswordOverride = {
+  dedupKey: string;
+  password: string;
 };
 
 export type IndexerApiKeyOverride = {

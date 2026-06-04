@@ -677,6 +677,28 @@ async fn wait_for_captured(
     );
 }
 
+async fn wait_for_wiremock_requests(
+    server: &wiremock::MockServer,
+    expected: usize,
+) -> Vec<wiremock::Request> {
+    for _ in 0..50 {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request capture should succeed");
+        if requests.len() >= expected {
+            return requests;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    panic!("timed out waiting for {expected} HTTP requests, captured {requests:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Channel CRUD
 // ---------------------------------------------------------------------------
@@ -1261,6 +1283,89 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
         .send_notification(&test_notification_payload())
         .await
         .expect("jellyfin dist plugin should accept test payload");
+}
+
+#[tokio::test]
+async fn notification_dispatcher_delivers_jellyfin_media_server_target_refresh() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+    let app = app_with_notification_provider(&ctx, provider);
+    let user = default_user(&app).await;
+
+    Mock::given(method("POST"))
+        .and(path("/Library/Media/Updated"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-dispatch-target",
+        &ctx.nzbgeek_server.uri(),
+        vec![MediaServerPathMapping {
+            source_path: "/media".to_string(),
+            destination_path: "/data".to_string(),
+            sort_order: 0,
+        }],
+    )
+    .await;
+    create_media_server_subscription(
+        &app,
+        &user,
+        &connection,
+        NotificationEventType::ImportComplete.as_str(),
+    )
+    .await;
+
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    tokio::task::yield_now().await;
+
+    app.append_domain_event(new_event(
+        "evt-jellyfin-media-server-target-refresh",
+        "title-1",
+        "series",
+        DomainEventPayload::ImportCompleted(import_completed_event_data(
+            title_context(
+                "Example Show",
+                "series",
+                DomainExternalIds {
+                    imdb_id: None,
+                    tmdb_id: None,
+                    tvdb_id: Some("123".to_string()),
+                    anidb_id: None,
+                },
+            ),
+            vec![MediaPathUpdate {
+                path: "/data/series/Example Show/S01E01.mkv".to_string(),
+                update_type: MediaUpdateType::Created,
+            }],
+            1,
+            vec!["episode-1".to_string()],
+        )),
+    ))
+    .await
+    .expect("append import-complete event");
+
+    let requests = wait_for_wiremock_requests(&ctx.nzbgeek_server, 1).await;
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher task");
+
+    assert_eq!(requests[0].url.path(), "/Library/Media/Updated");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    assert_eq!(
+        body,
+        json!({
+            "updates": [
+                {
+                    "path": "/media/series/Example Show/S01E01.mkv",
+                    "updateType": "Created",
+                }
+            ]
+        }),
+    );
 }
 
 #[tokio::test]

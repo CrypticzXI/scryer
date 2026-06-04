@@ -769,7 +769,7 @@ export function MediaContentView({
         />
       ) : (
         view === "movies" || view === "series" || view === "anime" ? (
-          <Card>
+          <Card id={`media-overview-${view}`}>
             <CardHeader>
               <CardTitle>{view === "movies" ? t("title.manageMovies") : view === "anime" ? t("nav.anime") : t("nav.series")}</CardTitle>
             </CardHeader>
@@ -833,7 +833,13 @@ export function MediaContentView({
                     </ToggleGroupItem>
                   </ToggleGroup>
                 ) : null}
-                <Button className="w-full sm:w-auto" variant="primary" onClick={handleRefreshTitles} disabled={titleLoading}>
+                <Button
+                  id={`title-overview-refresh-${view === "movies" ? "movie" : view === "series" ? "series" : "anime"}`}
+                  className="w-full sm:w-auto"
+                  variant="primary"
+                  onClick={handleRefreshTitles}
+                  disabled={titleLoading}
+                >
                   {t("label.refresh")}
                 </Button>
               </div>

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
@@ -7,7 +6,6 @@ use scryer_application::external_import::{
     self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
     ExternalArrClient,
 };
-use scryer_application::stored_paths::path_to_stored_string;
 use scryer_application::{
     AppError, ExternalIdHint, ExternalIdProvider, ExternalImportLibraryPathsSelection,
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
@@ -15,7 +13,8 @@ use scryer_application::{
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
     ExternalImportMonitorWarmupStatus, IndexerConfigUpdate, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource,
+    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+    library_scan_folder_leaf_key,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use serde::Serialize;
@@ -615,6 +614,11 @@ impl ExternalImportMutations {
             .into_iter()
             .map(|o| (o.dedup_key, o.api_key))
             .collect();
+        let dc_password_overrides: HashMap<String, String> = input
+            .download_client_password_overrides
+            .into_iter()
+            .map(|o| (o.dedup_key, o.password))
+            .collect();
         let idx_api_key_overrides: HashMap<String, String> = input
             .indexer_api_key_overrides
             .into_iter()
@@ -753,10 +757,15 @@ impl ExternalImportMutations {
                     config_obj.insert("api_key".into(), serde_json::Value::String(api_key));
                 }
             } else {
+                let dedup_key = format!("{}:{}:{}", scryer_type, host, port);
                 if let Some(username) = external_import::field_str(&dc.fields, "username") {
                     config_obj.insert("username".into(), serde_json::Value::String(username));
                 }
-                if let Some(password) = external_import::field_str(&dc.fields, "password") {
+                let password = dc_password_overrides
+                    .get(&dedup_key)
+                    .cloned()
+                    .or_else(|| external_import::field_str_sensitive(&dc.fields, "password"));
+                if let Some(password) = password {
                     config_obj.insert("password".into(), serde_json::Value::String(password));
                 }
             }
@@ -1044,11 +1053,7 @@ impl ExternalImportMutations {
 }
 
 fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
-    let path = movie.path.as_deref()?.trim();
-    if path.is_empty() {
-        return None;
-    }
-
+    let path_key = library_scan_file_leaf_key(movie.file_path.as_deref()?)?;
     let mut ids = Vec::new();
     if let Some(tmdb_id) = movie
         .tmdb_id
@@ -1065,19 +1070,16 @@ fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
         ids.push(imdb_id);
     }
 
-    (!ids.is_empty()).then(|| LibraryScanHint {
+    (!ids.is_empty()).then_some(LibraryScanHint {
         source: LibraryScanHintSource::ExternalImportRadarr,
         facet: LibraryScanHintFacet::Movie,
-        path_key: path_to_stored_string(Path::new(path)),
+        path_key,
         ids,
     })
 }
 
-fn series_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
-    let path = series.path.as_deref()?.trim();
-    if path.is_empty() {
-        return None;
-    }
+fn series_folder_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
+    let path_key = library_scan_folder_leaf_key(series.path.as_deref()?)?;
     let ids = series
         .tvdb_id
         .as_deref()
@@ -1087,7 +1089,26 @@ fn series_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
     Some(LibraryScanHint {
         source: LibraryScanHintSource::ExternalImportSonarr,
         facet: LibraryScanHintFacet::Series,
-        path_key: path_to_stored_string(Path::new(path)),
+        path_key,
+        ids,
+    })
+}
+
+fn series_episode_scan_hint_from_arr(
+    series: &ArrSeries,
+    episode: &ArrEpisode,
+) -> Option<LibraryScanHint> {
+    let path_key = library_scan_file_leaf_key(episode.file_path.as_deref()?)?;
+    let ids = series
+        .tvdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tvdb, value))
+        .map(|id| vec![id])?;
+
+    Some(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportSonarr,
+        facet: LibraryScanHintFacet::Series,
+        path_key,
         ids,
     })
 }
@@ -1365,7 +1386,10 @@ async fn capture_external_import_monitor_warmup(
                                    series: ArrSeries| {
             let client = client.clone();
             join_set.spawn(async move {
-                let result = client.list_episodes_for_series(series.id).await;
+                let series_path = series.path.clone();
+                let result = client
+                    .list_episodes_for_series(series.id, series_path.as_deref())
+                    .await;
                 (series, result)
             });
         };
@@ -1387,8 +1411,13 @@ async fn capture_external_import_monitor_warmup(
             })?;
             let episodes = episodes_result?;
             let episode_count = i32::try_from(episodes.len()).unwrap_or(i32::MAX);
-            if let Some(hint) = series_scan_hint_from_arr(&series) {
+            if let Some(hint) = series_folder_scan_hint_from_arr(&series) {
                 scan_hints.push(hint);
+            }
+            for episode in &episodes {
+                if let Some(hint) = series_episode_scan_hint_from_arr(&series, episode) {
+                    scan_hints.push(hint);
+                }
             }
             let entry = series_monitor_entry_from_arr(series, episodes);
             series_writer.push(&entry).await?;
@@ -1569,6 +1598,7 @@ fn map_download_client(
     // Use field_str_sensitive so that Sonarr/Radarr's "********" mask becomes
     // None — callers can then detect that the key must be entered manually.
     let api_key = external_import::field_str_sensitive(&dc.fields, "apiKey");
+    let password = external_import::field_str_sensitive(&dc.fields, "password");
 
     let dedup_key = format!(
         "{}:{}:{}",
@@ -1590,6 +1620,8 @@ fn map_download_client(
         api_key,
         dedup_key,
         supported: scryer_type.is_some(),
+        requires_password_override: password.is_none()
+            && scryer_type.is_some_and(|client_type| client_type == "nzbget"),
     }
 }
 
@@ -1623,29 +1655,32 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
 
     use scryer_application::external_import::{
-        ArrDownloadClient, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
+        ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
     };
-    use scryer_application::stored_paths::path_to_stored_string;
-    use scryer_application::{ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource};
+    use scryer_application::{
+        ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource,
+        library_scan_file_leaf_key, library_scan_folder_leaf_key,
+    };
     use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
     use serde_json::Value;
 
     use super::{
         detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
         map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
-        prowlarr_dedup_key, series_scan_hint_from_arr,
+        prowlarr_dedup_key, series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
     };
 
     #[test]
     fn radarr_warmup_builds_movie_hint_with_tmdb_and_imdb() {
         let path = "/Movies/The Bourne Supremacy (2004)";
+        let file_path = "/Movies/The Bourne Supremacy (2004)/The Bourne Supremacy.mkv";
         let hint = movie_scan_hint_from_arr(&ArrMovie {
             id: 1,
             root_folder_path: "/Movies".into(),
             path: Some(path.into()),
+            file_path: Some(file_path.into()),
             tmdb_id: Some("2502".into()),
             imdb_id: Some("tt0372183".into()),
             monitored: true,
@@ -1654,7 +1689,10 @@ mod tests {
 
         assert_eq!(hint.source, LibraryScanHintSource::ExternalImportRadarr);
         assert_eq!(hint.facet, LibraryScanHintFacet::Movie);
-        assert_eq!(hint.path_key, path_to_stored_string(Path::new(path)));
+        assert_eq!(
+            hint.path_key,
+            library_scan_file_leaf_key(file_path).unwrap()
+        );
         assert!(
             hint.ids
                 .iter()
@@ -1673,6 +1711,7 @@ mod tests {
             id: 1,
             root_folder_path: "/Movies".into(),
             path: Some("/Movies/Children of Men (2006)".into()),
+            file_path: Some("/Movies/Children of Men (2006)/Children of Men.mkv".into()),
             tmdb_id: Some("9693".into()),
             imdb_id: Some("9693".into()),
             monitored: true,
@@ -1698,6 +1737,7 @@ mod tests {
             id: 1,
             root_folder_path: "/Movies".into(),
             path: Some("/Movies/Children of Men (2006)".into()),
+            file_path: Some("/Movies/Children of Men (2006)/Children of Men.mkv".into()),
             tmdb_id: Some("9693".into()),
             imdb_id: Some("tt0206634-extra".into()),
             monitored: true,
@@ -1720,7 +1760,7 @@ mod tests {
     #[test]
     fn sonarr_warmup_builds_series_hint_with_tvdb() {
         let path = "/Series/Foundation (2021)";
-        let hint = series_scan_hint_from_arr(&ArrSeries {
+        let series = ArrSeries {
             id: 1,
             root_folder_path: "/Series".into(),
             path: Some(path.into()),
@@ -1731,14 +1771,39 @@ mod tests {
                 total_episode_count: None,
                 monitored_episode_count: None,
             },
-        })
-        .expect("series hint");
+        };
+        let hint = series_folder_scan_hint_from_arr(&series).expect("series hint");
 
         assert_eq!(hint.source, LibraryScanHintSource::ExternalImportSonarr);
         assert_eq!(hint.facet, LibraryScanHintFacet::Series);
-        assert_eq!(hint.path_key, path_to_stored_string(Path::new(path)));
+        assert_eq!(hint.path_key, library_scan_folder_leaf_key(path).unwrap());
         assert!(
             hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
+        );
+
+        let episode_path = "/Series/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let episode_hint = series_episode_scan_hint_from_arr(
+            &series,
+            &ArrEpisode {
+                id: 1,
+                series_id: 1,
+                tvdb_id: Some("777001".into()),
+                season_number: 1,
+                episode_number: 1,
+                file_path: Some(episode_path.into()),
+                monitored: true,
+            },
+        )
+        .expect("episode hint");
+        assert_eq!(
+            episode_hint.path_key,
+            library_scan_file_leaf_key(episode_path).unwrap()
+        );
+        assert!(
+            episode_hint
+                .ids
                 .iter()
                 .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
         );

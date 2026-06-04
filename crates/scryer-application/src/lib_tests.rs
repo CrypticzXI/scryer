@@ -6021,6 +6021,59 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
 }
 
 #[tokio::test]
+async fn submit_media_request_auto_approves_for_requester_with_auto_approve_permission() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let requester = library_permission_user(
+        "auto-approved-requester",
+        &library_id,
+        &[
+            scryer_domain::LibraryPermission::Request,
+            scryer_domain::LibraryPermission::AutoApproveRequests,
+        ],
+    );
+
+    let outcome = harness
+        .app
+        .submit_media_request(&requester, media_request_input(library_id.clone(), 9029))
+        .await
+        .expect("request submission should auto-approve");
+
+    assert!(outcome.accepted);
+    let titles = harness.titles.store.lock().await;
+    assert_eq!(titles.len(), 1);
+    let title_id = titles[0].id.clone();
+    assert_eq!(titles[0].name, "Glass Harbor");
+    assert_eq!(titles[0].library_id, library_id);
+    drop(titles);
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.status, MediaRequestStatus::Approved);
+    assert_eq!(request.created_title_id.as_deref(), Some(title_id.as_str()));
+    assert_eq!(request.approved_quality_profile_id.as_deref(), Some("4k"));
+    assert_eq!(request.approved_quality_profile_name.as_deref(), Some("4K"));
+    assert_eq!(
+        request.resolved_by_user_id.as_deref(),
+        Some(requester.id.as_str())
+    );
+    assert!(request.resolved_at.is_some());
+
+    let events = harness.domain_events.events.lock().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.payload, DomainEventPayload::MediaRequestSubmitted(_)))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.payload, DomainEventPayload::MediaRequestApproved(_)))
+    );
+}
+
+#[tokio::test]
 async fn submit_media_request_uses_library_request_quality_profile_allowlist() {
     let harness = bootstrap_media_request_app();
     let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);

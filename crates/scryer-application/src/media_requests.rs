@@ -144,11 +144,24 @@ impl AppUseCase {
             }),
         );
 
-        self.services
+        let submitted_request = self
+            .services
             .catalog
             .media_requests
             .submit(request, actor, submitted_event)
             .await?;
+
+        if self
+            .has_granted_library_permission(
+                actor,
+                &submitted_request.library_id,
+                LibraryPermission::AutoApproveRequests,
+            )
+            .await?
+        {
+            self.auto_approve_submitted_media_request(actor, submitted_request)
+                .await?;
+        }
 
         Ok(SubmitMediaRequestOutcome { accepted: true })
     }
@@ -414,6 +427,85 @@ impl AppUseCase {
                 },
             )
             .await
+    }
+
+    async fn auto_approve_submitted_media_request(
+        &self,
+        actor: &User,
+        request: MediaRequest,
+    ) -> AppResult<()> {
+        if request.status != MediaRequestStatus::Pending {
+            return Ok(());
+        }
+
+        let approved_quality_profile_id = request
+            .requested_quality_profile_id
+            .clone()
+            .ok_or_else(|| AppError::Validation("approved quality profile is required".into()))?;
+        let approved_quality_profile_name = request
+            .requested_quality_profile_name
+            .clone()
+            .ok_or_else(|| {
+                AppError::Validation("approved quality profile name is required".into())
+            })?;
+        let approved_monitor_type = normalize_requested_monitor_type(
+            &request.facet,
+            request.requested_monitor_type.clone(),
+        )?;
+        let outcome = self
+            .add_title_with_outcome_after_library_authorization(
+                actor,
+                media_request_to_new_title(
+                    &request,
+                    Some(&approved_quality_profile_id),
+                    approved_monitor_type.as_deref(),
+                ),
+                request.library_id.clone(),
+            )
+            .await?;
+        let resolved_event = new_global_domain_event(
+            Some(actor.id.clone()),
+            DomainEventPayload::MediaRequestApproved(media_request_resolved_event_data(
+                &request,
+                Some(outcome.title.id.clone()),
+                Some(approved_quality_profile_id.clone()),
+                Some(approved_quality_profile_name.clone()),
+            )),
+        );
+        self.services
+            .catalog
+            .media_requests
+            .resolve_pending_overlapping(
+                &request,
+                MediaRequestResolution {
+                    status: MediaRequestStatus::Approved,
+                    resolved_by_user_id: actor.id.clone(),
+                    resolved_at: chrono::Utc::now(),
+                    created_title_id: Some(outcome.title.id.clone()),
+                    approved_quality_profile_id: Some(approved_quality_profile_id),
+                    approved_quality_profile_name: Some(approved_quality_profile_name),
+                    event: resolved_event,
+                },
+            )
+            .await?;
+
+        if let Err(error) = self
+            .trigger_title_wanted_search(
+                actor,
+                &outcome.title.id,
+                SubmissionConflictPolicy::from_replace_flag(false),
+            )
+            .await
+        {
+            tracing::warn!(
+                request_id = request.id.as_str(),
+                title_id = outcome.title.id.as_str(),
+                error = %error,
+                "auto-approved media request but wanted search failed"
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn pending_media_request_counts(

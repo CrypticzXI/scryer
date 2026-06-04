@@ -3604,6 +3604,14 @@ pub struct DownloadClientApiKeyOverrideInput {
     pub api_key: String,
 }
 
+/// Password supplied by the user for a download client whose password was
+/// masked by Sonarr/Radarr and could not be retrieved automatically.
+#[derive(InputObject)]
+pub struct DownloadClientPasswordOverrideInput {
+    pub dedup_key: String,
+    pub password: String,
+}
+
 /// API key supplied by the user for a grouped Prowlarr import candidate whose
 /// key was masked or conflicted in Sonarr/Radarr, or for another indexer
 /// whose key could not be retrieved automatically.
@@ -3626,6 +3634,9 @@ pub struct ExecuteExternalImportInput {
     /// User-supplied API keys for download clients whose keys were masked by
     /// Sonarr/Radarr.  Keyed by the client's `dedup_key`.
     pub download_client_api_key_overrides: Vec<DownloadClientApiKeyOverrideInput>,
+    /// User-supplied passwords for download clients whose passwords were
+    /// masked by Sonarr/Radarr.  Keyed by the client's `dedup_key`.
+    pub download_client_password_overrides: Vec<DownloadClientPasswordOverrideInput>,
     /// User-supplied API keys for grouped indexer import candidates, keyed by
     /// the import candidate's `dedup_key`.
     pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
@@ -3736,6 +3747,7 @@ pub struct ExternalImportDownloadClientPayload {
     pub api_key: Option<String>,
     pub dedup_key: String,
     pub supported: bool,
+    pub requires_password_override: bool,
 }
 
 #[derive(SimpleObject, Clone)]

@@ -269,14 +269,16 @@ impl LibraryScanHintSet {
     }
 
     pub fn push(&mut self, hint: LibraryScanHint) {
-        if hint.ids.is_empty() {
+        if hint.ids.is_empty() || hint.path_key.trim().is_empty() {
             return;
         }
         if let Some(existing) = self.hints.iter_mut().find(|existing| {
-            existing.facet == hint.facet && external_ids_overlap(&existing.ids, &hint.ids)
+            existing.facet == hint.facet
+                && stored_path_keys_match(&existing.path_key, &hint.path_key)
         }) {
-            if existing.path_key.trim().is_empty() && !hint.path_key.trim().is_empty() {
-                existing.path_key = hint.path_key.clone();
+            if existing.ids.is_empty() || !external_ids_overlap(&existing.ids, &hint.ids) {
+                existing.ids.clear();
+                return;
             }
             for id in hint.ids {
                 if !existing.ids.iter().any(|existing_id| existing_id == &id) {
@@ -300,17 +302,67 @@ impl LibraryScanHintSet {
         if candidate_ids.is_empty() {
             return None;
         }
+        self.hints
+            .iter()
+            .find(|hint| hint.facet == facet && external_ids_overlap(&hint.ids, candidate_ids))
+    }
+
+    pub fn hint_for_stored_path(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_path_key: &str,
+    ) -> Option<&LibraryScanHint> {
         self.hints.iter().find(|hint| {
-            hint.facet == facet && external_ids_overlap(&hint.ids, candidate_ids)
+            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
         })
     }
 }
 
+fn stored_path_keys_match(left: &str, right: &str) -> bool {
+    let left = normalize_stored_path_key(left);
+    let right = normalize_stored_path_key(right);
+    !left.is_empty() && left == right
+}
+
+fn normalize_stored_path_key(value: &str) -> String {
+    value.trim().trim_end_matches(['/', '\\']).to_lowercase()
+}
+
+pub fn library_scan_file_leaf_key(path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    let file = components.last()?;
+    let parent = components.iter().rev().nth(1)?;
+    Some(format!(
+        "file:{}/{}",
+        normalize_leaf_path_component(parent),
+        normalize_leaf_path_component(file)
+    ))
+}
+
+pub fn library_scan_folder_leaf_key(path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    let folder = components.last()?;
+    Some(format!("folder:{}", normalize_leaf_path_component(folder)))
+}
+
+fn leaf_path_components(path: &str) -> Vec<&str> {
+    path.trim()
+        .trim_end_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .collect()
+}
+
+fn normalize_leaf_path_component(component: &str) -> String {
+    component.trim().to_lowercase()
+}
+
 fn external_ids_overlap(left: &[ExternalIdHint], right: &[ExternalIdHint]) -> bool {
     left.iter().any(|left_id| {
-        right
-            .iter()
-            .any(|right_id| left_id.provider == right_id.provider && left_id.value == right_id.value)
+        right.iter().any(|right_id| {
+            left_id.provider == right_id.provider && left_id.value == right_id.value
+        })
     })
 }
 
@@ -1560,4 +1612,61 @@ pub struct HousekeepingReport {
     pub staged_nzb_artifacts_pruned: u32,
     pub recycled_purged: u32,
     pub ran_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ExternalIdHint, ExternalIdProvider, LibraryScanHint, LibraryScanHintFacet,
+        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+        library_scan_folder_leaf_key,
+    };
+
+    #[test]
+    fn library_scan_leaf_keys_ignore_root_and_separator_style() {
+        let unix = library_scan_file_leaf_key(
+            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
+        );
+        let windows = library_scan_file_leaf_key(
+            r"D:\Series\Foundation (2021)\Season 01\Foundation.S01E01.mkv",
+        );
+        assert_eq!(unix, windows);
+
+        assert_eq!(
+            library_scan_folder_leaf_key("/mnt/media/Foundation (2021)"),
+            library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
+        );
+    }
+
+    #[test]
+    fn library_scan_hint_set_marks_conflicting_leaf_key_ambiguous() {
+        let path_key = library_scan_file_leaf_key(
+            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
+        )
+        .expect("leaf key");
+        let mut hints = LibraryScanHintSet::new();
+        hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: path_key.clone(),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "366972".to_string(),
+            }],
+        });
+        hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: path_key.clone(),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "999999".to_string(),
+            }],
+        });
+
+        let hint = hints
+            .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
+            .expect("ambiguous hint remains addressable");
+        assert!(hint.ids.is_empty());
+    }
 }

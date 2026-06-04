@@ -31,7 +31,10 @@ import {
   scanLibraryMutation,
 } from "@/lib/graphql/mutations";
 import { wsClient } from "@/lib/graphql/ws-client";
-import { DEFAULT_DOWNLOAD_CLIENT_DRAFT, DEFAULT_PORT_FOR_CLIENT_TYPE } from "@/lib/constants/download-clients";
+import {
+  DEFAULT_DOWNLOAD_CLIENT_DRAFT,
+  DEFAULT_PORT_FOR_CLIENT_TYPE,
+} from "@/lib/constants/download-clients";
 import {
   buildDownloadClientConfigJson,
   buildDownloadClientTypeOptions,
@@ -46,8 +49,14 @@ import {
   qualityProfileSettingsToEntries,
   qualityProfileEntryToMutationInput,
 } from "@/lib/utils/quality-profiles";
-import type { DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types/download-clients";
-import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-profiles";
+import type {
+  DownloadClientDraft,
+  DownloadClientTypeOption,
+} from "@/lib/types/download-clients";
+import type {
+  FacetQualityPrefs,
+  ViewCategoryId,
+} from "@/lib/types/quality-profiles";
 import type {
   ExternalImportConnection,
   ExternalImportMonitorWarmupProgress,
@@ -167,8 +176,12 @@ type ExternalImportMonitorWarmupProgressSubscriptionResult = {
 
 function extractPluginMutationErrorMessage(error: unknown): string | null {
   if (error && typeof error === "object" && "graphQLErrors" in error) {
-    const graphQLErrors = (error as { graphQLErrors?: Array<{ message?: string }> }).graphQLErrors;
-    const message = graphQLErrors?.find((entry) => typeof entry.message === "string")?.message;
+    const graphQLErrors = (
+      error as { graphQLErrors?: Array<{ message?: string }> }
+    ).graphQLErrors;
+    const message = graphQLErrors?.find(
+      (entry) => typeof entry.message === "string",
+    )?.message;
     if (message?.trim()) {
       return message.trim();
     }
@@ -183,14 +196,16 @@ function extractPluginMutationErrorMessage(error: unknown): string | null {
 
 function extractPluginMutationErrorCode(error: unknown): string | null {
   if (
-    error
-    && typeof error === "object"
-    && "graphQLErrors" in error
-    && Array.isArray((error as { graphQLErrors?: unknown[] }).graphQLErrors)
+    error &&
+    typeof error === "object" &&
+    "graphQLErrors" in error &&
+    Array.isArray((error as { graphQLErrors?: unknown[] }).graphQLErrors)
   ) {
-    const graphQLErrors = (error as {
-      graphQLErrors?: Array<{ extensions?: { code?: unknown } }>;
-    }).graphQLErrors;
+    const graphQLErrors = (
+      error as {
+        graphQLErrors?: Array<{ extensions?: { code?: unknown } }>;
+      }
+    ).graphQLErrors;
     const code = graphQLErrors?.find(
       (entry) => typeof entry.extensions?.code === "string",
     )?.extensions?.code;
@@ -212,19 +227,25 @@ function formatPluginInstallError(
     .trim();
 
   if (normalized && /WASM SHA256 mismatch/i.test(normalized)) {
-    return t("status.pluginInstallFailedChecksumMismatch", { name: plugin.name });
+    return t("status.pluginInstallFailedChecksumMismatch", {
+      name: plugin.name,
+    });
   }
 
   if (
-    normalized
-    && normalized.includes("has sdk_constraint")
-    && normalized.includes("but registry selected")
+    normalized &&
+    normalized.includes("has sdk_constraint") &&
+    normalized.includes("but registry selected")
   ) {
-    return t("status.pluginInstallFailedSdkMetadataMismatch", { name: plugin.name });
+    return t("status.pluginInstallFailedSdkMetadataMismatch", {
+      name: plugin.name,
+    });
   }
 
   if (normalized) {
-    if (extractPluginMutationErrorCode(error) === "PLUGIN_INSTALL_IN_PROGRESS") {
+    if (
+      extractPluginMutationErrorCode(error) === "PLUGIN_INSTALL_IN_PROGRESS"
+    ) {
       return t("status.pluginInstallAlreadyInProgress", { name: plugin.name });
     }
     return t("status.pluginInstallFailedWithReason", {
@@ -276,10 +297,12 @@ export function SetupWizardContainer({
   );
 
   // ── Step 1 (fresh) / Step 3 (import): Quality Preferences ─────────
-  const [facetPrefs, setFacetPrefs] = useState<Record<ViewCategoryId, FacetQualityPrefs>>({
-    movie:  { quality: "4k",    persona: "Balanced" },
-    series: { quality: "4k",    persona: "Balanced" },
-    anime:  { quality: "1080p", persona: "Balanced" },
+  const [facetPrefs, setFacetPrefs] = useState<
+    Record<ViewCategoryId, FacetQualityPrefs>
+  >({
+    movie: { quality: "4k", persona: "Balanced" },
+    series: { quality: "4k", persona: "Balanced" },
+    anime: { quality: "1080p", persona: "Balanced" },
   });
   const [personaSaving, setPersonaSaving] = useState(false);
 
@@ -291,15 +314,19 @@ export function SetupWizardContainer({
   const [mediaPathsError, setMediaPathsError] = useState<string | null>(null);
 
   // ── Step 4 (fresh): Download Client ─────────────────────────────────
-  const [dcDraft, setDcDraft] = useState<DownloadClientDraft>({ ...DEFAULT_DOWNLOAD_CLIENT_DRAFT });
-  const [dcTypeOptions, setDcTypeOptions] = useState<DownloadClientTypeOption[]>(
-    () => buildDownloadClientTypeOptions([]),
-  );
+  const [dcDraft, setDcDraft] = useState<DownloadClientDraft>({
+    ...DEFAULT_DOWNLOAD_CLIENT_DRAFT,
+  });
+  const [dcTypeOptions, setDcTypeOptions] = useState<
+    DownloadClientTypeOption[]
+  >(() => buildDownloadClientTypeOptions([]));
   const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>(() =>
     resolveLocalPathStyle(null),
   );
   const [dcTesting, setDcTesting] = useState(false);
-  const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(null);
+  const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(
+    null,
+  );
   const [dcSaving, setDcSaving] = useState(false);
   const [dcSaved, setDcSaved] = useState(false);
   const [dcError, setDcError] = useState<string | null>(null);
@@ -307,11 +334,16 @@ export function SetupWizardContainer({
   // ── Step 5 (fresh): Indexer ─────────────────────────────────────────
   const [idxName, setIdxName] = useState("");
   const [idxProviderType, setIdxProviderType] = useState("");
-  const [idxConfigValues, setIdxConfigValues] = useState<Record<string, string>>({});
-  const [idxProviderOptions, setIdxProviderOptions] =
-    useState<SetupIndexerProviderOption[]>([]);
+  const [idxConfigValues, setIdxConfigValues] = useState<
+    Record<string, string>
+  >({});
+  const [idxProviderOptions, setIdxProviderOptions] = useState<
+    SetupIndexerProviderOption[]
+  >([]);
   const [idxTesting, setIdxTesting] = useState(false);
-  const [idxTestResult, setIdxTestResult] = useState<"success" | "failed" | null>(null);
+  const [idxTestResult, setIdxTestResult] = useState<
+    "success" | "failed" | null
+  >(null);
   const [idxSaving, setIdxSaving] = useState(false);
   const [idxSaved, setIdxSaved] = useState(false);
   const [idxError, setIdxError] = useState<string | null>(null);
@@ -321,7 +353,9 @@ export function SetupWizardContainer({
   const [pluginsLoading, setPluginsLoading] = useState(true);
   const [pluginsRefreshing, setPluginsRefreshing] = useState(false);
   const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
-  const [pluginProgress, setPluginProgress] = useState<Record<string, PluginInstallProgressRecord>>({});
+  const [pluginProgress, setPluginProgress] = useState<
+    Record<string, PluginInstallProgressRecord>
+  >({});
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
   const [pluginsError, setPluginsError] = useState<string | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
@@ -334,7 +368,9 @@ export function SetupWizardContainer({
   const [prowlarrUrl, setProwlarrUrl] = useState("");
   const [prowlarrApiKey, setProwlarrApiKey] = useState("");
   const [importConnecting, setImportConnecting] = useState(false);
-  const [importConnectError, setImportConnectError] = useState<string | null>(null);
+  const [importConnectError, setImportConnectError] = useState<string | null>(
+    null,
+  );
   const [importConnectServiceErrors, setImportConnectServiceErrors] = useState<{
     sonarr: string | null;
     radarr: string | null;
@@ -346,24 +382,40 @@ export function SetupWizardContainer({
   });
 
   // ── Import: Preview / Review ────────────────────────────────────────
-  const [importPreview, setImportPreview] = useState<ExternalImportPreview | null>(null);
+  const [importPreview, setImportPreview] =
+    useState<ExternalImportPreview | null>(null);
   const [selectedMoviesPaths, setSelectedMoviesPaths] = useState<string[]>([]);
   const [selectedSeriesPaths, setSelectedSeriesPaths] = useState<string[]>([]);
   const [customMoviesPaths, setCustomMoviesPaths] = useState<string[]>([]);
   const [customSeriesPaths, setCustomSeriesPaths] = useState<string[]>([]);
   const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
-  const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
+  const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(
+    new Set(),
+  );
   // User-supplied API keys for clients whose keys were masked by Sonarr/Radarr.
-  const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<Map<string, string>>(new Map());
-  const [idxApiKeyOverrides, setIdxApiKeyOverrides] = useState<Map<string, string>>(new Map());
+  const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<
+    Map<string, string>
+  >(new Map());
+  const [dcPasswordOverrides, setDcPasswordOverrides] = useState<
+    Map<string, string>
+  >(new Map());
+  const [idxApiKeyOverrides, setIdxApiKeyOverrides] = useState<
+    Map<string, string>
+  >(new Map());
   const [selectedAnimePaths, setSelectedAnimePaths] = useState<string[]>([]);
   const [customAnimePaths, setCustomAnimePaths] = useState<string[]>([]);
   const [importExecuting, setImportExecuting] = useState(false);
-  const [importExecuteError, setImportExecuteError] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<ExternalImportResult | null>(null);
+  const [importExecuteError, setImportExecuteError] = useState<string | null>(
+    null,
+  );
+  const [importResult, setImportResult] = useState<ExternalImportResult | null>(
+    null,
+  );
   const [importWarmupProgress, setImportWarmupProgress] =
     useState<ExternalImportMonitorWarmupProgress | null>(null);
-  const [importWarmupError, setImportWarmupError] = useState<string | null>(null);
+  const [importWarmupError, setImportWarmupError] = useState<string | null>(
+    null,
+  );
   const warmupSubscriptionRef = useRef<(() => void) | null>(null);
 
   // ── Summary / Finish ────────────────────────────────────────────────
@@ -373,9 +425,9 @@ export function SetupWizardContainer({
   const finishing = finishingAction !== null;
 
   const beginPluginMutation = useCallback((pluginId: string) => {
-    setMutatingPluginIds((current) => (
-      current.includes(pluginId) ? current : [...current, pluginId]
-    ));
+    setMutatingPluginIds((current) =>
+      current.includes(pluginId) ? current : [...current, pluginId],
+    );
   }, []);
 
   const endPluginMutation = useCallback((pluginId: string) => {
@@ -393,13 +445,16 @@ export function SetupWizardContainer({
     });
   }, []);
 
-  const stopPluginInstallProgressSubscription = useCallback((pluginId: string) => {
-    const unsubscribe = installProgressSubscriptionsRef.current.get(pluginId);
-    if (unsubscribe) {
-      unsubscribe();
-      installProgressSubscriptionsRef.current.delete(pluginId);
-    }
-  }, []);
+  const stopPluginInstallProgressSubscription = useCallback(
+    (pluginId: string) => {
+      const unsubscribe = installProgressSubscriptionsRef.current.get(pluginId);
+      if (unsubscribe) {
+        unsubscribe();
+        installProgressSubscriptionsRef.current.delete(pluginId);
+      }
+    },
+    [],
+  );
 
   const stopImportWarmupProgressSubscription = useCallback(() => {
     if (warmupSubscriptionRef.current) {
@@ -411,19 +466,25 @@ export function SetupWizardContainer({
   const externalImportConnections = useMemo<{
     sonarr: ExternalImportConnection | null;
     radarr: ExternalImportConnection | null;
-  }>(() => ({
-    sonarr:
-      sonarrUrl.trim() && sonarrApiKey.trim()
-        ? { baseUrl: sonarrUrl.trim(), apiKey: sonarrApiKey.trim() }
-        : null,
-    radarr:
-      radarrUrl.trim() && radarrApiKey.trim()
-        ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
-        : null,
-  }), [radarrApiKey, radarrUrl, sonarrApiKey, sonarrUrl]);
+  }>(
+    () => ({
+      sonarr:
+        sonarrUrl.trim() && sonarrApiKey.trim()
+          ? { baseUrl: sonarrUrl.trim(), apiKey: sonarrApiKey.trim() }
+          : null,
+      radarr:
+        radarrUrl.trim() && radarrApiKey.trim()
+          ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
+          : null,
+    }),
+    [radarrApiKey, radarrUrl, sonarrApiKey, sonarrUrl],
+  );
 
   const beginImportWarmupProgressSubscription = useCallback(
-    (sessionId: string, initialSnapshot?: ExternalImportMonitorWarmupProgress | null) => {
+    (
+      sessionId: string,
+      initialSnapshot?: ExternalImportMonitorWarmupProgress | null,
+    ) => {
       stopImportWarmupProgressSubscription();
       if (initialSnapshot) {
         setImportWarmupProgress(initialSnapshot);
@@ -434,7 +495,9 @@ export function SetupWizardContainer({
           variables: { sessionId },
         },
         {
-          next: (result: ExternalImportMonitorWarmupProgressSubscriptionResult) => {
+          next: (
+            result: ExternalImportMonitorWarmupProgressSubscriptionResult,
+          ) => {
             const snapshot = result.data?.externalImportMonitorWarmupProgress;
             if (!snapshot) {
               return;
@@ -495,26 +558,33 @@ export function SetupWizardContainer({
 
   const refreshProviderOptions = useCallback(async () => {
     try {
-      const { data, error } = await client.query(setupWizardProviderTypesInitQuery, {}).toPromise();
-      if (error && !data?.downloadClientProviderTypes && !data?.indexerProviderTypes) throw error;
+      const { data, error } = await client
+        .query(setupWizardProviderTypesInitQuery, {})
+        .toPromise();
+      if (
+        error &&
+        !data?.downloadClientProviderTypes &&
+        !data?.indexerProviderTypes
+      )
+        throw error;
 
       setDcLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
       setDcTypeOptions(
         buildDownloadClientTypeOptions(
-          (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],
+          (data?.downloadClientProviderTypes as
+            | ProviderTypeInfo[]
+            | undefined) ?? [],
         ),
       );
 
       if (data?.indexerProviderTypes?.length) {
         setIdxProviderOptions(
-          data.indexerProviderTypes.map(
-            (provider: ProviderTypeInfo) => ({
-              value: provider.providerType,
-              label: provider.name,
-              defaultBaseUrl: provider.defaultBaseUrl || undefined,
-              configFields: provider.configFields ?? [],
-            }),
-          ),
+          data.indexerProviderTypes.map((provider: ProviderTypeInfo) => ({
+            value: provider.providerType,
+            label: provider.name,
+            defaultBaseUrl: provider.defaultBaseUrl || undefined,
+            configFields: provider.configFields ?? [],
+          })),
         );
       } else {
         setIdxProviderOptions(FALLBACK_PROVIDER_OPTIONS);
@@ -541,7 +611,8 @@ export function SetupWizardContainer({
         .toPromise();
       if (refreshError) throw refreshError;
 
-      const refreshedPlugins = (refreshData?.refreshPluginCatalog ?? []) as RegistryPluginRecord[];
+      const refreshedPlugins = (refreshData?.refreshPluginCatalog ??
+        []) as RegistryPluginRecord[];
       setPlugins(refreshedPlugins);
       return refreshedPlugins;
     },
@@ -555,7 +626,9 @@ export function SetupWizardContainer({
       try {
         await Promise.all([refreshProviderOptions(), loadPlugins(true)]);
       } catch (error) {
-        setPluginsError(error instanceof Error ? error.message : t("status.failedToLoad"));
+        setPluginsError(
+          error instanceof Error ? error.message : t("status.failedToLoad"),
+        );
       } finally {
         setPluginsLoading(false);
       }
@@ -565,13 +638,16 @@ export function SetupWizardContainer({
   useEffect(() => {
     setDcDraft((prev) => {
       const normalizedClientType = normalizeDownloadClientType(prev.clientType);
-      if (dcTypeOptions.some((option) => option.value === normalizedClientType)) {
+      if (
+        dcTypeOptions.some((option) => option.value === normalizedClientType)
+      ) {
         return prev;
       }
 
       return {
         ...prev,
-        clientType: dcTypeOptions[0]?.value ?? DEFAULT_DOWNLOAD_CLIENT_DRAFT.clientType,
+        clientType:
+          dcTypeOptions[0]?.value ?? DEFAULT_DOWNLOAD_CLIENT_DRAFT.clientType,
       };
     });
   }, [dcTypeOptions]);
@@ -583,7 +659,9 @@ export function SetupWizardContainer({
     const firstProvider = idxProviderOptions[0];
     if (firstProvider?.value) {
       setIdxProviderType(firstProvider.value);
-      setIdxConfigValues(buildSetupIndexerConfigValues(firstProvider.configFields));
+      setIdxConfigValues(
+        buildSetupIndexerConfigValues(firstProvider.configFields),
+      );
       setIdxName((current) => current || firstProvider.label);
     }
   }, [idxProviderOptions, idxProviderType]);
@@ -598,9 +676,14 @@ export function SetupWizardContainer({
     };
   }, []);
 
-  const availableDcTypeOptions = ensureDownloadClientTypeOption(dcTypeOptions, dcDraft.clientType);
+  const availableDcTypeOptions = ensureDownloadClientTypeOption(
+    dcTypeOptions,
+    dcDraft.clientType,
+  );
   const selectedIdxProvider = useMemo(
-    () => idxProviderOptions.find((option) => option.value === idxProviderType) ?? null,
+    () =>
+      idxProviderOptions.find((option) => option.value === idxProviderType) ??
+      null,
     [idxProviderOptions, idxProviderType],
   );
   const selectedIdxProviderFields = useMemo(
@@ -610,7 +693,9 @@ export function SetupWizardContainer({
   const indexerProviderConfigFieldsByType = useMemo(
     () =>
       new Map(
-        idxProviderOptions.map((option) => [option.value, option.configFields] as const),
+        idxProviderOptions.map(
+          (option) => [option.value, option.configFields] as const,
+        ),
       ),
     [idxProviderOptions],
   );
@@ -632,8 +717,9 @@ export function SetupWizardContainer({
   const handleIdxProviderTypeChange = useCallback(
     (nextProviderType: string) => {
       const nextProvider =
-        idxProviderOptions.find((option) => option.value === nextProviderType) ??
-        null;
+        idxProviderOptions.find(
+          (option) => option.value === nextProviderType,
+        ) ?? null;
       setIdxProviderType(nextProviderType);
       setIdxConfigValues(
         buildSetupIndexerConfigValues(nextProvider?.configFields ?? []),
@@ -684,7 +770,9 @@ export function SetupWizardContainer({
 
       setPlugins((data?.refreshPluginCatalog ?? []) as RegistryPluginRecord[]);
     } catch (error) {
-      setPluginsError(error instanceof Error ? error.message : t("status.failedToLoad"));
+      setPluginsError(
+        error instanceof Error ? error.message : t("status.failedToLoad"),
+      );
     } finally {
       setPluginsRefreshing(false);
     }
@@ -726,7 +814,10 @@ export function SetupWizardContainer({
                       delete next[plugin.id];
                       return next;
                     });
-                    await Promise.all([loadPlugins(false), refreshProviderOptions()]);
+                    await Promise.all([
+                      loadPlugins(false),
+                      refreshProviderOptions(),
+                    ]);
                   } else {
                     setPluginErrors((current) => ({
                       ...current,
@@ -738,7 +829,11 @@ export function SetupWizardContainer({
                     }));
                   }
                 } catch (error) {
-                  setPluginsError(error instanceof Error ? error.message : t("status.failedToLoad"));
+                  setPluginsError(
+                    error instanceof Error
+                      ? error.message
+                      : t("status.failedToLoad"),
+                  );
                 } finally {
                   clearPluginProgress(plugin.id);
                   endPluginMutation(plugin.id);
@@ -801,7 +896,13 @@ export function SetupWizardContainer({
         endPluginMutation(plugin.id);
       }
     },
-    [beginLivePluginProgress, beginPluginMutation, client, endPluginMutation, t],
+    [
+      beginLivePluginProgress,
+      beginPluginMutation,
+      client,
+      endPluginMutation,
+      t,
+    ],
   );
 
   const uninstallPlugin = useCallback(
@@ -825,30 +926,55 @@ export function SetupWizardContainer({
       } catch (error) {
         setPluginErrors((current) => ({
           ...current,
-          [plugin.id]: extractPluginMutationErrorMessage(error) ?? t("status.failedToDelete"),
+          [plugin.id]:
+            extractPluginMutationErrorMessage(error) ??
+            t("status.failedToDelete"),
         }));
       } finally {
         endPluginMutation(plugin.id);
       }
     },
-    [beginPluginMutation, client, endPluginMutation, loadPlugins, refreshProviderOptions, t],
+    [
+      beginPluginMutation,
+      client,
+      endPluginMutation,
+      loadPlugins,
+      refreshProviderOptions,
+      t,
+    ],
   );
 
   // ── Step labels per path ────────────────────────────────────────────
   const stepLabels =
     wizardPath === "import"
-      ? [t("setup.stepConnect"), t("setup.stepReview"), t("setup.stepPersona"), t("setup.stepSummary")]
+      ? [
+          t("setup.stepConnect"),
+          t("setup.stepReview"),
+          t("setup.stepPersona"),
+          t("setup.stepSummary"),
+        ]
       : wizardPath === "restore"
         ? [t("setup.stepRestore")]
-      : [t("setup.stepPersona"), t("setup.stepMediaPaths"), t("setup.stepPlugins"), t("setup.stepDownloadClient"), t("setup.stepIndexer"), t("setup.stepSummary")];
+        : [
+            t("setup.stepPersona"),
+            t("setup.stepMediaPaths"),
+            t("setup.stepPlugins"),
+            t("setup.stepDownloadClient"),
+            t("setup.stepIndexer"),
+            t("setup.stepSummary"),
+          ];
 
   // ── Quality preferences save (per-facet) ────────────────────────────
   const saveFacetQualityPrefs = useCallback(
     async (nextStep: number) => {
       setPersonaSaving(true);
       try {
-        const { data } = await client.query(qualityProfilesInitQuery, {}).toPromise();
-        const existingProfiles = qualityProfileSettingsToEntries(data?.qualityProfileSettings);
+        const { data } = await client
+          .query(qualityProfilesInitQuery, {})
+          .toPromise();
+        const existingProfiles = qualityProfileSettingsToEntries(
+          data?.qualityProfileSettings,
+        );
 
         // Build per-facet profiles from templates
         const WIZARD_FACETS: { facet: ViewCategoryId; name: string }[] = [
@@ -859,7 +985,9 @@ export function SetupWizardContainer({
         const wizardProfileIds = WIZARD_FACETS.map((f) => `wizard-${f.facet}`);
         const builtinProfileIds = ["4k", "1080p"];
         const keptProfiles = existingProfiles.filter(
-          (p) => !wizardProfileIds.includes(p.id) && !builtinProfileIds.includes(p.id),
+          (p) =>
+            !wizardProfileIds.includes(p.id) &&
+            !builtinProfileIds.includes(p.id),
         );
 
         for (const { facet, name } of WIZARD_FACETS) {
@@ -941,9 +1069,11 @@ export function SetupWizardContainer({
     (updates: Partial<DownloadClientDraft>) => {
       const next = { ...dcDraft, ...updates };
       if (updates.clientType && updates.clientType !== dcDraft.clientType) {
-        const prevDefault = DEFAULT_PORT_FOR_CLIENT_TYPE[dcDraft.clientType] ?? "8080";
+        const prevDefault =
+          DEFAULT_PORT_FOR_CLIENT_TYPE[dcDraft.clientType] ?? "8080";
         if (dcDraft.port === "" || dcDraft.port === prevDefault) {
-          next.port = DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
+          next.port =
+            DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
         }
       }
 
@@ -1142,7 +1272,11 @@ export function SetupWizardContainer({
   const handleImportConnect = useCallback(async () => {
     setImportConnecting(true);
     setImportConnectError(null);
-    setImportConnectServiceErrors({ sonarr: null, radarr: null, prowlarr: null });
+    setImportConnectServiceErrors({
+      sonarr: null,
+      radarr: null,
+      prowlarr: null,
+    });
     try {
       const sonarr =
         sonarrUrl.trim() && sonarrApiKey.trim()
@@ -1159,7 +1293,11 @@ export function SetupWizardContainer({
 
       const { data, error } = await client
         .mutation(previewExternalImportMutation, {
-          input: { sonarr: sonarr ?? null, radarr: radarr ?? null, prowlarr: prowlarr ?? null },
+          input: {
+            sonarr: sonarr ?? null,
+            radarr: radarr ?? null,
+            prowlarr: prowlarr ?? null,
+          },
         })
         .toPromise();
       if (error) throw error;
@@ -1226,6 +1364,7 @@ export function SetupWizardContainer({
 
       setImportPreview(preview);
       setDcApiKeyOverrides(new Map());
+      setDcPasswordOverrides(new Map());
       setIdxApiKeyOverrides(new Map());
 
       // Auto-select all supported items
@@ -1242,11 +1381,15 @@ export function SetupWizardContainer({
       setSelectedIdxKeys(idxKeys);
 
       // Auto-select all Radarr roots for movies.
-      const radarrFolders = preview.rootFolders.filter((f) => f.source === "radarr");
+      const radarrFolders = preview.rootFolders.filter(
+        (f) => f.source === "radarr",
+      );
       setSelectedMoviesPaths(radarrFolders.map((folder) => folder.path));
       setCustomMoviesPaths([]);
 
-      const sonarrFolders = preview.rootFolders.filter((f) => f.source === "sonarr");
+      const sonarrFolders = preview.rootFolders.filter(
+        (f) => f.source === "sonarr",
+      );
       setSelectedSeriesPaths(sonarrFolders.map((folder) => folder.path));
       setSelectedAnimePaths([]);
       setCustomSeriesPaths([]);
@@ -1254,7 +1397,9 @@ export function SetupWizardContainer({
 
       goToStep(2);
     } catch (err) {
-      setImportConnectError(err instanceof Error ? err.message : "Connection failed");
+      setImportConnectError(
+        err instanceof Error ? err.message : "Connection failed",
+      );
     } finally {
       setImportConnecting(false);
     }
@@ -1273,15 +1418,18 @@ export function SetupWizardContainer({
     if (wizardPath !== "import" || currentStep !== 2 || !importPreview) {
       return;
     }
-    if (!externalImportConnections.sonarr && !externalImportConnections.radarr) {
+    if (
+      !externalImportConnections.sonarr &&
+      !externalImportConnections.radarr
+    ) {
       return;
     }
     if (
-      importWarmupProgress?.status === "queued"
-      || importWarmupProgress?.status === "running"
-      || importWarmupProgress?.status === "completed"
-      || importWarmupProgress?.status === "failed"
-      || importWarmupProgress?.status === "canceled"
+      importWarmupProgress?.status === "queued" ||
+      importWarmupProgress?.status === "running" ||
+      importWarmupProgress?.status === "completed" ||
+      importWarmupProgress?.status === "failed" ||
+      importWarmupProgress?.status === "canceled"
     ) {
       return;
     }
@@ -1317,7 +1465,9 @@ export function SetupWizardContainer({
         }
       } catch (error) {
         if (!canceled) {
-          setImportWarmupError(error instanceof Error ? error.message : t("setup.connectError"));
+          setImportWarmupError(
+            error instanceof Error ? error.message : t("setup.connectError"),
+          );
         }
       }
     })();
@@ -1355,9 +1505,11 @@ export function SetupWizardContainer({
       importWarmupProgress.status !== "failed" &&
       importWarmupProgress.status !== "canceled"
     ) {
-      void client.mutation(cancelExternalImportMonitorWarmupMutation, {
-        input: { sessionId },
-      }).toPromise();
+      void client
+        .mutation(cancelExternalImportMonitorWarmupMutation, {
+          input: { sessionId },
+        })
+        .toPromise();
     }
     setImportWarmupProgress(null);
     setImportWarmupError(null);
@@ -1419,9 +1571,12 @@ export function SetupWizardContainer({
     stopImportWarmupProgressSubscription,
   ]);
 
-  useEffect(() => () => {
-    stopImportWarmupProgressSubscription();
-  }, [stopImportWarmupProgressSubscription]);
+  useEffect(
+    () => () => {
+      stopImportWarmupProgressSubscription();
+    },
+    [stopImportWarmupProgressSubscription],
+  );
 
   // ── Import: Execute ─────────────────────────────────────────────────
   const buildSelectedImportPaths = useCallback(
@@ -1456,22 +1611,25 @@ export function SetupWizardContainer({
   const handleImportExecute = useCallback(async () => {
     const missingApiKeyRequirement = importPreview
       ? findMissingExternalImportApiKeyRequirement({
-        preview: importPreview,
-        selectedDcKeys,
-        selectedIdxKeys,
-        dcApiKeyOverrides,
-        idxApiKeyOverrides,
-        indexerProviderConfigFieldsByType,
-      })
+          preview: importPreview,
+          selectedDcKeys,
+          selectedIdxKeys,
+          dcApiKeyOverrides,
+          dcPasswordOverrides,
+          idxApiKeyOverrides,
+          indexerProviderConfigFieldsByType,
+        })
       : null;
     if (missingApiKeyRequirement) {
-      setImportExecuteError(
-        missingApiKeyRequirement.isProwlarr
-          ? t("setup.prowlarrApiKeyRequired", {
-            name: missingApiKeyRequirement.name,
-          })
-          : t("setup.apiKeyMasked"),
-      );
+      const missingCredentialMessage =
+        missingApiKeyRequirement.kind === "password"
+          ? t("status.passwordRequired")
+          : missingApiKeyRequirement.isProwlarr
+            ? t("setup.prowlarrApiKeyRequired", {
+                name: missingApiKeyRequirement.name,
+              })
+            : t("setup.apiKeyMasked");
+      setImportExecuteError(missingCredentialMessage);
       return;
     }
 
@@ -1491,7 +1649,9 @@ export function SetupWizardContainer({
           ? { baseUrl: prowlarrUrl.trim(), apiKey: prowlarrApiKey.trim() }
           : undefined;
       const downloadClientDedupKeys = new Set(
-        importPreview?.downloadClients.map((downloadClient) => downloadClient.dedupKey) ?? [],
+        importPreview?.downloadClients.map(
+          (downloadClient) => downloadClient.dedupKey,
+        ) ?? [],
       );
       const indexerDedupKeys = new Set(
         importPreview?.indexers.map((indexer) => indexer.dedupKey) ?? [],
@@ -1511,6 +1671,9 @@ export function SetupWizardContainer({
             downloadClientApiKeyOverrides: [...dcApiKeyOverrides.entries()]
               .filter(([dedupKey]) => downloadClientDedupKeys.has(dedupKey))
               .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
+            downloadClientPasswordOverrides: [...dcPasswordOverrides.entries()]
+              .filter(([dedupKey]) => downloadClientDedupKeys.has(dedupKey))
+              .map(([dedupKey, password]) => ({ dedupKey, password })),
             indexerApiKeyOverrides: [...idxApiKeyOverrides.entries()]
               .filter(([dedupKey]) => indexerDedupKeys.has(dedupKey))
               .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
@@ -1523,9 +1686,12 @@ export function SetupWizardContainer({
       setImportResult(result);
 
       // Keep the wizard summary aligned with the default imported roots.
-      if (finalSelectedMoviesPaths.length > 0) setMoviesPath(finalSelectedMoviesPaths[0]);
-      if (finalSelectedSeriesPaths.length > 0) setSeriesPath(finalSelectedSeriesPaths[0]);
-      if (finalSelectedAnimePaths.length > 0) setAnimePath(finalSelectedAnimePaths[0]);
+      if (finalSelectedMoviesPaths.length > 0)
+        setMoviesPath(finalSelectedMoviesPaths[0]);
+      if (finalSelectedSeriesPaths.length > 0)
+        setSeriesPath(finalSelectedSeriesPaths[0]);
+      if (finalSelectedAnimePaths.length > 0)
+        setAnimePath(finalSelectedAnimePaths[0]);
 
       if (result.errors.length > 0) {
         setImportExecuteError(result.errors.join("; "));
@@ -1533,7 +1699,9 @@ export function SetupWizardContainer({
 
       goToStep(3); // → persona
     } catch (err) {
-      setImportExecuteError(err instanceof Error ? err.message : "Import failed");
+      setImportExecuteError(
+        err instanceof Error ? err.message : "Import failed",
+      );
     } finally {
       setImportExecuting(false);
     }
@@ -1551,6 +1719,7 @@ export function SetupWizardContainer({
     selectedDcKeys,
     selectedIdxKeys,
     dcApiKeyOverrides,
+    dcPasswordOverrides,
     idxApiKeyOverrides,
     indexerProviderConfigFieldsByType,
     importPreview,
@@ -1593,32 +1762,39 @@ export function SetupWizardContainer({
     t,
   ]);
 
-  const finishSetup = useCallback(async (action: "finish" | "importOnly" = "finish") => {
-    setFinishingAction(action);
-    try {
-      if (action === "importOnly") {
-        await finalizeImportedMonitorSnapshots();
-      }
-      const { data, error } = await client.mutation(completeSetupMutation, {}).toPromise();
-      if (error) {
-        throw error;
-      }
-      if (!data?.completeSetup) {
-        throw new Error(t("setup.connectError"));
-      }
-      navigateAfterSetup();
-    } catch (error) {
-      if (action === "importOnly") {
-        toast.warning(
-          error instanceof Error ? error.message : t("setup.importFinalizeFailed"),
-        );
-      } else {
+  const finishSetup = useCallback(
+    async (action: "finish" | "importOnly" = "finish") => {
+      setFinishingAction(action);
+      try {
+        if (action === "importOnly") {
+          await finalizeImportedMonitorSnapshots();
+        }
+        const { data, error } = await client
+          .mutation(completeSetupMutation, {})
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (!data?.completeSetup) {
+          throw new Error(t("setup.connectError"));
+        }
         navigateAfterSetup();
+      } catch (error) {
+        if (action === "importOnly") {
+          toast.warning(
+            error instanceof Error
+              ? error.message
+              : t("setup.importFinalizeFailed"),
+          );
+        } else {
+          navigateAfterSetup();
+        }
+      } finally {
+        setFinishingAction(null);
       }
-    } finally {
-      setFinishingAction(null);
-    }
-  }, [client, finalizeImportedMonitorSnapshots, navigateAfterSetup, t]);
+    },
+    [client, finalizeImportedMonitorSnapshots, navigateAfterSetup, t],
+  );
 
   const finishImportAndScan = useCallback(async () => {
     setFinishingAction("importAndScan");
@@ -1657,7 +1833,9 @@ export function SetupWizardContainer({
 
     try {
       await finalizeImportedMonitorSnapshots();
-      const { data, error } = await client.mutation(completeSetupMutation, {}).toPromise();
+      const { data, error } = await client
+        .mutation(completeSetupMutation, {})
+        .toPromise();
       if (error) {
         throw error;
       }
@@ -1680,21 +1858,24 @@ export function SetupWizardContainer({
               error instanceof Error ? error.message : String(error ?? "");
             if (/library scan already running/i.test(message)) {
               toast.info(
-                t("settings.libraryScanAlreadyRunning").replace("{{facet}}", label),
+                t("settings.libraryScanAlreadyRunning").replace(
+                  "{{facet}}",
+                  label,
+                ),
               );
               return;
             }
 
-            toast.warning(
-              message || t("settings.libraryScanFailed"),
-            );
+            toast.warning(message || t("settings.libraryScanFailed"));
           }
         }),
       );
       navigateAfterSetup();
     } catch (error) {
       toast.warning(
-        error instanceof Error ? error.message : t("setup.importFinalizeFailed"),
+        error instanceof Error
+          ? error.message
+          : t("setup.importFinalizeFailed"),
       );
     } finally {
       setFinishingAction(null);
@@ -1720,7 +1901,9 @@ export function SetupWizardContainer({
       setter((prev) =>
         prev.includes(path)
           ? prev.filter((entry) => entry !== path)
-          : importedPaths.filter((entry) => prev.includes(entry) || entry === path),
+          : importedPaths.filter(
+              (entry) => prev.includes(entry) || entry === path,
+            ),
       );
     },
     [],
@@ -1728,9 +1911,10 @@ export function SetupWizardContainer({
 
   const toggleMoviesPath = useCallback(
     (path: string) => {
-      const importedPaths = importPreview?.rootFolders
-        .filter((folder) => folder.source === "radarr")
-        .map((folder) => folder.path) ?? [];
+      const importedPaths =
+        importPreview?.rootFolders
+          .filter((folder) => folder.source === "radarr")
+          .map((folder) => folder.path) ?? [];
       toggleImportedPathSelection(setSelectedMoviesPaths, path, importedPaths);
     },
     [importPreview, toggleImportedPathSelection],
@@ -1738,14 +1922,22 @@ export function SetupWizardContainer({
 
   const toggleSeriesPath = useCallback(
     (path: string) => {
-      toggleImportedPathSelection(setSelectedSeriesPaths, path, importedSonarrPaths);
+      toggleImportedPathSelection(
+        setSelectedSeriesPaths,
+        path,
+        importedSonarrPaths,
+      );
     },
     [importedSonarrPaths, toggleImportedPathSelection],
   );
 
   const toggleAnimePath = useCallback(
     (path: string) => {
-      toggleImportedPathSelection(setSelectedAnimePaths, path, importedSonarrPaths);
+      toggleImportedPathSelection(
+        setSelectedAnimePaths,
+        path,
+        importedSonarrPaths,
+      );
     },
     [importedSonarrPaths, toggleImportedPathSelection],
   );
@@ -1766,7 +1958,9 @@ export function SetupWizardContainer({
         setSelectedImportedPaths((prev) =>
           prev.includes(trimmed)
             ? prev
-            : importedPaths.filter((entry) => prev.includes(entry) || entry === trimmed),
+            : importedPaths.filter(
+                (entry) => prev.includes(entry) || entry === trimmed,
+              ),
         );
         return;
       }
@@ -1787,9 +1981,10 @@ export function SetupWizardContainer({
 
   const addCustomMoviesPath = useCallback(
     (path: string) => {
-      const importedPaths = importPreview?.rootFolders
-        .filter((folder) => folder.source === "radarr")
-        .map((folder) => folder.path) ?? [];
+      const importedPaths =
+        importPreview?.rootFolders
+          .filter((folder) => folder.source === "radarr")
+          .map((folder) => folder.path) ?? [];
       addCustomFacetPath(
         path,
         importedPaths,
@@ -1869,6 +2064,15 @@ export function SetupWizardContainer({
     });
   }, []);
 
+  const setDcPassword = useCallback((dedupKey: string, password: string) => {
+    setDcPasswordOverrides((prev) => {
+      const next = new Map(prev);
+      if (password) next.set(dedupKey, password);
+      else next.delete(dedupKey);
+      return next;
+    });
+  }, []);
+
   const setIdxApiKey = useCallback((dedupKey: string, apiKey: string) => {
     setIdxApiKeyOverrides((prev) => {
       const next = new Map(prev);
@@ -1883,7 +2087,8 @@ export function SetupWizardContainer({
   // Step mapping for progress bar (step 0 = welcome, not shown in bar)
   const progressStep = currentStep > 0 ? currentStep - 1 : -1;
   const isWideImportStep =
-    currentStep === 0 || (wizardPath === "import" && (currentStep === 1 || currentStep === 2));
+    currentStep === 0 ||
+    (wizardPath === "import" && (currentStep === 1 || currentStep === 2));
 
   return (
     <div
@@ -1893,7 +2098,10 @@ export function SetupWizardContainer({
     >
       {currentStep > 0 && (
         <div className="mb-8 w-full">
-          <SetupProgressBar currentStep={progressStep} stepLabels={stepLabels} />
+          <SetupProgressBar
+            currentStep={progressStep}
+            stepLabels={stepLabels}
+          />
         </div>
       )}
 
@@ -2069,6 +2277,7 @@ export function SetupWizardContainer({
           selectedDcKeys={selectedDcKeys}
           selectedIdxKeys={selectedIdxKeys}
           dcApiKeyOverrides={dcApiKeyOverrides}
+          dcPasswordOverrides={dcPasswordOverrides}
           idxApiKeyOverrides={idxApiKeyOverrides}
           indexerProviderConfigFieldsByType={indexerProviderConfigFieldsByType}
           onToggleMoviesPath={toggleMoviesPath}
@@ -2083,6 +2292,7 @@ export function SetupWizardContainer({
           onToggleDc={toggleDcKey}
           onToggleIdx={toggleIdxKey}
           onSetDcApiKey={setDcApiKey}
+          onSetDcPassword={setDcPassword}
           onSetIdxApiKey={setIdxApiKey}
           onImport={handleImportExecute}
           onBack={() => goToStep(1)}

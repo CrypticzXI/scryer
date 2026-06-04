@@ -425,7 +425,8 @@ pub use types::{
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
     ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
     ExternalImportMonitorSnapshotEntryKind, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource,
+    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+    library_scan_folder_leaf_key,
 };
 pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,

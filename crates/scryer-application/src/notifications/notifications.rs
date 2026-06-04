@@ -829,7 +829,7 @@ impl AppUseCase {
             let rendered = connection
                 .path_mappings
                 .iter()
-                .map(|mapping| format!("{} => {}", mapping.source_path, mapping.destination_path))
+                .map(|mapping| format!("{} => {}", mapping.destination_path, mapping.source_path))
                 .collect::<Vec<_>>()
                 .join("\n");
             config.insert(

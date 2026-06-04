@@ -476,6 +476,25 @@ impl AppUseCase {
         let created = self
             .create_title_without_hydration_in_library(actor, request, library_id)
             .await?;
+        self.finish_add_title_with_outcome(created).await
+    }
+
+    pub(crate) async fn add_title_with_outcome_after_library_authorization(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+    ) -> AppResult<AddTitleOutcome> {
+        let created = self
+            .create_title_without_hydration_after_library_authorization(actor, request, library_id)
+            .await?;
+        self.finish_add_title_with_outcome(created).await
+    }
+
+    async fn finish_add_title_with_outcome(
+        &self,
+        created: CreateTitleOutcome,
+    ) -> AppResult<AddTitleOutcome> {
         self.notify_title_image_wakes(&created.title);
 
         let metadata_hydration_state = if created.title.metadata_fetched_at.is_some() {

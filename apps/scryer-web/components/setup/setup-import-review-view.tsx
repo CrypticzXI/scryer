@@ -1,5 +1,12 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, Ban, Check, FolderOpen, Loader2, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Ban,
+  Check,
+  FolderOpen,
+  Loader2,
+  Trash2,
+} from "lucide-react";
 
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
@@ -9,6 +16,7 @@ import { selectorId } from "@/lib/utils/dom-ids";
 
 import {
   externalImportDownloadClientNeedsUserSuppliedApiKey,
+  externalImportDownloadClientNeedsUserSuppliedPassword,
   externalImportIndexerNeedsUserSuppliedApiKey,
 } from "./setup-import-api-key-requirements";
 
@@ -27,6 +35,7 @@ interface SetupImportReviewViewProps {
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
   dcApiKeyOverrides: Map<string, string>;
+  dcPasswordOverrides: Map<string, string>;
   idxApiKeyOverrides: Map<string, string>;
   indexerProviderConfigFieldsByType: Map<string, ConfigFieldDef[]>;
   onToggleMoviesPath: (path: string) => void;
@@ -41,6 +50,7 @@ interface SetupImportReviewViewProps {
   onToggleDc: (dedupKey: string) => void;
   onToggleIdx: (dedupKey: string) => void;
   onSetDcApiKey: (dedupKey: string, apiKey: string) => void;
+  onSetDcPassword: (dedupKey: string, password: string) => void;
   onSetIdxApiKey: (dedupKey: string, apiKey: string) => void;
   onImport: () => void;
   onBack: () => void;
@@ -60,6 +70,7 @@ export function SetupImportReviewView({
   selectedDcKeys,
   selectedIdxKeys,
   dcApiKeyOverrides,
+  dcPasswordOverrides,
   idxApiKeyOverrides,
   indexerProviderConfigFieldsByType,
   onToggleMoviesPath,
@@ -74,6 +85,7 @@ export function SetupImportReviewView({
   onToggleDc,
   onToggleIdx,
   onSetDcApiKey,
+  onSetDcPassword,
   onSetIdxApiKey,
   onImport,
   onBack,
@@ -102,11 +114,20 @@ export function SetupImportReviewView({
 
   const browserInitialPath =
     browseTarget === "movie"
-      ? customMoviesPaths.at(-1) ?? selectedMoviesPaths[0] ?? radarrFolders[0]?.path ?? "/"
+      ? (customMoviesPaths.at(-1) ??
+        selectedMoviesPaths[0] ??
+        radarrFolders[0]?.path ??
+        "/")
       : browseTarget === "series"
-        ? customSeriesPaths.at(-1) ?? selectedSeriesPaths[0] ?? sonarrFolders[0]?.path ?? "/"
+        ? (customSeriesPaths.at(-1) ??
+          selectedSeriesPaths[0] ??
+          sonarrFolders[0]?.path ??
+          "/")
         : browseTarget === "anime"
-          ? customAnimePaths.at(-1) ?? selectedAnimePaths[0] ?? sonarrFolders[0]?.path ?? "/"
+          ? (customAnimePaths.at(-1) ??
+            selectedAnimePaths[0] ??
+            sonarrFolders[0]?.path ??
+            "/")
           : "/";
 
   const browserTitle =
@@ -136,32 +157,41 @@ export function SetupImportReviewView({
     <div id="setup-import-review-view" className="w-full space-y-6">
       <div className="text-center">
         <h2 className="mb-2 text-xl font-semibold">{t("setup.reviewTitle")}</h2>
-        <p className="text-sm text-muted-foreground">{t("setup.reviewDescription")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("setup.reviewDescription")}
+        </p>
       </div>
 
       <div className="flex items-center justify-center gap-3">
         {preview.sonarrConnected ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
             <Check className="h-3 w-3" />
-            Sonarr {preview.sonarrVersion ? `v${preview.sonarrVersion}` : ""} {t("setup.connected")}
+            Sonarr {preview.sonarrVersion
+              ? `v${preview.sonarrVersion}`
+              : ""}{" "}
+            {t("setup.connected")}
           </span>
         ) : null}
         {preview.radarrConnected ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-600 dark:text-amber-400">
             <Check className="h-3 w-3" />
-            Radarr {preview.radarrVersion ? `v${preview.radarrVersion}` : ""} {t("setup.connected")}
+            Radarr {preview.radarrVersion
+              ? `v${preview.radarrVersion}`
+              : ""}{" "}
+            {t("setup.connected")}
           </span>
         ) : null}
         {preview.prowlarrConnected ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
             <Check className="h-3 w-3" />
-            Prowlarr {preview.prowlarrVersion ? `v${preview.prowlarrVersion}` : ""}{" "}
+            Prowlarr{" "}
+            {preview.prowlarrVersion ? `v${preview.prowlarrVersion}` : ""}{" "}
             {t("setup.connected")}
           </span>
         ) : null}
       </div>
 
-      {(preview.radarrConnected || preview.sonarrConnected) ? (
+      {preview.radarrConnected || preview.sonarrConnected ? (
         <Section title={t("setup.mediaPathsSection")}>
           {preview.radarrConnected ? (
             <ImportPathFacetSection
@@ -205,7 +235,10 @@ export function SetupImportReviewView({
       {preview.downloadClients.length > 0 ? (
         <Section title={t("setup.downloadClientsSection")}>
           {preview.downloadClients.map((dc) => {
-            const needsApiKey = externalImportDownloadClientNeedsUserSuppliedApiKey(dc);
+            const needsApiKey =
+              externalImportDownloadClientNeedsUserSuppliedApiKey(dc);
+            const needsPassword =
+              externalImportDownloadClientNeedsUserSuppliedPassword(dc);
             const isSelected = selectedDcKeys.has(dc.dedupKey);
             const sabUrl = dc.host
               ? `${dc.useSsl ? "https" : "http"}://${dc.host}${dc.port ? `:${dc.port}` : ""}${dc.urlBase ? `/${dc.urlBase.replace(/^\//, "")}` : ""}/config/general/`
@@ -214,7 +247,9 @@ export function SetupImportReviewView({
               <div key={dc.dedupKey}>
                 <label
                   className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
-                    dc.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
+                    dc.supported
+                      ? "cursor-pointer hover:bg-muted"
+                      : "cursor-not-allowed opacity-50"
                   }`}
                 >
                   <input
@@ -228,7 +263,9 @@ export function SetupImportReviewView({
                     <span className="font-medium">{dc.name}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
                       {dc.implementation}
-                      {dc.host ? ` @ ${dc.host}${dc.port ? `:${dc.port}` : ""}` : ""}
+                      {dc.host
+                        ? ` @ ${dc.host}${dc.port ? `:${dc.port}` : ""}`
+                        : ""}
                     </span>
                   </div>
                   <SourceBadges sources={dc.sources} t={t} />
@@ -240,7 +277,9 @@ export function SetupImportReviewView({
                 </label>
                 {needsApiKey && isSelected ? (
                   <div className="mb-1 ml-8 space-y-1">
-                    <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t("setup.apiKeyMasked")}
+                    </p>
                     <input
                       id={selectorId(
                         "setup-import-download-client-api-key",
@@ -248,7 +287,9 @@ export function SetupImportReviewView({
                       )}
                       type="password"
                       value={dcApiKeyOverrides.get(dc.dedupKey) ?? ""}
-                      onChange={(e) => onSetDcApiKey(dc.dedupKey, e.target.value)}
+                      onChange={(e) =>
+                        onSetDcApiKey(dc.dedupKey, e.target.value)
+                      }
                       placeholder={t("setup.apiKeyPlaceholder")}
                       className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
@@ -264,6 +305,26 @@ export function SetupImportReviewView({
                     ) : null}
                   </div>
                 ) : null}
+                {needsPassword && isSelected ? (
+                  <div className="mb-1 ml-8 space-y-1">
+                    <p className="text-xs text-muted-foreground">
+                      {t("status.passwordRequired")}
+                    </p>
+                    <input
+                      id={selectorId(
+                        "setup-import-download-client-password",
+                        dc.dedupKey,
+                      )}
+                      type="password"
+                      value={dcPasswordOverrides.get(dc.dedupKey) ?? ""}
+                      onChange={(e) =>
+                        onSetDcPassword(dc.dedupKey, e.target.value)
+                      }
+                      placeholder={t("form.passwordPlaceholder")}
+                      className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -276,10 +337,13 @@ export function SetupImportReviewView({
             const providerConfigFields =
               idx.scryerProviderType === null
                 ? []
-                : (indexerProviderConfigFieldsByType.get(idx.scryerProviderType) ?? []);
+                : (indexerProviderConfigFieldsByType.get(
+                    idx.scryerProviderType,
+                  ) ?? []);
             const isSelected = selectedIdxKeys.has(idx.dedupKey);
             const isProwlarr = idx.scryerProviderType === "prowlarr";
-            const isDirectProwlarr = isProwlarr && idx.sources.includes("prowlarr");
+            const isDirectProwlarr =
+              isProwlarr && idx.sources.includes("prowlarr");
             const needsApiKey = externalImportIndexerNeedsUserSuppliedApiKey(
               idx,
               providerConfigFields,
@@ -326,7 +390,9 @@ export function SetupImportReviewView({
                           </div>
                         ) : null}
                         {isDirectProwlarr ? (
-                          <div>{t("setup.prowlarrManagedChildrenReadOnly")}</div>
+                          <div>
+                            {t("setup.prowlarrManagedChildrenReadOnly")}
+                          </div>
                         ) : null}
                       </div>
                     ) : null}
@@ -341,7 +407,9 @@ export function SetupImportReviewView({
                 {needsApiKey && isSelected ? (
                   <div className="mb-1 ml-8 space-y-1">
                     <p className="text-xs text-muted-foreground">
-                      {isProwlarr ? t("setup.prowlarrApiKeyMasked") : t("setup.apiKeyMasked")}
+                      {isProwlarr
+                        ? t("setup.prowlarrApiKeyMasked")
+                        : t("setup.apiKeyMasked")}
                     </p>
                     <input
                       id={selectorId(
@@ -350,7 +418,9 @@ export function SetupImportReviewView({
                       )}
                       type="password"
                       value={idxApiKeyOverrides.get(idx.dedupKey) ?? ""}
-                      onChange={(e) => onSetIdxApiKey(idx.dedupKey, e.target.value)}
+                      onChange={(e) =>
+                        onSetIdxApiKey(idx.dedupKey, e.target.value)
+                      }
                       placeholder={t("setup.apiKeyPlaceholder")}
                       className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
@@ -361,7 +431,9 @@ export function SetupImportReviewView({
                         rel="noopener noreferrer"
                         className="inline-block text-xs text-primary underline underline-offset-2"
                       >
-                        {isProwlarr ? t("setup.prowlarrApiKeyHelpLink") : t("setup.apiKeyHelpLink")}
+                        {isProwlarr
+                          ? t("setup.prowlarrApiKeyHelpLink")
+                          : t("setup.apiKeyHelpLink")}
                       </a>
                     ) : null}
                   </div>
@@ -376,7 +448,8 @@ export function SetupImportReviewView({
       preview.indexers.length === 0 &&
       preview.rootFolders.length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">
-          <Ban className="mb-1 inline-block h-4 w-4" /> {t("setup.noItemsFound")}
+          <Ban className="mb-1 inline-block h-4 w-4" />{" "}
+          {t("setup.noItemsFound")}
         </p>
       ) : null}
 
@@ -423,7 +496,13 @@ export function SetupImportReviewView({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-2 rounded-lg border border-border p-4">
       <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -475,7 +554,9 @@ function ImportPathFacetSection({
               onChange={() => onToggleImported(folder.path)}
               className="accent-primary"
             />
-            <code className="min-w-0 flex-1 truncate text-xs">{folder.path}</code>
+            <code className="min-w-0 flex-1 truncate text-xs">
+              {folder.path}
+            </code>
             <SourceBadges sources={[folder.source]} t={t} />
           </label>
         ))}
@@ -507,7 +588,13 @@ function ImportPathFacetSection({
   );
 }
 
-function SourceBadges({ sources, t }: { sources: string[]; t: (key: string) => string }) {
+function SourceBadges({
+  sources,
+  t,
+}: {
+  sources: string[];
+  t: (key: string) => string;
+}) {
   return (
     <span className="flex gap-1">
       {sources.map((source) => {

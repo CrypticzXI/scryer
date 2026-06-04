@@ -48,6 +48,7 @@ pub struct ArrMovie {
     pub id: i64,
     pub root_folder_path: String,
     pub path: Option<String>,
+    pub file_path: Option<String>,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
@@ -83,6 +84,7 @@ pub struct ArrEpisode {
     pub tvdb_id: Option<String>,
     pub season_number: i32,
     pub episode_number: i32,
+    pub file_path: Option<String>,
     pub monitored: bool,
 }
 
@@ -376,15 +378,12 @@ impl ExternalArrClient {
                     return None;
                 }
 
+                let path = value_trimmed_string(item.get("path"));
                 Some(ArrMovie {
                     id,
                     root_folder_path,
-                    path: item
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string),
+                    file_path: arr_nested_file_path(item.get("movieFile"), path.as_deref()),
+                    path,
                     tmdb_id: value_str_or_number(item.get("tmdbId")),
                     imdb_id: item
                         .get("imdbId")
@@ -475,10 +474,15 @@ impl ExternalArrClient {
             .collect())
     }
 
-    pub async fn list_episodes_for_series(&self, series_id: i64) -> AppResult<Vec<ArrEpisode>> {
-        let json = self
-            .api_get(&format!("episode?seriesId={series_id}"))
-            .await?;
+    pub async fn list_episodes_for_series(
+        &self,
+        series_id: i64,
+        series_path: Option<&str>,
+    ) -> AppResult<Vec<ArrEpisode>> {
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let path = sonarr_episode_list_path(series_id, &api_prefix);
+        let json = self.api_get_with_prefix(&api_prefix, &path).await?;
         let arr = json
             .as_array()
             .ok_or_else(|| AppError::Repository("episode response was not an array".into()))?;
@@ -504,6 +508,7 @@ impl ExternalArrClient {
                     tvdb_id: value_str_or_number(item.get("tvdbId")),
                     season_number,
                     episode_number,
+                    file_path: arr_nested_file_path(item.get("episodeFile"), series_path),
                     monitored: item
                         .get("monitored")
                         .and_then(Value::as_bool)
@@ -812,6 +817,38 @@ fn value_str_or_number(value: Option<&Value>) -> Option<String> {
     })
 }
 
+fn value_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn arr_nested_file_path(value: Option<&Value>, parent_path: Option<&str>) -> Option<String> {
+    let object = value.and_then(Value::as_object)?;
+    value_trimmed_string(object.get("path")).or_else(|| {
+        let relative = value_trimmed_string(object.get("relativePath"))?;
+        Some(join_arr_relative_path(parent_path?, &relative))
+    })
+}
+
+fn join_arr_relative_path(parent_path: &str, relative_path: &str) -> String {
+    format!(
+        "{}/{}",
+        parent_path.trim().trim_end_matches(['/', '\\']),
+        relative_path.trim().trim_start_matches(['/', '\\'])
+    )
+}
+
+fn sonarr_episode_list_path(series_id: i64, api_prefix: &str) -> String {
+    if api_prefix.trim().eq_ignore_ascii_case("v5") {
+        format!("episode?seriesId={series_id}&includeSubresources=EpisodeFile")
+    } else {
+        format!("episode?seriesId={series_id}&includeEpisodeFile=true")
+    }
+}
+
 fn value_i32(value: Option<&Value>) -> Option<i32> {
     value
         .and_then(Value::as_i64)
@@ -838,7 +875,7 @@ mod tests {
     use super::{
         ArrIndexer, ExternalArrApiBucket, detect_linked_prowlarr_proxy_indexer,
         detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
-        should_skip_imported_indexer,
+        should_skip_imported_indexer, sonarr_episode_list_path,
     };
 
     #[test]
@@ -856,6 +893,22 @@ mod tests {
         ExternalArrApiBucket::SonarrV4
             .validate_api_prefix("v5")
             .expect("newer Sonarr api prefix should be supported");
+    }
+
+    #[test]
+    fn sonarr_episode_list_path_uses_legacy_include_flag_before_v5() {
+        assert_eq!(
+            sonarr_episode_list_path(42, "v4"),
+            "episode?seriesId=42&includeEpisodeFile=true"
+        );
+    }
+
+    #[test]
+    fn sonarr_episode_list_path_uses_v5_subresource_parameter() {
+        assert_eq!(
+            sonarr_episode_list_path(42, "v5"),
+            "episode?seriesId=42&includeSubresources=EpisodeFile"
+        );
     }
 
     #[test]
