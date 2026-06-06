@@ -53,6 +53,44 @@ pub struct WantedStore {
     datastore: StoreDatastore,
 }
 
+fn wanted_due_numeric_text_order_sql(datastore: &StoreDatastore, column: &str) -> String {
+    let value = format!("trim(coalesce({column}, ''))");
+    let is_numeric = match datastore {
+        StoreDatastore::Sqlite { .. } => {
+            format!("{value} GLOB '[0-9]*' AND {value} NOT GLOB '*[^0-9]*'")
+        }
+        StoreDatastore::Postgres { .. } => format!("{value} ~ '^[0-9]+$'"),
+    };
+    let numeric_value = match datastore {
+        StoreDatastore::Sqlite { .. } => format!("CAST({value} AS INTEGER)"),
+        StoreDatastore::Postgres { .. } => format!("CAST({value} AS NUMERIC)"),
+    };
+
+    format!(
+        "CASE WHEN {is_numeric} THEN 0 ELSE 1 END ASC,
+         CASE WHEN {is_numeric} THEN {numeric_value} ELSE NULL END ASC,
+         CASE WHEN {value} = '' THEN 1 ELSE 0 END ASC,
+         lower({value}) ASC"
+    )
+}
+
+fn wanted_due_order_sql(datastore: &StoreDatastore) -> String {
+    format!(
+        " ORDER BY
+             w.next_search_at ASC,
+             lower(coalesce(t.sort_title, t.name, w.title_id)) ASC,
+             w.title_id ASC,
+             CASE WHEN w.media_type = 'episode' THEN 0 ELSE 1 END ASC,
+             {},
+             {},
+             w.created_at ASC,
+             w.id ASC
+          LIMIT {{}}",
+        wanted_due_numeric_text_order_sql(datastore, "e.season_number"),
+        wanted_due_numeric_text_order_sql(datastore, "e.episode_number")
+    )
+}
+
 #[derive(Clone)]
 pub struct PendingReleaseStore {
     datastore: StoreDatastore,
@@ -658,7 +696,7 @@ impl WantedItemRepository for WantedStore {
                     .map(|facet| SqlArg::Text(facet.as_str().to_string())),
             );
         }
-        sql.push_str(" ORDER BY w.next_search_at ASC LIMIT {}");
+        sql.push_str(&wanted_due_order_sql(&self.datastore));
         args.push(SqlArg::I64(batch_limit));
 
         SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
