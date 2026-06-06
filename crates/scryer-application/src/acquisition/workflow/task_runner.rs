@@ -49,6 +49,9 @@ async fn process_due_wanted_items(app: &AppUseCase) {
 fn select_due_items_for_cooperative_slice(
     due_items: Vec<WantedItem>,
 ) -> (Vec<WantedItem>, HashMap<String, usize>) {
+    let mut due_items = due_items;
+    due_items.sort_by(compare_due_wanted_items_for_search);
+
     let mut selected = Vec::with_capacity(due_items.len());
     let mut selected_per_title: HashMap<String, usize> = HashMap::new();
     let mut deferred_per_title: HashMap<String, usize> = HashMap::new();
@@ -65,6 +68,47 @@ fn select_due_items_for_cooperative_slice(
     }
 
     (selected, deferred_per_title)
+}
+fn compare_due_wanted_items_for_search(
+    left: &WantedItem,
+    right: &WantedItem,
+) -> std::cmp::Ordering {
+    wanted_due_title_order(left)
+        .cmp(&wanted_due_title_order(right))
+        .then_with(|| left.title_id.cmp(&right.title_id))
+        .then_with(|| wanted_due_media_order(left).cmp(&wanted_due_media_order(right)))
+        .then_with(|| wanted_due_numeric_text_order(left.season_number.as_deref()).cmp(&wanted_due_numeric_text_order(right.season_number.as_deref())))
+        .then_with(|| wanted_due_text_order(left.season_number.as_deref()).cmp(&wanted_due_text_order(right.season_number.as_deref())))
+        .then_with(|| wanted_due_numeric_text_order(left.episode_number.as_deref()).cmp(&wanted_due_numeric_text_order(right.episode_number.as_deref())))
+        .then_with(|| wanted_due_text_order(left.episode_number.as_deref()).cmp(&wanted_due_text_order(right.episode_number.as_deref())))
+        .then_with(|| left.created_at.cmp(&right.created_at))
+        .then_with(|| left.id.cmp(&right.id))
+}
+fn wanted_due_title_order(item: &WantedItem) -> String {
+    item.title_name
+        .as_deref()
+        .unwrap_or(&item.title_id)
+        .trim()
+        .to_lowercase()
+}
+fn wanted_due_media_order(item: &WantedItem) -> u8 {
+    if item.media_type == "episode" { 0 } else { 1 }
+}
+fn wanted_due_numeric_text_order(value: Option<&str>) -> (u8, u64) {
+    let value = value.unwrap_or("").trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return (1, 0);
+    }
+
+    (0, value.parse::<u64>().unwrap_or(u64::MAX))
+}
+fn wanted_due_text_order(value: Option<&str>) -> (u8, String) {
+    let value = value.unwrap_or("").trim();
+    if value.is_empty() {
+        return (1, String::new());
+    }
+
+    (0, value.to_lowercase())
 }
 pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     app: &AppUseCase,
