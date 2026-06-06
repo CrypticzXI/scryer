@@ -891,30 +891,22 @@ impl ImportRepository for TrackingImportRepo {
         payload_json: String,
         submission_identity: Option<DownloadSubmissionIdentity>,
     ) -> AppResult<String> {
-        if let Some(submission_identity) = submission_identity.as_ref() {
+        let download_id = submission_identity.as_ref().and_then(|identity| {
+            identity
+                .download_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+        if let Some(download_id) = download_id.as_deref() {
             let records = self.records.lock().await;
-            let identities = self.identities.lock().await;
             if let Some(record) = records.iter().rev().find(|record| {
                 record.status.is_active()
-                    && identities.get(&record.id).is_some_and(|record_identity| {
-                        submission_identity
-                            .download_request_id
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .is_some_and(|request_id| {
-                                record_identity.download_request_id.as_deref() == Some(request_id)
-                            })
-                            || submission_identity
-                                .download_fingerprint
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                                .is_some_and(|fingerprint| {
-                                    record_identity.download_fingerprint.as_deref()
-                                        == Some(fingerprint)
-                                })
-                    })
+                    && record.source_client_id.as_deref().unwrap_or("")
+                        == source_identity.client_id_or_empty()
+                    && record.source_system == source_identity.client_type
+                    && record.download_id.as_deref() == Some(download_id)
             }) {
                 return Ok(record.id.clone());
             }
@@ -930,6 +922,7 @@ impl ImportRepository for TrackingImportRepo {
             status: ImportStatus::Pending,
             payload_json,
             result_json: None,
+            download_id,
             started_at: None,
             finished_at: None,
             created_at: now.clone(),
@@ -1057,12 +1050,20 @@ impl ImportRepository for TrackingImportRepo {
             }))
     }
 
-    async fn is_already_imported_by_submission_identity(
+    async fn is_already_imported_by_download_id(
         &self,
+        source_identity: &DownloadSourceIdentity,
         identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
+        let Some(download_id) = identity
+            .download_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(false);
+        };
         let records = self.records.lock().await;
-        let identities = self.identities.lock().await;
         Ok(records.iter().rev().any(|record| {
             if !matches!(
                 record.status,
@@ -1070,25 +1071,9 @@ impl ImportRepository for TrackingImportRepo {
             ) {
                 return false;
             }
-            let Some(record_identity) = identities.get(&record.id) else {
-                return false;
-            };
-            identity
-                .download_request_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_some_and(|request_id| {
-                    record_identity.download_request_id.as_deref() == Some(request_id)
-                })
-                || identity
-                    .download_fingerprint
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_some_and(|fingerprint| {
-                        record_identity.download_fingerprint.as_deref() == Some(fingerprint)
-                    })
+            record.source_client_id.as_deref().unwrap_or("") == source_identity.client_id_or_empty()
+                && record.source_system == source_identity.client_type
+                && record.download_id.as_deref() == Some(download_id)
         }))
     }
 
@@ -1451,6 +1436,29 @@ impl MockMediaRequestRepo {
     }
 }
 
+async fn append_mock_media_request_event(
+    domain_events: Option<&Arc<MockDomainEventRepo>>,
+    event: NewDomainEvent,
+) -> AppResult<DomainEvent> {
+    if let Some(domain_events) = domain_events {
+        return domain_events.append(event).await;
+    }
+
+    Ok(DomainEvent {
+        sequence: 0,
+        event_id: event.event_id,
+        occurred_at: event.occurred_at,
+        actor_user_id: event.actor_user_id,
+        title_id: event.title_id,
+        facet: event.facet,
+        correlation_id: event.correlation_id,
+        causation_id: event.causation_id,
+        schema_version: event.schema_version,
+        stream: event.stream,
+        payload: event.payload,
+    })
+}
+
 #[async_trait]
 impl MediaRequestRepository for MockMediaRequestRepo {
     async fn submit(
@@ -1458,7 +1466,7 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         request: NewMediaRequest,
         requester: &User,
         submitted_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestSubmissionResult> {
         let mut requests = self.requests.lock().await;
         let now = Utc::now();
         let stored = MediaRequest {
@@ -1497,10 +1505,12 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         };
         requests.push(stored.clone());
         drop(requests);
-        if let Some(domain_events) = &self.domain_events {
-            domain_events.append(submitted_event).await?;
-        }
-        Ok(stored)
+        let event =
+            append_mock_media_request_event(self.domain_events.as_ref(), submitted_event).await?;
+        Ok(MediaRequestSubmissionResult {
+            request: stored,
+            event,
+        })
     }
 
     async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>> {
@@ -1515,7 +1525,7 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         &self,
         request: &MediaRequest,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
+    ) -> AppResult<MediaRequestResolutionResult> {
         let mut requests = self.requests.lock().await;
         let mut updated = 0;
         for candidate in requests.iter_mut().filter(|candidate| {
@@ -1541,20 +1551,23 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         }
         drop(requests);
 
-        if updated > 0
-            && let Some(domain_events) = &self.domain_events
-        {
-            domain_events.append(resolution.event).await?;
-        }
+        let event = if updated > 0 {
+            Some(
+                append_mock_media_request_event(self.domain_events.as_ref(), resolution.event)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
-        Ok(updated)
+        Ok(MediaRequestResolutionResult { updated, event })
     }
 
     async fn resolve_pending(
         &self,
         request_id: &str,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
+    ) -> AppResult<MediaRequestResolutionResult> {
         let mut requests = self.requests.lock().await;
         let mut updated = 0;
         for candidate in requests.iter_mut().filter(|candidate| {
@@ -1572,13 +1585,16 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         }
         drop(requests);
 
-        if updated > 0
-            && let Some(domain_events) = &self.domain_events
-        {
-            domain_events.append(resolution.event).await?;
-        }
+        let event = if updated > 0 {
+            Some(
+                append_mock_media_request_event(self.domain_events.as_ref(), resolution.event)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
-        Ok(updated)
+        Ok(MediaRequestResolutionResult { updated, event })
     }
 
     async fn update_pending_request_preferences(
@@ -1588,7 +1604,7 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         requested_quality_profile_name: String,
         requested_monitor_type: Option<String>,
         updated_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestUpdateResult> {
         let mut requests = self.requests.lock().await;
         let now = Utc::now();
         let Some(request) = requests.iter_mut().find(|request| {
@@ -1605,11 +1621,13 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         let updated = request.clone();
         drop(requests);
 
-        if let Some(domain_events) = &self.domain_events {
-            domain_events.append(updated_event).await?;
-        }
+        let event =
+            append_mock_media_request_event(self.domain_events.as_ref(), updated_event).await?;
 
-        Ok(updated)
+        Ok(MediaRequestUpdateResult {
+            request: updated,
+            event,
+        })
     }
 
     async fn count_pending_by_facet(
@@ -4227,9 +4245,15 @@ impl WantedItemRepository for TrackingWantedItemRepo {
 #[async_trait]
 impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
     async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
-        self.download_submissions
-            .record_submission(commit.download_submission.clone())
-            .await?;
+        if let Some(identity) = commit.download_submission_identity.clone() {
+            self.download_submissions
+                .record_submission_with_identity(commit.download_submission.clone(), identity)
+                .await?;
+        } else {
+            self.download_submissions
+                .record_submission(commit.download_submission.clone())
+                .await?;
+        }
 
         let mut covered_wanted_item_ids = commit.covered_wanted_item_ids.clone();
         if !covered_wanted_item_ids
@@ -4314,19 +4338,11 @@ fn download_source_identity_key(identity: &DownloadSourceIdentity) -> TrackedDow
 
 fn download_identity_state_key(identity: &DownloadSubmissionIdentity) -> Option<String> {
     identity
-        .download_request_id
+        .download_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| format!("request:{value}"))
-        .or_else(|| {
-            identity
-                .download_fingerprint
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| format!("fingerprint:{value}"))
-        })
+        .map(|value| format!("download:{value}"))
 }
 
 #[async_trait]
@@ -4386,42 +4402,21 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .cloned())
     }
 
-    async fn list_by_request_id(
+    async fn list_by_download_id(
         &self,
-        download_request_id: &str,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
     ) -> AppResult<Vec<DownloadSubmission>> {
         let keys = self
             .identities
             .lock()
             .await
             .iter()
-            .filter(|(_, identity)| {
-                identity.download_request_id.as_deref() == Some(download_request_id)
-            })
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        let entries = self.store.lock().await;
-        Ok(entries
-            .iter()
-            .filter(|entry| {
-                keys.iter()
-                    .any(|key| *key == download_submission_key(entry))
-            })
-            .cloned()
-            .collect())
-    }
-
-    async fn list_by_fingerprint(
-        &self,
-        download_fingerprint: &str,
-    ) -> AppResult<Vec<DownloadSubmission>> {
-        let keys = self
-            .identities
-            .lock()
-            .await
-            .iter()
-            .filter(|(_, identity)| {
-                identity.download_fingerprint.as_deref() == Some(download_fingerprint)
+            .filter(|(key, identity)| {
+                key.0.as_str() == client_id.unwrap_or("")
+                    && key.1.eq_ignore_ascii_case(client_type)
+                    && identity.download_id.as_deref() == Some(download_id)
             })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
@@ -4892,6 +4887,7 @@ struct StubDownloadClient {
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     deleted_requests: DeletedDownloadRequests,
     delete_error: Arc<Mutex<Option<String>>>,
+    grab_info_hash: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
     queue_calls: Arc<Mutex<usize>>,
     queue_for_title_calls: Arc<Mutex<Vec<String>>>,
@@ -4903,6 +4899,10 @@ struct StubDownloadClient {
 impl StubDownloadClient {
     async fn set_delete_error(&self, error: Option<&str>) {
         *self.delete_error.lock().await = error.map(str::to_string);
+    }
+
+    async fn set_grab_info_hash(&self, info_hash: Option<&str>) {
+        *self.grab_info_hash.lock().await = info_hash.map(str::to_string);
     }
 
     async fn record_delete(
@@ -4957,6 +4957,7 @@ impl DownloadClient for StubDownloadClient {
             job_id,
             client_id: None,
             client_type: "nzbget".to_string(),
+            info_hash: self.grab_info_hash.lock().await.clone(),
         })
     }
 
@@ -7419,6 +7420,12 @@ async fn dismiss_media_request_resolves_overlapping_pending_requests_without_tit
         .expect("duplicate request should succeed");
 
     let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+    let mut notification_wakes = harness
+        .app
+        .runtime
+        .events
+        .notification_event_broadcast
+        .subscribe();
     let removed = harness
         .app
         .dismiss_media_request(&harness.manager, &request_id)
@@ -7426,6 +7433,10 @@ async fn dismiss_media_request_resolves_overlapping_pending_requests_without_tit
         .expect("dismiss should remove the request group");
 
     assert_eq!(removed, 2);
+    timeout(Duration::from_millis(250), notification_wakes.recv())
+        .await
+        .expect("rejected media request should wake notifications")
+        .expect("notification wake sender should remain open");
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert!(
@@ -12222,6 +12233,46 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
 }
 
 #[tokio::test]
+async fn add_title_and_queue_download_records_accepted_torrent_hash_fingerprint() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let info_hash = "abcdef0123456789abcdef0123456789abcdef01";
+    download_client.set_grab_info_hash(Some(info_hash)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let request = NewTitle {
+        name: "Queued Torrent".into(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tmdb".to_string(),
+            value: "987654".to_string(),
+        }],
+        min_availability: None,
+        ..Default::default()
+    };
+    let queued_release = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/releases/queued-torrent.torrent".to_string()),
+        source_kind: Some(DownloadSourceKind::TorrentFile),
+        source_title: Some("Queued.Torrent.2026.1080p.WEB-DL".to_string()),
+    };
+
+    app.add_title_and_queue_download_with_outcome(&user, request, queued_release)
+        .await
+        .expect("queued torrent add should succeed");
+
+    let identities = download_submissions.identities.lock().await;
+    assert_eq!(identities.len(), 1);
+    let identity = identities.values().next().expect("submission identity");
+    assert_eq!(identity.download_id.as_deref(), Some(info_hash));
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_reuses_matching_queue_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -14490,8 +14541,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "queue-direct".to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -14522,8 +14572,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "queue-active".to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -14554,8 +14603,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "queue-unrelated".to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -14663,8 +14711,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "foreign-stub".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14731,8 +14778,7 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "history-1".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14827,8 +14873,7 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "job-1".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14898,8 +14943,7 @@ fn queue_history_fixture_item(
         attention_required: false,
         attention_reason: None,
         download_client_item_id: download_client_item_id.to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -14924,8 +14968,7 @@ fn completed_download_fixture_item(
         client_type: "nzbget".to_string(),
         client_id: "primary".to_string(),
         download_client_item_id: download_client_item_id.to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         name: name.to_string(),
         dest_dir: dest_dir.to_string(),
         category: Some("movie".to_string()),
@@ -15781,6 +15824,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
         status: ImportStatus::Completed,
         payload_json: String::new(),
         result_json: None,
+        download_id: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -15839,6 +15883,7 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
         status: ImportStatus::Completed,
         payload_json: String::new(),
         result_json: None,
+        download_id: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -15895,6 +15940,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
         status: ImportStatus::Completed,
         payload_json: String::new(),
         result_json: None,
+        download_id: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -15916,8 +15962,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
                 scope: SubmissionScope::Title,
             },
             DownloadSubmissionIdentity {
-                download_request_id: Some("scryer-request:fresh".to_string()),
-                download_fingerprint: Some("sha256:fresh".to_string()),
+                download_id: Some("scryer-download:fresh".to_string()),
             },
         )
         .await
@@ -15933,12 +15978,8 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
     completed.client_id = client_id.to_string();
     completed.client_type = "weaver".to_string();
     completed.parameters.push((
-        "*scryer_request_id".to_string(),
-        "scryer-request:fresh".to_string(),
-    ));
-    completed.parameters.push((
-        "*scryer_download_fingerprint".to_string(),
-        "sha256:fresh".to_string(),
+        "*scryer_download_id".to_string(),
+        "scryer-download:fresh".to_string(),
     ));
 
     let result = crate::import::import::import_completed_download(&app, &user, &completed)
@@ -15950,7 +15991,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
 }
 
 #[tokio::test]
-async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_legacy_item_id() {
+async fn try_import_completed_downloads_blocks_ambiguous_download_id_instead_of_legacy_item_id() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -15969,6 +16010,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_
     item.title_id = Some("title-current".to_string());
     item.title_name = "Fresh Identity".to_string();
     item.facet = Some("movie".to_string());
+    item.download_id = Some("scryer-download:ambiguous".to_string());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let mut completed = completed_download_fixture_item(
@@ -15981,15 +16023,14 @@ async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_
     completed.client_type = "weaver".to_string();
     completed.parameters.clear();
     completed.parameters.push((
-        "*scryer_download_fingerprint".to_string(),
-        "sha256:ambiguous".to_string(),
+        "*scryer_download_id".to_string(),
+        "scryer-download:ambiguous".to_string(),
     ));
     *download_client.completed_downloads.lock().await = vec![completed];
 
-    for (request_id, submitted_item_id, submitted_title_id) in [
-        ("scryer-request:old-one", item_id, "title-current"),
-        ("scryer-request:old-two", "other-item", "title-other"),
-    ] {
+    for (submitted_item_id, submitted_title_id) in
+        [(item_id, "title-current"), ("other-item", "title-other")]
+    {
         download_submissions
             .record_submission_with_identity(
                 DownloadSubmission {
@@ -16005,8 +16046,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_
                     scope: SubmissionScope::Title,
                 },
                 DownloadSubmissionIdentity {
-                    download_request_id: Some(request_id.to_string()),
-                    download_fingerprint: Some("sha256:ambiguous".to_string()),
+                    download_id: Some("scryer-download:ambiguous".to_string()),
                 },
             )
             .await
@@ -16020,8 +16060,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_
     assert!(download_client.deleted_requests.lock().await.is_empty());
     let state = download_submissions
         .get_identity_tracked_state(&DownloadSubmissionIdentity {
-            download_request_id: None,
-            download_fingerprint: Some("sha256:ambiguous".to_string()),
+            download_id: Some("scryer-download:ambiguous".to_string()),
         })
         .await
         .expect("identity state lookup");
@@ -16032,7 +16071,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_fingerprint_instead_of_
 }
 
 #[tokio::test]
-async fn try_import_completed_downloads_blocks_missing_durable_identity_submission() {
+async fn try_import_completed_downloads_blocks_missing_download_id_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -16061,12 +16100,8 @@ async fn try_import_completed_downloads_blocks_missing_durable_identity_submissi
     completed.client_id = client_id.to_string();
     completed.client_type = "weaver".to_string();
     completed.parameters.push((
-        "*scryer_request_id".to_string(),
-        "scryer-request:missing".to_string(),
-    ));
-    completed.parameters.push((
-        "*scryer_download_fingerprint".to_string(),
-        "sha256:missing".to_string(),
+        "*scryer_download_id".to_string(),
+        "scryer-download:missing".to_string(),
     ));
     *download_client.completed_downloads.lock().await = vec![completed];
 
@@ -16077,8 +16112,7 @@ async fn try_import_completed_downloads_blocks_missing_durable_identity_submissi
     assert!(download_client.deleted_requests.lock().await.is_empty());
     let state = download_submissions
         .get_identity_tracked_state(&DownloadSubmissionIdentity {
-            download_request_id: Some("scryer-request:missing".to_string()),
-            download_fingerprint: Some("sha256:missing".to_string()),
+            download_id: Some("scryer-download:missing".to_string()),
         })
         .await
         .expect("identity state lookup");
@@ -16089,7 +16123,7 @@ async fn try_import_completed_downloads_blocks_missing_durable_identity_submissi
 }
 
 #[tokio::test]
-async fn try_import_completed_downloads_dedupes_same_request_when_item_id_changes() {
+async fn try_import_completed_downloads_dedupes_same_download_id_when_item_id_changes() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -16120,8 +16154,7 @@ async fn try_import_completed_downloads_dedupes_same_request_when_item_id_change
 
     let old_item_id = "stable-old-item";
     let new_item_id = "stable-new-item";
-    let request_id = "scryer-request:stable";
-    let fingerprint = "sha256:stable";
+    let download_id = "scryer-download:stable";
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
@@ -16137,8 +16170,7 @@ async fn try_import_completed_downloads_dedupes_same_request_when_item_id_change
                 scope: SubmissionScope::Title,
             },
             DownloadSubmissionIdentity {
-                download_request_id: Some(request_id.to_string()),
-                download_fingerprint: Some(fingerprint.to_string()),
+                download_id: Some(download_id.to_string()),
             },
         )
         .await
@@ -16170,11 +16202,7 @@ async fn try_import_completed_downloads_dedupes_same_request_when_item_id_change
     completed.client_type = "weaver".to_string();
     completed
         .parameters
-        .push(("*scryer_request_id".to_string(), request_id.to_string()));
-    completed.parameters.push((
-        "*scryer_download_fingerprint".to_string(),
-        fingerprint.to_string(),
-    ));
+        .push(("*scryer_download_id".to_string(), download_id.to_string()));
     *download_client.completed_downloads.lock().await = vec![completed];
 
     let processed =
@@ -16233,6 +16261,7 @@ async fn try_import_completed_downloads_uses_download_submission_fallback_for_un
         status: ImportStatus::Completed,
         payload_json: String::new(),
         result_json: None,
+        download_id: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -16834,8 +16863,7 @@ async fn download_queue_subscription_bootstraps_from_live_queue_without_history_
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "queue-1".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -17167,8 +17195,7 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
         attention_required: true,
         attention_reason: Some("corrupt archive".to_string()),
         download_client_item_id: download_client_item_id.to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -17186,6 +17213,8 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
 #[tokio::test]
 async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     let download_client = Arc::new(StubDownloadClient::default());
+    let info_hash = "abcdef0123456789abcdef0123456789abcdef01";
+    download_client.set_grab_info_hash(Some(info_hash)).await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let wanted_items = Arc::new(TrackingWantedItemRepo::default());
@@ -17261,12 +17290,12 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             wanted_item_id: wanted.id.clone(),
             title_id: title.id.clone(),
             release_title: "Standby.Release.1080p.WEB-DL".to_string(),
-            release_url: Some("https://example.com/standby.nzb".to_string()),
-            source_kind: Some(DownloadSourceKind::NzbUrl),
+            release_url: Some("https://example.com/standby.torrent".to_string()),
+            source_kind: Some(DownloadSourceKind::TorrentFile),
             release_size_bytes: Some(1_000),
             release_score: 150,
             scoring_log_json: None,
-            indexer_source: Some("nzbgeek".to_string()),
+            indexer_source: Some("torrent_rss".to_string()),
             release_guid: Some("guid-standby".to_string()),
             added_at: Utc::now().to_rfc3339(),
             delay_until: Utc::now().to_rfc3339(),
@@ -17274,7 +17303,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             grabbed_at: None,
             source_password: None,
             published_at: Some(Utc::now().to_rfc3339()),
-            info_hash: None,
+            info_hash: Some(info_hash.to_string()),
         })
         .await
         .expect("seed standby");
@@ -17350,8 +17379,16 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         submission.download_client_item_id == format!("job-for-{}", title.id)
             && submission.source_title.as_deref() == Some("Standby.Release.1080p.WEB-DL")
             && submission.request_signature.as_deref()
-                == Some("nzb_url|https://example.com/standby.nzb|Standby.Release.1080p.WEB-DL")
+                == Some(
+                    "torrent_file|https://example.com/standby.torrent|Standby.Release.1080p.WEB-DL",
+                )
     }));
+    let identities = download_submissions.identities.lock().await;
+    assert!(
+        identities
+            .values()
+            .any(|identity| { identity.download_id.as_deref() == Some(info_hash) })
+    );
 
     assert_eq!(
         download_client
@@ -18972,8 +19009,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "episode-one-active".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -19177,8 +19213,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "season-one-pack".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -20178,8 +20213,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         attention_required: false,
         attention_reason: None,
         download_client_item_id: "movie-active".to_string(),
-        download_request_id: None,
-        download_fingerprint: None,
+        download_id: None,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -24235,8 +24269,8 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             form_login_enabled: false,
             password_min_length: 12,
             skip_login_for_local_ips: false,
-            totp_require_config_step_up: false,
-            totp_require_local_login: false,
+            mfa_require_config_step_up: false,
+            mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
         },
     )
@@ -24277,8 +24311,8 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
             form_login_enabled: false,
             password_min_length: 12,
             skip_login_for_local_ips: false,
-            totp_require_config_step_up: false,
-            totp_require_local_login: false,
+            mfa_require_config_step_up: false,
+            mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
         },
     )

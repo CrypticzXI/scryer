@@ -1468,7 +1468,7 @@ const pt_BR: LocaleDictionary = {
   "profile.passkeyOperationFailed": "A solicitação de passkey falhou.",
   "profile.externalConnections": "Conexões externas",
   "profile.externalConnectionsPlaceholder":
-    "Plex, passkeys e outras conexões externas estarão disponíveis aqui.",
+    "Passkeys e conexões de contas externas estarão disponíveis aqui.",
   "auth.loginTitle": "Entrar",
   "auth.signIn": "Entrar",
   "auth.signingIn": "Entrando…",

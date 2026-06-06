@@ -91,7 +91,7 @@ export type AuthState = {
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
-  totpRequireLocalLogin: boolean;
+  mfaRequirePasswordLogin: boolean;
   totpRequireJellyfinLogin: boolean;
   login: (
     username: string,
@@ -125,7 +125,7 @@ export function useAuth(): AuthState {
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
-  const [totpRequireLocalLogin, setTotpRequireLocalLogin] = useState(false);
+  const [mfaRequirePasswordLogin, setMfaRequirePasswordLogin] = useState(false);
   const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
@@ -178,7 +178,7 @@ export function useAuth(): AuthState {
             : null,
         );
         setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
-        setTotpRequireLocalLogin(runtimeState?.totpRequireLocalLogin === true);
+        setMfaRequirePasswordLogin(runtimeState?.mfaRequirePasswordLogin === true);
         setTotpRequireJellyfinLogin(runtimeState?.totpRequireJellyfinLogin === true);
       } catch {
         // Fall back to the existing token/bootstrap path when the public
@@ -280,7 +280,7 @@ export function useAuth(): AuthState {
     loading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
-    totpRequireLocalLogin,
+    mfaRequirePasswordLogin,
     totpRequireJellyfinLogin,
     login,
     adoptSession,

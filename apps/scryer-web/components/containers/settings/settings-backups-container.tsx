@@ -384,6 +384,18 @@ export function SettingsBackupsContainer() {
   );
 
   React.useEffect(() => {
+    if (!backups.some((backup) => backup.status === "creating")) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void fetchBackups();
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, [backups, fetchBackups]);
+
+  React.useEffect(() => {
     if (autoBackupNavigationBlocker.state !== "blocked") {
       return;
     }

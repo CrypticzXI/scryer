@@ -989,6 +989,7 @@ pub struct DownloadGrabResult {
     pub job_id: String,
     pub client_id: Option<String>,
     pub client_type: String,
+    pub info_hash: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

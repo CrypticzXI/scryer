@@ -880,7 +880,7 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "security".into(),
                 scope: "system".into(),
-                key_name: "auth.totp.require_config_step_up".into(),
+                key_name: "auth.mfa.require_config_step_up".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,
@@ -898,7 +898,7 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "security".into(),
                 scope: "system".into(),
-                key_name: "auth.totp.require_local_login".into(),
+                key_name: "auth.mfa.require_password_login".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,
@@ -4768,7 +4768,7 @@ async fn graphql_typed_security_settings_defaults() {
             formLoginEnabled
             passwordMinLength
             skipLoginForLocalIps
-            totpRequireLocalLogin
+            mfaRequirePasswordLogin
             effectiveFormLoginEnabled
             envOverrideActive
             envOverrideDescription
@@ -4787,7 +4787,7 @@ async fn graphql_typed_security_settings_defaults() {
         false
     );
     assert_eq!(
-        body["data"]["securitySettings"]["totpRequireLocalLogin"],
+        body["data"]["securitySettings"]["mfaRequirePasswordLogin"],
         false
     );
     assert_eq!(
@@ -4812,13 +4812,13 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
             formLoginEnabled: false
             passwordMinLength: 8
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: true
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: true
           }) {
             formLoginEnabled
-            totpRequireConfigStepUp
-            totpRequireLocalLogin
+            mfaRequireConfigStepUp
+            mfaRequirePasswordLogin
             totpRequireJellyfinLogin
             effectiveFormLoginEnabled
           }
@@ -4844,7 +4844,7 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
         query AuthRuntimeState {
           authRuntimeState {
             effectiveFormLoginEnabled
-            totpRequireLocalLogin
+            mfaRequirePasswordLogin
             totpRequireJellyfinLogin
           }
         }
@@ -4863,7 +4863,7 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
         false
     );
     assert_eq!(
-        runtime["data"]["authRuntimeState"]["totpRequireLocalLogin"],
+        runtime["data"]["authRuntimeState"]["mfaRequirePasswordLogin"],
         false
     );
 }
@@ -4887,8 +4887,8 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
             formLoginEnabled: true
             passwordMinLength: 12
             skipLoginForLocalIps: true
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
           }) {
             formLoginEnabled
@@ -4992,8 +4992,8 @@ async fn graphql_typed_security_settings_reject_short_password_minimum() {
             formLoginEnabled: false
             passwordMinLength: 7
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
           }) {
             formLoginEnabled
@@ -5028,8 +5028,8 @@ async fn graphql_typed_security_settings_reject_enable_with_default_admin_passwo
             formLoginEnabled: true
             passwordMinLength: 8
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
           }) {
             formLoginEnabled
@@ -10311,8 +10311,8 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
             formLoginEnabled: true
             passwordMinLength: 8
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
           }) {
             effectiveFormLoginEnabled
@@ -10383,7 +10383,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 
     let step_up = gql_with_token(
         &ctx,
-        r#"mutation { totpVerifyStepUp(input: { code: "123456" }) { token } }"#,
+        r#"mutation { mfaVerifyStepUp(input: { code: "123456" }) { token } }"#,
         json!({}),
         &token,
     )
@@ -10431,7 +10431,7 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
     ctx.settings_store
         .upsert_setting_value(
             "system",
-            "auth.totp.require_config_step_up",
+            "auth.mfa.require_config_step_up",
             None,
             "true",
             "test",
@@ -14034,12 +14034,12 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
             formLoginEnabled: true
             passwordMinLength: 8
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: true
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
           }) {
             effectiveFormLoginEnabled
-            totpRequireLocalLogin
+            mfaRequirePasswordLogin
           }
         }
         "#,
@@ -14052,7 +14052,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         true
     );
     assert_eq!(
-        update["data"]["updateSecuritySettings"]["totpRequireLocalLogin"],
+        update["data"]["updateSecuritySettings"]["mfaRequirePasswordLogin"],
         true
     );
 
@@ -14202,12 +14202,12 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
             formLoginEnabled: true
             passwordMinLength: 8
             skipLoginForLocalIps: false
-            totpRequireConfigStepUp: false
-            totpRequireLocalLogin: true
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
           }) {
             effectiveFormLoginEnabled
-            totpRequireLocalLogin
+            mfaRequirePasswordLogin
           }
         }
         "#,
@@ -14236,7 +14236,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         "expected local password login to require TOTP: {missing_code}"
     );
     assert_eq!(
-        errors[0]["extensions"]["code"], "TOTP_STEP_UP_REQUIRED",
+        errors[0]["extensions"]["code"], "MFA_STEP_UP_REQUIRED",
         "unexpected missing-code rejection shape: {missing_code}"
     );
 

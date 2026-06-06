@@ -120,8 +120,8 @@ fn from_security_settings(
         form_login_enabled: settings.form_login_enabled,
         password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
-        totp_require_config_step_up: settings.totp_require_config_step_up,
-        totp_require_local_login: settings.totp_require_local_login,
+        mfa_require_config_step_up: settings.mfa_require_config_step_up,
+        mfa_require_password_login: settings.mfa_require_password_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
@@ -809,8 +809,8 @@ impl SettingsMutations {
                     form_login_enabled: input.form_login_enabled,
                     password_min_length: input.password_min_length,
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
-                    totp_require_config_step_up: input.totp_require_config_step_up,
-                    totp_require_local_login: input.totp_require_local_login,
+                    mfa_require_config_step_up: input.mfa_require_config_step_up,
+                    mfa_require_password_login: input.mfa_require_password_login,
                     totp_require_jellyfin_login: input.totp_require_jellyfin_login,
                 },
             )
@@ -1324,24 +1324,18 @@ impl SettingsMutations {
         })
     }
 
-    async fn totp_verify_step_up(
+    async fn mfa_verify_step_up(
         &self,
         ctx: &Context<'_>,
         input: TotpVerifyInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let mfa_verified_until = app
-            .totp_verify_step_up(&actor, &input.code)
+        let mfa_step_up_verified_until = app
+            .mfa_verify_step_up(&actor, &input.code)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(
-            &app,
-            actor,
-            Some(mfa_verified_until),
-            Some(mfa_verified_until),
-        )
-        .await
+        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until)).await
     }
 
     async fn totp_disable(
@@ -1431,8 +1425,7 @@ impl SettingsMutations {
                 .await);
             }
         };
-        let mfa_verified_until = app.mfa_freshness_verified_until();
-        login_payload_from_user(&app, user, Some(mfa_verified_until), None).await
+        login_payload_from_user(&app, user, None, None).await
     }
 
     async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
@@ -1461,19 +1454,19 @@ impl SettingsMutations {
         let effective_login_enabled = auth_runtime_from_ctx(ctx)
             .snapshot()
             .effective_form_login_enabled;
-        let local_mfa_required = effective_login_enabled
+        let password_login_mfa_required = effective_login_enabled
             && app
                 .security_settings()
                 .await
                 .map_err(to_gql_error)?
-                .totp_require_local_login;
-        let mfa_verified_until = if local_mfa_required {
+                .mfa_require_password_login;
+        let mfa_verified_until = if password_login_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
                 return login_mfa_enrollment_payload_from_user(&app, user).await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
-                to_gql_error(scryer_application::AppError::TotpStepUpRequired(
-                    "TOTP code is required for local login".into(),
+                to_gql_error(scryer_application::AppError::MfaStepUpRequired(
+                    "MFA code is required for password login".into(),
                 ))
             })?;
             Some(

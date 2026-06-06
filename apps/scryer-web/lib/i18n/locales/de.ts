@@ -1451,7 +1451,7 @@ const de: LocaleDictionary = {
   "profile.passwordUpdated": "Passwort erfolgreich aktualisiert.",
   "profile.externalConnections": "Externe Verbindungen",
   "profile.externalConnectionsPlaceholder":
-    "Plex, Passkeys und andere externe Verbindungen werden hier verfügbar sein.",
+    "Passkeys und externe Kontoverbindungen werden hier verfügbar sein.",
   "auth.loginTitle": "Anmelden",
   "auth.usernamePlaceholder": "Benutzername",
   "auth.passwordPlaceholder": "Passwort",

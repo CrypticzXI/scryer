@@ -547,28 +547,9 @@ impl AppUseCase {
             "persisted candidate: grabbing"
         );
 
-        let download_request_id = crate::download_identity::new_download_request_id();
-        let download_fingerprint = crate::download_identity::build_download_fingerprint(
-            crate::download_identity::DownloadFingerprintInput {
-                request_id: Some(download_request_id.as_str()),
-                title_id: Some(title.id.as_str()),
-                facet: Some(title.facet.as_str()),
-                scope: None,
-                source_kind,
-                source_hint: source_hint.as_deref(),
-                source_title: source_title.as_deref(),
-                info_hash_hint: pr.info_hash.as_deref(),
-                indexer_name: pr.indexer_source.as_deref(),
-                size_bytes: None,
-                client_type: None,
-                output_path: None,
-                category: Some(download_cat.as_str()),
-                completed_at: None,
-            },
-        );
+        let download_id = crate::download_identity::new_download_id();
         let submission_identity = DownloadSubmissionIdentity {
-            download_request_id: Some(download_request_id.clone()),
-            download_fingerprint: download_fingerprint.clone(),
+            download_id: Some(download_id.clone()),
         };
 
         let grab_result = self
@@ -577,8 +558,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
-                download_request_id: Some(download_request_id),
-                download_fingerprint,
+                download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind,
@@ -611,6 +591,19 @@ impl AppUseCase {
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => indexer_label, "facet" => facet_label).increment(1);
                 }
+
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind,
+                            source_hint: source_hint.as_deref(),
+                            info_hash_hint: pr.info_hash.as_deref(),
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
 
                 let _ = self
                     .services
@@ -714,7 +707,7 @@ impl AppUseCase {
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
-                        download_submission_identity: Some(submission_identity),
+                        download_submission_identity: Some(accepted_identity),
                         grabbed_pending_release_id: Some(pr.id.clone()),
                         grabbed_at: Some(now.to_rfc3339()),
                     })

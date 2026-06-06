@@ -13,6 +13,7 @@ import {
   jellyfinServerUsersQuery,
   usersQuery,
 } from "@/lib/graphql/queries";
+import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useClient } from "urql";
@@ -85,9 +86,14 @@ function connectionDescriptorsForProvider(
 function inviteProviders(settings: AuthProviderSettings): ExternalAccountProvider[] {
   return settings.allowedProviders.filter(
     (provider) =>
+      isVisibleExternalAccountProvider(provider) &&
       settings.providerLoginEnabled.includes(provider) &&
       connectionDescriptorsForProvider(settings, provider).length > 0,
   );
+}
+
+function visibleExternalAccountInvites(invites: LinkedAccount[]): LinkedAccount[] {
+  return invites.filter((invite) => isVisibleExternalAccountProvider(invite.provider));
 }
 
 export function ExternalAccountInvitesContainer() {
@@ -117,7 +123,9 @@ export function ExternalAccountInvitesContainer() {
       .query(externalAccountInvitesQuery, {}, { requestPolicy: "network-only" })
       .toPromise();
     if (error) throw error;
-    setInvites((data?.externalAccountInvites ?? []) as LinkedAccount[]);
+    setInvites(
+      visibleExternalAccountInvites((data?.externalAccountInvites ?? []) as LinkedAccount[]),
+    );
   }, [client]);
 
   const refreshInviteData = useCallback(async () => {
@@ -146,7 +154,11 @@ export function ExternalAccountInvitesContainer() {
         ...DEFAULT_AUTH_PROVIDER_SETTINGS,
         ...authProviderResult.data?.authProviderRuntimeSettings,
       });
-      setInvites((invitesResult.data?.externalAccountInvites ?? []) as LinkedAccount[]);
+      setInvites(
+        visibleExternalAccountInvites(
+          (invitesResult.data?.externalAccountInvites ?? []) as LinkedAccount[],
+        ),
+      );
     } catch (error) {
       setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));

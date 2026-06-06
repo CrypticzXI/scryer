@@ -74,6 +74,47 @@ async fn persist_completed_download_tracked_state(
             "failed to persist completed download terminal state"
         );
     }
+
+    let observed_identity = completed_download_observed_identity(completed);
+    let download_identity = match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched) => matched
+            .identity
+            .clone()
+            .filter(|identity| !download_submission_identity_is_empty(identity))
+            .or_else(|| {
+                (!download_submission_identity_is_empty(&observed_identity))
+                    .then_some(observed_identity.clone())
+            }),
+        CompletedDownloadSubmissionResolution::MissingDownloadId { identity } => {
+            Some(identity.clone())
+        }
+        _ => (!download_submission_identity_is_empty(&observed_identity))
+            .then_some(observed_identity.clone()),
+    };
+
+    if let Some(download_identity) = download_identity
+        && let Err(error) = app
+            .services
+            .workflow
+            .download_submissions
+            .record_identity_tracked_state(
+                &download_identity,
+                Some(&completed_download_identity(completed)),
+                state.as_str(),
+                None,
+                None,
+            )
+            .await
+    {
+        tracing::warn!(
+            error = %error,
+            client_id = completed.client_id.as_str(),
+            client_type = completed.client_type.as_str(),
+            download_client_item_id = completed.download_client_item_id.as_str(),
+            state = state.as_str(),
+            "failed to persist durable completed download terminal state"
+        );
+    }
 }
 async fn terminal_download_item_is_still_visible(
     app: &AppUseCase,

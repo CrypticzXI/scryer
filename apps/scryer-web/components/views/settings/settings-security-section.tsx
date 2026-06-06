@@ -31,8 +31,8 @@ type SettingsSecuritySectionProps = {
   onPasswordMinLengthDraftChange: (value: string) => void;
   onPasswordMinLengthSubmit: () => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
-  onTotpConfigStepUpChange: (enabled: boolean) => void;
-  onTotpLocalLoginChange: (enabled: boolean) => void;
+  onMfaConfigStepUpChange: (enabled: boolean) => void;
+  onMfaPasswordLoginChange: (enabled: boolean) => void;
   onTotpJellyfinLoginChange: (enabled: boolean) => void;
   externalAccountInvitesPanel: React.ReactNode;
 };
@@ -58,8 +58,8 @@ export function SettingsSecuritySection({
   onPasswordMinLengthDraftChange,
   onPasswordMinLengthSubmit,
   onSkipLocalIpsChange,
-  onTotpConfigStepUpChange,
-  onTotpLocalLoginChange,
+  onMfaConfigStepUpChange,
+  onMfaPasswordLoginChange,
   onTotpJellyfinLoginChange,
   externalAccountInvitesPanel,
 }: SettingsSecuritySectionProps) {
@@ -153,44 +153,44 @@ export function SettingsSecuritySection({
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
                   <Checkbox
-                    checked={settings.totpRequireConfigStepUp}
+                    checked={settings.mfaRequireConfigStepUp}
                     disabled={busy}
-                    id="security-totp-config-step-up"
-                    onCheckedChange={(checked) => onTotpConfigStepUpChange(checked === true)}
+                    id="security-mfa-config-step-up"
+                    onCheckedChange={(checked) => onMfaConfigStepUpChange(checked === true)}
                   />
                   <div className="grid gap-1">
                     <div className="flex items-center gap-2">
                       <Label
                         className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-totp-config-step-up"
+                        htmlFor="security-mfa-config-step-up"
                       >
-                        {t("settings.securityTotpConfigStepUp")}
+                        {t("settings.securityMfaConfigStepUp")}
                       </Label>
                       <InfoHelp
-                        ariaLabel={t("settings.securityTotpConfigStepUp")}
-                        text={t("settings.securityTotpConfigStepUpHelp")}
+                        ariaLabel={t("settings.securityMfaConfigStepUp")}
+                        text={t("settings.securityMfaConfigStepUpHelp")}
                       />
                     </div>
                   </div>
                 </div>
                 <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
                   <Checkbox
-                    checked={settings.totpRequireLocalLogin}
+                    checked={settings.mfaRequirePasswordLogin}
                     disabled={busy}
-                    id="security-totp-local-login"
-                    onCheckedChange={(checked) => onTotpLocalLoginChange(checked === true)}
+                    id="security-mfa-password-login"
+                    onCheckedChange={(checked) => onMfaPasswordLoginChange(checked === true)}
                   />
                   <div className="grid gap-1">
                     <div className="flex items-center gap-2">
                       <Label
                         className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-totp-local-login"
+                        htmlFor="security-mfa-password-login"
                       >
-                        {t("settings.securityTotpLocalLogin")}
+                        {t("settings.securityMfaPasswordLogin")}
                       </Label>
                       <InfoHelp
-                        ariaLabel={t("settings.securityTotpLocalLogin")}
-                        text={t("settings.securityTotpLocalLoginHelp")}
+                        ariaLabel={t("settings.securityMfaPasswordLogin")}
+                        text={t("settings.securityMfaPasswordLoginHelp")}
                       />
                     </div>
                   </div>

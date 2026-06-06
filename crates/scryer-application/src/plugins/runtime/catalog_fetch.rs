@@ -399,7 +399,7 @@ const CATALOG_URL_ENV: &str = "SCRYER_PLUGIN_CATALOG_URL";
 const CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog";
 const LEGACY_CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog_v2";
 const CENTRAL_CATALOG_REPO: &str = "scryer-media/scryer-plugins";
-const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
+const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin-v3.yml";
 fn community_catalog_source_key(plugin_id: &str) -> String {
     format!("community:{plugin_id}")
 }

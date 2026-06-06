@@ -8,8 +8,8 @@ pub struct SecuritySettings {
     pub form_login_enabled: bool,
     pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
-    pub totp_require_config_step_up: bool,
-    pub totp_require_local_login: bool,
+    pub mfa_require_config_step_up: bool,
+    pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +17,8 @@ pub struct UpdateSecuritySettings {
     pub form_login_enabled: bool,
     pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
-    pub totp_require_config_step_up: bool,
-    pub totp_require_local_login: bool,
+    pub mfa_require_config_step_up: bool,
+    pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,16 +37,16 @@ impl AppUseCase {
             .read_setting_bool_value(SKIP_LOGIN_FOR_LOCAL_IPS_KEY, None)
             .await?
             .unwrap_or(false);
-        let totp_require_config_step_up = self
-            .read_setting_bool_value(TOTP_REQUIRE_CONFIG_STEP_UP_KEY, None)
+        let mfa_require_config_step_up = self
+            .read_setting_bool_value(MFA_REQUIRE_CONFIG_STEP_UP_KEY, None)
             .await?
             .unwrap_or(false);
         let totp_require_jellyfin_login = self
             .read_setting_bool_value(TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, None)
             .await?
             .unwrap_or(false);
-        let totp_require_local_login = self
-            .read_setting_bool_value(TOTP_REQUIRE_LOCAL_LOGIN_KEY, None)
+        let mfa_require_password_login = self
+            .read_setting_bool_value(MFA_REQUIRE_PASSWORD_LOGIN_KEY, None)
             .await?
             .unwrap_or(false);
 
@@ -54,8 +54,8 @@ impl AppUseCase {
             form_login_enabled,
             password_min_length,
             skip_login_for_local_ips,
-            totp_require_config_step_up,
-            totp_require_local_login,
+            mfa_require_config_step_up,
+            mfa_require_password_login,
             totp_require_jellyfin_login,
         })
     }
@@ -135,7 +135,7 @@ impl AppUseCase {
             )));
         }
 
-        if input.totp_require_config_step_up
+        if input.mfa_require_config_step_up
             && self
                 .services
                 .identity
@@ -178,8 +178,8 @@ impl AppUseCase {
         )
         .await?;
         self.upsert_system_setting_json(
-            TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
-            &input.totp_require_config_step_up,
+            MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            &input.mfa_require_config_step_up,
             Some(actor.id.clone()),
         )
         .await?;
@@ -190,8 +190,8 @@ impl AppUseCase {
         )
         .await?;
         self.upsert_system_setting_json(
-            TOTP_REQUIRE_LOCAL_LOGIN_KEY,
-            &input.totp_require_local_login,
+            MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+            &input.mfa_require_password_login,
             Some(actor.id.clone()),
         )
         .await?;
@@ -204,8 +204,8 @@ impl AppUseCase {
                 FORM_LOGIN_ENABLED_KEY.to_string(),
                 PASSWORD_MIN_LENGTH_KEY.to_string(),
                 SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
-                TOTP_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
-                TOTP_REQUIRE_LOCAL_LOGIN_KEY.to_string(),
+                MFA_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
+                MFA_REQUIRE_PASSWORD_LOGIN_KEY.to_string(),
                 TOTP_REQUIRE_JELLYFIN_LOGIN_KEY.to_string(),
             ],
         )
@@ -215,8 +215,8 @@ impl AppUseCase {
             form_login_enabled: input.form_login_enabled,
             password_min_length: input.password_min_length,
             skip_login_for_local_ips: input.skip_login_for_local_ips,
-            totp_require_config_step_up: input.totp_require_config_step_up,
-            totp_require_local_login: input.totp_require_local_login,
+            mfa_require_config_step_up: input.mfa_require_config_step_up,
+            mfa_require_password_login: input.mfa_require_password_login,
             totp_require_jellyfin_login: input.totp_require_jellyfin_login,
         })
     }

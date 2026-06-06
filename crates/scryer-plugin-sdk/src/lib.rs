@@ -1587,9 +1587,7 @@ pub struct PluginTorrentOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadRelease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1645,9 +1643,7 @@ pub struct PluginDownloadClientAddResponse {
 pub struct PluginDownloadItem {
     pub client_item_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_fingerprint: Option<String>,
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub title: String,
@@ -1728,9 +1724,7 @@ pub struct PluginTorrentItem {
 pub struct PluginCompletedDownload {
     pub client_item_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub download_fingerprint: Option<String>,
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub name: String,

@@ -464,6 +464,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "download_identity_states",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "download_queue_commands",
         classification: BackupTableClassification::Export,
     },
@@ -1537,6 +1541,16 @@ mod tests {
             row_counts,
             part_checksums,
         }
+    }
+
+    #[test]
+    fn backup_table_catalog_exports_download_identity_states() {
+        let classification = BACKUP_TABLE_CATALOG
+            .iter()
+            .find(|entry| entry.table == "download_identity_states")
+            .map(|entry| entry.classification);
+
+        assert_eq!(classification, Some(BackupTableClassification::Export));
     }
 
     #[test]

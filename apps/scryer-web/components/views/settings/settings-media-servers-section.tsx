@@ -31,6 +31,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  isVisibleMediaServerProvider,
+  type VisibleMediaServerProvider,
+} from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
   LibraryRecord,
@@ -71,10 +75,8 @@ type SettingsMediaServersSectionProps = {
   editorError: string | null;
 };
 
-const PROVIDERS: Array<{ value: MediaServerProvider; label: string }> = [
+const PROVIDERS: Array<{ value: VisibleMediaServerProvider; label: string }> = [
   { value: "jellyfin", label: "Jellyfin" },
-  { value: "plex", label: "Plex" },
-  { value: "emby", label: "Emby" },
 ];
 
 const DEFAULT_BASE_URL_BY_PROVIDER: Record<MediaServerProvider, string> = {
@@ -94,7 +96,7 @@ function providerLabel(provider: MediaServerProvider): string {
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
-  return provider === "jellyfin" || provider === "plex";
+  return provider === "jellyfin";
 }
 
 function updateLibraryGrant(
@@ -201,6 +203,9 @@ export function SettingsMediaServersSection({
   const selectedProviderLabel = providerLabel(draft.provider);
   const editorMutationId = editingConnectionId ?? "new";
   const isSavingEditor = mutatingConnectionId === editorMutationId;
+  const visibleConnections = connections.filter((connection) =>
+    isVisibleMediaServerProvider(connection.provider),
+  );
 
   const handleProviderChange = React.useCallback(
     (provider: MediaServerProvider) => {
@@ -258,7 +263,7 @@ export function SettingsMediaServersSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {connections.map((connection) => (
+              {visibleConnections.map((connection) => (
                 <TableRow
                   key={connection.id}
                   id={selectorId("settings-media-server-row", connection.displayName)}
@@ -356,7 +361,7 @@ export function SettingsMediaServersSection({
                   </TableCell>
                 </TableRow>
               ))}
-              {connections.length === 0 ? (
+              {visibleConnections.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-muted-foreground">
                     {t("settings.noMediaServersFound")}

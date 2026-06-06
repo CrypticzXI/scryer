@@ -30,6 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
   AuthProviderConnection,
@@ -143,6 +144,7 @@ function providerIdentifierLabel(provider: ExternalAccountProvider, t: ReturnTyp
 function inviteProviderOptions(settings: AuthProviderSettings): ExternalAccountProvider[] {
   return settings.allowedProviders.filter(
     (provider) =>
+      isVisibleExternalAccountProvider(provider) &&
       settings.providerLoginEnabled.includes(provider) &&
       providerConnections(settings, provider).length > 0,
   );
@@ -406,11 +408,13 @@ export function ExternalAccountInvitesPanel({
     !externalInviteDraft.connectionId ||
     externalInviteDraft.providerUserIdentifier.trim().length === 0;
   const usersById = new Map(users.map((user) => [user.id, user.username]));
-  const sortedInvites = [...invites].sort((left, right) => {
-    const rightTime = new Date(right.createdAt).getTime();
-    const leftTime = new Date(left.createdAt).getTime();
-    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
-  });
+  const sortedInvites = invites
+    .filter((invite) => isVisibleExternalAccountProvider(invite.provider))
+    .sort((left, right) => {
+      const rightTime = new Date(right.createdAt).getTime();
+      const leftTime = new Date(left.createdAt).getTime();
+      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+    });
   const selectedProviderUser = isJellyfinInvite
     ? providerUserOptions.find((option) =>
         option.username.localeCompare(

@@ -1793,8 +1793,8 @@ export const securitySettingsQuery = `query SecuritySettings {
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
-    totpRequireConfigStepUp
-    totpRequireLocalLogin
+    mfaRequireConfigStepUp
+    mfaRequirePasswordLogin
     totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive
@@ -1987,7 +1987,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     skipLoginForLocalIps
     passkeyEnabled
     envOverrideActive
-    totpRequireLocalLogin
+    mfaRequirePasswordLogin
     totpRequireJellyfinLogin
   }
 }`;

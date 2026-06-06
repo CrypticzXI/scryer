@@ -7,6 +7,7 @@ import { useLanguage } from "@/lib/hooks/use-language";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
+import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { authProviderRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
@@ -145,6 +146,7 @@ export default function LoginPage() {
       }))
       .filter((connection) => connection.loginEnabled);
   const plexConnections =
+    isVisibleExternalAccountProvider("plex") &&
     authProviderSettings?.providerLoginEnabled.includes("plex") &&
     authProviderSettings.allowedProviders.includes("plex")
       ? availablePlexConnections.filter((connection) => connection.loginEnabled)
@@ -223,12 +225,14 @@ export default function LoginPage() {
             current || firstJellyfinConnectionId,
           );
         }
-        const firstPlexConnectionId =
-          settings?.allowedPlexConnections.find((connection) => connection.loginEnabled)?.id ??
-          settings?.allowedPlexConnectionIds[0] ??
-          "";
-        if (firstPlexConnectionId) {
-          setPlexConnectionId((current) => current || firstPlexConnectionId);
+        if (isVisibleExternalAccountProvider("plex")) {
+          const firstPlexConnectionId =
+            settings?.allowedPlexConnections.find((connection) => connection.loginEnabled)?.id ??
+            settings?.allowedPlexConnectionIds[0] ??
+            "";
+          if (firstPlexConnectionId) {
+            setPlexConnectionId((current) => current || firstPlexConnectionId);
+          }
         }
       } catch {
         // Provider login remains hidden when settings cannot be loaded.
@@ -307,7 +311,7 @@ export default function LoginPage() {
         }
         navigate(redirectTarget, { replace: true });
       } catch (err) {
-        if (graphQlErrorCode(err) === "TOTP_STEP_UP_REQUIRED") {
+        if (graphQlErrorCode(err) === "MFA_STEP_UP_REQUIRED") {
           setLocalTotpPrompted(true);
           setLocalTotpCode("");
           setError(null);
@@ -420,7 +424,7 @@ export default function LoginPage() {
         adoptSession(loginPayload.token, loginPayload.user ?? null);
         navigate(redirectTarget, { replace: true });
       } catch (err) {
-        if (graphQlErrorCode(err) === "TOTP_STEP_UP_REQUIRED") {
+        if (graphQlErrorCode(err) === "MFA_STEP_UP_REQUIRED") {
           setJellyfinTotpPrompted(true);
           setJellyfinTotpCode("");
           setError(null);

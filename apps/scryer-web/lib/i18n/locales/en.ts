@@ -106,17 +106,17 @@ const en: LocaleDictionary = {
     "Minimum password length must be at least {{min}}.",
   "settings.manageMediaServerLogins": "Manage media server logins",
   "settings.manageMediaServerLoginsDescription":
-    "Configure Jellyfin and Plex login, linking, and auto-onboarding on each media server connection.",
+    "Configure Jellyfin login, linking, and auto-onboarding on media server connections.",
   "settings.openMediaServers": "Open Media Servers",
   "settings.securitySkipLocalIps": "Skip for local IPs",
   "settings.securitySkipLocalIpsHelp":
     "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
-  "settings.securityTotpConfigStepUp": "Require MFA for settings",
-  "settings.securityTotpConfigStepUpHelp":
+  "settings.securityMfaConfigStepUp": "Require MFA step-up for configuration changes",
+  "settings.securityMfaConfigStepUpHelp":
     "When enabled, system and facet configuration changes require a recent MFA verification.",
-  "settings.securityTotpLocalLogin": "Require MFA for local user logins",
-  "settings.securityTotpLocalLoginHelp":
-    "When enabled, Scryer username and password sign-in requires Scryer one-time codes. Passkeys are unchanged.",
+  "settings.securityMfaPasswordLogin": "Require MFA for password login",
+  "settings.securityMfaPasswordLoginHelp":
+    "When enabled, Scryer username and password sign-in requires a one-time code. Passkeys are unchanged.",
   "settings.securityTotpJellyfinLogin": "Require MFA for Jellyfin login",
   "settings.securityTotpJellyfinLoginHelp":
     "When enabled, Jellyfin password passthrough sign-in requires the user's Scryer MFA code.",
@@ -2104,18 +2104,18 @@ const en: LocaleDictionary = {
   "profile.totpLastUsedAt": "Last used",
   "profile.totpRecoveryRemaining": "Recovery codes left",
   "profile.totpRecoveryCodes": "Recovery codes",
-  "profile.totpVerifyStepUp": "Verify for settings",
-  "profile.totpStepUpVerified": "TOTP step-up verified.",
+  "profile.mfaVerifyStepUp": "Verify for settings",
+  "profile.mfaStepUpVerified": "MFA step-up verified.",
   "profile.totpDisable": "Disable",
   "profile.totpRegenerateRecoveryCodes": "New recovery codes",
   "profile.totpRecoveryCodesRegenerated": "Recovery codes regenerated.",
   "profile.totpOperationFailed": "Authenticator request failed.",
   "profile.externalConnections": "External Connections",
   "profile.externalConnectionsPlaceholder":
-    "Plex, passkeys, and other external connections will be available here.",
+    "Passkeys and external account connections will be available here.",
   "profile.linkedAccounts": "Linked accounts",
   "profile.linkedAccountsDescription":
-    "Manage Plex and Jellyfin identities linked to this Scryer account.",
+    "Manage Jellyfin identities linked to this Scryer account.",
   "profile.linkedAccountsEmpty": "No external accounts are linked yet.",
   "profile.linkedAccountsLoadFailed": "Failed to load linked accounts.",
   "profile.linkAccountLoadFailed": "Failed to load link options.",

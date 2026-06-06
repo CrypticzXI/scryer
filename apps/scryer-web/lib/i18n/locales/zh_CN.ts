@@ -1349,7 +1349,7 @@ const zh_CN: LocaleDictionary = {
   "profile.passwordUpdated": "密码修改成功。",
   "profile.externalConnections": "外部连接",
   "profile.externalConnectionsPlaceholder":
-    "Plex、通行密钥和其他外部连接将在此处提供。",
+    "通行密钥和外部账号连接将在此处提供。",
   "auth.loginTitle": "登录",
   "auth.usernamePlaceholder": "用户名",
   "auth.passwordPlaceholder": "密码",

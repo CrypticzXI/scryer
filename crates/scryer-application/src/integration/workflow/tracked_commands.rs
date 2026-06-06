@@ -192,7 +192,6 @@ pub async fn start_download_queue_poller(
 ) {
     use crate::tracked_downloads::{
         TrackedDownloadService, publish_runtime_tracked_download_snapshot_cache,
-        tracked_download_id,
     };
     use scryer_domain::TrackedDownloadState;
 
@@ -263,11 +262,7 @@ pub async fn start_download_queue_poller(
 
                         // Phase 1: Refresh — track each item and run checks.
                         for item in items.iter() {
-                            let id = tracked_download_id(
-                                Some(item.client_id.as_str()),
-                                &item.client_type,
-                                &item.download_client_item_id,
-                            );
+                            let id = tracked_download_id_for_item(item);
                             seen_ids.insert(id.clone());
 
                             let is_new = tracker.find(&id).is_none();
@@ -364,11 +359,7 @@ pub async fn start_download_queue_poller(
 
                         // Enrich items with tracked state before broadcasting.
                         for item in &mut items {
-                            let id = tracked_download_id(
-                                Some(item.client_id.as_str()),
-                                &item.client_type,
-                                &item.download_client_item_id,
-                            );
+                            let id = tracked_download_id_for_item(item);
                             if let Some(td) = tracker.find(&id) {
                                 let metadata = tracked_download_queue_snapshot(td);
                                 apply_tracked_download_queue_metadata(item, &metadata);
@@ -419,6 +410,14 @@ pub async fn start_download_queue_poller(
         }
     }
 }
+fn resolve_tracked_command_id(
+    tracker: &crate::tracked_downloads::TrackedDownloadService,
+    requested_id: &str,
+) -> String {
+    tracker
+        .resolve_cached_id(requested_id)
+        .unwrap_or_else(|| requested_id.to_string())
+}
 async fn handle_tracked_download_command(
     app: &AppUseCase,
     actor: &User,
@@ -434,9 +433,11 @@ async fn handle_tracked_download_command(
 
     match command {
         TrackedDownloadCommand::MarkImported { id, reply } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {id} is busy processing"
+                    "tracked download {requested_id} is busy processing"
                 ))));
                 return;
             }
@@ -451,7 +452,9 @@ async fn handle_tracked_download_command(
                     .await;
                 Ok(())
             } else {
-                Err(AppError::NotFound(format!("tracked download {id}")))
+                Err(AppError::NotFound(format!(
+                    "tracked download {requested_id}"
+                )))
             };
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
@@ -459,9 +462,11 @@ async fn handle_tracked_download_command(
             let _ = reply.send(result);
         }
         TrackedDownloadCommand::Ignore { id, reply } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {id} is busy processing"
+                    "tracked download {requested_id} is busy processing"
                 ))));
                 return;
             }
@@ -476,7 +481,9 @@ async fn handle_tracked_download_command(
                     .await;
                 Ok(())
             } else {
-                Err(AppError::NotFound(format!("tracked download {id}")))
+                Err(AppError::NotFound(format!(
+                    "tracked download {requested_id}"
+                )))
             };
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
@@ -488,9 +495,11 @@ async fn handle_tracked_download_command(
             skip_reacquire,
             reply,
         } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {id} is busy processing"
+                    "tracked download {requested_id} is busy processing"
                 ))));
                 return;
             }
@@ -509,7 +518,9 @@ async fn handle_tracked_download_command(
                 );
                 Ok(())
             } else {
-                Err(AppError::NotFound(format!("tracked download {id}")))
+                Err(AppError::NotFound(format!(
+                    "tracked download {requested_id}"
+                )))
             };
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
@@ -517,9 +528,11 @@ async fn handle_tracked_download_command(
             let _ = reply.send(result);
         }
         TrackedDownloadCommand::RetryImport { id, reply } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {id} is busy processing"
+                    "tracked download {requested_id} is busy processing"
                 ))));
                 return;
             }
@@ -532,7 +545,9 @@ async fn handle_tracked_download_command(
                 td.skip_reacquire_on_failure = false;
                 Ok(())
             } else {
-                Err(AppError::NotFound(format!("tracked download {id}")))
+                Err(AppError::NotFound(format!(
+                    "tracked download {requested_id}"
+                )))
             };
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
@@ -544,9 +559,11 @@ async fn handle_tracked_download_command(
             title_id,
             reply,
         } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {id} is busy processing"
+                    "tracked download {requested_id} is busy processing"
                 ))));
                 return;
             }
@@ -566,7 +583,9 @@ async fn handle_tracked_download_command(
                 crate::tracked_downloads::assign_title_to_tracked_download(app, td, &title).await;
                 Ok(())
             } else {
-                Err(AppError::NotFound(format!("tracked download {id}")))
+                Err(AppError::NotFound(format!(
+                    "tracked download {requested_id}"
+                )))
             };
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
@@ -577,8 +596,9 @@ async fn handle_tracked_download_command(
             let snapshot = ids
                 .into_iter()
                 .filter_map(|id| {
+                    let resolved_id = resolve_tracked_command_id(tracker, &id);
                     tracker
-                        .find(&id)
+                        .find(&resolved_id)
                         .map(|tracked| (id, tracked_download_queue_snapshot(tracked)))
                 })
                 .collect();

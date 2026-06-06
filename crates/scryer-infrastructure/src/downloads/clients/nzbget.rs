@@ -702,8 +702,7 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: nzb_id.to_string(),
-                    download_request_id: scryer_parameters.download_request_id,
-                    download_fingerprint: scryer_parameters.download_fingerprint,
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -808,13 +807,8 @@ impl NzbgetDownloadClient {
                     if existing.facet.is_none() {
                         existing.facet = scryer_parameters.facet.clone();
                     }
-                    if existing.download_request_id.is_none() {
-                        existing.download_request_id =
-                            scryer_parameters.download_request_id.clone();
-                    }
-                    if existing.download_fingerprint.is_none() {
-                        existing.download_fingerprint =
-                            scryer_parameters.download_fingerprint.clone();
+                    if existing.download_id.is_none() {
+                        existing.download_id = scryer_parameters.download_id.clone();
                     }
                     if existing.size_bytes.is_none() || existing.size_bytes == Some(0) {
                         existing.size_bytes = size_to_bytes(size_mb);
@@ -862,8 +856,7 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: id.clone(),
-                    download_request_id: scryer_parameters.download_request_id,
-                    download_fingerprint: scryer_parameters.download_fingerprint,
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -975,8 +968,7 @@ impl NzbgetDownloadClient {
                     attention_required: matches!(state, DownloadQueueState::Failed),
                     attention_reason,
                     download_client_item_id: nzb_id.to_string(),
-                    download_request_id: scryer_parameters.download_request_id,
-                    download_fingerprint: scryer_parameters.download_fingerprint,
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -1156,11 +1148,8 @@ impl DownloadClient for NzbgetDownloadClient {
             json!({"*scryer_title_id": title.id.clone()}),
             json!({"*scryer_facet": facet_str}),
         ];
-        if let Some(download_request_id) = request.download_request_id.as_deref() {
-            parameters.push(json!({"*scryer_request_id": download_request_id}));
-        }
-        if let Some(download_fingerprint) = request.download_fingerprint.as_deref() {
-            parameters.push(json!({"*scryer_download_fingerprint": download_fingerprint}));
+        if let Some(download_id) = request.download_id.as_deref() {
+            parameters.push(json!({"*scryer_download_id": download_id}));
         }
 
         if let Some(imdb_id) = title
@@ -1235,6 +1224,7 @@ impl DownloadClient for NzbgetDownloadClient {
                 job_id: nzbget_id.to_string(),
                 client_id: None,
                 client_type: "nzbget".to_string(),
+                info_hash: None,
             })
         }
         .await;
@@ -1418,8 +1408,7 @@ impl DownloadClient for NzbgetDownloadClient {
                     history_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
                 let observed_identity = scryer_application::observed_download_identity(
                     scryer_application::ObservedDownloadIdentityInput {
-                        download_request_id: None,
-                        download_fingerprint: None,
+                        download_id: None,
                         parameters: &parameters,
                         info_hash_hint: None,
                     },
@@ -1429,8 +1418,7 @@ impl DownloadClient for NzbgetDownloadClient {
                     client_type: "nzbget".to_string(),
                     client_id: String::new(),
                     download_client_item_id: nzb_id.to_string(),
-                    download_request_id: observed_identity.download_request_id,
-                    download_fingerprint: observed_identity.download_fingerprint,
+                    download_id: observed_identity.download_id,
                     name,
                     dest_dir,
                     category,
@@ -1447,8 +1435,7 @@ struct ExtractedNzbgetParameters {
     title_id: Option<String>,
     facet: Option<String>,
     is_scryer: bool,
-    download_request_id: Option<String>,
-    download_fingerprint: Option<String>,
+    download_id: Option<String>,
 }
 
 fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> ExtractedNzbgetParameters {
@@ -1463,8 +1450,7 @@ fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> Extracte
                 title_id: None,
                 facet: None,
                 is_scryer: false,
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
             };
         }
     };
@@ -1505,8 +1491,7 @@ fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> Extracte
     }
     let observed_identity = scryer_application::observed_download_identity(
         scryer_application::ObservedDownloadIdentityInput {
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             parameters: &parameters,
             info_hash_hint: None,
         },
@@ -1515,8 +1500,7 @@ fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> Extracte
         title_id,
         facet,
         is_scryer,
-        download_request_id: observed_identity.download_request_id,
-        download_fingerprint: observed_identity.download_fingerprint,
+        download_id: observed_identity.download_id,
     }
 }
 
@@ -2114,8 +2098,7 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "42".to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -2150,13 +2133,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_nzbget_parameters_maps_durable_identity() {
+    fn extract_nzbget_parameters_maps_download_id() {
         let entry = json!({
             "Parameters": [
                 { "Name": "*scryer_title_id", "Value": "title-1" },
                 { "Name": "*scryer_facet", "Value": "anime" },
-                { "Name": "*scryer_request_id", "Value": " scryer-request:nzbget-1 " },
-                { "Name": "*scryer_download_fingerprint", "Value": " sha256:nzbget-release " }
+                { "Name": "*scryer_download_id", "Value": " scryer-download:nzbget-1 " }
             ]
         });
         let params = extract_nzbget_parameters(entry.as_object().expect("object"));
@@ -2164,12 +2146,8 @@ mod tests {
         assert_eq!(params.title_id.as_deref(), Some("title-1"));
         assert_eq!(params.facet.as_deref(), Some("anime"));
         assert_eq!(
-            params.download_request_id.as_deref(),
-            Some("scryer-request:nzbget-1")
-        );
-        assert_eq!(
-            params.download_fingerprint.as_deref(),
-            Some("sha256:nzbget-release")
+            params.download_id.as_deref(),
+            Some("scryer-download:nzbget-1")
         );
         assert!(params.is_scryer);
     }

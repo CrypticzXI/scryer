@@ -103,8 +103,8 @@ ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
 
-export const totpVerifyStepUpMutation = `mutation TotpVerifyStepUp($input: TotpVerifyInput!) {
-  totpVerifyStepUp(input: $input) {
+export const mfaVerifyStepUpMutation = `mutation MfaVerifyStepUp($input: TotpVerifyInput!) {
+  mfaVerifyStepUp(input: $input) {
 ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
@@ -666,8 +666,8 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
-    totpRequireConfigStepUp
-    totpRequireLocalLogin
+    mfaRequireConfigStepUp
+    mfaRequirePasswordLogin
     totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive

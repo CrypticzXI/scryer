@@ -357,7 +357,7 @@ impl UserMutations {
                 return login_mfa_enrollment_payload_from_user(&app, user).await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
-                to_gql_error(AppError::TotpStepUpRequired(
+                to_gql_error(AppError::MfaStepUpRequired(
                     "TOTP code is required for Jellyfin login".into(),
                 ))
             })?;

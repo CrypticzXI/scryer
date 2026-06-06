@@ -192,44 +192,35 @@ impl ImportRepository for ImportStore {
         Ok(row.i64("count")? > 0)
     }
 
-    async fn is_already_imported_by_submission_identity(
+    async fn is_already_imported_by_download_id(
         &self,
+        source_identity: &DownloadSourceIdentity,
         identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
-        let mut clauses = Vec::new();
-        let mut args = Vec::new();
-        if let Some(request_id) = identity
-            .download_request_id
+        let Some(download_id) = identity
+            .download_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-        {
-            clauses.push("download_request_id = {}");
-            args.push(SqlArg::Text(request_id.to_string()));
-        }
-        if let Some(fingerprint) = identity
-            .download_fingerprint
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            clauses.push("download_fingerprint = {}");
-            args.push(SqlArg::Text(fingerprint.to_string()));
-        }
-        if clauses.is_empty() {
+        else {
             return Ok(false);
-        }
+        };
 
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            &format!(
-                "SELECT COUNT(1) AS count
-                 FROM imports
-                 WHERE status IN ('completed', 'skipped')
-                   AND ({})",
-                clauses.join(" OR ")
-            ),
-            &args,
+            "SELECT COUNT(1) AS count
+             FROM imports
+             WHERE status IN ('completed', 'skipped')
+               AND COALESCE(source_client_id, '') = {}
+               AND source_system = {}
+               AND download_id = {}",
+            &[
+                SqlArg::Text(normalize_download_client_id(
+                    source_identity.client_id.as_deref(),
+                )),
+                SqlArg::Text(source_identity.client_type.clone()),
+                SqlArg::Text(download_id.to_string()),
+            ],
         )
         .await?
         .ok_or_else(|| AppError::Repository("missing import identity count".into()))?;

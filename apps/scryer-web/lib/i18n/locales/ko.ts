@@ -1402,7 +1402,7 @@ const ko: LocaleDictionary = {
   "profile.passwordUpdated": "비밀번호가 성공적으로 변경되었습니다.",
   "profile.externalConnections": "외부 연결",
   "profile.externalConnectionsPlaceholder":
-    "Plex, 패스키 및 기타 외부 연결이 여기에서 제공될 예정입니다.",
+    "패스키 및 외부 계정 연결이 여기에서 제공될 예정입니다.",
   "auth.loginTitle": "로그인",
   "auth.usernamePlaceholder": "사용자명",
   "auth.passwordPlaceholder": "비밀번호",

@@ -23,19 +23,11 @@ impl DownloadSubmissionStore {
 
 fn download_identity_state_key(identity: &DownloadSubmissionIdentity) -> Option<String> {
     identity
-        .download_request_id
+        .download_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| format!("request:{value}"))
-        .or_else(|| {
-            identity
-                .download_fingerprint
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| format!("fingerprint:{value}"))
-        })
+        .map(|value| format!("download:{value}"))
 }
 
 #[async_trait]
@@ -116,34 +108,24 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .transpose()
     }
 
-    async fn list_by_request_id(
+    async fn list_by_download_id(
         &self,
-        download_request_id: &str,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
     ) -> AppResult<Vec<DownloadSubmission>> {
         let sql = download_submission_select_sql(
             &self.datastore,
-            "WHERE download_request_id = {} ORDER BY submitted_at DESC, id DESC",
+            "WHERE download_client_type = {} AND download_client_id = {} AND download_id = {} ORDER BY submitted_at DESC, id DESC",
         );
         fetch_download_submissions(
             self.datastore.read_exec(),
             &sql,
-            &[SqlArg::Text(download_request_id.to_string())],
-        )
-        .await
-    }
-
-    async fn list_by_fingerprint(
-        &self,
-        download_fingerprint: &str,
-    ) -> AppResult<Vec<DownloadSubmission>> {
-        let sql = download_submission_select_sql(
-            &self.datastore,
-            "WHERE download_fingerprint = {} ORDER BY submitted_at DESC, id DESC",
-        );
-        fetch_download_submissions(
-            self.datastore.read_exec(),
-            &sql,
-            &[SqlArg::Text(download_fingerprint.to_string())],
+            &[
+                SqlArg::Text(client_type.trim().to_ascii_lowercase()),
+                SqlArg::Text(normalize_download_client_id(client_id)),
+                SqlArg::Text(download_id.trim().to_string()),
+            ],
         )
         .await
     }
@@ -154,7 +136,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     ) -> AppResult<Option<DownloadSubmissionIdentity>> {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT download_request_id, download_fingerprint
+            "SELECT download_id
              FROM download_submissions
              WHERE download_client_type = {}
                AND download_client_item_id = {}
@@ -169,8 +151,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await?;
         row.map(|row| {
             Ok(DownloadSubmissionIdentity {
-                download_request_id: row.opt_text("download_request_id")?,
-                download_fingerprint: row.opt_text("download_fingerprint")?,
+                download_id: row.opt_text("download_id")?,
             })
         })
         .transpose()
@@ -207,13 +188,12 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "INSERT INTO download_identity_states
-                         (id, identity_key, download_request_id, download_fingerprint,
+                         (id, identity_key, download_id,
                           client_id, client_type, download_client_item_id,
                           tracked_state, reason, detail, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                          ON CONFLICT(identity_key) DO UPDATE
-                         SET download_request_id = excluded.download_request_id,
-                             download_fingerprint = excluded.download_fingerprint,
+                         SET download_id = excluded.download_id,
                              client_id = excluded.client_id,
                              client_type = excluded.client_type,
                              download_client_item_id = excluded.download_client_item_id,
@@ -224,8 +204,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &[
                             SqlArg::Text(Id::new().0),
                             SqlArg::Text(identity_key),
-                            SqlArg::OptText(identity.download_request_id),
-                            SqlArg::OptText(identity.download_fingerprint),
+                            SqlArg::OptText(identity.download_id),
                             SqlArg::OptText(source_identity.as_ref().map(|source| {
                                 normalize_download_client_id(source.client_id.as_deref())
                             })),
@@ -260,23 +239,14 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     ) -> AppResult<Option<String>> {
         let mut clauses = Vec::new();
         let mut args = Vec::new();
-        if let Some(request_id) = identity
-            .download_request_id
+        if let Some(download_id) = identity
+            .download_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            clauses.push("download_request_id = {}");
-            args.push(SqlArg::Text(request_id.to_string()));
-        }
-        if let Some(fingerprint) = identity
-            .download_fingerprint
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            clauses.push("download_fingerprint = {}");
-            args.push(SqlArg::Text(fingerprint.to_string()));
+            clauses.push("download_id = {}");
+            args.push(SqlArg::Text(download_id.to_string()));
         }
         if clauses.is_empty() {
             return Ok(None);

@@ -6,9 +6,9 @@ mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
 pub use download_identity::{
-    DOWNLOAD_FINGERPRINT_PARAMETER, DOWNLOAD_REQUEST_ID_PARAMETER, DownloadFingerprintInput,
-    ObservedDownloadIdentityInput, build_download_fingerprint, download_fingerprint_from_info_hash,
-    download_submission_identity_is_empty, observed_download_identity,
+    AcceptedDownloadIdentityInput, DOWNLOAD_ID_PARAMETER, ObservedDownloadIdentityInput,
+    accepted_download_submission_identity, download_id_from_info_hash,
+    download_submission_identity_is_empty, normalize_torrent_info_hash, observed_download_identity,
 };
 mod events;
 pub mod external_import;
@@ -89,7 +89,8 @@ pub(crate) use rules::user_rule_input;
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
-    EpisodeImageUrlUpdate, MediaRequestResolution, SubtitleSyncClient, SubtitleSyncJob,
+    EpisodeImageUrlUpdate, MediaRequestResolution, MediaRequestResolutionResult,
+    MediaRequestSubmissionResult, MediaRequestUpdateResult, SubtitleSyncClient, SubtitleSyncJob,
     TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
 };
 pub(crate) mod normalize;
@@ -377,7 +378,8 @@ pub use settings::keys::{
     DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
+    MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_PATH_KEY,
     MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
     NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
     NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY, PASSWORD_MIN_LENGTH_MIN,
@@ -395,8 +397,7 @@ pub use settings::keys::{
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,
     SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
     SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY,
-    TLS_KEY_PATH_KEY, TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
-    TOTP_REQUIRE_LOCAL_LOGIN_KEY,
+    TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
@@ -461,7 +462,7 @@ pub enum AppError {
     DownloadSubmitAmbiguous(String),
 
     #[error("{0}")]
-    TotpStepUpRequired(String),
+    MfaStepUpRequired(String),
 
     #[error("{0}")]
     TotpEnrollmentRequired(String),

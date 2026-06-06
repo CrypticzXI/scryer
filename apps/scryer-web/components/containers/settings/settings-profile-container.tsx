@@ -12,7 +12,7 @@ import {
   totpEnrollmentCompleteMutation,
   totpEnrollmentStartMutation,
   totpRegenerateRecoveryCodesMutation,
-  totpVerifyStepUpMutation,
+  mfaVerifyStepUpMutation,
   unlinkExternalAccountMutation,
 } from "@/lib/graphql/mutations";
 import {
@@ -22,6 +22,10 @@ import {
   myPasskeysQuery,
   myTotpQuery,
 } from "@/lib/graphql/queries";
+import {
+  VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS,
+  isVisibleExternalAccountProvider,
+} from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
@@ -306,7 +310,11 @@ export function SettingsProfileContainer({ userId, username }: Props) {
         setGlobalStatus(result.error.message);
         return;
       }
-      setLinkedAccounts(result.data?.linkedAccounts ?? []);
+      setLinkedAccounts(
+        (result.data?.linkedAccounts ?? []).filter((account) =>
+          isVisibleExternalAccountProvider(account.provider),
+        ),
+      );
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("profile.linkedAccountsLoadFailed"));
     } finally {
@@ -359,6 +367,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
     const eligibleForProvider = (provider: ExternalAccountProvider) => {
       if (
+        !isVisibleExternalAccountProvider(provider) ||
         !authProviderSettings.allowedProviders.includes(provider) ||
         !authProviderSettings.providerLinkingEnabled.includes(provider)
       ) {
@@ -379,7 +388,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
   const linkedAccountConnectionLabels = useMemo(() => {
     const labels: Record<string, string> = {};
-    (["jellyfin", "plex"] as const).forEach((provider) => {
+    VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS.forEach((provider) => {
       connectionsForProvider(authProviderSettings, provider).forEach((connection) => {
         labels[`${provider}:${connection.id}`] = connectionLabelForDisplay(connection);
       });
@@ -507,17 +516,17 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     try {
       const result = await client
         .mutation<
-          { totpVerifyStepUp?: { token: string; user: AuthUser | null } },
+          { mfaVerifyStepUp?: { token: string; user: AuthUser | null } },
           { input: { code: string } }
-        >(totpVerifyStepUpMutation, { input: { code: totpActionCode } })
+        >(mfaVerifyStepUpMutation, { input: { code: totpActionCode } })
         .toPromise();
-      if (result.error || !result.data?.totpVerifyStepUp) {
+      if (result.error || !result.data?.mfaVerifyStepUp) {
         setGlobalStatus(result.error?.message ?? t("profile.totpOperationFailed"));
         return;
       }
-      adoptSession(result.data.totpVerifyStepUp.token, result.data.totpVerifyStepUp.user);
+      adoptSession(result.data.mfaVerifyStepUp.token, result.data.mfaVerifyStepUp.user);
       setTotpActionCode("");
-      setGlobalStatus(t("profile.totpStepUpVerified"));
+      setGlobalStatus(t("profile.mfaStepUpVerified"));
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("profile.totpOperationFailed"));
     } finally {
@@ -578,6 +587,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t]);
 
   const handleStartLinkAccount = useCallback((provider: ExternalAccountProvider) => {
+    if (!isVisibleExternalAccountProvider(provider)) {
+      return;
+    }
     const connections = provider === "jellyfin" ? linkableConnections.jellyfin : linkableConnections.plex;
     setLinkingProvider(provider);
     setLinkAccountError(null);

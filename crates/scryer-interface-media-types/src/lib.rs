@@ -1945,8 +1945,8 @@ pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
-    pub totp_require_config_step_up: bool,
-    pub totp_require_local_login: bool,
+    pub mfa_require_config_step_up: bool,
+    pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
     pub effective_form_login_enabled: bool,
     pub env_override_active: bool,
@@ -1959,7 +1959,7 @@ pub struct AuthRuntimeStatePayload {
     pub skip_login_for_local_ips: bool,
     pub passkey_enabled: bool,
     pub env_override_active: bool,
-    pub totp_require_local_login: bool,
+    pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 
@@ -2410,8 +2410,8 @@ pub struct UpdateSecuritySettingsInput {
     pub form_login_enabled: bool,
     pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
-    pub totp_require_config_step_up: bool,
-    pub totp_require_local_login: bool,
+    pub mfa_require_config_step_up: bool,
+    pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 

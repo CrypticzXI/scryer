@@ -1435,7 +1435,7 @@ const ja: LocaleDictionary = {
   "profile.passwordUpdated": "パスワードを変更しました。",
   "profile.externalConnections": "外部接続",
   "profile.externalConnectionsPlaceholder":
-    "Plex、パスキー、その他の外部接続がここに表示される予定です。",
+    "パスキーと外部アカウント接続がここに表示される予定です。",
   "auth.loginTitle": "サインイン",
   "auth.usernamePlaceholder": "ユーザー名",
   "auth.passwordPlaceholder": "パスワード",

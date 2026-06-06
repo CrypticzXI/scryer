@@ -1062,9 +1062,7 @@ pub struct DownloadQueueItem {
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
     #[serde(default)]
-    pub download_request_id: Option<String>,
-    #[serde(default)]
-    pub download_fingerprint: Option<String>,
+    pub download_id: Option<String>,
     pub import_status: Option<ImportStatus>,
     pub import_error_code: Option<ImportErrorCode>,
     pub import_error_message: Option<String>,
@@ -1176,9 +1174,7 @@ pub struct CompletedDownload {
     pub client_id: String,
     pub download_client_item_id: String,
     #[serde(default)]
-    pub download_request_id: Option<String>,
-    #[serde(default)]
-    pub download_fingerprint: Option<String>,
+    pub download_id: Option<String>,
     pub name: String,
     pub dest_dir: String,
     pub category: Option<String>,
@@ -1466,6 +1462,7 @@ pub struct ImportRecord {
     pub status: ImportStatus,
     pub payload_json: String,
     pub result_json: Option<String>,
+    pub download_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,

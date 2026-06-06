@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, MediaRequestCounts, MediaRequestQuery, MediaRequestRepository,
-    MediaRequestResolution, NewMediaRequest,
+    MediaRequestResolution, MediaRequestResolutionResult, MediaRequestSubmissionResult,
+    MediaRequestUpdateResult, NewMediaRequest,
 };
 use scryer_domain::{
     ExternalId, MediaFacet, MediaRequest, MediaRequestRequester, MediaRequestStatus,
@@ -30,7 +31,7 @@ impl MediaRequestRepository for MediaRequestStore {
         request: NewMediaRequest,
         requester: &User,
         submitted_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestSubmissionResult> {
         let requester = requester.clone();
         SqlRuntime::run_in_transaction(&self.datastore, "submit_media_request", move |tx| {
             let request = request.clone();
@@ -48,11 +49,12 @@ impl MediaRequestRepository for MediaRequestStore {
                 )
                 .await?;
                 insert_media_request_requester_tx(tx, &request.id, &requester.id, now).await?;
-                append_domain_event_tx(tx, submitted_event).await?;
+                let event = append_domain_event_tx(tx, submitted_event).await?;
 
-                load_media_request_tx(tx, &request.id)
+                let request = load_media_request_tx(tx, &request.id)
                     .await?
-                    .ok_or_else(|| AppError::NotFound(format!("media request {}", request.id)))
+                    .ok_or_else(|| AppError::NotFound(format!("media request {}", request.id)))?;
+                Ok(MediaRequestSubmissionResult { request, event })
             })
         })
         .await
@@ -90,7 +92,7 @@ impl MediaRequestRepository for MediaRequestStore {
         &self,
         request: &MediaRequest,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
+    ) -> AppResult<MediaRequestResolutionResult> {
         let request = request.clone();
         let resolution = resolution.clone();
         SqlRuntime::run_in_transaction(
@@ -111,7 +113,7 @@ impl MediaRequestRepository for MediaRequestStore {
         &self,
         request_id: &str,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
+    ) -> AppResult<MediaRequestResolutionResult> {
         let request_id = request_id.to_string();
         let resolution = resolution.clone();
         SqlRuntime::run_in_transaction(
@@ -133,7 +135,7 @@ impl MediaRequestRepository for MediaRequestStore {
         requested_quality_profile_name: String,
         requested_monitor_type: Option<String>,
         updated_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestUpdateResult> {
         let request_id = request_id.to_string();
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -317,7 +319,7 @@ async fn resolve_pending_overlapping_tx(
     tx: &mut SqlTx<'_>,
     request: &MediaRequest,
     resolution: MediaRequestResolution,
-) -> AppResult<u64> {
+) -> AppResult<MediaRequestResolutionResult> {
     let resolved_at = resolution.resolved_at;
     let mut args = vec![
         SqlArg::Text(resolution.status.as_str().to_string()),
@@ -377,17 +379,22 @@ async fn resolve_pending_overlapping_tx(
           WHERE {where_clause}"
     );
     let rows = tx.execute(&sql, &args).await?;
-    if rows > 0 {
-        append_domain_event_tx(tx, resolution.event).await?;
-    }
-    Ok(rows)
+    let event = if rows > 0 {
+        Some(append_domain_event_tx(tx, resolution.event).await?)
+    } else {
+        None
+    };
+    Ok(MediaRequestResolutionResult {
+        updated: rows,
+        event,
+    })
 }
 
 async fn resolve_pending_tx(
     tx: &mut SqlTx<'_>,
     request_id: &str,
     resolution: MediaRequestResolution,
-) -> AppResult<u64> {
+) -> AppResult<MediaRequestResolutionResult> {
     let resolved_at = resolution.resolved_at;
     let rows = tx
         .execute(
@@ -413,10 +420,15 @@ async fn resolve_pending_tx(
             ],
         )
         .await?;
-    if rows > 0 {
-        append_domain_event_tx(tx, resolution.event).await?;
-    }
-    Ok(rows)
+    let event = if rows > 0 {
+        Some(append_domain_event_tx(tx, resolution.event).await?)
+    } else {
+        None
+    };
+    Ok(MediaRequestResolutionResult {
+        updated: rows,
+        event,
+    })
 }
 
 async fn update_pending_request_preferences_tx(
@@ -426,7 +438,7 @@ async fn update_pending_request_preferences_tx(
     requested_quality_profile_name: String,
     requested_monitor_type: Option<String>,
     updated_event: NewDomainEvent,
-) -> AppResult<MediaRequest> {
+) -> AppResult<MediaRequestUpdateResult> {
     let now = Utc::now();
     let rows = tx
         .execute(
@@ -452,10 +464,11 @@ async fn update_pending_request_preferences_tx(
         ));
     }
 
-    append_domain_event_tx(tx, updated_event).await?;
-    load_media_request_tx(tx, request_id)
+    let event = append_domain_event_tx(tx, updated_event).await?;
+    let request = load_media_request_tx(tx, request_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("media request {request_id}")))
+        .ok_or_else(|| AppError::NotFound(format!("media request {request_id}")))?;
+    Ok(MediaRequestUpdateResult { request, event })
 }
 
 async fn load_media_request_tx(

@@ -220,7 +220,7 @@ impl AppUseCase {
         })
     }
 
-    pub async fn totp_verify_step_up(&self, actor: &User, code: &str) -> AppResult<DateTime<Utc>> {
+    pub async fn mfa_verify_step_up(&self, actor: &User, code: &str) -> AppResult<DateTime<Utc>> {
         self.verify_totp_for_user(actor, code).await
     }
 
@@ -264,7 +264,7 @@ impl AppUseCase {
         mfa_step_up_verified_until: Option<i64>,
     ) -> AppResult<()> {
         let settings = self.security_settings().await?;
-        if !settings.totp_require_config_step_up {
+        if !settings.mfa_require_config_step_up {
             return Ok(());
         }
 
@@ -285,7 +285,7 @@ impl AppUseCase {
             ));
         }
 
-        Err(AppError::TotpStepUpRequired(
+        Err(AppError::MfaStepUpRequired(
             "MFA verification is required before changing system configuration".into(),
         ))
     }

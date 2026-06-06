@@ -248,11 +248,9 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
             })
         }
-        AppError::TotpStepUpRequired(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "TOTP_STEP_UP_REQUIRED");
-            })
-        }
+        AppError::MfaStepUpRequired(message) => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "MFA_STEP_UP_REQUIRED");
+        }),
         AppError::TotpEnrollmentRequired(message) => {
             Error::new(message).extend_with(|_, extensions| {
                 extensions.set("code", "TOTP_ENROLLMENT_REQUIRED");
@@ -278,7 +276,7 @@ pub fn to_gql_error(err: AppError) -> Error {
 fn login_progression_error(err: &AppError) -> bool {
     matches!(
         err,
-        AppError::TotpStepUpRequired(_)
+        AppError::MfaStepUpRequired(_)
             | AppError::TotpEnrollmentRequired(_)
             | AppError::MfaEnrollmentRequired(_)
             | AppError::TotpInvalidCode(_)
@@ -294,7 +292,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
-        AppError::TotpStepUpRequired(_) => "TotpStepUpRequired",
+        AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
@@ -440,9 +438,9 @@ mod tests {
     fn login_errors_preserve_mfa_progression() {
         let error = to_login_gql_error(
             "local",
-            AppError::TotpStepUpRequired("TOTP code is required for local login".into()),
+            AppError::MfaStepUpRequired("MFA code is required for password login".into()),
         );
-        assert_eq!(error.message, "TOTP code is required for local login");
-        assert_eq!(graphql_error_code(&error), Some("TOTP_STEP_UP_REQUIRED"));
+        assert_eq!(error.message, "MFA code is required for password login");
+        assert_eq!(graphql_error_code(&error), Some("MFA_STEP_UP_REQUIRED"));
     }
 }

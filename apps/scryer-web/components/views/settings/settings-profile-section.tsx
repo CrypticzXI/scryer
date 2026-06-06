@@ -12,6 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { QRCode } from "react-qr-code";
+import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
   AuthProviderConnection,
@@ -195,9 +196,16 @@ export function SettingsProfileSection({
     !passwordMismatch &&
     !saving;
   const selectedLinkConnections =
-    linkingProvider === "jellyfin" ? linkableJellyfinConnections : linkablePlexConnections;
+    linkingProvider === "jellyfin"
+      ? linkableJellyfinConnections
+      : isVisibleExternalAccountProvider("plex")
+        ? linkablePlexConnections
+        : [];
   const selectedLinkConnection = selectedLinkConnections.find(
     (connection) => connection.id === linkAccountConnectionId,
+  );
+  const visibleLinkedAccounts = linkedAccounts.filter((account) =>
+    isVisibleExternalAccountProvider(account.provider),
   );
   const canSubmitJellyfinLink =
     Boolean(linkAccountConnectionId) &&
@@ -410,7 +418,7 @@ export function SettingsProfileSection({
                   onClick={onVerifyTotpStepUp}
                 >
                   {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  {t("profile.totpVerifyStepUp")}
+                  {t("profile.mfaVerifyStepUp")}
                 </Button>
                 <Button
                   id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
@@ -524,7 +532,7 @@ export function SettingsProfileSection({
                 {t("profile.linkJellyfinAccount")}
               </Button>
             ) : null}
-            {linkablePlexConnections.length > 0 ? (
+            {isVisibleExternalAccountProvider("plex") && linkablePlexConnections.length > 0 ? (
               <Button
                 type="button"
                 variant={linkingProvider === "plex" ? "secondary" : "outline"}
@@ -627,7 +635,7 @@ export function SettingsProfileSection({
           </form>
         ) : null}
 
-        {linkingProvider === "plex" ? (
+        {isVisibleExternalAccountProvider("plex") && linkingProvider === "plex" ? (
           <form
             className="grid gap-3 rounded-md border border-border bg-background/60 p-4 md:max-w-xl"
             onSubmit={onSubmitPlexLink}
@@ -687,11 +695,11 @@ export function SettingsProfileSection({
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
-        ) : linkedAccounts.length === 0 ? (
+        ) : visibleLinkedAccounts.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("profile.linkedAccountsEmpty")}</p>
         ) : (
           <div className="space-y-3">
-            {linkedAccounts.map((account) => (
+            {visibleLinkedAccounts.map((account) => (
               <div
                 id={selectorId(
                   "settings-profile-linked-account",

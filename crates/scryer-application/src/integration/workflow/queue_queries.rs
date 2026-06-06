@@ -398,20 +398,10 @@ impl AppUseCase {
                 Ok(snapshot) => {
                     let existing_ids = items
                         .iter()
-                        .map(|item| {
-                            tracked_download_id(
-                                Some(item.client_id.as_str()),
-                                &item.client_type,
-                                &item.download_client_item_id,
-                            )
-                        })
+                        .map(tracked_download_id_for_item)
                         .collect::<HashSet<_>>();
                     for item in &mut items {
-                        let tracked_id = tracked_download_id(
-                            Some(item.client_id.as_str()),
-                            &item.client_type,
-                            &item.download_client_item_id,
-                        );
+                        let tracked_id = tracked_download_id_for_item(item);
                         if let Some(metadata) = snapshot.get(&tracked_id) {
                             apply_tracked_download_queue_metadata(item, metadata);
                         }
@@ -842,7 +832,6 @@ impl AppUseCase {
             .enrich_download_queue_items(Some(&primary_client), items, use_tracked_runtime_snapshot)
             .await)
     }
-
 }
 impl AppUseCase {
     #[expect(

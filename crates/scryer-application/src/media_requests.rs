@@ -144,12 +144,14 @@ impl AppUseCase {
             }),
         );
 
-        let submitted_request = self
+        let submission = self
             .services
             .catalog
             .media_requests
             .submit(request, actor, submitted_event)
             .await?;
+        self.publish_stored_domain_event(&submission.event).await;
+        let submitted_request = submission.request;
 
         if self
             .has_granted_library_permission(
@@ -281,7 +283,8 @@ impl AppUseCase {
                 Some(approved_quality_profile_name.clone()),
             )),
         );
-        self.services
+        let resolution = self
+            .services
             .catalog
             .media_requests
             .resolve_pending_overlapping(
@@ -297,6 +300,9 @@ impl AppUseCase {
                 },
             )
             .await?;
+        if let Some(event) = &resolution.event {
+            self.publish_stored_domain_event(event).await;
+        }
         let title_id = outcome.title.id.clone();
         let wanted_search = match self
             .trigger_title_wanted_search(
@@ -335,7 +341,8 @@ impl AppUseCase {
                 &request, None, None, None,
             )),
         );
-        self.services
+        let resolution = self
+            .services
             .catalog
             .media_requests
             .resolve_pending_overlapping(
@@ -350,7 +357,11 @@ impl AppUseCase {
                     event: resolved_event,
                 },
             )
-            .await
+            .await?;
+        if let Some(event) = &resolution.event {
+            self.publish_stored_domain_event(event).await;
+        }
+        Ok(resolution.updated)
     }
 
     pub async fn update_my_media_request(
@@ -386,7 +397,8 @@ impl AppUseCase {
             )),
         );
 
-        self.services
+        let update = self
+            .services
             .catalog
             .media_requests
             .update_pending_request_preferences(
@@ -396,7 +408,9 @@ impl AppUseCase {
                 requested_monitor_type,
                 updated_event,
             )
-            .await
+            .await?;
+        self.publish_stored_domain_event(&update.event).await;
+        Ok(update.request)
     }
 
     pub async fn cancel_my_media_request(&self, actor: &User, request_id: &str) -> AppResult<u64> {
@@ -411,7 +425,8 @@ impl AppUseCase {
             )),
         );
 
-        self.services
+        let resolution = self
+            .services
             .catalog
             .media_requests
             .resolve_pending(
@@ -426,7 +441,11 @@ impl AppUseCase {
                     event: canceled_event,
                 },
             )
-            .await
+            .await?;
+        if let Some(event) = &resolution.event {
+            self.publish_stored_domain_event(event).await;
+        }
+        Ok(resolution.updated)
     }
 
     async fn auto_approve_submitted_media_request(
@@ -472,7 +491,8 @@ impl AppUseCase {
                 Some(approved_quality_profile_name.clone()),
             )),
         );
-        self.services
+        let resolution = self
+            .services
             .catalog
             .media_requests
             .resolve_pending_overlapping(
@@ -488,6 +508,9 @@ impl AppUseCase {
                 },
             )
             .await?;
+        if let Some(event) = &resolution.event {
+            self.publish_stored_domain_event(event).await;
+        }
 
         if let Err(error) = self
             .trigger_title_wanted_search(

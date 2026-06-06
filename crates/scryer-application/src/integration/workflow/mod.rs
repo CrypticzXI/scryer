@@ -5,7 +5,7 @@ use crate::event_views::{
 };
 use crate::tracked_downloads::{
     TrackedDownload, TrackedDownloadQueueMetadata, publish_runtime_tracked_download_snapshot_cache,
-    tracked_download_id,
+    tracked_download_id_for_item,
 };
 use crate::types::DownloadClientFilterOption;
 use scryer_domain::{

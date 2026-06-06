@@ -418,28 +418,9 @@ impl AppUseCase {
                 .as_deref()
                 .or(title.digital_release_date.as_deref()),
         );
-        let download_request_id = crate::download_identity::new_download_request_id();
-        let download_fingerprint = crate::download_identity::build_download_fingerprint(
-            crate::download_identity::DownloadFingerprintInput {
-                request_id: Some(download_request_id.as_str()),
-                title_id: Some(title.id.as_str()),
-                facet: Some(title.facet.as_str()),
-                scope: Some(&scope),
-                source_kind,
-                source_hint: source_hint_for_attempt.as_deref(),
-                source_title: source_title_for_attempt.as_deref(),
-                info_hash_hint: None,
-                indexer_name: None,
-                size_bytes: None,
-                client_type: None,
-                output_path: None,
-                category: Some(category.as_str()),
-                completed_at: None,
-            },
-        );
+        let download_id = crate::download_identity::new_download_id();
         let submission_identity = DownloadSubmissionIdentity {
-            download_request_id: Some(download_request_id.clone()),
-            download_fingerprint: download_fingerprint.clone(),
+            download_id: Some(download_id.clone()),
         };
         let job_result = self
             .services
@@ -447,8 +428,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
-                download_request_id: Some(download_request_id),
-                download_fingerprint,
+                download_id: Some(download_id),
                 source_hint,
                 staged_nzb: None,
                 source_kind,
@@ -478,8 +458,19 @@ impl AppUseCase {
                 }
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let log_request_id = submission_identity.download_request_id.clone();
-                let log_fingerprint = submission_identity.download_fingerprint.clone();
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind,
+                            source_hint: source_hint_for_attempt.as_deref(),
+                            info_hash_hint: None,
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
+                let log_download_id = accepted_identity.download_id.clone();
                 if let Err(error) = self
                     .services
                     .workflow
@@ -497,7 +488,7 @@ impl AppUseCase {
                             request_signature: request_signature.clone(),
                             scope,
                         },
-                        submission_identity,
+                        accepted_identity,
                     )
                     .await
                 {
@@ -506,8 +497,7 @@ impl AppUseCase {
                         client_id = ?grab.client_id,
                         client_type = %grab.client_type,
                         download_client_item_id = %grab.job_id,
-                        download_request_id = ?log_request_id,
-                        download_fingerprint = ?log_fingerprint,
+                        download_id = ?log_download_id,
                         "download_identity_persistence_failed"
                     );
                     let _ = self

@@ -3220,13 +3220,7 @@
         "client_item_id": {
           "type": "string"
         },
-        "download_request_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "download_fingerprint": {
+        "download_id": {
           "type": [
             "string",
             "null"
@@ -3524,13 +3518,7 @@
         "client_item_id": {
           "type": "string"
         },
-        "download_request_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "download_fingerprint": {
+        "download_id": {
           "type": [
             "string",
             "null"

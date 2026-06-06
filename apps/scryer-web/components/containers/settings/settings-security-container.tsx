@@ -17,8 +17,8 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
   passwordMinLength: MIN_PASSWORD_LENGTH,
   skipLoginForLocalIps: false,
-  totpRequireConfigStepUp: false,
-  totpRequireLocalLogin: false,
+  mfaRequireConfigStepUp: false,
+  mfaRequirePasswordLogin: false,
   totpRequireJellyfinLogin: false,
   effectiveFormLoginEnabled: false,
   envOverrideActive: false,
@@ -114,8 +114,8 @@ export function SettingsSecurityContainer() {
     formLoginEnabled: boolean,
     passwordMinLength: number,
     skipLoginForLocalIps: boolean,
-    totpRequireConfigStepUp: boolean,
-    totpRequireLocalLogin: boolean,
+    mfaRequireConfigStepUp: boolean,
+    mfaRequirePasswordLogin: boolean,
     totpRequireJellyfinLogin: boolean,
   ) => {
     const { data, error } = await client
@@ -124,8 +124,8 @@ export function SettingsSecurityContainer() {
           formLoginEnabled,
           passwordMinLength,
           skipLoginForLocalIps,
-          totpRequireConfigStepUp,
-          totpRequireLocalLogin,
+          mfaRequireConfigStepUp,
+          mfaRequirePasswordLogin,
           totpRequireJellyfinLogin,
         },
       })
@@ -178,8 +178,8 @@ export function SettingsSecurityContainer() {
           settings.formLoginEnabled,
           draftPasswordMinLength,
           settings.skipLoginForLocalIps,
-          settings.totpRequireConfigStepUp,
-          settings.totpRequireLocalLogin,
+          settings.mfaRequireConfigStepUp,
+          settings.mfaRequirePasswordLogin,
           settings.totpRequireJellyfinLogin,
         );
         setSettings(nextSettings);
@@ -209,9 +209,9 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.passwordMinLength,
     settings.skipLoginForLocalIps,
-    settings.totpRequireConfigStepUp,
+    settings.mfaRequireConfigStepUp,
     settings.totpRequireJellyfinLogin,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequirePasswordLogin,
     t,
   ]);
 
@@ -263,8 +263,8 @@ export function SettingsSecurityContainer() {
         true,
         effectivePasswordMinLength,
         settings.skipLoginForLocalIps,
-        settings.totpRequireConfigStepUp,
-        settings.totpRequireLocalLogin,
+        settings.mfaRequireConfigStepUp,
+        settings.mfaRequirePasswordLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -301,8 +301,8 @@ export function SettingsSecurityContainer() {
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
     effectivePasswordMinLength,
@@ -330,8 +330,8 @@ export function SettingsSecurityContainer() {
         false,
         effectivePasswordMinLength,
         settings.skipLoginForLocalIps,
-        settings.totpRequireConfigStepUp,
-        settings.totpRequireLocalLogin,
+        settings.mfaRequireConfigStepUp,
+        settings.mfaRequirePasswordLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -362,8 +362,8 @@ export function SettingsSecurityContainer() {
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -388,8 +388,8 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         effectivePasswordMinLength,
         enabled,
-        settings.totpRequireConfigStepUp,
-        settings.totpRequireLocalLogin,
+        settings.mfaRequireConfigStepUp,
+        settings.mfaRequirePasswordLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -419,15 +419,15 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
     token,
   ]);
 
-  const handleTotpConfigStepUpChange = React.useCallback(async (enabled: boolean) => {
-    if (confirmBusy || saveBusy || enabled === settings.totpRequireConfigStepUp) {
+  const handleMfaConfigStepUpChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || saveBusy || enabled === settings.mfaRequireConfigStepUp) {
       return;
     }
 
@@ -439,7 +439,7 @@ export function SettingsSecurityContainer() {
         effectivePasswordMinLength,
         settings.skipLoginForLocalIps,
         enabled,
-        settings.totpRequireLocalLogin,
+        settings.mfaRequirePasswordLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -457,14 +457,14 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
 
-  const handleTotpLocalLoginChange = React.useCallback(async (enabled: boolean) => {
-    if (confirmBusy || saveBusy || enabled === settings.totpRequireLocalLogin) {
+  const handleMfaPasswordLoginChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || saveBusy || enabled === settings.mfaRequirePasswordLogin) {
       return;
     }
 
@@ -475,7 +475,7 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         effectivePasswordMinLength,
         settings.skipLoginForLocalIps,
-        settings.totpRequireConfigStepUp,
+        settings.mfaRequireConfigStepUp,
         enabled,
         settings.totpRequireJellyfinLogin,
       );
@@ -494,8 +494,8 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -512,8 +512,8 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         effectivePasswordMinLength,
         settings.skipLoginForLocalIps,
-        settings.totpRequireConfigStepUp,
-        settings.totpRequireLocalLogin,
+        settings.mfaRequireConfigStepUp,
+        settings.mfaRequirePasswordLogin,
         enabled,
       );
       setSettings(nextSettings);
@@ -531,8 +531,8 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     submitPasswordMinLength,
-    settings.totpRequireConfigStepUp,
-    settings.totpRequireLocalLogin,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -563,8 +563,8 @@ export function SettingsSecurityContainer() {
       onPasswordMinLengthDraftChange={setPasswordMinLengthDraft}
       onPasswordMinLengthSubmit={handlePasswordMinLengthSubmit}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
-      onTotpConfigStepUpChange={handleTotpConfigStepUpChange}
-      onTotpLocalLoginChange={handleTotpLocalLoginChange}
+      onMfaConfigStepUpChange={handleMfaConfigStepUpChange}
+      onMfaPasswordLoginChange={handleMfaPasswordLoginChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
       externalAccountInvitesPanel={
         canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null

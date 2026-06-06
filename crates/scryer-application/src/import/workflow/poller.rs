@@ -37,69 +37,44 @@ async fn prepare_completed_import_request(
     let submission_resolution =
         resolve_completed_download_submission(app, &completed, None).await?;
 
-    if let CompletedDownloadSubmissionResolution::AmbiguousFingerprint {
-        fingerprint,
+    if let CompletedDownloadSubmissionResolution::AmbiguousDownloadId {
+        download_id,
         matches,
     } = &submission_resolution
     {
         block_completed_download_identity_for_manual_review(
             app,
             &completed,
-            "ambiguous_fingerprint",
-            &format!("download fingerprint matched {matches} submissions: {fingerprint}"),
+            "ambiguous_download_id",
+            &format!("download id matched {matches} submissions: {download_id}"),
         )
         .await;
         let result = ImportResult {
             decision: ImportDecision::Rejected,
             skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
             error_message: Some(format!(
-                "Download fingerprint matched {matches} submissions; manual review is required: {fingerprint}"
+                "DownloadId matched {matches} submissions; manual review is required: {download_id}"
             )),
             ..base_completed_import_result("", &completed, started_at)
         };
         return Ok(CompletedImportProgress::Finished(result));
     }
-    if let CompletedDownloadSubmissionResolution::MissingDurableIdentity { identity } =
+    if let CompletedDownloadSubmissionResolution::MissingDownloadId { identity } =
         &submission_resolution
     {
         block_completed_download_identity_for_manual_review(
             app,
             &completed,
-            "missing_durable_identity",
-            &format!(
-                "request_id={:?} fingerprint={:?}",
-                identity.download_request_id, identity.download_fingerprint
-            ),
+            "missing_download_id",
+            &format!("download_id={:?}", identity.download_id),
         )
         .await;
         let result = ImportResult {
             decision: ImportDecision::Rejected,
             skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
             error_message: Some(format!(
-                "Download has durable identity but no matching Scryer submission; manual review is required: request_id={:?} fingerprint={:?}",
-                identity.download_request_id, identity.download_fingerprint
-            )),
-            ..base_completed_import_result("", &completed, started_at)
-        };
-        return Ok(CompletedImportProgress::Finished(result));
-    }
-    if let CompletedDownloadSubmissionResolution::ConflictingIdentity {
-        request_id,
-        fingerprint,
-    } = &submission_resolution
-    {
-        block_completed_download_identity_for_manual_review(
-            app,
-            &completed,
-            "conflicting_durable_identity",
-            &format!("request_id={request_id:?} fingerprint={fingerprint:?}"),
-        )
-        .await;
-        let result = ImportResult {
-            decision: ImportDecision::Rejected,
-            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
-            error_message: Some(format!(
-                "Download request identity conflicts with fingerprint identity; manual review is required: request_id={request_id:?} fingerprint={fingerprint:?}"
+                "Download has a DownloadId but no matching Scryer submission; manual review is required: download_id={:?}",
+                identity.download_id
             )),
             ..base_completed_import_result("", &completed, started_at)
         };
@@ -107,12 +82,7 @@ async fn prepare_completed_import_request(
     }
 
     // 1. DEDUP CHECK
-    if completed_download_already_imported_for_current_attempt(
-        app,
-        &completed,
-        &submission_resolution,
-    )
-    .await?
+    if completed_download_already_imported_for_current_attempt(app, &submission_resolution).await?
     {
         let result = ImportResult {
             decision: ImportDecision::Skipped,

@@ -858,8 +858,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         attention_required: item.attention_required,
         attention_reason: item.attention_reason,
         download_client_item_id: item.download_client_item_id,
-        download_request_id: item.download_request_id,
-        download_fingerprint: item.download_fingerprint,
+        download_id: item.download_id,
         import_status: item.import_status.map(ImportStatusValue::from_domain),
         import_error_code: item
             .import_error_code

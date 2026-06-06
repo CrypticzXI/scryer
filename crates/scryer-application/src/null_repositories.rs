@@ -14,6 +14,7 @@ use scryer_domain::RuleSet;
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
+    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
     MediaServerConnectionRepository, PlexServerDiscovery, SuccessfulGrabCommit, WantedItemsQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
@@ -1503,7 +1504,7 @@ impl MediaRequestRepository for NullMediaRequestRepository {
         _request: NewMediaRequest,
         _requester: &User,
         _submitted_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestSubmissionResult> {
         Err(AppError::Repository(
             "media request repository not configured".into(),
         ))
@@ -1521,16 +1522,22 @@ impl MediaRequestRepository for NullMediaRequestRepository {
         &self,
         _request: &MediaRequest,
         _resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
-        Ok(0)
+    ) -> AppResult<MediaRequestResolutionResult> {
+        Ok(MediaRequestResolutionResult {
+            updated: 0,
+            event: None,
+        })
     }
 
     async fn resolve_pending(
         &self,
         _request_id: &str,
         _resolution: MediaRequestResolution,
-    ) -> AppResult<u64> {
-        Ok(0)
+    ) -> AppResult<MediaRequestResolutionResult> {
+        Ok(MediaRequestResolutionResult {
+            updated: 0,
+            event: None,
+        })
     }
 
     async fn update_pending_request_preferences(
@@ -1540,7 +1547,7 @@ impl MediaRequestRepository for NullMediaRequestRepository {
         _requested_quality_profile_name: String,
         _requested_monitor_type: Option<String>,
         _updated_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest> {
+    ) -> AppResult<MediaRequestUpdateResult> {
         Err(AppError::Repository(
             "media request repository not configured".into(),
         ))

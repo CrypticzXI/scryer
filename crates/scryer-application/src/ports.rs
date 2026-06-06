@@ -270,6 +270,24 @@ pub struct MediaRequestResolution {
     pub event: NewDomainEvent,
 }
 
+#[derive(Clone, Debug)]
+pub struct MediaRequestSubmissionResult {
+    pub request: MediaRequest,
+    pub event: DomainEvent,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestResolutionResult {
+    pub updated: u64,
+    pub event: Option<DomainEvent>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestUpdateResult {
+    pub request: MediaRequest,
+    pub event: DomainEvent,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MediaRequestQuery {
     pub facet: Option<MediaFacet>,
@@ -285,7 +303,7 @@ pub trait MediaRequestRepository: Send + Sync {
         request: NewMediaRequest,
         requester: &User,
         submitted_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest>;
+    ) -> AppResult<MediaRequestSubmissionResult>;
 
     async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>>;
 
@@ -293,13 +311,13 @@ pub trait MediaRequestRepository: Send + Sync {
         &self,
         request: &MediaRequest,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64>;
+    ) -> AppResult<MediaRequestResolutionResult>;
 
     async fn resolve_pending(
         &self,
         request_id: &str,
         resolution: MediaRequestResolution,
-    ) -> AppResult<u64>;
+    ) -> AppResult<MediaRequestResolutionResult>;
 
     async fn update_pending_request_preferences(
         &self,
@@ -308,7 +326,7 @@ pub trait MediaRequestRepository: Send + Sync {
         requested_quality_profile_name: String,
         requested_monitor_type: Option<String>,
         updated_event: NewDomainEvent,
-    ) -> AppResult<MediaRequest>;
+    ) -> AppResult<MediaRequestUpdateResult>;
 
     async fn count_pending_by_facet(&self, library_ids: &[String])
     -> AppResult<MediaRequestCounts>;
@@ -934,27 +952,24 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>>;
 
-    async fn find_by_request_id(
+    async fn find_by_download_id(
         &self,
-        download_request_id: &str,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(self
-            .list_by_request_id(download_request_id)
+            .list_by_download_id(client_id, client_type, download_id)
             .await?
             .into_iter()
             .next())
     }
 
-    async fn list_by_request_id(
+    async fn list_by_download_id(
         &self,
-        _download_request_id: &str,
-    ) -> AppResult<Vec<DownloadSubmission>> {
-        Ok(Vec::new())
-    }
-
-    async fn list_by_fingerprint(
-        &self,
-        _download_fingerprint: &str,
+        _client_id: Option<&str>,
+        _client_type: &str,
+        _download_id: &str,
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(Vec::new())
     }
@@ -1172,8 +1187,9 @@ pub trait ImportRepository: Send + Sync {
 
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
 
-    async fn is_already_imported_by_submission_identity(
+    async fn is_already_imported_by_download_id(
         &self,
+        _source_identity: &DownloadSourceIdentity,
         _identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
         Ok(false)

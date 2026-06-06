@@ -593,30 +593,9 @@ async fn process_single_wanted_item(
                                 .get("info_hash")
                                 .and_then(|value| value.as_str())
                                 .map(str::to_string);
-                            let download_request_id =
-                                crate::download_identity::new_download_request_id();
-                            let download_fingerprint =
-                                crate::download_identity::build_download_fingerprint(
-                                    crate::download_identity::DownloadFingerprintInput {
-                                        request_id: Some(download_request_id.as_str()),
-                                        title_id: Some(title.id.as_str()),
-                                        facet: Some(title.facet.as_str()),
-                                        scope: None,
-                                        source_kind: best_pack.source_kind,
-                                        source_hint: pack_url.as_deref(),
-                                        source_title: pack_title.as_deref(),
-                                        info_hash_hint: info_hash_hint.as_deref(),
-                                        indexer_name: Some(best_pack.source.as_str()),
-                                        size_bytes: None,
-                                        client_type: None,
-                                        output_path: None,
-                                        category: Some(download_cat.as_str()),
-                                        completed_at: None,
-                                    },
-                                );
+                            let download_id = crate::download_identity::new_download_id();
                             let submission_identity = DownloadSubmissionIdentity {
-                                download_request_id: Some(download_request_id.clone()),
-                                download_fingerprint: download_fingerprint.clone(),
+                                download_id: Some(download_id.clone()),
                             };
 
                             let grab_result = app
@@ -625,8 +604,7 @@ async fn process_single_wanted_item(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
-                                    download_request_id: Some(download_request_id),
-                                    download_fingerprint,
+                                    download_id: Some(download_id),
                                     source_hint: pack_url.clone(),
                                     staged_nzb: None,
                                     source_kind: best_pack.source_kind,
@@ -637,7 +615,7 @@ async fn process_single_wanted_item(
                                     download_directory: None,
                                     release_title: Some(best_pack.title.clone()),
                                     indexer_name: Some(best_pack.source.clone()),
-                                    info_hash_hint,
+                                    info_hash_hint: info_hash_hint.clone(),
                                     seed_goal_ratio: None,
                                     seed_goal_seconds: None,
                                     is_recent,
@@ -653,6 +631,20 @@ async fn process_single_wanted_item(
                                         .trim_matches('"')
                                         .to_string();
                                     metrics::counter!("scryer_grabs_total", "indexer" => best_pack.source.clone(), "facet" => facet_label).increment(1);
+                                    let accepted_identity =
+                                        crate::download_identity::accepted_download_submission_identity(
+                                            crate::download_identity::AcceptedDownloadIdentityInput {
+                                                initial_download_id: submission_identity
+                                                    .download_id
+                                                    .as_deref(),
+                                                source_kind: best_pack.source_kind,
+                                                source_hint: pack_url.as_deref(),
+                                                info_hash_hint: info_hash_hint.as_deref(),
+                                                client_type: Some(grab.client_type.as_str()),
+                                                client_item_id: Some(grab.job_id.as_str()),
+                                                accepted_info_hash: grab.info_hash.as_deref(),
+                                            },
+                                        );
                                     season_pack_grabbed.insert(season_key.clone());
                                     let _ = app
                                         .services
@@ -714,7 +706,7 @@ async fn process_single_wanted_item(
                                                 request_signature: request_signature.clone(),
                                                 scope: submission_scope,
                                             },
-                                            download_submission_identity: Some(submission_identity),
+                                            download_submission_identity: Some(accepted_identity),
                                             grabbed_pending_release_id: None,
                                             grabbed_at: Some(now.to_rfc3339()),
                                         })
@@ -1120,31 +1112,9 @@ async fn process_single_wanted_item(
             .get("info_hash")
             .and_then(|value| value.as_str())
             .map(str::to_string);
-        let download_request_id = crate::download_identity::new_download_request_id();
-        let download_fingerprint = crate::download_identity::build_download_fingerprint(
-            crate::download_identity::DownloadFingerprintInput {
-                request_id: Some(download_request_id.as_str()),
-                title_id: Some(title.id.as_str()),
-                facet: Some(title.facet.as_str()),
-                scope: Some(&direct_download_submission_scope_for_wanted_item(
-                    item,
-                    episode.as_ref(),
-                )),
-                source_kind: candidate.source_kind,
-                source_hint: source_hint.as_deref(),
-                source_title: source_title.as_deref(),
-                info_hash_hint: info_hash_hint.as_deref(),
-                indexer_name: Some(candidate.source.as_str()),
-                size_bytes: None,
-                client_type: None,
-                output_path: None,
-                category: Some(download_cat.as_str()),
-                completed_at: None,
-            },
-        );
+        let download_id = crate::download_identity::new_download_id();
         let submission_identity = DownloadSubmissionIdentity {
-            download_request_id: Some(download_request_id.clone()),
-            download_fingerprint: download_fingerprint.clone(),
+            download_id: Some(download_id.clone()),
         };
 
         let grab_result = app
@@ -1153,8 +1123,7 @@ async fn process_single_wanted_item(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
-                download_request_id: Some(download_request_id),
-                download_fingerprint,
+                download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind: candidate.source_kind,
@@ -1165,7 +1134,7 @@ async fn process_single_wanted_item(
                 download_directory: None,
                 release_title: Some(candidate.title.clone()),
                 indexer_name: Some(candidate.source.clone()),
-                info_hash_hint,
+                info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 is_recent,
@@ -1183,6 +1152,18 @@ async fn process_single_wanted_item(
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => candidate.source.clone(), "facet" => facet_label).increment(1);
                 }
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind: candidate.source_kind,
+                            source_hint: source_hint.as_deref(),
+                            info_hash_hint: info_hash_hint.as_deref(),
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
 
                 let _ = app
                     .services
@@ -1268,7 +1249,7 @@ async fn process_single_wanted_item(
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
-                        download_submission_identity: Some(submission_identity),
+                        download_submission_identity: Some(accepted_identity),
                         grabbed_pending_release_id: None,
                         grabbed_at: Some(now.to_rfc3339()),
                     })

@@ -21,6 +21,7 @@ import {
   runConnectionFeedback,
 } from "@/lib/utils/connection-feedback";
 import { notifyExternalAccountInviteSourcesChanged } from "@/components/containers/settings/external-account-invites-container";
+import { isVisibleMediaServerProvider } from "@/lib/constants/integration-providers";
 import type {
   LibraryRecord,
   MediaServerConnection,
@@ -134,7 +135,7 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
 }
 
 function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
-  const supportsAuth = draft.provider === "jellyfin" || draft.provider === "plex";
+  const supportsAuth = draft.provider === "jellyfin";
   const input: Record<string, unknown> = {
     provider: draft.provider,
     displayName: draft.displayName.trim(),
@@ -211,7 +212,11 @@ export function SettingsMediaServersContainer() {
       .query(mediaServerConnectionsQuery, { provider: null }, { requestPolicy: "network-only" })
       .toPromise();
     if (error) throw error;
-    setConnections((data?.mediaServerConnections ?? []) as MediaServerConnection[]);
+    setConnections(
+      ((data?.mediaServerConnections ?? []) as MediaServerConnection[]).filter((connection) =>
+        isVisibleMediaServerProvider(connection.provider),
+      ),
+    );
   }, [client]);
 
   const refreshLibraries = useCallback(async () => {

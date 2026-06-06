@@ -1149,6 +1149,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         job_id: result.job_id,
                         client_id: Some(config.id.clone()),
                         client_type: config.client_type.clone(),
+                        info_hash: result.info_hash,
                     });
                 }
                 Err(error) => {
@@ -1968,6 +1969,7 @@ mod tests {
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "mock".to_string(),
+                info_hash: None,
             })
         }
 
@@ -2048,6 +2050,7 @@ mod tests {
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "delayed".to_string(),
+                info_hash: None,
             })
         }
 
@@ -2083,6 +2086,7 @@ mod tests {
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "failing".to_string(),
+                info_hash: None,
             })
         }
 
@@ -2195,8 +2199,7 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: id.to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -2236,8 +2239,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::TorrentFile),
@@ -2291,8 +2293,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::TorrentFile),
@@ -2333,8 +2334,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("magnet:?xt=urn:btih:abcdef".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::MagnetUri),
@@ -2400,8 +2400,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2474,8 +2473,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Movie),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/movie.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2498,8 +2496,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Anime),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/anime.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2557,8 +2554,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2616,8 +2612,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2676,8 +2671,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2733,8 +2727,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2812,8 +2805,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2885,8 +2877,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -2946,8 +2937,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -3004,8 +2994,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title,
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
@@ -3249,8 +3238,7 @@ mod tests {
                 client_type: "qbittorrent".to_string(),
                 client_id: String::new(),
                 download_client_item_id: "a-1".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 name: "A 1".to_string(),
                 dest_dir: "/downloads/a-1".to_string(),
                 category: None,
@@ -3262,8 +3250,7 @@ mod tests {
                 client_type: "qbittorrent".to_string(),
                 client_id: String::new(),
                 download_client_item_id: "a-2".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 name: "A 2".to_string(),
                 dest_dir: "/downloads/a-2".to_string(),
                 category: None,
@@ -3277,8 +3264,7 @@ mod tests {
                 client_type: "qbittorrent".to_string(),
                 client_id: String::new(),
                 download_client_item_id: "b-1".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 name: "B 1".to_string(),
                 dest_dir: "/downloads/b-1".to_string(),
                 category: None,
@@ -3290,8 +3276,7 @@ mod tests {
                 client_type: "qbittorrent".to_string(),
                 client_id: String::new(),
                 download_client_item_id: "b-2".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 name: "B 2".to_string(),
                 dest_dir: "/downloads/b-2".to_string(),
                 category: None,
@@ -3347,8 +3332,7 @@ mod tests {
                 client_type: "qbittorrent".to_string(),
                 client_id: String::new(),
                 download_client_item_id: "remote-1".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 name: "Remote Download".to_string(),
                 dest_dir: "D:\\Data\\Completed\\Remote Download".to_string(),
                 category: None,

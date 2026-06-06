@@ -662,8 +662,7 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
             payload_json TEXT NOT NULL,
             result_json TEXT,
             rename_plan_json TEXT,
-            download_request_id TEXT,
-            download_fingerprint TEXT,
+            download_id TEXT,
             started_at TEXT,
             finished_at TEXT,
             created_at TEXT NOT NULL,
@@ -740,16 +739,16 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
     .expect("import count should load");
     assert_eq!(row_count, 1);
 
-    let durable_identity = DownloadSubmissionIdentity {
-        download_request_id: Some("scryer-request:store-test".to_string()),
-        download_fingerprint: Some("sha256:store-test".to_string()),
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:store-test".to_string()),
     };
+    let durable_source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10001");
     let durable_import_id = workflow
         .queue_import_request_with_identity(
-            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10001"),
+            durable_source_identity.clone(),
             ImportType::MovieDownload.as_str().to_string(),
             "{\"attempt\":1}".to_string(),
-            Some(durable_identity.clone()),
+            Some(download_identity.clone()),
         )
         .await
         .expect("durable import should queue");
@@ -760,7 +759,7 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
 
     assert!(
         workflow
-            .is_already_imported_by_submission_identity(&durable_identity)
+            .is_already_imported_by_download_id(&durable_source_identity, &download_identity)
             .await
             .expect("identity import lookup should succeed")
     );
@@ -940,8 +939,7 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
                 },
             },
             DownloadSubmissionIdentity {
-                download_request_id: Some("scryer-request:fresh".to_string()),
-                download_fingerprint: Some("sha256:fresh".to_string()),
+                download_id: Some("scryer-download:fresh".to_string()),
             },
         )
         .await
@@ -954,10 +952,10 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
     assert_eq!(tracked_state, None);
 
     let fresh = workflow
-        .find_by_request_id("scryer-request:fresh")
+        .find_by_download_id(None, "weaver", "scryer-download:fresh")
         .await
-        .expect("request lookup should succeed")
-        .expect("fresh request should be indexed");
+        .expect("download id lookup should succeed")
+        .expect("fresh download id should be indexed");
     assert_eq!(fresh.source_title.as_deref(), Some("Fresh.Release.S01E07"));
 
     let _ = std::fs::remove_file(db);
@@ -6377,8 +6375,7 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
         .expect("db should initialize");
     let workflow_store = DownloadSubmissionStore::new(services.datastore());
     let identity = DownloadSubmissionIdentity {
-        download_request_id: Some("scryer-request:blocked".to_string()),
-        download_fingerprint: Some("sha256:blocked".to_string()),
+        download_id: Some("scryer-download:blocked".to_string()),
     };
     let source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
 
@@ -6387,8 +6384,8 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
             &identity,
             Some(&source_identity),
             "import_blocked",
-            Some("unresolved_durable_identity"),
-            Some("request/fingerprint observed without a matching submission"),
+            Some("unresolved_download_id"),
+            Some("download id observed without a matching submission"),
         )
         .await
         .expect("identity tracked state should persist");
@@ -6411,9 +6408,9 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
 
     let row = sqlx::query(
         "SELECT client_id, client_type, download_client_item_id, reason \
-         FROM download_identity_states WHERE download_request_id = ?",
+         FROM download_identity_states WHERE download_id = ?",
     )
-    .bind("scryer-request:blocked")
+    .bind("scryer-download:blocked")
     .fetch_one(services.pool())
     .await
     .expect("identity state row should exist");
@@ -6424,7 +6421,7 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
     assert_eq!(client_id, "client-a");
     assert_eq!(client_type, "weaver");
     assert_eq!(item_id, "10010");
-    assert_eq!(reason, "unresolved_durable_identity");
+    assert_eq!(reason, "unresolved_download_id");
 
     drop(services);
     let _ = std::fs::remove_file(db);

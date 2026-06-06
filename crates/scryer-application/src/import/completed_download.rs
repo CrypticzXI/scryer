@@ -34,8 +34,7 @@ const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 #[derive(Default)]
 pub(crate) struct CompletedDownloadLookup {
     by_source: HashMap<(String, String, String), CompletedDownload>,
-    by_request_id: HashMap<String, Vec<CompletedDownload>>,
-    by_fingerprint: HashMap<String, Vec<CompletedDownload>>,
+    by_download_id: HashMap<(String, String, String), Vec<CompletedDownload>>,
 }
 
 enum ExpectedEpisodeResolution {
@@ -90,20 +89,34 @@ pub(crate) async fn check_with_lookup(
         return;
     }
 
+    let queue_identity = observed_queue_item_identity(&td.client_item);
+    if let Some(state) = download_id_tracked_state(app, &queue_identity).await
+        && state.is_terminal()
+    {
+        apply_download_id_state(td, state);
+        return;
+    }
+
     let Some(completed) = find_completed_download(app, td, completed_lookup).await else {
-        if !crate::download_submission_identity_is_empty(&observed_queue_item_identity(
-            &td.client_item,
-        )) {
+        if !crate::download_submission_identity_is_empty(&queue_identity) {
             block_tracked_download_identity_for_manual_review(
                 app,
                 td,
                 "missing_completed_history_identity",
-                "completed queue item carried durable identity but completed history did not contain a compatible identity",
+                "completed queue item carried DownloadId but completed history did not contain a matching DownloadId",
             )
             .await;
         }
         return;
     };
+
+    let completed_identity = observed_completed_download_identity(&completed);
+    if let Some(state) = download_id_tracked_state(app, &completed_identity).await
+        && state.is_terminal()
+    {
+        apply_download_id_state(td, state);
+        return;
+    }
 
     maybe_resolve_title_from_completed_download(app, td, &completed).await;
 
@@ -446,27 +459,19 @@ fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDown
     let mut lookup = CompletedDownloadLookup::default();
     for completed in downloads {
         let observed_identity = observed_completed_download_identity(&completed);
-        if let Some(request_id) = observed_identity
-            .download_request_id
+        if let Some(download_id) = observed_identity
+            .download_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
             lookup
-                .by_request_id
-                .entry(request_id.to_string())
-                .or_default()
-                .push(completed.clone());
-        }
-        if let Some(fingerprint) = observed_identity
-            .download_fingerprint
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lookup
-                .by_fingerprint
-                .entry(fingerprint.to_string())
+                .by_download_id
+                .entry(completed_download_lookup_key(
+                    Some(&completed.client_id),
+                    &completed.client_type,
+                    download_id,
+                ))
                 .or_default()
                 .push(completed.clone());
         }
@@ -484,8 +489,7 @@ fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDown
 
 fn observed_queue_item_identity(item: &DownloadQueueItem) -> crate::DownloadSubmissionIdentity {
     crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
-        download_request_id: item.download_request_id.as_deref(),
-        download_fingerprint: item.download_fingerprint.as_deref(),
+        download_id: item.download_id.as_deref(),
         parameters: &[],
         info_hash_hint: None,
     })
@@ -495,11 +499,41 @@ fn observed_completed_download_identity(
     completed: &CompletedDownload,
 ) -> crate::DownloadSubmissionIdentity {
     crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
-        download_request_id: completed.download_request_id.as_deref(),
-        download_fingerprint: completed.download_fingerprint.as_deref(),
+        download_id: completed.download_id.as_deref(),
         parameters: &completed.parameters,
         info_hash_hint: None,
     })
+}
+
+async fn download_id_tracked_state(
+    app: &AppUseCase,
+    identity: &crate::DownloadSubmissionIdentity,
+) -> Option<TrackedDownloadState> {
+    if crate::download_submission_identity_is_empty(identity) {
+        return None;
+    }
+    app.services
+        .workflow
+        .download_submissions
+        .get_identity_tracked_state(identity)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|state| TrackedDownloadState::from_str_opt(&state))
+}
+
+fn apply_download_id_state(td: &mut TrackedDownload, state: TrackedDownloadState) {
+    td.state = state;
+    match state {
+        TrackedDownloadState::Imported => {
+            td.status = TrackedDownloadStatus::Ok;
+            td.status_messages.clear();
+        }
+        TrackedDownloadState::Failed => {
+            td.status = TrackedDownloadStatus::Error;
+        }
+        _ => {}
+    }
 }
 
 fn single_completed_download_identity_match(
@@ -520,7 +554,7 @@ fn single_completed_download_identity_match(
         identity_kind = label,
         identity_value = value,
         matches = matches.len(),
-        "find_completed_download: durable identity matched multiple completed downloads"
+        "find_completed_download: DownloadId matched multiple completed downloads"
     );
     None
 }
@@ -622,28 +656,20 @@ fn find_completed_download_in_lookup(
     td: &TrackedDownload,
 ) -> Option<CompletedDownload> {
     let observed_identity = observed_queue_item_identity(&td.client_item);
-    if let Some(request_id) = observed_identity
-        .download_request_id
+    if let Some(download_id) = observed_identity
+        .download_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         return single_completed_download_identity_match(
-            lookup.by_request_id.get(request_id),
-            "request_id",
-            request_id,
-        );
-    }
-    if let Some(fingerprint) = observed_identity
-        .download_fingerprint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return single_completed_download_identity_match(
-            lookup.by_fingerprint.get(fingerprint),
-            "fingerprint",
-            fingerprint,
+            lookup.by_download_id.get(&completed_download_lookup_key(
+                Some(&td.client_id),
+                &td.client_type,
+                download_id,
+            )),
+            "download_id",
+            download_id,
         );
     }
 
@@ -656,29 +682,7 @@ fn find_completed_download_in_lookup(
         return Some(completed.clone());
     }
 
-    if !td.client_id.trim().is_empty() {
-        return None;
-    }
-
-    let mut legacy_matches = lookup
-        .by_source
-        .iter()
-        .filter(|((_, client_type, item_id), _)| {
-            client_type == &td.client_type && item_id == &td.client_item.download_client_item_id
-        })
-        .map(|(_, completed)| completed.clone());
-    let first = legacy_matches.next()?;
-    if legacy_matches.next().is_some() {
-        tracing::warn!(
-            id = %td.id,
-            item_id = %td.client_item.download_client_item_id,
-            client_type = %td.client_type,
-            "find_completed_download: legacy tracked download matched multiple configured clients; refusing ambiguous import"
-        );
-        return None;
-    }
-
-    Some(first)
+    None
 }
 
 async fn maybe_resolve_title_from_completed_download(
@@ -867,11 +871,28 @@ async fn apply_import_result(
     result: ImportResult,
     files_imported_this_pass: usize,
 ) -> bool {
-    if verify_import(app, td, files_imported_this_pass).await {
-        td.state = TrackedDownloadState::Imported;
-        td.status = TrackedDownloadStatus::Ok;
-        td.status_messages.clear();
-        return true;
+    let already_imported = result.skip_reason == Some(ImportSkipReason::AlreadyImported);
+    if result.decision == ImportDecision::Imported || already_imported {
+        if verify_import(app, td, files_imported_this_pass).await {
+            td.state = TrackedDownloadState::Imported;
+            td.status = TrackedDownloadStatus::Ok;
+            td.status_messages.clear();
+            return true;
+        }
+
+        if already_imported {
+            td.state = TrackedDownloadState::Imported;
+            td.status = TrackedDownloadStatus::Ok;
+            td.status_messages.clear();
+            return true;
+        }
+
+        td.state = TrackedDownloadState::ImportPending;
+        td.status = TrackedDownloadStatus::Warning;
+        td.status_messages = vec![
+            "Import partially completed; waiting for remaining files or verification.".to_string(),
+        ];
+        return false;
     }
 
     if import_result_is_retryable(&result) {
@@ -893,15 +914,6 @@ async fn apply_import_result(
     }
 
     match result.decision {
-        ImportDecision::Imported => {
-            td.state = TrackedDownloadState::ImportPending;
-            td.status = TrackedDownloadStatus::Warning;
-            td.status_messages = vec![
-                "Import partially completed; waiting for remaining files or verification."
-                    .to_string(),
-            ];
-            false
-        }
         ImportDecision::Failed => {
             td.state = TrackedDownloadState::ImportBlocked;
             td.status = TrackedDownloadStatus::Error;
@@ -1236,10 +1248,12 @@ mod tests {
     use crate::{
         ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
         CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
-        DownloadClientConfigRepository, DownloadGrabResult, EpisodeUpdate, FacetRegistry,
-        ImportArtifact, ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig,
-        PendingTitleHydration, QualityProfile, QualityProfileRepository, ScopedExternalId,
-        ShowRepository, TitleMetadataUpdate, TitleRepository,
+        DownloadClientConfigRepository, DownloadGrabResult, DownloadSourceIdentity,
+        DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository,
+        EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
+        IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, QualityProfile,
+        QualityProfileRepository, ScopedExternalId, ShowRepository, TitleMetadataUpdate,
+        TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -1760,6 +1774,215 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TestDownloadSubmissionRepo {
+        rows: Arc<Mutex<Vec<(DownloadSubmission, DownloadSubmissionIdentity)>>>,
+        tracked_states: Arc<Mutex<Vec<(DownloadSourceIdentity, String)>>>,
+        identity_tracked_states: Arc<Mutex<Vec<(DownloadSubmissionIdentity, String)>>>,
+    }
+
+    #[async_trait]
+    impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
+        async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+            self.rows
+                .lock()
+                .await
+                .push((submission, DownloadSubmissionIdentity::default()));
+            Ok(())
+        }
+
+        async fn record_submission_with_identity(
+            &self,
+            submission: DownloadSubmission,
+            submission_identity: DownloadSubmissionIdentity,
+        ) -> AppResult<()> {
+            self.rows
+                .lock()
+                .await
+                .push((submission, submission_identity));
+            Ok(())
+        }
+
+        async fn find_by_client_item_id(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|(submission, _)| {
+                    DownloadSourceIdentity::from_submission(submission) == *identity
+                })
+                .map(|(submission, _)| submission.clone()))
+        }
+
+        async fn list_by_download_id(
+            &self,
+            client_id: Option<&str>,
+            client_type: &str,
+            download_id: &str,
+        ) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|(submission, identity)| {
+                    submission.download_client_id.as_deref().unwrap_or("")
+                        == client_id.unwrap_or("")
+                        && submission
+                            .download_client_type
+                            .eq_ignore_ascii_case(client_type)
+                        && identity.download_id.as_deref() == Some(download_id)
+                })
+                .map(|(submission, _)| submission.clone())
+                .collect())
+        }
+
+        async fn get_submission_identity(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<Option<DownloadSubmissionIdentity>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|(submission, _)| {
+                    DownloadSourceIdentity::from_submission(submission) == *identity
+                })
+                .map(|(_, submission_identity)| submission_identity.clone()))
+        }
+
+        async fn record_identity_tracked_state(
+            &self,
+            identity: &DownloadSubmissionIdentity,
+            _source_identity: Option<&DownloadSourceIdentity>,
+            tracked_state: &str,
+            _reason: Option<&str>,
+            _detail: Option<&str>,
+        ) -> AppResult<()> {
+            let mut states = self.identity_tracked_states.lock().await;
+            if let Some((_, state)) = states
+                .iter_mut()
+                .find(|(stored_identity, _)| stored_identity == identity)
+            {
+                *state = tracked_state.to_string();
+            } else {
+                states.push((identity.clone(), tracked_state.to_string()));
+            }
+            Ok(())
+        }
+
+        async fn get_identity_tracked_state(
+            &self,
+            identity: &DownloadSubmissionIdentity,
+        ) -> AppResult<Option<String>> {
+            Ok(self
+                .identity_tracked_states
+                .lock()
+                .await
+                .iter()
+                .find(|(stored_identity, _)| stored_identity == identity)
+                .map(|(_, state)| state.clone()))
+        }
+
+        async fn list_for_client_items(
+            &self,
+            client_items: &[DownloadSourceIdentity],
+        ) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|(submission, _)| {
+                    let identity = DownloadSourceIdentity::from_submission(submission);
+                    client_items.contains(&identity)
+                })
+                .map(|(submission, _)| submission.clone())
+                .collect())
+        }
+
+        async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|(submission, _)| submission.title_id == title_id)
+                .map(|(submission, _)| submission.clone())
+                .collect())
+        }
+
+        async fn find_by_title_and_request_signature(
+            &self,
+            title_id: &str,
+            request_signature: &str,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|(submission, _)| {
+                    submission.title_id == title_id
+                        && submission.request_signature.as_deref() == Some(request_signature)
+                })
+                .map(|(submission, _)| submission.clone()))
+        }
+
+        async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+            self.rows
+                .lock()
+                .await
+                .retain(|(submission, _)| submission.title_id != title_id);
+            Ok(())
+        }
+
+        async fn delete_by_client_item_id(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<()> {
+            self.rows.lock().await.retain(|(submission, _)| {
+                DownloadSourceIdentity::from_submission(submission) != *identity
+            });
+            Ok(())
+        }
+
+        async fn update_tracked_state(
+            &self,
+            identity: &DownloadSourceIdentity,
+            tracked_state: &str,
+        ) -> AppResult<()> {
+            let mut states = self.tracked_states.lock().await;
+            if let Some((_, state)) = states
+                .iter_mut()
+                .find(|(stored_identity, _)| stored_identity == identity)
+            {
+                *state = tracked_state.to_string();
+            } else {
+                states.push((identity.clone(), tracked_state.to_string()));
+            }
+            Ok(())
+        }
+
+        async fn get_tracked_state(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<Option<String>> {
+            Ok(self
+                .tracked_states
+                .lock()
+                .await
+                .iter()
+                .find(|(stored_identity, _)| stored_identity == identity)
+                .map(|(_, state)| state.clone()))
+        }
+    }
+
     struct TestDownloadClientConfigRepo {
         configs: Vec<DownloadClientConfig>,
     }
@@ -2092,6 +2315,26 @@ mod tests {
         download_client: Arc<dyn DownloadClient>,
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
     ) -> AppUseCase {
+        build_app_with_download_client_configs_and_submissions(
+            titles,
+            collections,
+            episodes,
+            artifacts,
+            download_client,
+            download_client_configs,
+            Arc::new(crate::null_repositories::NullDownloadSubmissionRepository),
+        )
+    }
+
+    fn build_app_with_download_client_configs_and_submissions(
+        titles: Vec<Title>,
+        collections: Vec<Collection>,
+        episodes: Vec<Episode>,
+        artifacts: Vec<ImportArtifact>,
+        download_client: Arc<dyn DownloadClient>,
+        download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+        download_submissions: Arc<dyn DownloadSubmissionRepository>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(TestTitleRepo {
                 titles: Arc::new(Mutex::new(titles)),
@@ -2114,6 +2357,7 @@ mod tests {
         .with_import_artifacts(Arc::new(TestImportArtifactRepo {
             artifacts: Arc::new(Mutex::new(artifacts)),
         }))
+        .with_download_submissions(download_submissions)
         .build_partial_for_tests();
 
         AppUseCase::new(
@@ -2304,8 +2548,7 @@ mod tests {
                 attention_required: false,
                 attention_reason: None,
                 download_client_item_id: "dl-1".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 import_status: None,
                 import_error_code: None,
                 import_error_message: None,
@@ -2344,8 +2587,7 @@ mod tests {
             client_type: "nzbget".to_string(),
             client_id: "client-1".to_string(),
             download_client_item_id: "dl-1".to_string(),
-            download_request_id: None,
-            download_fingerprint: None,
+            download_id: None,
             name: name.to_string(),
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
@@ -2509,6 +2751,131 @@ mod tests {
         assert!(td.status_messages.is_empty());
 
         std::fs::remove_dir_all(&local_root).expect("remove mapped download directory");
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let release_title = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb";
+        let info_hash = "5b4ba671c3729e34718de86e3372be2ecb527b15";
+        let accepted_identity = crate::download_identity::accepted_download_submission_identity(
+            crate::download_identity::AcceptedDownloadIdentityInput {
+                initial_download_id: Some("scryer-download:test-qbit"),
+                source_kind: Some(crate::DownloadSourceKind::TorrentFile),
+                source_hint: Some("http://torrent-indexer/download/paperman.torrent"),
+                info_hash_hint: None,
+                client_type: Some("qbittorrent"),
+                client_item_id: Some(info_hash),
+                accepted_info_hash: Some(info_hash),
+            },
+        );
+        assert_eq!(accepted_identity.download_id.as_deref(), Some(info_hash));
+
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        submission_repo
+            .record_submission_with_identity(
+                DownloadSubmission {
+                    title_id: title.id.clone(),
+                    facet: title.facet.as_str().to_string(),
+                    download_client_id: Some("client-1".to_string()),
+                    download_client_type: "qbittorrent".to_string(),
+                    download_client_item_id: info_hash.to_string(),
+                    source_hint: Some("http://torrent-indexer/download/paperman.torrent".to_string()),
+                    source_kind: Some(crate::DownloadSourceKind::TorrentFile),
+                    source_title: Some(release_title.to_string()),
+                    request_signature: Some(
+                        "torrent_file|http://torrent-indexer/download/paperman.torrent|Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb"
+                            .to_string(),
+                    ),
+                    scope: crate::SubmissionScope::Title,
+                },
+                accepted_identity,
+            )
+            .await
+            .expect("record submission");
+
+        let completed_dir =
+            std::env::temp_dir().join(format!("scryer-qbit-completed-{}", Id::new().0));
+        std::fs::create_dir_all(&completed_dir).expect("create completed dir");
+        let mut completed = build_completed_download(
+            release_title,
+            completed_dir.to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        completed.client_type = "qbittorrent".to_string();
+        completed.client_id = "client-1".to_string();
+        completed.download_client_item_id = info_hash.to_string();
+        completed.download_id = Some(info_hash.to_string());
+        let lookup = index_completed_downloads(vec![completed]);
+
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo,
+        );
+        let mut td = build_tracked_download(&title.id, "movie", release_title);
+        td.id = format!("download:{info_hash}");
+        td.client_type = "qbittorrent".to_string();
+        td.client_id = "client-1".to_string();
+        td.client_item.client_id = "client-1".to_string();
+        td.client_item.client_name = "qBittorrent".to_string();
+        td.client_item.client_type = "qbittorrent".to_string();
+        td.client_item.download_client_item_id = info_hash.to_string();
+        td.client_item.download_id = Some(info_hash.to_string());
+
+        check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert!(td.status_messages.is_empty());
+
+        std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_uses_durable_terminal_state_before_redispatch() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "scryer-download:terminal";
+        let identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        submission_repo
+            .record_identity_tracked_state(
+                &identity,
+                Some(&DownloadSourceIdentity::new(
+                    Some("client-1"),
+                    "nzbget",
+                    "dl-1",
+                )),
+                TrackedDownloadState::Imported.as_str(),
+                None,
+                None,
+            )
+            .await
+            .expect("record identity state");
+
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo,
+        );
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:{download_id}");
+        td.client_item.download_id = Some(download_id.to_string());
+
+        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+
+        assert_eq!(td.state, TrackedDownloadState::Imported);
+        assert_eq!(td.status, TrackedDownloadStatus::Ok);
+        assert!(td.status_messages.is_empty());
     }
 
     #[tokio::test]
@@ -2991,6 +3358,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_result_does_not_verify_unresolved_identity_rejection_as_imported() {
+        let title = build_title("title-1", "Show", MediaFacet::Series);
+        let collection = build_collection("season-1", "title-1", "1");
+        let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+        let app = build_app(
+            vec![title],
+            vec![collection],
+            vec![episode],
+            vec![build_artifact("dl-1", "ep-1", "Show.S01E01.mkv")],
+        );
+        let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Rejected,
+            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("dl-1".to_string()),
+            source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+            source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+            dest_path: None,
+            quality: None,
+            episode_ids: vec![],
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some("download identity is unresolved".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    }
+
+    #[tokio::test]
     async fn apply_result_keeps_retryable_no_video_import_pending() {
         let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
@@ -3072,8 +3475,7 @@ mod tests {
                 attention_required: false,
                 attention_reason: None,
                 download_client_item_id: "dl-2".to_string(),
-                download_request_id: None,
-                download_fingerprint: None,
+                download_id: None,
                 import_status: None,
                 import_error_code: None,
                 import_error_message: None,
