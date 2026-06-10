@@ -206,6 +206,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     attentionRequired
     attentionReason
     downloadClientItemId
+    downloadId
     importStatus
     importErrorCode
     importErrorMessage

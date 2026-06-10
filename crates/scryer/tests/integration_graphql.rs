@@ -3936,7 +3936,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
               { "code": "spa", "hearingImpaired": false, "forced": true }
             ],
             "autoDownloadOnImport": true,
-            "minimumScoreSeries": 255,
+            "minimumScoreSeries": 95,
             "minimumScoreMovie": 85,
             "searchIntervalHours": 12,
             "includeAiTranslated": true,
@@ -3979,7 +3979,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
     let settings = &read["data"]["subtitleSettings"];
     assert_eq!(settings["enabled"], true);
     assert_eq!(settings["autoDownloadOnImport"], true);
-    assert_eq!(settings["minimumScoreSeries"], 255);
+    assert_eq!(settings["minimumScoreSeries"], 95);
     assert_eq!(settings["minimumScoreMovie"], 85);
     assert_eq!(settings["searchIntervalHours"], 12);
     assert_eq!(settings["includeAiTranslated"], true);
@@ -13321,12 +13321,11 @@ async fn login_with_wrong_password_returns_error() {
                 .unwrap_or(false),
         "wrong password should return a GraphQL error: {body}"
     );
-    // Verify the error indicates bad credentials, not a server error.
+    // Verify the error is the masked bad-credentials response, not a server error.
     let error_msg = body["errors"][0]["message"].as_str().unwrap_or("");
-    assert!(
-        error_msg.to_ascii_lowercase().contains("credentials")
-            || error_msg.to_ascii_lowercase().contains("invalid"),
-        "error should indicate bad credentials: {error_msg}"
+    assert_eq!(
+        error_msg,
+        "Sign-in failed. Check your sign-in details and try again."
     );
 }
 

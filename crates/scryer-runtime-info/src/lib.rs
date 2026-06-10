@@ -125,15 +125,8 @@ pub fn lane_from_canonical_features(
     }
 }
 
-pub fn determine_build_lane(target_arch: &str, target_features: &str) -> BinaryLane {
-    let arch = MachineArch::from_machine(target_arch);
-    let mut features = HashSet::new();
-    for token in target_features.split(',') {
-        if let Some(feature) = normalize_feature_token(arch, token) {
-            features.insert(feature);
-        }
-    }
-    lane_from_canonical_features(arch, &features)
+pub fn determine_build_lane(_target_arch: &str, _target_features: &str) -> BinaryLane {
+    BinaryLane::Portable
 }
 
 pub fn validate_build_lane_assertion(
@@ -208,26 +201,26 @@ mod tests {
     }
 
     #[test]
-    fn build_lane_detects_haswell_from_target_features() {
+    fn build_lane_derives_portable_even_with_required_x86_features() {
         let lane = determine_build_lane(
             "x86_64",
             "avx,avx2,bmi1,bmi2,f16c,fma,lzcnt,movbe,pclmulqdq,popcnt,rdrand,sse3,sse4.1,sse4.2,ssse3,xsave,xsaveopt",
         );
-        assert_eq!(lane, BinaryLane::Haswell);
-        assert_eq!(lane.binary_class(), BinaryClass::Optimized);
+        assert_eq!(lane, BinaryLane::Portable);
+        assert_eq!(lane.binary_class(), BinaryClass::Portable);
     }
 
     #[test]
-    fn build_lane_detects_arm_optimized_from_target_features() {
+    fn build_lane_derives_portable_even_with_required_arm_features() {
         let lane = determine_build_lane("aarch64", "aes,crc,dotprod,fp16,lse,neon,rdm,sha2");
-        assert_eq!(lane, BinaryLane::Arm64Optimized);
+        assert_eq!(lane, BinaryLane::Portable);
     }
 
     #[test]
-    fn validate_build_lane_assertion_accepts_matching_lane() {
+    fn validate_build_lane_assertion_accepts_matching_portable_lane() {
         let lane =
-            validate_build_lane_assertion(Some("haswell"), BinaryLane::Haswell).expect("match");
-        assert_eq!(lane, BinaryLane::Haswell);
+            validate_build_lane_assertion(Some("portable"), BinaryLane::Portable).expect("match");
+        assert_eq!(lane, BinaryLane::Portable);
     }
 
     #[test]
@@ -239,8 +232,15 @@ mod tests {
 
     #[test]
     fn validate_build_lane_assertion_rejects_mismatch() {
-        let error = validate_build_lane_assertion(Some("portable"), BinaryLane::Haswell)
-            .expect_err("mismatch");
-        assert!(error.contains("derive 'haswell'"));
+        let haswell_error = validate_build_lane_assertion(Some("haswell"), BinaryLane::Portable)
+            .expect_err("haswell mismatch");
+        assert!(haswell_error.contains("asserted 'haswell'"));
+        assert!(haswell_error.contains("derive 'portable'"));
+
+        let arm_error =
+            validate_build_lane_assertion(Some("arm64_optimized"), BinaryLane::Portable)
+                .expect_err("arm64 mismatch");
+        assert!(arm_error.contains("asserted 'arm64_optimized'"));
+        assert!(arm_error.contains("derive 'portable'"));
     }
 }

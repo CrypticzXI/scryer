@@ -1094,36 +1094,18 @@ async fn process_single_wanted_item(
             .clone()
             .or_else(|| candidate.link.clone());
 
-        // Deduplicate: skip if this exact URL was already submitted this cycle.
-        if let Some(url) = source_hint.as_deref()
-            && !grabbed_urls.insert(url.to_string())
-        {
-            info!(
-                title = title.name.as_str(),
-                release = candidate.title.as_str(),
-                "skipping duplicate release already submitted this cycle"
-            );
-            // Mark this wanted item as grabbed too since the release covers it
-            let grabbed_json = serde_json::json!({
-                "title": candidate.title,
-                "score": candidate_score,
-                "grabbed_at": now.to_rfc3339(),
-                "deduplicated": true,
-            })
-            .to_string();
-            let _ = app
-                .services
-                .workflow
-                .wanted_items
-                .transition_wanted_to_grabbed(&WantedGrabTransition {
-                    id: item.id.clone(),
-                    last_search_at: Some(now.to_rfc3339()),
-                    search_count: item.search_count + 1,
-                    current_score: item.current_score,
-                    grabbed_release: grabbed_json,
-                })
-                .await;
-            return Ok(());
+        // Deduplicate submit attempts without inventing grabbed state. Covered
+        // wanted items are marked grabbed only by commit_successful_grab.
+        if let Some(url) = source_hint.as_deref() {
+            if grabbed_urls.contains(url) {
+                info!(
+                    title = title.name.as_str(),
+                    release = candidate.title.as_str(),
+                    "skipping duplicate release already submitted this cycle"
+                );
+                continue;
+            }
+            grabbed_urls.insert(url.to_string());
         }
 
         let source_title = Some(candidate.title.clone());

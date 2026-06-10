@@ -404,7 +404,7 @@ pub(crate) async fn queue_import_request_with_identity(
                 return Ok(existing_id);
             }
             let import_sql = if has_download_id {
-                import_request_insert_sql()
+                import_request_insert_active_download_id_sql(tx)
             } else {
                 import_request_upsert_sql(tx)
             };
@@ -413,7 +413,7 @@ pub(crate) async fn queue_import_request_with_identity(
                 &import_sql,
                 &[
                     SqlArg::Text(id.clone()),
-                    SqlArg::OptText(normalized_client_id),
+                    SqlArg::OptText(normalized_client_id.clone()),
                     SqlArg::Text(source_system.clone()),
                     SqlArg::Text(source_ref.clone()),
                     SqlArg::Text(import_type),
@@ -421,7 +421,7 @@ pub(crate) async fn queue_import_request_with_identity(
                     payload_arg,
                     rename_arg,
                     result_arg,
-                    SqlArg::OptText(download_id),
+                    SqlArg::OptText(download_id.clone()),
                     SqlArg::OptTimestamp(None),
                     SqlArg::OptTimestamp(None),
                     SqlArg::Timestamp(now),
@@ -431,7 +431,14 @@ pub(crate) async fn queue_import_request_with_identity(
             .await?;
 
             if has_download_id {
-                return Ok(id);
+                return find_active_import_by_download_id_tx(
+                    tx,
+                    normalized_client_id.as_deref(),
+                    &source_system,
+                    download_id.as_deref(),
+                )
+                .await?
+                .ok_or_else(|| AppError::Repository("failed to reload durable import".into()));
             }
 
             let row = SqlRuntime::fetch_optional(
@@ -492,6 +499,19 @@ pub(crate) fn import_request_insert_sql() -> String {
      (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, download_id, started_at, finished_at, created_at, updated_at)
      VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})"
         .to_string()
+}
+
+pub(crate) fn import_request_insert_active_download_id_sql(tx: &SqlTx<'_>) -> String {
+    let conflict_clause = match tx {
+        SqlTx::Sqlite(_) => "ON CONFLICT DO NOTHING",
+        SqlTx::Postgres(_) => {
+            "ON CONFLICT ((COALESCE(source_client_id, '')), source_system, download_id)
+             WHERE download_id IS NOT NULL AND status IN ('pending', 'running', 'processing')
+             DO NOTHING"
+        }
+    };
+
+    format!("{} {conflict_clause}", import_request_insert_sql())
 }
 
 pub(crate) fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {

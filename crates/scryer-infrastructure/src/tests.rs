@@ -644,10 +644,9 @@ async fn list_imports_for_identities_handles_multiple_pairs() {
     let _ = std::fs::remove_file(db);
 }
 
-#[tokio::test]
-async fn queue_import_request_reuses_existing_row_for_same_identity() {
+async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, ImportStore) {
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(max_connections)
         .connect("sqlite::memory:")
         .await
         .expect("pool should initialize");
@@ -674,16 +673,33 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
     .expect("imports table should create");
     sqlx::query(
         "CREATE UNIQUE INDEX idx_imports_source_ref
-         ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type)",
+         ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type)
+         WHERE download_id IS NULL",
     )
     .execute(&pool)
     .await
     .expect("imports identity index should create");
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_imports_active_download_id
+         ON imports (COALESCE(source_client_id, ''), source_system, download_id)
+         WHERE download_id IS NOT NULL
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .execute(&pool)
+    .await
+    .expect("active download identity index should create");
 
     let workflow = ImportStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
         pool: pool.clone(),
         writer_gate: Arc::new(tokio::sync::Mutex::new(())),
     });
+
+    (pool, workflow)
+}
+
+#[tokio::test]
+async fn queue_import_request_reuses_existing_row_for_same_identity() {
+    let (pool, workflow) = import_store_test_harness(1).await;
     let identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000");
 
     let first_id = workflow
@@ -763,6 +779,183 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
             .await
             .expect("identity import lookup should succeed")
     );
+}
+
+#[tokio::test]
+async fn queue_import_request_with_download_id_reuses_active_row_only() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:active-dedupe".to_string()),
+    };
+
+    let first_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-a"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":1}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("first durable import should queue");
+    let second_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-b"),
+            ImportType::SeriesDownload.as_str().to_string(),
+            "{\"attempt\":2}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("active duplicate durable import should reuse existing row");
+
+    assert_eq!(second_id, first_id);
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE COALESCE(source_client_id, '') = 'client-a'
+           AND source_system = 'weaver'
+           AND download_id = 'scryer-download:active-dedupe'
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("active import count should load");
+    assert_eq!(active_count, 1);
+
+    workflow
+        .update_import_status(&first_id, ImportStatus::Completed, None)
+        .await
+        .expect("first durable import should complete");
+    let third_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-c"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":3}".to_string(),
+            Some(download_identity),
+        )
+        .await
+        .expect("completed durable import should not block a new active row");
+
+    assert_ne!(third_id, first_id);
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE COALESCE(source_client_id, '') = 'client-a'
+           AND source_system = 'weaver'
+           AND download_id = 'scryer-download:active-dedupe'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("total import count should load");
+    assert_eq!(total_count, 2);
+}
+
+#[tokio::test]
+async fn queue_import_request_with_download_id_scopes_active_rows_by_client_and_source() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:scoped-active".to_string()),
+    };
+
+    let client_a_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-a"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("client-a import should queue");
+    let client_b_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "job-b"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("client-b import should queue");
+    let other_source_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "sabnzbd", "job-c"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity),
+        )
+        .await
+        .expect("other source import should queue");
+
+    assert_ne!(client_a_id, client_b_id);
+    assert_ne!(client_a_id, other_source_id);
+    assert_ne!(client_b_id, other_source_id);
+
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE download_id = 'scryer-download:scoped-active'
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("active import count should load");
+    assert_eq!(active_count, 3);
+}
+
+#[tokio::test]
+async fn active_download_identity_unique_index_blocks_duplicate_active_rows() {
+    let (pool, _) = import_store_test_harness(1).await;
+    let now = Utc::now().to_rfc3339();
+    let insert_sql = "INSERT INTO imports
+        (id, source_client_id, source_system, source_ref, import_type, status, payload_json, download_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    sqlx::query(insert_sql)
+        .bind("active-index-first")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-a")
+        .bind(ImportType::MovieDownload.as_str())
+        .bind(ImportStatus::Pending.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("first active import should insert");
+
+    let duplicate = sqlx::query(insert_sql)
+        .bind("active-index-second")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-b")
+        .bind(ImportType::SeriesDownload.as_str())
+        .bind(ImportStatus::Running.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await;
+    assert!(duplicate.is_err());
+
+    sqlx::query("UPDATE imports SET status = ? WHERE id = ?")
+        .bind(ImportStatus::Completed.as_str())
+        .bind("active-index-first")
+        .execute(&pool)
+        .await
+        .expect("first active import should complete");
+
+    sqlx::query(insert_sql)
+        .bind("active-index-second")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-b")
+        .bind(ImportType::SeriesDownload.as_str())
+        .bind(ImportStatus::Pending.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("completed import should not block a new active row");
 }
 
 #[test]

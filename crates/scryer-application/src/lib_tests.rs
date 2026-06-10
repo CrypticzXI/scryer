@@ -2558,6 +2558,84 @@ impl IndexerClient for FixedReleaseIndexerClient {
     }
 }
 
+#[derive(Clone)]
+struct SharedUrlMovieIndexerClient {
+    download_url: String,
+}
+
+impl SharedUrlMovieIndexerClient {
+    fn new(download_url: impl Into<String>) -> Self {
+        Self {
+            download_url: download_url.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl IndexerClient for SharedUrlMovieIndexerClient {
+    async fn search(
+        &self,
+        query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        let query = query.trim();
+        let release_title = if query.contains("Deferred Movie") {
+            "Deferred.Movie.2024.1080p.WEB-DL-GRP".to_string()
+        } else if query.contains("Rejected Movie") {
+            "Rejected.Movie.2024.1080p.WEB-DL-GRP".to_string()
+        } else {
+            let release_stem = query
+                .split_whitespace()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(".");
+            format!("{release_stem}.2024.1080p.WEB-DL-GRP")
+        };
+
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: release_title.clone(),
+                link: Some("https://example.invalid/info".to_string()),
+                download_url: Some(self.download_url.clone()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some(format!("guid-{release_title}")),
+                info_url: Some("https://example.invalid/info".to_string()),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
+                queue_scope: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RecordedSearchCall {
     facet: Option<String>,
@@ -20738,6 +20816,72 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
         failed[0].source_title.as_deref(),
         Some("rejected.movie.2024.1080p.web-dl-grp")
     );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_without_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let shared_url = "https://example.invalid/shared-duplicate.nzb";
+    let indexer_client = Arc::new(SharedUrlMovieIndexerClient::new(shared_url));
+    let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let (_, first_wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Deferred Movie", 2024).await;
+    let (_, second_wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Deferred.Movie.2024.1080p.WEB-DL-GRP".to_string()]
+    );
+
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].source_title.as_deref(),
+        Some("Deferred.Movie.2024.1080p.WEB-DL-GRP")
+    );
+
+    let store = wanted_items.store.lock().await.clone();
+    let first = store
+        .iter()
+        .find(|item| item.id == first_wanted_id)
+        .expect("first wanted item");
+    let second = store
+        .iter()
+        .find(|item| item.id == second_wanted_id)
+        .expect("second wanted item");
+    assert_eq!(first.status, WantedStatus::Grabbed);
+    assert_eq!(second.status, WantedStatus::Wanted);
+    assert!(
+        store
+            .iter()
+            .filter_map(|item| item.grabbed_release.as_deref())
+            .all(|grabbed_release| !grabbed_release.contains("deduplicated")),
+        "duplicate URL handling must not write grabbed dedupe metadata"
+    );
+
+    let release_decisions = wanted_items.release_decisions.lock().await.clone();
+    assert!(release_decisions.iter().any(|decision| {
+        decision.wanted_item_id == second_wanted_id
+            && decision.release_url.as_deref() == Some(shared_url)
+            && decision.decision_code == "eligible"
+    }));
 }
 
 #[tokio::test]
