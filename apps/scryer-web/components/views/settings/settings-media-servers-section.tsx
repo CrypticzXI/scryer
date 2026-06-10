@@ -266,7 +266,7 @@ export function SettingsMediaServersSection({
               {visibleConnections.map((connection) => (
                 <TableRow
                   key={connection.id}
-                  id={selectorId("settings-media-server-row", connection.displayName)}
+                  id={selectorId("settings-media-server-row", connection.id)}
                 >
                   <TableCell className="font-medium">{connection.displayName}</TableCell>
                   <TableCell>{providerLabel(connection.provider)}</TableCell>
@@ -311,7 +311,7 @@ export function SettingsMediaServersSection({
                   <TableCell className="text-right">
                     <div className="inline-flex items-center gap-2">
                       <MediaServerActionButton
-                        id={selectorId("settings-media-server-test", connection.displayName)}
+                        id={selectorId("settings-media-server-test", connection.id)}
                         label={t("label.testConnection")}
                         tone="neutral"
                         onClick={() => void testConnection(connection)}
@@ -324,7 +324,7 @@ export function SettingsMediaServersSection({
                         )}
                       </MediaServerActionButton>
                       <MediaServerActionButton
-                        id={selectorId("settings-media-server-toggle", connection.displayName)}
+                        id={selectorId("settings-media-server-toggle", connection.id)}
                         label={connection.enabled ? t("label.disable") : t("label.enable")}
                         tone={connection.enabled ? "enabled" : "disabled"}
                         onClick={() => void toggleConnectionEnabled(connection)}
@@ -337,7 +337,7 @@ export function SettingsMediaServersSection({
                         )}
                       </MediaServerActionButton>
                       <MediaServerActionButton
-                        id={selectorId("settings-media-server-edit", connection.displayName)}
+                        id={selectorId("settings-media-server-edit", connection.id)}
                         label={t("label.edit")}
                         tone="edit"
                         onClick={() => editConnection(connection)}
@@ -345,7 +345,7 @@ export function SettingsMediaServersSection({
                         <Edit className="h-4 w-4" />
                       </MediaServerActionButton>
                       <MediaServerActionButton
-                        id={selectorId("settings-media-server-delete", connection.displayName)}
+                        id={selectorId("settings-media-server-delete", connection.id)}
                         label={t("label.delete")}
                         tone="delete"
                         onClick={() => void deleteConnection(connection)}

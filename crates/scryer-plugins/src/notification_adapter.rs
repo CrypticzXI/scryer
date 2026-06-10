@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use scryer_application::{
@@ -10,13 +13,13 @@ use tracing::warn;
 
 use crate::socket_host::SocketHost;
 use crate::types::{
-    EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationActor,
-    PluginNotificationApp, PluginNotificationApplicationUpdate, PluginNotificationDownload,
-    PluginNotificationEpisode, PluginNotificationExternalIds, PluginNotificationFile,
-    PluginNotificationHealth, PluginNotificationImport, PluginNotificationManualInteraction,
-    PluginNotificationMediaFile, PluginNotificationMediaRequest, PluginNotificationMediaUpdate,
-    PluginNotificationRequest, PluginNotificationResponse, PluginNotificationTitle,
-    decode_plugin_result,
+    EXPORT_NOTIFICATION_ACTION, EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor,
+    PluginNotificationActor, PluginNotificationApp, PluginNotificationApplicationUpdate,
+    PluginNotificationDownload, PluginNotificationEpisode, PluginNotificationExternalIds,
+    PluginNotificationFile, PluginNotificationHealth, PluginNotificationImport,
+    PluginNotificationManualInteraction, PluginNotificationMediaFile,
+    PluginNotificationMediaRequest, PluginNotificationMediaUpdate, PluginNotificationRequest,
+    PluginNotificationResponse, PluginNotificationTitle, decode_plugin_result,
 };
 
 pub struct WasmNotificationClient {
@@ -39,6 +42,51 @@ impl WasmNotificationClient {
             channel_name,
             socket_host,
         }
+    }
+
+    #[allow(dead_code)]
+    pub async fn notification_action(
+        &self,
+        action: &str,
+        query: BTreeMap<String, String>,
+    ) -> AppResult<Option<serde_json::Value>> {
+        let request = serde_json::json!({
+            "action": action,
+            "query": query,
+        });
+        let input = serde_json::to_string(&request).map_err(|e| {
+            AppError::Repository(format!(
+                "failed to serialize notification action request: {e}"
+            ))
+        })?;
+
+        let plugin = Arc::clone(&self.plugin);
+        let socket_host = self.socket_host.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            let mut guard = plugin
+                .lock()
+                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+            if !guard.function_exists(EXPORT_NOTIFICATION_ACTION) {
+                if let Some(socket_host) = socket_host {
+                    socket_host.cleanup();
+                }
+                return Ok(None);
+            }
+
+            let output = guard.call::<&str, String>(EXPORT_NOTIFICATION_ACTION, &input);
+            if let Some(socket_host) = socket_host {
+                socket_host.cleanup();
+            }
+            output.map(Some).map_err(|e| {
+                AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_ACTION}() failed: {e}"))
+            })
+        })
+        .await
+        .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;
+
+        output
+            .map(|output| decode_plugin_result(&output, EXPORT_NOTIFICATION_ACTION))
+            .transpose()
     }
 }
 

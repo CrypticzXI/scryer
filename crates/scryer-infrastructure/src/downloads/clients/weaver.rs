@@ -765,6 +765,12 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         episode_id: None,
         title_name: job.name.clone(),
         facet: scryer_metadata.facet,
+        category: job
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         client_id: String::new(),
         client_name: String::new(),
         client_type: "weaver".to_string(),
@@ -1063,8 +1069,8 @@ impl DownloadClient for WeaverDownloadClient {
             {
                 Ok(data) => {
                     if !data.submit_nzb.accepted {
-                        return Err(AppError::Repository(
-                            "weaver submitNzb did not accept the submission".into(),
+                        return Err(AppError::download_submit_unavailable(
+                            "weaver submitNzb did not accept the submission",
                         ));
                     }
                     let job_id = data.submit_nzb.item.id;
@@ -1117,7 +1123,8 @@ impl DownloadClient for WeaverDownloadClient {
                                 "metadata": attributes,
                             }),
                         )
-                        .await?;
+                        .await
+                        .map_err(AppError::into_download_submit_unavailable)?;
                     Ok(DownloadGrabResult {
                         job_id: compat_data.submit_nzb.id.to_string(),
                         client_id: None,
@@ -1125,7 +1132,7 @@ impl DownloadClient for WeaverDownloadClient {
                         info_hash: None,
                     })
                 }
-                Err(error) => Err(error),
+                Err(error) => Err(error.into_download_submit_unavailable()),
             }
         }
         .await;
@@ -1546,7 +1553,7 @@ mod tests {
             "downloadedBytes": 100,
             "failedBytes": 0,
             "health": 1000,
-            "category": null,
+            "category": "movies",
             "outputDir": null,
             "createdAt": "2024-01-01T00:00:00Z",
             "completedAt": null,
@@ -1564,6 +1571,7 @@ mod tests {
 
         assert_eq!(item.download_id.as_deref(), Some("scryer-download:abc123"));
         assert!(item.is_scryer_origin);
+        assert_eq!(item.category.as_deref(), Some("movies"));
     }
 
     #[tokio::test]

@@ -211,11 +211,10 @@ struct RefreshCandidate {
 fn variant_specs_for_kind(kind: TitleImageKind) -> Vec<TitleImageVariantSpec> {
     IMAGE_REFRESH_PRIORITIES
         .iter()
-        .filter_map(|(candidate_kind, variant_key, width)| {
-            (*candidate_kind == kind).then(|| TitleImageVariantSpec {
-                variant_key: (*variant_key).to_string(),
-                width: *width,
-            })
+        .filter(|(candidate_kind, _, _)| *candidate_kind == kind)
+        .map(|(_, variant_key, width)| TitleImageVariantSpec {
+            variant_key: (*variant_key).to_string(),
+            width: *width,
         })
         .collect()
 }

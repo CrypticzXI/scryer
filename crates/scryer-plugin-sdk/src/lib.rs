@@ -287,6 +287,7 @@ fn abi_major_constraint_from_generated_minor_line(constraint: &str) -> Option<St
 pub const EXPORT_DESCRIBE: &str = "scryer_describe";
 pub const EXPORT_VALIDATE_CONFIG: &str = "scryer_validate_config";
 pub const EXPORT_INDEXER_SEARCH: &str = "scryer_indexer_search";
+pub const EXPORT_INDEXER_ACTION: &str = "scryer_indexer_action";
 pub const EXPORT_DOWNLOAD_ADD: &str = "scryer_download_add";
 pub const EXPORT_DOWNLOAD_LIST_QUEUE: &str = "scryer_download_list_queue";
 pub const EXPORT_DOWNLOAD_LIST_HISTORY: &str = "scryer_download_list_history";
@@ -296,6 +297,7 @@ pub const EXPORT_DOWNLOAD_MARK_IMPORTED: &str = "scryer_download_mark_imported";
 pub const EXPORT_DOWNLOAD_STATUS: &str = "scryer_download_status";
 pub const EXPORT_DOWNLOAD_TEST_CONNECTION: &str = "scryer_download_test_connection";
 pub const EXPORT_NOTIFICATION_SEND: &str = "scryer_notification_send";
+pub const EXPORT_NOTIFICATION_ACTION: &str = "scryer_notification_action";
 pub const EXPORT_SUBTITLE_SEARCH: &str = "scryer_subtitle_search";
 pub const EXPORT_SUBTITLE_DOWNLOAD: &str = "scryer_subtitle_download";
 pub const EXPORT_SUBTITLE_GENERATE: &str = "scryer_subtitle_generate";
@@ -1545,6 +1547,12 @@ pub struct PluginDownloadSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_bytes_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_password: Option<String>,
@@ -2610,6 +2618,9 @@ mod tests {
                 torrent_url: Some("https://tracker.example/release.torrent".to_string()),
                 torrent_file_name: Some("release.torrent".to_string()),
                 torrent_content_type: Some("application/x-bittorrent".to_string()),
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
                 source_title: None,
                 source_password: None,
             },
@@ -2657,6 +2668,122 @@ mod tests {
         assert_eq!(
             seed_seconds_to_minutes(request.release.seed_goal_seconds),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_choose_nzb_url_source() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::NzbUrl,
+                download_url: Some("https://indexer.example/release.nzb".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: None,
+                nzb_file_name: Some("release.nzb".to_string()),
+                nzb_content_type: Some("application/x-nzb".to_string()),
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: None,
+        };
+        let capabilities = DownloadTorrentCapabilities {
+            supported_sources: vec![DownloadInputKind::NzbUrl],
+            ..DownloadTorrentCapabilities::default()
+        };
+
+        assert_eq!(
+            choose_source_kind(Some(&capabilities), &request),
+            Some(DownloadInputKind::NzbUrl)
+        );
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::NzbUrl)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_choose_nzb_bytes_source() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::Nzb,
+                download_url: Some("https://indexer.example/release.nzb".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: Some("bmti".to_string()),
+                nzb_file_name: Some("release.nzb".to_string()),
+                nzb_content_type: Some("application/x-nzb".to_string()),
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: Some(PluginTorrentOptions {
+                source_preference: vec![DownloadInputKind::Nzb, DownloadInputKind::NzbUrl],
+                ..PluginTorrentOptions::default()
+            }),
+        };
+
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::Nzb)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_do_not_treat_torrent_download_url_as_nzb_url() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::TorrentUrl,
+                download_url: Some("https://tracker.example/release.torrent".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: Some("release.torrent".to_string()),
+                torrent_content_type: Some("application/x-bittorrent".to_string()),
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: Some(PluginTorrentOptions {
+                source_preference: vec![DownloadInputKind::NzbUrl],
+                ..PluginTorrentOptions::default()
+            }),
+        };
+
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::TorrentUrl)
         );
     }
 

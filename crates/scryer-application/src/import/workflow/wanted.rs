@@ -1,3 +1,30 @@
+fn expected_runtime_seconds_for_episode_import(
+    title: &scryer_domain::Title,
+    target_episodes: &[scryer_domain::Episode],
+) -> Option<i32> {
+    let positive_episode_durations = target_episodes
+        .iter()
+        .filter_map(|episode| episode.duration_seconds.filter(|duration| *duration > 0))
+        .collect::<Vec<_>>();
+    if !target_episodes.is_empty() && positive_episode_durations.len() == target_episodes.len() {
+        let total_seconds = positive_episode_durations
+            .into_iter()
+            .sum::<i64>()
+            .min(i64::from(i32::MAX));
+        return Some(total_seconds as i32);
+    }
+
+    let episode_count = i32::try_from(target_episodes.len().max(1)).unwrap_or(i32::MAX);
+    title
+        .runtime_minutes
+        .filter(|runtime_minutes| *runtime_minutes > 0)
+        .map(|runtime_minutes| {
+            runtime_minutes
+                .saturating_mul(60)
+                .saturating_mul(episode_count)
+        })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "resolved episode imports coordinate rename tokens, coverage, and scoring in one step"
@@ -18,6 +45,7 @@ async fn execute_resolved_episode_import(
     rename_episode_title: Option<&str>,
     quality_profile: &crate::QualityProfile,
     quality_override: Option<String>,
+    runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
 ) -> AppResult<EpisodeImportOutcome> {
     let source_size = std::fs::metadata(source_video)
         .map(|metadata| metadata.len() as i64)
@@ -42,6 +70,18 @@ async fn execute_resolved_episode_import(
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
+    let expected_runtime_seconds =
+        expected_runtime_seconds_for_episode_import(title, target_episodes);
+    let runtime_sample_validation = match runtime_sample_mode {
+        crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic => {
+            crate::post_download_gate::RuntimeSampleValidation::automatic(expected_runtime_seconds)
+        }
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck => {
+            crate::post_download_gate::RuntimeSampleValidation::manual_override(
+                expected_runtime_seconds,
+            )
+        }
+    };
     let prepared = match crate::post_download_gate::prepare_import_candidate(
         app,
         title,
@@ -52,6 +92,7 @@ async fn execute_resolved_episode_import(
         !existing_files.is_empty(),
         existing_score,
         is_filler,
+        runtime_sample_validation,
     )
     .await
     {

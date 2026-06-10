@@ -21,6 +21,7 @@ use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
 use crate::plugin_http_host;
+use crate::process_host::ProcessHost;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
@@ -2339,12 +2340,13 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
-    build_plugin_with_socket_host(manifest, &SocketHost::disabled())
+    build_plugin_with_hosts(manifest, &SocketHost::disabled(), &ProcessHost::disabled())
 }
 
-fn build_plugin_with_socket_host(
+fn build_plugin_with_hosts(
     manifest: Manifest,
     socket_host: &SocketHost,
+    process_host: &ProcessHost,
 ) -> Result<extism::Plugin, extism::Error> {
     // Wasmtime's filesystem cache is not race-free when multiple identical
     // modules compile concurrently in the same process. Serialize the build
@@ -2354,6 +2356,7 @@ fn build_plugin_with_socket_host(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut functions = socket_host.functions();
+    functions.extend(process_host.functions());
     functions.extend(plugin_http_host::host_functions(&manifest));
 
     extism::PluginBuilder::new(manifest)
@@ -2595,6 +2598,8 @@ impl WasmNotificationPluginProvider {
         manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
         let socket_host =
             SocketHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
+        let process_host =
+            ProcessHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
 
         // Inject config_json key-value pairs
         match parse_config_json_entries(&config.config_json) {
@@ -2612,7 +2617,7 @@ impl WasmNotificationPluginProvider {
             }
         }
 
-        match build_plugin_with_socket_host(manifest, &socket_host) {
+        match build_plugin_with_hosts(manifest, &socket_host, &process_host) {
             Ok(plugin) => {
                 let client = WasmNotificationClient::new(
                     plugin,

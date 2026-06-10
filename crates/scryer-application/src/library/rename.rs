@@ -2305,7 +2305,50 @@ pub fn sanitize_filesystem_component(raw: &str) -> String {
         }
     }
 
-    collapse_separators(&sanitized)
+    disarm_windows_reserved_device_name(&collapse_separators(&sanitized))
+}
+
+fn disarm_windows_reserved_device_name(component: &str) -> String {
+    let Some((prefix_len, suffix_start)) = windows_reserved_device_name_bounds(component) else {
+        return component.to_string();
+    };
+
+    let mut disarmed = String::with_capacity(component.len() + 1);
+    disarmed.push_str(&component[..prefix_len]);
+    disarmed.push('_');
+    disarmed.push_str(&component[suffix_start..]);
+    disarmed
+}
+
+fn windows_reserved_device_name_bounds(component: &str) -> Option<(usize, usize)> {
+    const RESERVED_DEVICE_NAMES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    RESERVED_DEVICE_NAMES.iter().find_map(|reserved| {
+        let prefix = component.get(..reserved.len())?;
+        if !prefix.eq_ignore_ascii_case(reserved) {
+            return None;
+        }
+        let suffix = &component[reserved.len()..];
+        let Some(first) = suffix.chars().next() else {
+            return Some((reserved.len(), reserved.len()));
+        };
+        if first == '.' {
+            return Some((reserved.len(), reserved.len()));
+        }
+        if first == '-' || first.is_whitespace() {
+            let separator_len = suffix
+                .char_indices()
+                .take_while(|(_, ch)| *ch == '-' || ch.is_whitespace())
+                .map(|(index, ch)| index + ch.len_utf8())
+                .last()
+                .unwrap_or(first.len_utf8());
+            return Some((reserved.len(), reserved.len() + separator_len));
+        }
+        None
+    })
 }
 
 fn collapse_separators(raw: &str) -> String {

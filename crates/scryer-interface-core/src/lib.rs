@@ -243,6 +243,11 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
             })
         }
+        AppError::DownloadSubmitUnavailable(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "DOWNLOAD_SUBMIT_UNAVAILABLE");
+            })
+        }
         AppError::PluginInstallInProgress(message) => {
             Error::new(message).extend_with(|_, extensions| {
                 extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
@@ -292,6 +297,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",

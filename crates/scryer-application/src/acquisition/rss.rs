@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
     canonical_title_evidence, evaluate_auto_candidate, parsed_release_matches_title_evidence,
@@ -1233,7 +1234,11 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint_for_attempt,
                         source_title_for_attempt,
-                        ReleaseDownloadAttemptOutcome::Failed,
+                        if is_download_submit_unavailable_error(&err) {
+                            ReleaseDownloadAttemptOutcome::Pending
+                        } else {
+                            ReleaseDownloadAttemptOutcome::Failed
+                        },
                         Some(err.to_string()),
                         source_password,
                     )

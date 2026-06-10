@@ -604,11 +604,16 @@ fn local_ip_bypass_active(
         return false;
     }
 
-    request_client_ip(headers, remote_addr).is_some_and(is_local_network_ip)
-        || remote_addr
-            .map(|addr| addr.ip())
-            .is_some_and(is_trusted_proxy_ip)
-            && request_target_is_local(headers)
+    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
+        return false;
+    };
+
+    if has_proxy_forwarding_headers(headers) {
+        return is_trusted_proxy_ip(peer_ip)
+            && forwarded_client_ip(headers).is_some_and(is_local_network_ip);
+    }
+
+    is_local_network_ip(peer_ip)
 }
 
 fn request_client_ip(headers: &HeaderMap, remote_addr: Option<SocketAddr>) -> Option<IpAddr> {
@@ -627,41 +632,11 @@ fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
         .or_else(|| forwarded_header_client_ip(headers))
 }
 
-fn request_target_is_local(headers: &HeaderMap) -> bool {
-    forwarded_host_header(headers)
-        .or_else(|| host_header(headers))
-        .is_some_and(is_local_host_value)
-}
-
-fn forwarded_host_header(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("x-forwarded-host")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-}
-
-fn host_header(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-}
-
-fn is_local_host_value(raw: &str) -> bool {
-    let trimmed = raw.trim().trim_matches('"');
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    let Ok(authority) = trimmed.parse::<http::uri::Authority>() else {
-        return trimmed.eq_ignore_ascii_case("localhost")
-            || parse_forwarded_ip_token(trimmed).is_some_and(is_local_network_ip);
-    };
-
-    let host = authority.host().trim_end_matches('.');
-    host.eq_ignore_ascii_case("localhost")
-        || parse_forwarded_ip_token(host).is_some_and(is_local_network_ip)
+fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-forwarded-for")
+        || headers.contains_key("x-real-ip")
+        || headers.contains_key(header::FORWARDED)
+        || headers.contains_key("x-forwarded-host")
 }
 
 fn x_forwarded_for_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
@@ -805,6 +780,11 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         )
             .into_response(),
         AppError::DownloadSubmitAmbiguous(message) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        AppError::DownloadSubmitUnavailable(message) => (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse { error: message }),
         )
@@ -971,9 +951,8 @@ mod tests {
         ))));
     }
 
-    #[test]
-    fn local_ip_bypass_accepts_direct_private_and_loopback_clients() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+    fn local_bypass_snapshot() -> scryer_interface::context::AuthRuntimeStateSnapshot {
+        scryer_interface::context::AuthRuntimeStateSnapshot {
             form_login_enabled: true,
             skip_login_for_local_ips: true,
             effective_form_login_enabled: true,
@@ -982,7 +961,12 @@ mod tests {
             env_override_active: false,
             env_override_description: None,
             epoch: 1,
-        };
+        }
+    }
+
+    #[test]
+    fn local_ip_bypass_accepts_direct_private_and_loopback_clients() {
+        let snapshot = local_bypass_snapshot();
         let headers = HeaderMap::new();
 
         assert!(local_ip_bypass_active(
@@ -1074,6 +1058,35 @@ mod tests {
     }
 
     #[test]
+    fn local_ip_bypass_accepts_local_forwarded_client_through_trusted_proxy() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.2"),
+        );
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_accepts_local_forwarded_ipv6_client_through_trusted_proxy() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("[fc00::25]:8443"));
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        ));
+    }
+
+    #[test]
     fn spa_fallback_routes_do_not_consume_http_api_quota() {
         assert!(skip_http_rate_limit(&Method::GET, "/activity"));
         assert!(skip_http_rate_limit(&Method::GET, "/settings/profile"));
@@ -1103,22 +1116,13 @@ mod tests {
     }
 
     #[test]
-    fn local_bypass_accepts_localhost_host_through_trusted_proxy() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            webauthn_configured: false,
-            passkey_enabled: false,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
+    fn local_ip_bypass_rejects_localhost_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
         headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
 
-        assert!(local_ip_bypass_active(
+        assert!(!local_ip_bypass_active(
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
@@ -1126,17 +1130,8 @@ mod tests {
     }
 
     #[test]
-    fn local_bypass_accepts_private_host_through_trusted_proxy() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            webauthn_configured: false,
-            passkey_enabled: false,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
+    fn local_ip_bypass_rejects_private_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
         headers.insert(
@@ -1144,7 +1139,7 @@ mod tests {
             HeaderValue::from_static("172.16.5.173:3000"),
         );
 
-        assert!(local_ip_bypass_active(
+        assert!(!local_ip_bypass_active(
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
@@ -1152,17 +1147,8 @@ mod tests {
     }
 
     #[test]
-    fn local_bypass_rejects_public_host_with_public_forwarded_ip() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            webauthn_configured: false,
-            passkey_enabled: false,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
+    fn local_ip_bypass_rejects_public_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
         headers.insert(
@@ -1174,6 +1160,49 @@ mod tests {
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_private_forwarded_host_without_forwarded_client_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("172.16.5.173:3000"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_malformed_forwarded_ip_with_local_host() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_public_peer_with_spoofed_local_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("192.168.1.25"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
         ));
     }
 }

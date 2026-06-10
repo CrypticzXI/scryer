@@ -16,7 +16,7 @@ async fn run_import(
     .await?
     {
         CompletedImportTargetResolution::Ready(target) => target,
-        CompletedImportTargetResolution::Finished(result) => return Ok(result),
+        CompletedImportTargetResolution::Finished(result) => return Ok(*result),
     };
 
     let result =
@@ -40,8 +40,8 @@ struct CompletedImportTarget {
 }
 
 enum CompletedImportTargetResolution {
-    Ready(CompletedImportTarget),
-    Finished(ImportResult),
+    Ready(Box<CompletedImportTarget>),
+    Finished(Box<ImportResult>),
 }
 
 async fn resolve_completed_import_target(
@@ -164,7 +164,7 @@ async fn resolve_completed_import_target(
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
 
-            return Ok(CompletedImportTargetResolution::Finished(result));
+            return Ok(CompletedImportTargetResolution::Finished(Box::new(result)));
         }
     };
 
@@ -186,7 +186,7 @@ async fn resolve_completed_import_target(
         let result_json = serde_json::to_string(&result).ok();
         app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
             .await?;
-        return Ok(CompletedImportTargetResolution::Finished(result));
+        return Ok(CompletedImportTargetResolution::Finished(Box::new(result)));
     }
 
     // 3. FIND VIDEO FILES (extract archives first if needed)
@@ -217,14 +217,14 @@ async fn resolve_completed_import_target(
         let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
         app.update_import_status_and_notify(import_id, status, result_json)
             .await?;
-        return Ok(CompletedImportTargetResolution::Finished(result));
+        return Ok(CompletedImportTargetResolution::Finished(Box::new(result)));
     }
 
     // Check if this is an interstitial movie import (anime franchise movie → Season 00)
     let interstitial_collection_id =
         extract_parameter(&completed.parameters, "*scryer_collection_id");
 
-    Ok(CompletedImportTargetResolution::Ready(
+    Ok(CompletedImportTargetResolution::Ready(Box::new(
         CompletedImportTarget {
             title,
             is_series,
@@ -232,7 +232,7 @@ async fn resolve_completed_import_target(
             extracted_dir,
             interstitial_collection_id,
         },
-    ))
+    )))
 }
 
 async fn dispatch_completed_import_target(
@@ -327,6 +327,12 @@ async fn import_movie_download(
         !existing_files.is_empty(),
         existing_score,
         false,
+        crate::post_download_gate::RuntimeSampleValidation::automatic(
+            title
+                .runtime_minutes
+                .filter(|runtime_minutes| *runtime_minutes > 0)
+                .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+        ),
     )
     .await
     {
@@ -949,6 +955,12 @@ async fn import_interstitial_movie_download(
         !collection_files.is_empty(),
         existing_score,
         false,
+        crate::post_download_gate::RuntimeSampleValidation::automatic(
+            title
+                .runtime_minutes
+                .filter(|runtime_minutes| *runtime_minutes > 0)
+                .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+        ),
     )
     .await
     {

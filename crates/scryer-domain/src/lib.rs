@@ -1049,6 +1049,8 @@ pub struct DownloadQueueItem {
     pub episode_id: Option<String>,
     pub title_name: String,
     pub facet: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
     pub client_id: String,
     pub client_name: String,
     pub client_type: String,

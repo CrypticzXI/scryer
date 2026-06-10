@@ -462,6 +462,9 @@ pub enum AppError {
     DownloadSubmitAmbiguous(String),
 
     #[error("{0}")]
+    DownloadSubmitUnavailable(String),
+
+    #[error("{0}")]
     MfaStepUpRequired(String),
 
     #[error("{0}")]
@@ -478,6 +481,23 @@ pub enum AppError {
 
     #[error("repository: {0}")]
     Repository(String),
+}
+
+impl AppError {
+    pub fn download_submit_unavailable(message: impl Into<String>) -> Self {
+        Self::DownloadSubmitUnavailable(message.into())
+    }
+
+    pub fn into_download_submit_unavailable(self) -> Self {
+        match self {
+            Self::DownloadSubmitUnavailable(_) | Self::DownloadSubmitAmbiguous(_) => self,
+            _ => Self::DownloadSubmitUnavailable(self.to_string()),
+        }
+    }
+
+    pub fn is_download_submit_unavailable(&self) -> bool {
+        matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable
 const PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, confirm the NZBDAV completed-symlinks mount is visible to Scryer, and make sure the rclone mount was started with --links before retrying manually.";
 const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
+const FOREIGN_CATEGORY_BLOCKED_MESSAGE: &str = "Download wasn't grabbed by Scryer and is not in a Scryer download category. Manual confirmation required before import.";
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
@@ -188,6 +189,13 @@ pub(crate) async fn check_with_lookup(
         return;
     }
 
+    if !completed_download_allows_automatic_import(app, td, &completed).await {
+        td.status_messages.clear();
+        td.warn(FOREIGN_CATEGORY_BLOCKED_MESSAGE);
+        set_state_to_import_blocked(app, td).await;
+        return;
+    }
+
     // All checks passed — queue for import.
     tracing::info!(
         id = %td.id,
@@ -198,6 +206,72 @@ pub(crate) async fn check_with_lookup(
     td.state = TrackedDownloadState::ImportPending;
     td.status = TrackedDownloadStatus::Ok;
     td.status_messages.clear();
+}
+
+async fn completed_download_allows_automatic_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: &CompletedDownload,
+) -> bool {
+    if matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) || td.client_item.is_scryer_origin
+    {
+        return true;
+    }
+
+    let Some(observed_category) = normalized_download_category(
+        completed
+            .category
+            .as_deref()
+            .or(td.client_item.category.as_deref()),
+    ) else {
+        return false;
+    };
+
+    let Some(title_id) = td
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    let title = match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => title,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download category gate could not load title"
+            );
+            return false;
+        }
+    };
+
+    match app
+        .effective_download_client_category_for_title(&title, &td.client_id)
+        .await
+    {
+        Ok(Some(expected_category)) => observed_category == expected_category.trim(),
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                client_id = td.client_id.as_str(),
+                error = %error,
+                "completed download category gate could not resolve effective category"
+            );
+            false
+        }
+    }
+}
+
+fn normalized_download_category(category: Option<&str>) -> Option<&str> {
+    category.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// Phase 2: run the actual import for a download in ImportPending state.
@@ -1247,13 +1321,14 @@ mod tests {
     };
     use crate::{
         ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
-        CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
-        DownloadClientConfigRepository, DownloadGrabResult, DownloadSourceIdentity,
-        DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository,
-        EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
-        IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, QualityProfile,
-        QualityProfileRepository, ScopedExternalId, ShowRepository, TitleMetadataUpdate,
-        TitleRepository,
+        CreateTitleOutcome, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+        DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, DomainEventRepository, DownloadClient,
+        DownloadClientAddRequest, DownloadClientConfigRepository, DownloadGrabResult,
+        DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
+        DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry, ImportArtifact,
+        ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration,
+        QualityProfile, QualityProfileRepository, SETTINGS_SCOPE_SYSTEM, ScopedExternalId,
+        SettingsRepository, ShowRepository, SubmissionScope, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -1263,9 +1338,12 @@ mod tests {
         MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, TitleMatchType,
         TrackedDownloadState, TrackedDownloadStatus, User,
     };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
     use tokio::sync::Mutex;
 
@@ -2275,6 +2353,96 @@ mod tests {
         }
     }
 
+    type TestSettingsKey = (String, String, Option<String>);
+    type TestSettingsValues = Arc<Mutex<HashMap<TestSettingsKey, String>>>;
+
+    #[derive(Default)]
+    struct TestSettingsRepo {
+        values: TestSettingsValues,
+    }
+
+    impl TestSettingsRepo {
+        async fn set_scoped_json(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: &str,
+            value_json: &str,
+        ) {
+            self.values.lock().await.insert(
+                (
+                    scope.to_string(),
+                    key_name.to_string(),
+                    Some(scope_id.to_string()),
+                ),
+                value_json.to_string(),
+            );
+        }
+    }
+
+    #[async_trait]
+    impl SettingsRepository for TestSettingsRepo {
+        async fn get_setting_json(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .await
+                .get(&(scope.to_string(), key_name.to_string(), scope_id))
+                .cloned())
+        }
+
+        async fn get_setting_json_explicit(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            self.get_setting_json(scope, key_name, scope_id).await
+        }
+
+        async fn upsert_setting_json(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: Option<String>,
+            value_json: String,
+            _source: &str,
+            _updated_by_user_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values.lock().await.insert(
+                (scope.to_string(), key_name.to_string(), scope_id),
+                value_json,
+            );
+            Ok(())
+        }
+
+        async fn delete_setting_value(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values
+                .lock()
+                .await
+                .remove(&(scope.to_string(), key_name.to_string(), scope_id));
+            Ok(())
+        }
+
+        async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+            let mut values = self.values.lock().await;
+            let before = values.len();
+            values
+                .retain(|(_, _, stored_scope_id), _| stored_scope_id.as_deref() != Some(scope_id));
+            Ok((before - values.len()) as u32)
+        }
+    }
+
     fn build_app(
         titles: Vec<Title>,
         collections: Vec<Collection>,
@@ -2335,6 +2503,34 @@ mod tests {
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
         download_submissions: Arc<dyn DownloadSubmissionRepository>,
     ) -> AppUseCase {
+        build_app_with_download_client_configs_submissions_and_settings(
+            titles,
+            collections,
+            episodes,
+            artifacts,
+            TestAppRepositories {
+                download_client,
+                download_client_configs,
+                download_submissions,
+                settings: Arc::new(crate::null_repositories::NullSettingsRepository),
+            },
+        )
+    }
+
+    struct TestAppRepositories {
+        download_client: Arc<dyn DownloadClient>,
+        download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+        download_submissions: Arc<dyn DownloadSubmissionRepository>,
+        settings: Arc<dyn SettingsRepository>,
+    }
+
+    fn build_app_with_download_client_configs_submissions_and_settings(
+        titles: Vec<Title>,
+        collections: Vec<Collection>,
+        episodes: Vec<Episode>,
+        artifacts: Vec<ImportArtifact>,
+        repositories: TestAppRepositories,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(TestTitleRepo {
                 titles: Arc::new(Mutex::new(titles)),
@@ -2346,10 +2542,10 @@ mod tests {
             Arc::new(NullUserRepository),
             Arc::new(TestIndexerConfigRepo),
             Arc::new(NullIndexerClient),
-            download_client,
-            download_client_configs,
+            repositories.download_client,
+            repositories.download_client_configs,
             Arc::new(NullReleaseAttemptRepository),
-            Arc::new(crate::null_repositories::NullSettingsRepository),
+            repositories.settings,
             Arc::new(TestQualityProfileRepo),
             String::new(),
         )
@@ -2357,7 +2553,7 @@ mod tests {
         .with_import_artifacts(Arc::new(TestImportArtifactRepo {
             artifacts: Arc::new(Mutex::new(artifacts)),
         }))
-        .with_download_submissions(download_submissions)
+        .with_download_submissions(repositories.download_submissions)
         .build_partial_for_tests();
 
         AppUseCase::new(
@@ -2536,6 +2732,7 @@ mod tests {
                 episode_id: None,
                 title_name: release_title.to_string(),
                 facet: Some(facet.to_string()),
+                category: None,
                 client_id: "client-1".to_string(),
                 client_name: "NZBGet".to_string(),
                 client_type: "nzbget".to_string(),
@@ -2597,6 +2794,103 @@ mod tests {
         }
     }
 
+    fn test_download_client_with_completed(
+        completed: CompletedDownload,
+    ) -> Arc<TestDownloadClient> {
+        Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![completed])),
+            completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    fn build_foreign_completed_tracked_download(
+        category: Option<&str>,
+        match_type: TitleMatchType,
+        is_scryer_origin: bool,
+    ) -> TrackedDownload {
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p.WEB-DL");
+        td.client_item.is_scryer_origin = is_scryer_origin;
+        td.client_item.category = category.map(str::to_string);
+        td.match_type = match_type;
+        td
+    }
+
+    async fn run_category_gate_check(
+        settings: Arc<TestSettingsRepo>,
+        completed_category: Option<&str>,
+        queue_category: Option<&str>,
+        match_type: TitleMatchType,
+        is_scryer_origin: bool,
+    ) -> TrackedDownload {
+        if settings
+            .get_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+                Some("movie".to_string()),
+            )
+            .await
+            .expect("read default category")
+            .is_none()
+        {
+            set_scoped_default_category(&settings, "movie", "movie").await;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p.WEB-DL",
+            temp_dir.path().to_string_lossy().as_ref(),
+            completed_category,
+        );
+        let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+        let download_client = test_download_client_with_completed(completed);
+        let app = build_app_with_download_client_configs_submissions_and_settings(
+            vec![title],
+            vec![],
+            vec![],
+            vec![],
+            TestAppRepositories {
+                download_client,
+                download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+                download_submissions: Arc::new(
+                    crate::null_repositories::NullDownloadSubmissionRepository,
+                ),
+                settings,
+            },
+        );
+        let mut td =
+            build_foreign_completed_tracked_download(queue_category, match_type, is_scryer_origin);
+
+        check(&app, &mut td).await;
+        td
+    }
+
+    async fn set_scoped_routing(settings: &TestSettingsRepo, scope_id: &str, routing_json: &str) {
+        settings
+            .set_scoped_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                scope_id,
+                routing_json,
+            )
+            .await;
+    }
+
+    async fn set_scoped_default_category(
+        settings: &TestSettingsRepo,
+        scope_id: &str,
+        category: &str,
+    ) {
+        settings
+            .set_scoped_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+                scope_id,
+                &serde_json::json!(category).to_string(),
+            )
+            .await;
+    }
+
     #[test]
     fn completed_download_lookup_keeps_same_native_id_from_different_clients() {
         let first =
@@ -2626,6 +2920,326 @@ mod tests {
                     "dl-1"
                 ))
         );
+    }
+
+    #[tokio::test]
+    async fn foreign_title_parse_requires_submission_origin_or_scryer_category() {
+        for (completed_category, queue_category) in [(None, None), (Some("other"), None)] {
+            let td = run_category_gate_check(
+                Arc::new(TestSettingsRepo::default()),
+                completed_category,
+                queue_category,
+                TitleMatchType::TitleParse,
+                false,
+            )
+            .await;
+            assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+            assert!(
+                td.status_messages
+                    .iter()
+                    .any(|message| message == FOREIGN_CATEGORY_BLOCKED_MESSAGE)
+            );
+        }
+
+        let td = run_category_gate_check(
+            Arc::new(TestSettingsRepo::default()),
+            Some("movie"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+
+        let default_category_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_default_category(&default_category_settings, "movie", "Configured Movies").await;
+        let td = run_category_gate_check(
+            default_category_settings,
+            Some("Configured Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    }
+
+    #[tokio::test]
+    async fn foreign_title_parse_with_orphan_submission_still_requires_scryer_category() {
+        let settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_default_category(&settings, "movie", "movie").await;
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p.WEB-DL",
+            temp_dir.path().to_string_lossy().as_ref(),
+            None,
+        );
+        let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+        let download_client = test_download_client_with_completed(completed);
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: String::new(),
+                facet: "movie".to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: "dl-1".to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Paper.Lantern.2012.1080p.WEB-DL".to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Orphan,
+            })
+            .await
+            .expect("record orphan submission");
+        let app = build_app_with_download_client_configs_submissions_and_settings(
+            vec![title],
+            vec![],
+            vec![],
+            vec![],
+            TestAppRepositories {
+                download_client,
+                download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+                download_submissions,
+                settings,
+            },
+        );
+        let mut td =
+            build_foreign_completed_tracked_download(None, TitleMatchType::TitleParse, false);
+
+        check(&app, &mut td).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        assert!(
+            td.status_messages
+                .iter()
+                .any(|message| message == FOREIGN_CATEGORY_BLOCKED_MESSAGE)
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_category_gate_honors_facet_and_library_shadowing() {
+        let facet_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &facet_settings,
+            "movie",
+            r#"{"client-1":{"enabled":true,"category":"Facet Movies"}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            facet_settings,
+            Some("Facet Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+
+        let library_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &library_settings,
+            "movie",
+            r#"{"client-1":{"enabled":true,"category":"Facet Movies"}}"#,
+        )
+        .await;
+        set_scoped_routing(
+            &library_settings,
+            "movie_default_library",
+            r#"{"client-1":{"enabled":true,"category":"Library Movies"}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            library_settings.clone(),
+            Some("Facet Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        let td = run_category_gate_check(
+            library_settings,
+            Some("Library Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+
+        let empty_library_category_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &empty_library_category_settings,
+            "movie",
+            r#"{"client-1":{"enabled":true,"category":"Facet Movies"}}"#,
+        )
+        .await;
+        set_scoped_routing(
+            &empty_library_category_settings,
+            "movie_default_library",
+            r#"{"client-1":{"enabled":true,"category":""}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            empty_library_category_settings.clone(),
+            Some("Facet Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        let td = run_category_gate_check(
+            empty_library_category_settings,
+            Some("movie"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    }
+
+    #[tokio::test]
+    async fn completed_category_gate_honors_missing_disabled_and_invalid_routing() {
+        let missing_library_client_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &missing_library_client_settings,
+            "movie",
+            r#"{"client-1":{"enabled":true,"category":"movie"}}"#,
+        )
+        .await;
+        set_scoped_routing(
+            &missing_library_client_settings,
+            "movie_default_library",
+            r#"{"other-client":{"enabled":true,"category":"movie"}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            missing_library_client_settings,
+            Some("movie"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+
+        let missing_facet_client_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &missing_facet_client_settings,
+            "movie",
+            r#"{"other-client":{"enabled":true,"category":"other"}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            missing_facet_client_settings,
+            Some("movie"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+
+        for (scope_id, settings) in [
+            (
+                "movie_default_library",
+                Arc::new(TestSettingsRepo::default()),
+            ),
+            ("movie", Arc::new(TestSettingsRepo::default())),
+        ] {
+            set_scoped_routing(
+                &settings,
+                scope_id,
+                r#"{"client-1":{"enabled":false,"category":"movie"}}"#,
+            )
+            .await;
+            let td = run_category_gate_check(
+                settings,
+                Some("movie"),
+                None,
+                TitleMatchType::TitleParse,
+                false,
+            )
+            .await;
+            assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        }
+
+        let invalid_library_settings = Arc::new(TestSettingsRepo::default());
+        set_scoped_routing(
+            &invalid_library_settings,
+            "movie_default_library",
+            "not-json",
+        )
+        .await;
+        set_scoped_routing(
+            &invalid_library_settings,
+            "movie",
+            r#"{"client-1":{"enabled":true,"category":"Facet Movies"}}"#,
+        )
+        .await;
+        let td = run_category_gate_check(
+            invalid_library_settings,
+            Some("Facet Movies"),
+            None,
+            TitleMatchType::TitleParse,
+            false,
+        )
+        .await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    }
+
+    #[tokio::test]
+    async fn confirmed_completed_downloads_bypass_category_gate() {
+        for (match_type, is_scryer_origin) in [
+            (TitleMatchType::Submission, false),
+            (TitleMatchType::ClientParameter, false),
+            (TitleMatchType::TitleParse, true),
+        ] {
+            let td = run_category_gate_check(
+                Arc::new(TestSettingsRepo::default()),
+                None,
+                None,
+                match_type,
+                is_scryer_origin,
+            )
+            .await;
+            assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_assignment_allows_retry_after_category_block() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p.WEB-DL",
+            temp_dir.path().to_string_lossy().as_ref(),
+            None,
+        );
+        let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+        let download_client = test_download_client_with_completed(completed);
+        let app = build_app_with_download_client(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            download_client,
+        );
+        let mut td =
+            build_foreign_completed_tracked_download(None, TitleMatchType::TitleParse, false);
+
+        check(&app, &mut td).await;
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+
+        crate::tracked_downloads::assign_title_to_tracked_download(&app, &mut td, &title).await;
+        assert_eq!(td.match_type, TitleMatchType::Submission);
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+
+        td.state = TrackedDownloadState::Downloading;
+        check(&app, &mut td).await;
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
     }
 
     #[test]
@@ -3463,6 +4077,7 @@ mod tests {
                 episode_id: None,
                 title_name: "Unknown.Show.S01.Complete.1080p".to_string(),
                 facet: Some("series".to_string()),
+                category: None,
                 client_id: "client-1".to_string(),
                 client_name: "NZBGet".to_string(),
                 client_type: "nzbget".to_string(),

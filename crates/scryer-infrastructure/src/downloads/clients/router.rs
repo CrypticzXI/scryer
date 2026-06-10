@@ -1153,7 +1153,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     });
                 }
                 Err(error) => {
-                    let should_failover = matches!(error, AppError::Repository(_));
+                    let should_failover = matches!(
+                        error,
+                        AppError::Repository(_) | AppError::DownloadSubmitUnavailable(_)
+                    );
                     warn!(
                         client_id = config.id.as_str(),
                         client_name = config.name.as_str(),
@@ -1182,11 +1185,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )
         .await;
 
-        Err(last_error.unwrap_or_else(|| {
-            AppError::Repository(
-                "all prioritized download clients failed to enqueue this release".to_string(),
-            )
-        }))
+        Err(last_error
+            .unwrap_or_else(|| {
+                AppError::Repository(
+                    "all prioritized download clients failed to enqueue this release".to_string(),
+                )
+            })
+            .into_download_submit_unavailable())
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
@@ -1948,6 +1953,8 @@ mod tests {
     #[derive(Clone, Copy)]
     enum MockSubmitError {
         Ambiguous,
+        Repository,
+        SubmitUnavailable,
     }
 
     #[async_trait]
@@ -1961,6 +1968,14 @@ mod tests {
                 Some(MockSubmitError::Ambiguous) => {
                     return Err(AppError::DownloadSubmitAmbiguous(
                         "submit result is ambiguous".to_string(),
+                    ));
+                }
+                Some(MockSubmitError::Repository) => {
+                    return Err(AppError::Repository("client enqueue failed".to_string()));
+                }
+                Some(MockSubmitError::SubmitUnavailable) => {
+                    return Err(AppError::download_submit_unavailable(
+                        "client submit unavailable",
                     ));
                 }
                 None => {}
@@ -2187,6 +2202,7 @@ mod tests {
             episode_id: None,
             title_name: "Test Download".to_string(),
             facet: None,
+            category: None,
             client_id: String::new(),
             client_name: String::new(),
             client_type: "mock".to_string(),
@@ -2316,6 +2332,62 @@ mod tests {
         assert!(matches!(error, AppError::DownloadSubmitAmbiguous(_)));
         assert_eq!(primary.submissions.lock().unwrap().len(), 1);
         assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn submit_download_all_failover_clients_failed_returns_submit_unavailable() {
+        let primary = Arc::new(MockDownloadClient::default());
+        *primary.submit_error.lock().unwrap() = Some(MockSubmitError::Repository);
+        let secondary = Arc::new(MockDownloadClient::default());
+        *secondary.submit_error.lock().unwrap() = Some(MockSubmitError::SubmitUnavailable);
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let error = router
+            .submit_download(&DownloadClientAddRequest {
+                title: test_title(),
+                download_id: None,
+                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                staged_nzb: None,
+                source_kind: Some(DownloadSourceKind::TorrentFile),
+                source_title: Some("Test Release".to_string()),
+                source_password: None,
+                category: None,
+                queue_priority: None,
+                download_directory: None,
+                release_title: None,
+                indexer_name: None,
+                info_hash_hint: None,
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent: None,
+                season_pack: None,
+            })
+            .await
+            .expect_err("exhausted failover clients should fail");
+
+        assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
+        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
+        assert_eq!(secondary.submissions.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

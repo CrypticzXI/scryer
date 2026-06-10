@@ -57,6 +57,12 @@ pub(crate) enum FailureHandlingOutcome {
     RecordedNoReacquire,
     AlreadyHandled,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StandbyRecoveryOutcome {
+    Recovered,
+    Deferred,
+    Exhausted,
+}
 // Canonical owner for all title-affecting failed release / blocklist side effects.
 #[expect(
     clippy::too_many_arguments,
@@ -532,6 +538,17 @@ pub(crate) async fn process_download_failure(
     snapshot: Option<&DownloadClientSnapshot>,
 ) -> FailureHandlingOutcome {
     let failed_submission = find_failed_submission(app, &context).await;
+    if context.wanted_item.is_none() && failed_submission.is_none() {
+        info!(
+            client_id = context.client_id.as_str(),
+            client_type = context.client_type.as_str(),
+            download_client_item_id = context.client_item_id.as_str(),
+            release_title = context.release_title.as_str(),
+            "skipping automatic failed download handling without scryer grab history"
+        );
+        return FailureHandlingOutcome::RecordedOnly;
+    }
+
     let resolved_title_id = context
         .wanted_item
         .as_ref()
@@ -628,7 +645,7 @@ pub(crate) async fn process_download_failure(
 
     let wanted_item = match context.wanted_item.clone() {
         Some(item) => Some(item),
-        None if failed_collection_items.is_none() => {
+        None if failed_collection_items.is_none() && failed_submission.is_some() => {
             resolve_failure_wanted_item(
                 app,
                 resolved_title_id.as_deref(),
@@ -741,7 +758,7 @@ pub(crate) async fn process_download_failure(
         let active_snapshot = snapshot.or(owned_snapshot.as_ref());
 
         if let Some(active_snapshot) = active_snapshot {
-            if recover_from_standby_candidates(
+            match recover_from_standby_candidates(
                 app,
                 item,
                 release_title_for_matching,
@@ -750,14 +767,21 @@ pub(crate) async fn process_download_failure(
             )
             .await
             {
-                (
+                StandbyRecoveryOutcome::Recovered => (
                     FailureHandlingOutcome::RecoveredFromStandby,
                     format!(
                         "download failed for '{}': {}; recovered from standby candidate",
                         release_title_for_matching, context.reason
                     ),
-                )
-            } else {
+                ),
+                StandbyRecoveryOutcome::Deferred => (
+                    FailureHandlingOutcome::RequeuedDeferred,
+                    format!(
+                        "download failed for '{}': {}; standby candidate kept pending until download client recovers",
+                        release_title_for_matching, context.reason
+                    ),
+                ),
+                StandbyRecoveryOutcome::Exhausted => {
                 let immediate_research = should_research_failed_grab(item, &now);
                 let next_search_at = if immediate_research {
                     now.to_rfc3339()
@@ -795,6 +819,7 @@ pub(crate) async fn process_download_failure(
                     (FailureHandlingOutcome::RequeuedFreshSearch, message)
                 } else {
                     (FailureHandlingOutcome::RequeuedDeferred, message)
+                }
                 }
             }
         } else {
@@ -986,7 +1011,7 @@ async fn recover_from_standby_candidates(
     failed_release_title: &str,
     dl_snapshot: &DownloadClientSnapshot,
     now: &DateTime<Utc>,
-) -> bool {
+) -> StandbyRecoveryOutcome {
     let standby_releases = app
         .services
         .workflow
@@ -1037,7 +1062,7 @@ async fn recover_from_standby_candidates(
             .try_grab_pending_release(&effective_wanted, &standby, now)
             .await
         {
-            Ok(true) => {
+            Ok(super::pending::PendingGrabOutcome::Grabbed) => {
                 let grabbed_at = now.to_rfc3339();
                 let _ = app
                     .services
@@ -1090,9 +1115,26 @@ async fn recover_from_standby_candidates(
                         .await;
                 }
 
-                return true;
+                return StandbyRecoveryOutcome::Recovered;
             }
-            Ok(false) | Err(_) => {
+            Ok(super::pending::PendingGrabOutcome::Deferred) => {
+                info!(
+                    release = standby.release_title.as_str(),
+                    "standby reacquisition: download client unavailable, keeping release pending"
+                );
+                let _ = app
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_status(
+                        &standby.id,
+                        PendingReleaseStatus::Standby,
+                        None,
+                    )
+                    .await;
+                return StandbyRecoveryOutcome::Deferred;
+            }
+            Ok(super::pending::PendingGrabOutcome::Rejected) | Err(_) => {
                 let _ = app
                     .services
                     .workflow
@@ -1103,7 +1145,7 @@ async fn recover_from_standby_candidates(
         }
     }
 
-    false
+    StandbyRecoveryOutcome::Exhausted
 }
 async fn persist_standby_candidates(
     app: &AppUseCase,

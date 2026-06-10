@@ -19,6 +19,7 @@ mod tests {
             episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
+            category: None,
             client_id: "client-1".to_string(),
             client_name: "Weaver".to_string(),
             client_type: "weaver".to_string(),

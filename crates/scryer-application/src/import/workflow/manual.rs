@@ -920,6 +920,7 @@ pub async fn execute_manual_import(
             episode.title.as_deref(),
             &quality_profile,
             mapping.quality.clone(),
+            crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
         )
         .await
         {

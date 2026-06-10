@@ -368,16 +368,31 @@ fn external_import_identity_hint_for_leaf_key(
     metadata_identity_hint_from_library_scan_hint(Some(scan_hint))
 }
 
-fn select_metadata_identity_hint(
-    library_scan_hint: Option<&LibraryScanHint>,
-    nfo_meta: Option<&NfoMetadata>,
-    plexmatch_meta: Option<&NfoMetadata>,
-    file_walk: Option<&LibraryTitleWalk>,
-    folder_walk: Option<&LibraryTitleWalk>,
-    parsed: &crate::ParsedReleaseMetadata,
-    fallback_query: &str,
+struct MetadataIdentityHintSelection<'a> {
+    library_scan_hint: Option<&'a LibraryScanHint>,
+    nfo_meta: Option<&'a NfoMetadata>,
+    plexmatch_meta: Option<&'a NfoMetadata>,
+    file_walk: Option<&'a LibraryTitleWalk>,
+    folder_walk: Option<&'a LibraryTitleWalk>,
+    parsed: &'a crate::ParsedReleaseMetadata,
+    fallback_query: &'a str,
     fallback_year: Option<u32>,
+}
+
+fn select_metadata_identity_hint(
+    selection: MetadataIdentityHintSelection<'_>,
 ) -> Option<MetadataIdentityHint> {
+    let MetadataIdentityHintSelection {
+        library_scan_hint,
+        nfo_meta,
+        plexmatch_meta,
+        file_walk,
+        folder_walk,
+        parsed,
+        fallback_query,
+        fallback_year,
+    } = selection;
+
     metadata_identity_hint_from_library_scan_hint(library_scan_hint)
         .or_else(|| {
             nfo_meta.and_then(|meta| {
@@ -1553,16 +1568,16 @@ async fn build_prepared_movie_library_scan_candidate(
     let query_variants = query_evidence.queries.clone();
     let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
-    let local_identity_hint = select_metadata_identity_hint(
-        None,
-        nfo_meta.as_ref(),
-        None,
-        query_evidence.file_walk.as_ref(),
-        query_evidence.folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        extracted_year_hint,
-    );
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: nfo_meta.as_ref(),
+        plexmatch_meta: None,
+        file_walk: query_evidence.file_walk.as_ref(),
+        folder_walk: query_evidence.folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: extracted_year_hint,
+    });
     let leaf_key = crate::library_scan_file_leaf_key(&file.path);
     let identity_hint = if local_identity_hint
         .as_ref()
@@ -1690,16 +1705,16 @@ async fn prepare_series_library_scan_candidate(
         .and_then(|walk| walk.year)
         .or(extracted_year_hint);
     let parsed_release = filename_parse.parsed_release;
-    let local_identity_hint = select_metadata_identity_hint(
-        None,
-        nfo_meta.as_ref(),
-        plexmatch_meta.as_ref(),
-        None,
-        folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        extracted_year_hint,
-    );
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: nfo_meta.as_ref(),
+        plexmatch_meta: plexmatch_meta.as_ref(),
+        file_walk: None,
+        folder_walk: folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: extracted_year_hint,
+    });
     let folder_key = crate::library_scan_folder_leaf_key(folder.to_string_lossy().as_ref());
     let identity_hint = if local_identity_hint
         .as_ref()
@@ -1802,16 +1817,16 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
     let parsed_release = filename_parse.parsed_release;
     let plexmatch_meta =
         read_plexmatch_metadata(candidate_sidecar_folder(&file.path, library_path)).await;
-    let local_identity_hint = select_metadata_identity_hint(
-        None,
-        None,
-        plexmatch_meta.as_ref(),
-        query_evidence.file_walk.as_ref(),
-        query_evidence.folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        year_hint,
-    );
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: None,
+        plexmatch_meta: plexmatch_meta.as_ref(),
+        file_walk: query_evidence.file_walk.as_ref(),
+        folder_walk: query_evidence.folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: year_hint,
+    });
     let leaf_key = crate::library_scan_file_leaf_key(&file.path);
     let identity_hint = if local_identity_hint
         .as_ref()
@@ -2373,16 +2388,16 @@ mod tests {
             ..Default::default()
         };
 
-        let hint = select_metadata_identity_hint(
-            None,
-            Some(&nfo),
-            Some(&plexmatch),
-            None,
-            None,
-            &parsed,
-            "Filename Title",
-            Some(2020),
-        )
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: None,
+            nfo_meta: Some(&nfo),
+            plexmatch_meta: Some(&plexmatch),
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Filename Title",
+            fallback_year: Some(2020),
+        })
         .expect("identity hint");
 
         assert_eq!(hint.source, MetadataIdentitySource::Nfo);
@@ -2404,16 +2419,16 @@ mod tests {
             ..Default::default()
         };
 
-        let hint = select_metadata_identity_hint(
-            None,
-            Some(&empty_nfo),
-            Some(&plexmatch),
-            None,
-            None,
-            &parsed,
-            "Filename Title",
-            None,
-        )
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: None,
+            nfo_meta: Some(&empty_nfo),
+            plexmatch_meta: Some(&plexmatch),
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Filename Title",
+            fallback_year: None,
+        })
         .expect("identity hint");
 
         assert_eq!(hint.source, MetadataIdentitySource::Plexmatch);
@@ -2443,16 +2458,16 @@ mod tests {
             ..Default::default()
         };
 
-        let hint = select_metadata_identity_hint(
-            Some(&scan_hint),
-            Some(&nfo),
-            None,
-            None,
-            None,
-            &parsed,
-            "Patton",
-            Some(1970),
-        )
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: Some(&scan_hint),
+            nfo_meta: Some(&nfo),
+            plexmatch_meta: None,
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Patton",
+            fallback_year: Some(1970),
+        })
         .expect("identity hint");
 
         assert_eq!(hint.source, MetadataIdentitySource::ExternalImportRadarr);

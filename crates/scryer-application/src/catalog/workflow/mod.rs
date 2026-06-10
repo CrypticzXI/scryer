@@ -1,5 +1,6 @@
 use super::*;
 use crate::acquisition::acquisition::submission_blocks_wanted_item;
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::catalog_helpers::{
     DownloadClientRoutingEntry, anime_mapping_identity_keys, anime_movie_after_season,
     anime_movie_identity_keys, anime_movie_release_sort_key, build_rematched_external_ids,

@@ -16,7 +16,7 @@ export type QueueCatalogTitlesRefreshOptions = {
 
 export type QueueCatalogTitleRefreshOptions = {
   titleId: string;
-  apply: (title: TitleRecord | null) => void;
+  apply: (title: TitleRecord | null, requestEpoch: number) => void;
   onError?: ReactiveRefreshErrorHandler;
 };
 
@@ -85,6 +85,10 @@ export type ReactiveRefreshContextValue = {
 
 export const ReactiveRefreshContext =
   createContext<ReactiveRefreshContextValue | null>(null);
+
+export function reactiveRefreshEpoch(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
 
 export function useReactiveRefresh(): ReactiveRefreshContextValue {
   const value = useContext(ReactiveRefreshContext);

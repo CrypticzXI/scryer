@@ -531,6 +531,7 @@ impl AppUseCase {
                 grab
             }
             Err(error) => {
+                let submit_unavailable = is_download_submit_unavailable_error(&error);
                 let error_message = error.to_string();
                 let _ = self
                     .services
@@ -540,51 +541,59 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint_for_attempt.clone(),
                         source_title_for_attempt.clone(),
-                        ReleaseDownloadAttemptOutcome::Failed,
+                        if submit_unavailable {
+                            ReleaseDownloadAttemptOutcome::Pending
+                        } else {
+                            ReleaseDownloadAttemptOutcome::Failed
+                        },
                         Some(error_message.clone()),
                         source_password,
                     )
                     .await;
-                let blocklist_episode_ids = match &scope {
-                    SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
-                    SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
-                    SubmissionScope::Collection { collection_id } => self
+                if !submit_unavailable {
+                    let blocklist_episode_ids = match &scope {
+                        SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+                        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+                        SubmissionScope::Collection { collection_id } => self
+                            .services
+                            .catalog
+                            .shows
+                            .list_episodes_for_collection(collection_id)
+                            .await
+                            .map(|episodes| {
+                                episodes.into_iter().map(|episode| episode.id).collect()
+                            })
+                            .unwrap_or_default(),
+                        SubmissionScope::Title | SubmissionScope::Orphan => Vec::new(),
+                    };
+                    let mut blocklist_data = HashMap::new();
+                    if !blocklist_episode_ids.is_empty() {
+                        blocklist_data.insert(
+                            "episode_ids".to_string(),
+                            serde_json::json!(blocklist_episode_ids),
+                        );
+                    }
+                    if let SubmissionScope::Collection { collection_id } = &scope {
+                        blocklist_data.insert(
+                            "collection_id".to_string(),
+                            serde_json::json!(collection_id),
+                        );
+                    }
+                    let _ = self
                         .services
-                        .catalog
-                        .shows
-                        .list_episodes_for_collection(collection_id)
-                        .await
-                        .map(|episodes| episodes.into_iter().map(|episode| episode.id).collect())
-                        .unwrap_or_default(),
-                    SubmissionScope::Title | SubmissionScope::Orphan => Vec::new(),
-                };
-                let mut blocklist_data = HashMap::new();
-                if !blocklist_episode_ids.is_empty() {
-                    blocklist_data.insert(
-                        "episode_ids".to_string(),
-                        serde_json::json!(blocklist_episode_ids),
-                    );
+                        .workflow
+                        .blocklist_repo
+                        .add(&NewBlocklistEntry {
+                            title_id: title.id.clone(),
+                            source_title: source_title_for_attempt.clone(),
+                            source_hint: source_hint_for_attempt.clone(),
+                            quality: None,
+                            download_id: None,
+                            reason: Some(error_message.clone()),
+                            data: blocklist_data,
+                        })
+                        .await;
                 }
-                if let SubmissionScope::Collection { collection_id } = &scope {
-                    blocklist_data.insert(
-                        "collection_id".to_string(),
-                        serde_json::json!(collection_id),
-                    );
-                }
-                let _ = self
-                    .services
-                    .workflow
-                    .blocklist_repo
-                    .add(&NewBlocklistEntry {
-                        title_id: title.id.clone(),
-                        source_title: source_title_for_attempt.clone(),
-                        source_hint: source_hint_for_attempt.clone(),
-                        quality: None,
-                        download_id: None,
-                        reason: Some(error_message.clone()),
-                        data: blocklist_data,
-                    })
-                    .await;
                 drop(dedupe_guard);
                 drop(scope_guard);
                 return Err(error);

@@ -73,14 +73,27 @@ fn compare_due_wanted_items_for_search(
     left: &WantedItem,
     right: &WantedItem,
 ) -> std::cmp::Ordering {
-    wanted_due_title_order(left)
-        .cmp(&wanted_due_title_order(right))
+    left.next_search_at
+        .cmp(&right.next_search_at)
+        .then_with(|| wanted_due_title_order(left).cmp(&wanted_due_title_order(right)))
         .then_with(|| left.title_id.cmp(&right.title_id))
         .then_with(|| wanted_due_media_order(left).cmp(&wanted_due_media_order(right)))
-        .then_with(|| wanted_due_numeric_text_order(left.season_number.as_deref()).cmp(&wanted_due_numeric_text_order(right.season_number.as_deref())))
-        .then_with(|| wanted_due_text_order(left.season_number.as_deref()).cmp(&wanted_due_text_order(right.season_number.as_deref())))
-        .then_with(|| wanted_due_numeric_text_order(left.episode_number.as_deref()).cmp(&wanted_due_numeric_text_order(right.episode_number.as_deref())))
-        .then_with(|| wanted_due_text_order(left.episode_number.as_deref()).cmp(&wanted_due_text_order(right.episode_number.as_deref())))
+        .then_with(|| {
+            wanted_due_numeric_text_order(left.season_number.as_deref())
+                .cmp(&wanted_due_numeric_text_order(right.season_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_text_order(left.season_number.as_deref())
+                .cmp(&wanted_due_text_order(right.season_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_numeric_text_order(left.episode_number.as_deref())
+                .cmp(&wanted_due_numeric_text_order(right.episode_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_text_order(left.episode_number.as_deref())
+                .cmp(&wanted_due_text_order(right.episode_number.as_deref()))
+        })
         .then_with(|| left.created_at.cmp(&right.created_at))
         .then_with(|| left.id.cmp(&right.id))
 }
@@ -110,6 +123,7 @@ fn wanted_due_text_order(value: Option<&str>) -> (u8, String) {
 
     (0, value.to_lowercase())
 }
+
 pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
@@ -816,7 +830,11 @@ async fn process_single_wanted_item(
                                             Some(title.id.clone()),
                                             pack_hint,
                                             pack_title_norm,
-                                            ReleaseDownloadAttemptOutcome::Failed,
+                                            if is_download_submit_unavailable_error(&err) {
+                                                ReleaseDownloadAttemptOutcome::Pending
+                                            } else {
+                                                ReleaseDownloadAttemptOutcome::Failed
+                                            },
                                             Some(err.to_string()),
                                             pack_password,
                                         )
@@ -1363,46 +1381,64 @@ async fn process_single_wanted_item(
                     "grab failed, trying next candidate"
                 );
 
-                let attribution = FailedReleaseAttribution {
-                    title: Some(title.clone()),
-                    episode_ids: item.episode_id.iter().cloned().collect(),
-                    collection_id: item.collection_id.clone(),
-                };
                 let failure_reason = format!(
                     "grab failed for '{}' (attempt {}/10, trying next): {}",
                     candidate.title, grab_attempts, err
                 );
-                let candidate_source_hint = candidate
-                    .download_url
-                    .clone()
-                    .or_else(|| candidate.link.clone())
-                    .unwrap_or_else(|| candidate.source.clone());
-                let quality = candidate
-                    .parsed_release_metadata
-                    .as_ref()
-                    .and_then(|parsed| parsed.quality.clone())
-                    .or_else(|| release_quality_hint(Some(candidate.title.as_str())));
+                let submit_unavailable = is_download_submit_unavailable_error(&err);
 
-                record_failed_release_outcome(
-                    app,
-                    Some(title.id.as_str()),
-                    &attribution,
-                    Some(candidate.title.clone()),
-                    Some(candidate_source_hint),
-                    None,
-                    None,
-                    None,
-                    None,
-                    quality,
-                    Some(failure_reason),
-                    None,
-                    source_password,
-                )
-                .await;
+                if submit_unavailable {
+                    let _ = app
+                        .services
+                        .workflow
+                        .release_attempts
+                        .record_release_attempt(
+                            Some(title.id.clone()),
+                            source_hint_for_attempt.clone(),
+                            source_title_for_attempt.clone(),
+                            ReleaseDownloadAttemptOutcome::Pending,
+                            Some(failure_reason.clone()),
+                            source_password.clone(),
+                        )
+                        .await;
+                } else {
+                    let attribution = FailedReleaseAttribution {
+                        title: Some(title.clone()),
+                        episode_ids: item.episode_id.iter().cloned().collect(),
+                        collection_id: item.collection_id.clone(),
+                    };
+                    let candidate_source_hint = candidate
+                        .download_url
+                        .clone()
+                        .or_else(|| candidate.link.clone())
+                        .unwrap_or_else(|| candidate.source.clone());
+                    let quality = candidate
+                        .parsed_release_metadata
+                        .as_ref()
+                        .and_then(|parsed| parsed.quality.clone())
+                        .or_else(|| release_quality_hint(Some(candidate.title.as_str())));
 
-                // If ALL download clients for this source kind are down, mark it
-                // so we skip remaining candidates with the same protocol.
-                if is_all_clients_failed_error(&err)
+                    record_failed_release_outcome(
+                        app,
+                        Some(title.id.as_str()),
+                        &attribution,
+                        Some(candidate.title.clone()),
+                        Some(candidate_source_hint),
+                        None,
+                        None,
+                        None,
+                        None,
+                        quality,
+                        Some(failure_reason),
+                        None,
+                        source_password.clone(),
+                    )
+                    .await;
+                }
+
+                // If download-client submit is unavailable for this source kind,
+                // skip remaining candidates with the same protocol this run.
+                if submit_unavailable
                     && let Some(sk) = candidate.source_kind
                 {
                     if !failed_source_kinds.contains(&sk) {
@@ -1410,7 +1446,7 @@ async fn process_single_wanted_item(
                     }
                     info!(
                         source_kind = ?sk,
-                        "all download clients failed for source kind, skipping remaining candidates with same protocol"
+                        "download client submit unavailable for source kind, skipping remaining candidates with same protocol"
                     );
                 }
 
@@ -1829,5 +1865,88 @@ pub async fn start_background_acquisition_poller(
                 }).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod task_runner_tests {
+    use super::*;
+
+    fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> WantedItem {
+        WantedItem {
+            id: format!("{title_id}-e{episode_number}"),
+            title_id: title_id.to_string(),
+            title_name: Some(title_name.to_string()),
+            title_slug: None,
+            title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: Some(format!("{title_id}-episode-{episode_number}")),
+            collection_id: None,
+            season_number: Some("1".to_string()),
+            episode_number: Some(episode_number.to_string()),
+            media_type: "episode".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn cooperative_slice_selects_first_ten_episodes_for_large_title() {
+        let due_items = (1..=154)
+            .rev()
+            .map(|episode| wanted_episode_item("title-bluey", "Bluey", episode))
+            .collect::<Vec<_>>();
+
+        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let selected_ids = selected
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        let expected_ids = (1..=10)
+            .map(|episode| format!("title-bluey-e{episode}"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected_ids, expected_ids);
+        assert_eq!(deferred.get("title-bluey"), Some(&144));
+    }
+
+    #[test]
+    fn cooperative_slice_keeps_per_title_limit_after_ordering() {
+        let due_items = (1..=12)
+            .rev()
+            .flat_map(|episode| {
+                [
+                    wanted_episode_item("title-alpha", "Alpha", episode),
+                    wanted_episode_item("title-beta", "Beta", episode),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let alpha = selected
+            .iter()
+            .filter(|item| item.title_id == "title-alpha")
+            .count();
+        let beta = selected
+            .iter()
+            .filter(|item| item.title_id == "title-beta")
+            .count();
+
+        assert_eq!(alpha, 10);
+        assert_eq!(beta, 10);
+        assert_eq!(deferred.get("title-alpha"), Some(&2));
+        assert_eq!(deferred.get("title-beta"), Some(&2));
     }
 }

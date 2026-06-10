@@ -622,6 +622,7 @@ async fn import_single_episode_file(
         episode_title,
         quality_profile,
         None,
+        crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic,
     )
     .await?;
 

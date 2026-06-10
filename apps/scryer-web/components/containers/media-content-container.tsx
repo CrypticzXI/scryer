@@ -75,7 +75,10 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useSearchContext } from "@/lib/context/search-context";
-import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
+import {
+  reactiveRefreshEpoch,
+  useReactiveRefresh,
+} from "@/lib/context/reactive-refresh-context";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
@@ -491,6 +494,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const activeCatalogQueryRef = React.useRef("");
   const catalogTitleRequestSeqRef = React.useRef(0);
   const catalogBootstrapRequestSeqRef = React.useRef(0);
+  const latestCriticalMutationEpochRef = React.useRef(0);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
 
   const {
@@ -1006,6 +1010,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     await reloadTitles(query ?? titleFilter);
   }, [reloadTitles, titleFilter]);
 
+  const recordCriticalCatalogMutation = React.useCallback(() => {
+    latestCriticalMutationEpochRef.current = reactiveRefreshEpoch();
+  }, []);
+
   const clearDeletionFallbackTimers = React.useCallback(() => {
     for (const timer of deletionFallbackTimersRef.current) {
       clearTimeout(timer);
@@ -1106,7 +1114,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
 
   const applyRefreshedTitleRecord = React.useCallback(
-    (titleId: string, title: TitleRecord | null) => {
+    (titleId: string, title: TitleRecord | null, requestEpoch: number) => {
+      if (requestEpoch <= latestCriticalMutationEpochRef.current) {
+        return;
+      }
+
       setMonitoredTitles((current) => {
         const next = [...current];
         const existingIndex = next.findIndex((item) => item.id === titleId);
@@ -1161,8 +1173,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       pendingHydrationPosterTitleIds.forEach((titleId) => {
         queueCatalogTitleRefresh({
           titleId,
-          apply(title) {
-            applyRefreshedTitleRecord(titleId, title);
+          apply(title, requestEpoch) {
+            applyRefreshedTitleRecord(titleId, title, requestEpoch);
           },
           onError(error) {
             console.error("[catalog-hydration-poster-refresh] refresh failed:", error);
@@ -1889,6 +1901,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         throw result.error;
       }
       const acceptedIds = result.data?.deleteTitles?.acceptedTitleIds ?? [];
+      if (acceptedIds.length > 0) {
+        recordCriticalCatalogMutation();
+      }
       const run = normalizeJobRun(result.data?.deleteTitles?.jobRun);
       if (run) {
         deletionJobIdsRef.current.add(run.id);
@@ -1924,6 +1939,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     bulkDeleteTypedConfirmation,
     client,
     closeBulkDeleteDialog,
+    recordCriticalCatalogMutation,
     registerInteractiveJobRun,
     scheduleDeletionJobFallbackChecks,
     selectedTitles,
@@ -2022,6 +2038,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .toPromise();
       if (result.error) throw result.error;
       const acceptedIds = result.data?.deleteTitles?.acceptedTitleIds ?? [];
+      if (acceptedIds.length > 0) {
+        recordCriticalCatalogMutation();
+      }
       const run = normalizeJobRun(result.data?.deleteTitles?.jobRun);
       if (run) {
         deletionJobIdsRef.current.add(run.id);
@@ -2052,6 +2071,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     closeDeleteTitleDialog,
     deleteFilesOnDisk,
     client,
+    recordCriticalCatalogMutation,
     registerInteractiveJobRun,
     scheduleDeletionJobFallbackChecks,
     titleDeletePreview,

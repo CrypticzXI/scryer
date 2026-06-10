@@ -664,6 +664,7 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(group);
 
                 let scryer_parameters = extract_nzbget_parameters(group);
                 let queue_progress = progress_percent_from_sizes(size_mb, remaining_mb);
@@ -675,6 +676,7 @@ impl NzbgetDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -783,6 +785,7 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(entry);
 
                 let scryer_parameters = extract_nzbget_parameters(entry);
                 let updated_at = extract_i64_value(
@@ -813,6 +816,9 @@ impl NzbgetDownloadClient {
                     if existing.size_bytes.is_none() || existing.size_bytes == Some(0) {
                         existing.size_bytes = size_to_bytes(size_mb);
                     }
+                    if existing.category.is_none() {
+                        existing.category = category.clone();
+                    }
                     if remaining_seconds.is_some() {
                         existing.remaining_seconds = remaining_seconds;
                     }
@@ -840,6 +846,7 @@ impl NzbgetDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -940,6 +947,7 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(entry);
                 let size_mb =
                     extract_f64_value(entry.get("FileSizeMB").or_else(|| entry.get("fileSizeMB")))
                         .unwrap_or(0.0);
@@ -952,6 +960,7 @@ impl NzbgetDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -1198,7 +1207,8 @@ impl DownloadClient for NzbgetDownloadClient {
                         ..append_request
                     };
                     self.send_append_request(&retry_request, &staged.staged_nzb)
-                        .await?
+                        .await
+                        .map_err(AppError::into_download_submit_unavailable)?
                 }
                 Err(err @ AppError::DownloadSubmitAmbiguous(_)) => {
                     if let Some(queue_id) = self
@@ -1214,7 +1224,7 @@ impl DownloadClient for NzbgetDownloadClient {
                         return Err(err);
                     }
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(err.into_download_submit_unavailable()),
             };
 
             // Use the NZBGet queue ID (integer) as the job_id so it matches
@@ -1368,12 +1378,7 @@ impl DownloadClient for NzbgetDownloadClient {
 
                 let name = history_entry_name(entry);
 
-                let category = entry
-                    .get("Category")
-                    .or_else(|| entry.get("category"))
-                    .and_then(Value::as_str)
-                    .map(|v| v.to_string())
-                    .filter(|v| !v.is_empty());
+                let category = extract_nzbget_category(entry);
 
                 let size_mb =
                     extract_f64_value(entry.get("FileSizeMB").or_else(|| entry.get("fileSizeMB")))
@@ -1436,6 +1441,16 @@ struct ExtractedNzbgetParameters {
     facet: Option<String>,
     is_scryer: bool,
     download_id: Option<String>,
+}
+
+fn extract_nzbget_category(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    entry
+        .get("Category")
+        .or_else(|| entry.get("category"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> ExtractedNzbgetParameters {
@@ -2086,6 +2101,7 @@ mod tests {
             episode_id: None,
             title_name: "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),
             facet: None,
+            category: None,
             client_id: String::new(),
             client_name: String::new(),
             client_type: "nzbget".to_string(),
@@ -2130,6 +2146,21 @@ mod tests {
             ),
             Some(42)
         );
+    }
+
+    #[test]
+    fn extract_nzbget_category_trims_empty_values() {
+        let entry = json!({
+            "Category": " movies "
+        });
+        let entry = entry.as_object().expect("object");
+        assert_eq!(extract_nzbget_category(entry).as_deref(), Some("movies"));
+
+        let entry = json!({
+            "category": " "
+        });
+        let entry = entry.as_object().expect("object");
+        assert_eq!(extract_nzbget_category(entry), None);
     }
 
     #[test]

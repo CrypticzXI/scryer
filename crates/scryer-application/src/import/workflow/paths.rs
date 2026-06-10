@@ -43,7 +43,7 @@ struct CompletedDownloadSubmissionMatch {
 
 #[derive(Clone, Debug)]
 enum CompletedDownloadSubmissionResolution {
-    Matched(CompletedDownloadSubmissionMatch),
+    Matched(Box<CompletedDownloadSubmissionMatch>),
     Foreign,
     MissingDownloadId {
         identity: DownloadSubmissionIdentity,
@@ -136,7 +136,7 @@ fn submission_source_identity(submission: &DownloadSubmission) -> DownloadSource
 async fn resolve_completed_download_submission(
     app: &AppUseCase,
     completed: &CompletedDownload,
-    _item: Option<&DownloadQueueItem>,
+    item: Option<&DownloadQueueItem>,
 ) -> AppResult<CompletedDownloadSubmissionResolution> {
     let observed_identity = completed_download_observed_identity(completed);
     if let Some(download_id) = observed_identity.download_id.as_deref().and_then(|value| {
@@ -189,6 +189,31 @@ async fn resolve_completed_download_submission(
         );
     }
 
+    let mut source_identities = vec![completed_download_identity(completed)];
+    if let Some(item) = item {
+        source_identities.push(DownloadSourceIdentity::new(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        ));
+    }
+    for source_identity in source_identities {
+        if let Some(submission) = app
+            .services
+            .workflow
+            .download_submissions
+            .find_by_client_item_id(&source_identity)
+            .await?
+        {
+            return matched_completed_download_submission(
+                app,
+                submission,
+                &observed_identity,
+            )
+            .await;
+        }
+    }
+
     Ok(CompletedDownloadSubmissionResolution::Foreign)
 }
 
@@ -217,12 +242,12 @@ async fn matched_completed_download_submission(
     } else {
         Some(stored_identity)
     };
-    Ok(CompletedDownloadSubmissionResolution::Matched(
+    Ok(CompletedDownloadSubmissionResolution::Matched(Box::new(
         CompletedDownloadSubmissionMatch {
             submission,
             identity,
         },
-    ))
+    )))
 }
 
 async fn completed_download_already_imported_for_current_attempt(
@@ -248,18 +273,46 @@ async fn completed_download_already_imported_for_current_attempt(
         return Ok(false);
     };
 
+    let source_identity = submission_source_identity(&matched.submission);
     if let Some(identity) = matched.identity.as_ref()
-        && app
+        && !download_submission_identity_is_empty(identity)
+    {
+        return app
             .services
             .workflow
             .imports
-            .is_already_imported_by_download_id(&submission_source_identity(&matched.submission), identity)
-            .await?
-    {
-        return Ok(true);
+            .is_already_imported_by_download_id(&source_identity, identity)
+            .await;
     }
 
-    Ok(false)
+    app.services
+        .workflow
+        .imports
+        .is_already_imported(&source_identity)
+        .await
+}
+
+fn completed_download_for_submission_cleanup(
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> CompletedDownload {
+    if has_scryer_origin(&completed.parameters) {
+        return completed.clone();
+    }
+
+    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
+        return completed.clone();
+    };
+
+    let collection_id = matched.submission.scope.collection_id().map(str::to_string);
+    let mut patched = completed.clone();
+    merge_scryer_origin_parameters(
+        &mut patched.parameters,
+        matched.submission.title_id.clone(),
+        matched.submission.facet.clone(),
+        collection_id,
+    );
+    patched
 }
 
 async fn completed_download_terminal_state_for_resolution(
@@ -554,8 +607,11 @@ pub async fn try_import_completed_downloads(
                 state = state.as_str(),
                 "import: DownloadId already has terminal state"
             );
+            let cleanup_completed =
+                completed_download_for_submission_cleanup(&completed, &submission_resolution);
             let cleanup =
-                reconcile_terminal_download_cleanup_for_completed(app, &completed, state).await;
+                reconcile_terminal_download_cleanup_for_completed(app, &cleanup_completed, state)
+                    .await;
             if terminal_download_cleanup_is_complete(cleanup) {
                 processed_ids.insert(source_ref.clone());
             }
@@ -586,6 +642,39 @@ pub async fn try_import_completed_downloads(
                 &format!("download_id={:?}", identity.download_id),
             )
             .await;
+            continue;
+        }
+
+        let already_imported = match completed_download_already_imported_for_current_attempt(
+            app,
+            &submission_resolution,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
+                continue;
+            }
+        };
+
+        if already_imported {
+            tracing::debug!(
+                source_ref = %source_ref,
+                title = %item.title_name,
+                "import: treating already-imported download as terminal imported for cleanup"
+            );
+            let cleanup_completed =
+                completed_download_for_submission_cleanup(&completed, &submission_resolution);
+            let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                app,
+                &cleanup_completed,
+                TrackedDownloadState::Imported,
+            )
+            .await;
+            if terminal_download_cleanup_is_complete(cleanup) {
+                processed_ids.insert(source_ref.clone());
+            }
             continue;
         }
 
@@ -633,37 +722,6 @@ pub async fn try_import_completed_downloads(
                 }
             }
         };
-
-        let already_imported = match completed_download_already_imported_for_current_attempt(
-            app,
-            &submission_resolution,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
-                continue;
-            }
-        };
-
-        if already_imported {
-            tracing::debug!(
-                source_ref = %source_ref,
-                title = %item.title_name,
-                "import: treating already-imported download as terminal imported for cleanup"
-            );
-            let cleanup = reconcile_terminal_download_cleanup_for_completed(
-                app,
-                &completed,
-                TrackedDownloadState::Imported,
-            )
-            .await;
-            if terminal_download_cleanup_is_complete(cleanup) {
-                processed_ids.insert(source_ref.clone());
-            }
-            continue;
-        }
 
         // Skip if dest_dir is empty for fresh import attempts.
         if completed.dest_dir.is_empty() {

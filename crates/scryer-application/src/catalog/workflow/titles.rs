@@ -695,6 +695,35 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Resolve the category Scryer would submit with for this title/client.
+    /// A valid library-scoped routing object shadows facet routing completely;
+    /// when that object omits the client, the client is disabled for the title.
+    pub(crate) async fn effective_download_client_category_for_title(
+        &self,
+        title: &Title,
+        client_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(entry) = self
+            .read_download_client_routing_entry(Some(&title.library_id), &title.facet, client_id)
+            .await?
+        {
+            if !entry.enabled {
+                return Ok(None);
+            }
+
+            if let Some(category) = entry
+                .category
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Ok(Some(category.to_string()));
+            }
+        }
+
+        Ok(Some(self.derive_download_category(&title.facet).await))
+    }
+
     /// Resolve the per-facet fallback category used when the selected client
     /// does not declare an explicit routing category.
     pub(crate) async fn derive_download_category(&self, facet: &MediaFacet) -> String {

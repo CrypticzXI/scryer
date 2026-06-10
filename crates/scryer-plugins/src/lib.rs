@@ -4,6 +4,7 @@ mod indexer_adapter;
 mod loader;
 mod notification_adapter;
 mod plugin_http_host;
+mod process_host;
 mod runtime_features;
 mod socket_host;
 mod subtitle_adapter;

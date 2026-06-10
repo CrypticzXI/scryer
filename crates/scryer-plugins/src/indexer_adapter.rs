@@ -4,15 +4,16 @@ use scryer_application::{
     IndexerSearchResponse, IndexerSearchResult, SearchMode,
 };
 use scryer_domain::{IndexerConfig, TaggedAlias};
-use std::sync::mpsc;
+use std::{collections::BTreeMap, sync::mpsc};
 use tracing::{info, warn};
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
 use crate::types::{
-    ConfigFieldRole, EXPORT_INDEXER_SEARCH, IndexerProtocol, IndexerSourceKind, PluginDescriptor,
-    PluginSearchContext, PluginSearchOrigin, PluginSearchQueryKind, PluginSearchRequest,
-    PluginSearchRequestKind, PluginSearchResponse, PluginSearchSubjectKind, decode_plugin_result,
-    normalize_external_ids, normalize_indexer_info_hash, tagged_alias_to_sdk,
+    ConfigFieldRole, EXPORT_INDEXER_ACTION, EXPORT_INDEXER_SEARCH, IndexerProtocol,
+    IndexerSourceKind, PluginDescriptor, PluginSearchContext, PluginSearchOrigin,
+    PluginSearchQueryKind, PluginSearchRequest, PluginSearchRequestKind, PluginSearchResponse,
+    PluginSearchSubjectKind, decode_plugin_result, normalize_external_ids,
+    normalize_indexer_info_hash, tagged_alias_to_sdk,
 };
 
 pub struct WasmIndexerClient {
@@ -26,8 +27,10 @@ struct IndexerPluginWorker {
 }
 
 struct IndexerPluginCommand {
+    export: &'static str,
     input: String,
-    response: tokio::sync::oneshot::Sender<AppResult<String>>,
+    optional: bool,
+    response: tokio::sync::oneshot::Sender<AppResult<Option<String>>>,
 }
 
 impl IndexerPluginWorker {
@@ -58,20 +61,27 @@ impl IndexerPluginWorker {
 
                 while let Ok(command) = rx.recv() {
                     let start = std::time::Instant::now();
-                    let result = plugin
-                        .call::<&str, String>(EXPORT_INDEXER_SEARCH, &command.input)
-                        .map_err(|e| {
-                            AppError::Repository(format!(
-                                "plugin {EXPORT_INDEXER_SEARCH}() failed: {e}"
-                            ))
-                        });
+                    let result = if command.optional && !plugin.function_exists(command.export) {
+                        Ok(None)
+                    } else {
+                        plugin
+                            .call::<&str, String>(command.export, &command.input)
+                            .map(Some)
+                            .map_err(|e| {
+                                AppError::Repository(format!(
+                                    "plugin {}() failed: {e}",
+                                    command.export
+                                ))
+                            })
+                    };
                     let elapsed = start.elapsed();
 
                     tracing::debug!(
                         plugin = plugin_name.as_str(),
                         indexer = indexer_label.as_str(),
                         elapsed_ms = elapsed.as_millis() as u64,
-                        "WASM plugin search call completed"
+                        export = command.export,
+                        "WASM plugin call completed"
                     );
 
                     let _ = command.response.send(result);
@@ -93,7 +103,34 @@ impl IndexerPluginWorker {
     async fn call_search(&self, input: String) -> AppResult<String> {
         let (response, result) = tokio::sync::oneshot::channel();
         self.tx
-            .send(IndexerPluginCommand { input, response })
+            .send(IndexerPluginCommand {
+                export: EXPORT_INDEXER_SEARCH,
+                input,
+                optional: false,
+                response,
+            })
+            .map_err(|_| AppError::Repository("plugin worker stopped".into()))?;
+        result
+            .await
+            .map_err(|_| AppError::Repository("plugin worker stopped".into()))?
+            .and_then(|output| {
+                output.ok_or_else(|| {
+                    AppError::Repository(format!(
+                        "plugin {EXPORT_INDEXER_SEARCH}() returned no output"
+                    ))
+                })
+            })
+    }
+
+    async fn call_action(&self, input: String) -> AppResult<Option<String>> {
+        let (response, result) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(IndexerPluginCommand {
+                export: EXPORT_INDEXER_ACTION,
+                input,
+                optional: true,
+                response,
+            })
             .map_err(|_| AppError::Repository("plugin worker stopped".into()))?;
         result
             .await
@@ -122,6 +159,27 @@ impl WasmIndexerClient {
             indexer_name,
             worker,
         })
+    }
+
+    #[allow(dead_code)]
+    pub async fn indexer_action(
+        &self,
+        action: &str,
+        query: BTreeMap<String, String>,
+    ) -> AppResult<Option<serde_json::Value>> {
+        let request = serde_json::json!({
+            "action": action,
+            "query": query,
+        });
+        let input = serde_json::to_string(&request).map_err(|e| {
+            AppError::Repository(format!("failed to serialize indexer action request: {e}"))
+        })?;
+
+        self.worker
+            .call_action(input)
+            .await?
+            .map(|output| decode_plugin_result(&output, EXPORT_INDEXER_ACTION))
+            .transpose()
     }
 }
 

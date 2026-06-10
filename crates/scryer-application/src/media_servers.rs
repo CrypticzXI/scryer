@@ -151,17 +151,6 @@ impl AppUseCase {
     ) -> AppResult<MediaServerConnection> {
         self.require_app_permission(actor, AppPermission::ManageSystemSettings)
             .await?;
-        if patch
-            .default_app_permissions
-            .is_some_and(|permissions| !permissions.is_empty())
-            || patch
-                .default_library_grants
-                .as_ref()
-                .is_some_and(|grants| grants.iter().any(|grant| !grant.permissions.is_empty()))
-        {
-            self.require_app_permission(actor, AppPermission::ManagePermissions)
-                .await?;
-        }
         let id = patch.id.trim().to_string();
         if id.is_empty() {
             return Err(AppError::Validation(
@@ -176,7 +165,14 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media server connection {id}")))?;
 
-        let provider = patch.provider.unwrap_or_else(|| existing.provider.clone());
+        let provider = patch
+            .provider
+            .clone()
+            .unwrap_or_else(|| existing.provider.clone());
+        if media_server_update_requires_manage_permissions(&existing, &patch, &provider) {
+            self.require_app_permission(actor, AppPermission::ManagePermissions)
+                .await?;
+        }
         if provider != existing.provider
             && self
                 .services
@@ -664,6 +660,244 @@ impl AppUseCase {
     }
 }
 
+fn media_server_update_requires_manage_permissions(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+    provider: &MediaServerProvider,
+) -> bool {
+    let effective_app_permissions = if provider.supports_external_auth() {
+        patch
+            .default_app_permissions
+            .unwrap_or(existing.default_app_permissions)
+    } else {
+        AppPermissionMask::NONE
+    };
+    let effective_library_grants = if provider.supports_external_auth() {
+        normalize_default_library_grants(
+            patch
+                .default_library_grants
+                .clone()
+                .unwrap_or_else(|| existing.default_library_grants.clone()),
+        )
+    } else {
+        Vec::new()
+    };
+
+    if media_server_patch_changes_default_grants_to_non_empty(
+        existing,
+        patch,
+        effective_app_permissions,
+        &effective_library_grants,
+    ) {
+        return true;
+    }
+
+    if !media_server_default_grants_are_non_empty(
+        effective_app_permissions,
+        &effective_library_grants,
+    ) {
+        return false;
+    }
+
+    media_server_patch_activates_external_auth_surface(existing, patch, provider)
+        || media_server_patch_changes_external_auth_identity(existing, patch, provider)
+}
+
+fn media_server_patch_changes_default_grants_to_non_empty(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+    effective_app_permissions: AppPermissionMask,
+    effective_library_grants: &[MediaServerDefaultLibraryGrant],
+) -> bool {
+    if patch.default_app_permissions.is_none() && patch.default_library_grants.is_none() {
+        return false;
+    }
+    if !media_server_default_grants_are_non_empty(
+        effective_app_permissions,
+        effective_library_grants,
+    ) {
+        return false;
+    }
+
+    let existing_app_permissions = if existing.provider.supports_external_auth() {
+        existing.default_app_permissions
+    } else {
+        AppPermissionMask::NONE
+    };
+    let existing_library_grants = if existing.provider.supports_external_auth() {
+        normalize_default_library_grants(existing.default_library_grants.clone())
+    } else {
+        Vec::new()
+    };
+
+    effective_app_permissions != existing_app_permissions
+        || !media_server_default_library_grants_equal(
+            effective_library_grants,
+            &existing_library_grants,
+        )
+}
+
+fn media_server_patch_activates_external_auth_surface(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+    provider: &MediaServerProvider,
+) -> bool {
+    let resulting_enabled = patch.enabled.unwrap_or(existing.enabled);
+    let resulting_login_enabled = patch.login_enabled.unwrap_or(existing.login_enabled);
+    let resulting_linking_enabled = patch.linking_enabled.unwrap_or(existing.linking_enabled);
+    let resulting_auto_add_enabled = patch.auto_add_enabled.unwrap_or(existing.auto_add_enabled);
+    let existing_surface = media_server_external_auth_surface_usable(
+        &existing.provider,
+        existing.enabled,
+        existing.login_enabled,
+        existing.linking_enabled,
+        existing.auto_add_enabled,
+    );
+    let resulting_surface = media_server_external_auth_surface_usable(
+        provider,
+        resulting_enabled,
+        resulting_login_enabled,
+        resulting_linking_enabled,
+        resulting_auto_add_enabled,
+    );
+
+    if !resulting_surface {
+        return false;
+    }
+    if !existing_surface {
+        return true;
+    }
+
+    patch
+        .enabled
+        .is_some_and(|enabled| enabled && !existing.enabled)
+        || patch
+            .login_enabled
+            .is_some_and(|enabled| enabled && !existing.login_enabled)
+        || patch
+            .linking_enabled
+            .is_some_and(|enabled| enabled && !existing.linking_enabled)
+        || patch
+            .auto_add_enabled
+            .is_some_and(|enabled| enabled && !existing.auto_add_enabled)
+}
+
+fn media_server_patch_changes_external_auth_identity(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+    provider: &MediaServerProvider,
+) -> bool {
+    if !media_server_external_auth_surface_usable(
+        provider,
+        patch.enabled.unwrap_or(existing.enabled),
+        patch.login_enabled.unwrap_or(existing.login_enabled),
+        patch.linking_enabled.unwrap_or(existing.linking_enabled),
+        patch.auto_add_enabled.unwrap_or(existing.auto_add_enabled),
+    ) {
+        return false;
+    }
+    if patch
+        .provider
+        .as_ref()
+        .is_some_and(|provider| provider != &existing.provider)
+    {
+        return true;
+    }
+    if patch.base_url.as_ref().is_some_and(|base_url| {
+        media_server_base_url_changed(provider, &existing.base_url, base_url)
+    }) {
+        return true;
+    }
+
+    match provider {
+        MediaServerProvider::Plex => media_server_plex_identity_changed(existing, patch),
+        MediaServerProvider::Jellyfin => media_server_jellyfin_identity_changed(existing, patch),
+        MediaServerProvider::Emby => false,
+    }
+}
+
+fn media_server_external_auth_surface_usable(
+    provider: &MediaServerProvider,
+    enabled: bool,
+    login_enabled: bool,
+    linking_enabled: bool,
+    auto_add_enabled: bool,
+) -> bool {
+    provider.supports_external_auth()
+        && enabled
+        && (login_enabled || linking_enabled || auto_add_enabled)
+}
+
+fn media_server_default_grants_are_non_empty(
+    app_permissions: AppPermissionMask,
+    library_grants: &[MediaServerDefaultLibraryGrant],
+) -> bool {
+    !app_permissions.is_empty()
+        || library_grants
+            .iter()
+            .any(|grant| !grant.permissions.is_empty())
+}
+
+fn media_server_default_library_grants_equal(
+    left: &[MediaServerDefaultLibraryGrant],
+    right: &[MediaServerDefaultLibraryGrant],
+) -> bool {
+    let mut left = media_server_default_library_grant_entries(left);
+    let mut right = media_server_default_library_grant_entries(right);
+    left.sort_by(|a, b| a.0.cmp(&b.0));
+    right.sort_by(|a, b| a.0.cmp(&b.0));
+    left == right
+}
+
+fn media_server_default_library_grant_entries(
+    grants: &[MediaServerDefaultLibraryGrant],
+) -> Vec<(String, scryer_domain::LibraryPermissionMask)> {
+    grants
+        .iter()
+        .filter(|grant| !grant.permissions.is_empty())
+        .map(|grant| (grant.library_id.clone(), grant.permissions))
+        .collect()
+}
+
+fn media_server_base_url_changed(
+    provider: &MediaServerProvider,
+    existing_base_url: &str,
+    base_url: &str,
+) -> bool {
+    match normalize_media_server_base_url(provider, base_url.to_string()) {
+        Ok(normalized) => normalized != existing_base_url,
+        Err(_) => true,
+    }
+}
+
+fn media_server_plex_identity_changed(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+) -> bool {
+    (patch.clear_machine_id && existing.machine_id.is_some())
+        || patch.machine_id.as_ref().is_some_and(|machine_id| {
+            normalize_optional_string(Some(machine_id.clone())) != existing.machine_id
+        })
+        || option_has_non_empty_text(patch.plex_auth_token.as_deref())
+        || option_has_non_empty_text(patch.plex_server_id.as_deref())
+}
+
+fn media_server_jellyfin_identity_changed(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+) -> bool {
+    (patch.clear_api_key && existing.api_key.is_some())
+        || patch.api_key.as_ref().is_some_and(|api_key| {
+            normalize_optional_string(Some(api_key.clone())) != existing.api_key
+        })
+        || option_has_non_empty_text(patch.admin_username.as_deref())
+        || option_has_non_empty_text(patch.admin_password.as_deref())
+}
+
+fn option_has_non_empty_text(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|value| !value.is_empty())
+}
+
 fn default_media_server_display_name(provider: &MediaServerProvider) -> &'static str {
     match provider {
         MediaServerProvider::Jellyfin => "Jellyfin",
@@ -760,4 +994,561 @@ fn normalize_default_library_grants(
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::null_repositories::NullSettingsRepository;
+    use crate::null_repositories::test_nulls::{
+        NullDownloadClient, NullDownloadClientConfigRepository, NullIndexerClient,
+        NullQualityProfileRepository, NullReleaseAttemptRepository, NullShowRepository,
+        NullTitleRepository, NullUserRepository,
+    };
+    use crate::services::AppServices;
+    use scryer_domain::{LibraryPermission, LibraryPermissionMask, UserAuthorization};
+
+    #[derive(Default)]
+    struct TestMediaServerConnectionRepository {
+        connections: Mutex<Vec<MediaServerConnection>>,
+    }
+
+    impl TestMediaServerConnectionRepository {
+        fn new(connections: Vec<MediaServerConnection>) -> Self {
+            Self {
+                connections: Mutex::new(connections),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MediaServerConnectionRepository for TestMediaServerConnectionRepository {
+        async fn list(
+            &self,
+            provider: Option<MediaServerProvider>,
+        ) -> AppResult<Vec<MediaServerConnection>> {
+            Ok(self
+                .connections
+                .lock()
+                .await
+                .iter()
+                .filter(|connection| {
+                    provider
+                        .as_ref()
+                        .is_none_or(|provider| &connection.provider == provider)
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<MediaServerConnection>> {
+            Ok(self
+                .connections
+                .lock()
+                .await
+                .iter()
+                .find(|connection| connection.id == id)
+                .cloned())
+        }
+
+        async fn create(
+            &self,
+            connection: MediaServerConnection,
+        ) -> AppResult<MediaServerConnection> {
+            self.connections.lock().await.push(connection.clone());
+            Ok(connection)
+        }
+
+        async fn update(
+            &self,
+            connection: MediaServerConnection,
+        ) -> AppResult<MediaServerConnection> {
+            let mut connections = self.connections.lock().await;
+            if let Some(existing) = connections
+                .iter_mut()
+                .find(|candidate| candidate.id == connection.id)
+            {
+                *existing = connection.clone();
+            }
+            Ok(connection)
+        }
+
+        async fn delete(&self, id: &str) -> AppResult<()> {
+            self.connections
+                .lock()
+                .await
+                .retain(|connection| connection.id != id);
+            Ok(())
+        }
+
+        async fn has_external_accounts(&self, _: &str) -> AppResult<bool> {
+            Ok(false)
+        }
+
+        async fn has_notification_channels(&self, _: &str) -> AppResult<bool> {
+            Ok(false)
+        }
+    }
+
+    struct TestIndexerConfigRepository;
+
+    #[async_trait::async_trait]
+    impl IndexerConfigRepository for TestIndexerConfigRepository {
+        async fn list(&self, _: Option<String>) -> AppResult<Vec<IndexerConfig>> {
+            Ok(Vec::new())
+        }
+
+        async fn get_by_id(&self, _: &str) -> AppResult<Option<IndexerConfig>> {
+            Ok(None)
+        }
+
+        async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
+            Ok(config)
+        }
+
+        async fn touch_last_error(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn update(&self, _: IndexerConfigUpdate) -> AppResult<IndexerConfig> {
+            Err(AppError::Repository(
+                "indexer config update is not configured".into(),
+            ))
+        }
+
+        async fn delete(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct NoopExternalIdentityVerifier;
+
+    #[async_trait::async_trait]
+    impl ExternalIdentityVerifier for NoopExternalIdentityVerifier {
+        async fn verify_plex(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            Err(AppError::Repository(
+                "plex verification is not configured".into(),
+            ))
+        }
+
+        async fn discover_plex_servers(&self, _: &str) -> AppResult<Vec<PlexServerDiscovery>> {
+            Ok(vec![PlexServerDiscovery {
+                id: "machine-2".to_string(),
+                name: "Plex 2".to_string(),
+            }])
+        }
+
+        async fn verify_jellyfin(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            Err(AppError::Repository(
+                "jellyfin verification is not configured".into(),
+            ))
+        }
+
+        async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn exchange_jellyfin_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<String> {
+            Ok("generated-api-key".to_string())
+        }
+
+        async fn list_jellyfin_users(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<JellyfinServerUser>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct TestDomainEventRepository;
+
+    #[async_trait::async_trait]
+    impl DomainEventRepository for TestDomainEventRepository {
+        async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
+            Ok(DomainEvent {
+                sequence: 1,
+                event_id: event.event_id,
+                occurred_at: event.occurred_at,
+                actor_user_id: event.actor_user_id,
+                title_id: event.title_id,
+                facet: event.facet,
+                correlation_id: event.correlation_id,
+                causation_id: event.causation_id,
+                schema_version: event.schema_version,
+                stream: event.stream,
+                payload: event.payload,
+            })
+        }
+
+        async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>> {
+            let mut appended = Vec::new();
+            for event in events {
+                appended.push(self.append(event).await?);
+            }
+            Ok(appended)
+        }
+
+        async fn list(&self, _: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+            Ok(Vec::new())
+        }
+
+        async fn count_title_history_page_events(
+            &self,
+            _: Option<&[TitleHistoryEventType]>,
+            _: Option<&[String]>,
+            _: Option<&str>,
+        ) -> AppResult<i64> {
+            Ok(0)
+        }
+
+        async fn list_title_history_page_events(
+            &self,
+            _: Option<&[TitleHistoryEventType]>,
+            _: Option<&[String]>,
+            _: Option<&str>,
+            _: usize,
+            _: usize,
+        ) -> AppResult<Vec<DomainEvent>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_after_sequence(&self, _: i64, _: usize) -> AppResult<Vec<DomainEvent>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_for_title_ids(&self, _: &[String]) -> AppResult<u32> {
+            Ok(0)
+        }
+
+        async fn get_subscriber_offset(&self, _: &str) -> AppResult<i64> {
+            Ok(0)
+        }
+
+        async fn set_subscriber_offset(&self, _: &str, _: i64) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    fn app_with_connection(connection: MediaServerConnection) -> AppUseCase {
+        let services = AppServices::builder(
+            Arc::new(NullTitleRepository),
+            Arc::new(NullShowRepository),
+            Arc::new(NullUserRepository),
+            Arc::new(TestIndexerConfigRepository),
+            Arc::new(NullIndexerClient),
+            Arc::new(NullDownloadClient),
+            Arc::new(NullDownloadClientConfigRepository),
+            Arc::new(NullReleaseAttemptRepository),
+            Arc::new(NullSettingsRepository),
+            Arc::new(NullQualityProfileRepository),
+            String::new(),
+        )
+        .with_external_identity_verifier(Arc::new(NoopExternalIdentityVerifier))
+        .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
+            vec![connection],
+        )))
+        .with_domain_events(Arc::new(TestDomainEventRepository))
+        .build_partial_for_tests();
+
+        AppUseCase::new(
+            services,
+            JwtAuthConfig {
+                issuer: "scryer-test".to_string(),
+                access_ttl_seconds: 3600,
+                jwt_signing_salt: "test-salt".to_string(),
+            },
+            Arc::new(FacetRegistry::new()),
+        )
+    }
+
+    fn user_with_permissions(username: &str, app: AppPermissionMask) -> User {
+        User {
+            id: username.to_string(),
+            username: username.to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: UserAuthorization {
+                app,
+                libraries: HashMap::new(),
+                default_library: LibraryPermissionMask::NONE,
+                loaded: true,
+            },
+        }
+    }
+
+    fn system_settings_user() -> User {
+        user_with_permissions(
+            "system-settings",
+            AppPermissionMask::from_permissions([AppPermission::ManageSystemSettings]),
+        )
+    }
+
+    fn permission_manager_user() -> User {
+        user_with_permissions(
+            "permission-manager",
+            AppPermissionMask::from_permissions([
+                AppPermission::ManageSystemSettings,
+                AppPermission::ManagePermissions,
+            ]),
+        )
+    }
+
+    fn grant_bearing_jellyfin_connection() -> MediaServerConnection {
+        let now = Utc::now();
+        MediaServerConnection {
+            id: "jellyfin-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Jellyfin".to_string(),
+            base_url: "https://jellyfin.example.test".to_string(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: true,
+            default_app_permissions: AppPermissionMask::from_permissions([
+                AppPermission::ManageCatalogSettings,
+            ]),
+            default_library_grants: vec![MediaServerDefaultLibraryGrant {
+                library_id: "movies".to_string(),
+                permissions: LibraryPermissionMask::from_permissions([LibraryPermission::View]),
+            }],
+            machine_id: None,
+            api_key: Some("api-key-1".to_string()),
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn grant_bearing_plex_connection() -> MediaServerConnection {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.id = "plex-main".to_string();
+        connection.provider = MediaServerProvider::Plex;
+        connection.display_name = "Plex".to_string();
+        connection.base_url = "https://plex.tv".to_string();
+        connection.machine_id = Some("machine-1".to_string());
+        connection.api_key = None;
+        connection
+    }
+
+    fn empty_update_patch(id: &str) -> MediaServerConnectionPatch {
+        MediaServerConnectionPatch {
+            id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn assert_unauthorized(error: AppError) {
+        assert!(
+            matches!(error, AppError::Unauthorized(_)),
+            "expected unauthorized error, got {error:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn media_server_update_rejects_enabling_grant_bearing_connection_without_manage_permissions()
+     {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.enabled = false;
+        let app = app_with_connection(connection);
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.enabled = Some(true);
+
+        let error = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect_err("system settings user should not activate preserved grants");
+
+        assert_unauthorized(error);
+    }
+
+    #[tokio::test]
+    async fn media_server_update_rejects_enabling_auth_flags_with_grants_without_manage_permissions()
+     {
+        let user = system_settings_user();
+        for (name, patch) in [
+            ("login", {
+                let mut connection = grant_bearing_jellyfin_connection();
+                connection.login_enabled = false;
+                connection.linking_enabled = false;
+                connection.auto_add_enabled = false;
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.login_enabled = Some(true);
+                (connection, patch)
+            }),
+            ("linking", {
+                let mut connection = grant_bearing_jellyfin_connection();
+                connection.login_enabled = false;
+                connection.linking_enabled = false;
+                connection.auto_add_enabled = false;
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.linking_enabled = Some(true);
+                (connection, patch)
+            }),
+            ("auto add", {
+                let mut connection = grant_bearing_jellyfin_connection();
+                connection.auto_add_enabled = false;
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.auto_add_enabled = Some(true);
+                (connection, patch)
+            }),
+        ] {
+            let app = app_with_connection(patch.0);
+            let error = app
+                .update_media_server_connection(&user, patch.1)
+                .await
+                .expect_err(&format!("{name} should require ManagePermissions"));
+            assert_unauthorized(error);
+        }
+    }
+
+    #[tokio::test]
+    async fn media_server_update_rejects_auth_identity_changes_with_grants_without_manage_permissions()
+     {
+        let user = system_settings_user();
+        for (name, connection, patch) in [
+            ("base url", grant_bearing_jellyfin_connection(), {
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.base_url = Some("https://other-jellyfin.example.test".to_string());
+                patch
+            }),
+            ("api key", grant_bearing_jellyfin_connection(), {
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.api_key = Some("api-key-2".to_string());
+                patch
+            }),
+            ("admin credentials", grant_bearing_jellyfin_connection(), {
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.admin_username = Some("admin".to_string());
+                patch.admin_password = Some("password".to_string());
+                patch
+            }),
+            ("plex machine", grant_bearing_plex_connection(), {
+                let mut patch = empty_update_patch("plex-main");
+                patch.machine_id = Some("machine-2".to_string());
+                patch
+            }),
+        ] {
+            let app = app_with_connection(connection);
+            let error = app
+                .update_media_server_connection(&user, patch)
+                .await
+                .expect_err(&format!("{name} should require ManagePermissions"));
+            assert_unauthorized(error);
+        }
+    }
+
+    #[tokio::test]
+    async fn media_server_update_rejects_adding_non_empty_default_grants_even_when_auth_disabled() {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.enabled = false;
+        connection.login_enabled = false;
+        connection.linking_enabled = false;
+        connection.auto_add_enabled = false;
+        connection.default_app_permissions = AppPermissionMask::NONE;
+        connection.default_library_grants.clear();
+        let app = app_with_connection(connection);
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.default_app_permissions = Some(AppPermissionMask::from_permissions([
+            AppPermission::ManageCatalogSettings,
+        ]));
+
+        let error = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect_err("adding default grants should require ManagePermissions");
+
+        assert_unauthorized(error);
+    }
+
+    #[tokio::test]
+    async fn media_server_update_allows_permission_manager_to_activate_preserved_grants() {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.enabled = false;
+        let app = app_with_connection(connection);
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.enabled = Some(true);
+
+        let updated = app
+            .update_media_server_connection(&permission_manager_user(), patch)
+            .await
+            .expect("permission manager should activate preserved grants");
+
+        assert!(updated.enabled);
+    }
+
+    #[tokio::test]
+    async fn media_server_update_allows_system_settings_user_to_deactivate_or_clear_grants() {
+        let app = app_with_connection(grant_bearing_jellyfin_connection());
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.enabled = Some(false);
+        let updated = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect("system settings user should be able to deactivate connection");
+        assert!(!updated.enabled);
+
+        let app = app_with_connection(grant_bearing_jellyfin_connection());
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.default_app_permissions = Some(AppPermissionMask::NONE);
+        patch.default_library_grants = Some(Vec::new());
+        let updated = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect("system settings user should be able to clear grants");
+        assert!(updated.default_app_permissions.is_empty());
+        assert!(updated.default_library_grants.is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_server_update_allows_harmless_save_with_unchanged_grants_without_manage_permissions()
+     {
+        let connection = grant_bearing_jellyfin_connection();
+        let app = app_with_connection(connection.clone());
+        let mut patch = empty_update_patch("jellyfin-main");
+        patch.display_name = Some("Home Jellyfin".to_string());
+        patch.base_url = Some(connection.base_url);
+        patch.enabled = Some(connection.enabled);
+        patch.login_enabled = Some(connection.login_enabled);
+        patch.linking_enabled = Some(connection.linking_enabled);
+        patch.auto_add_enabled = Some(connection.auto_add_enabled);
+        patch.default_app_permissions = Some(connection.default_app_permissions);
+        patch.default_library_grants = Some(connection.default_library_grants);
+
+        let updated = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect("unchanged grant payload should not require ManagePermissions");
+
+        assert_eq!(updated.display_name, "Home Jellyfin");
+        assert!(!updated.default_app_permissions.is_empty());
+        assert!(!updated.default_library_grants.is_empty());
+    }
 }

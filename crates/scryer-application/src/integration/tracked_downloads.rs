@@ -1797,6 +1797,15 @@ mod tests {
         .with_domain_events(Arc::new(TestDomainEventRepo::default()))
         .build_partial_for_tests();
 
+        let mut facet_registry = FacetRegistry::new();
+        facet_registry.register(Arc::new(crate::catalog::facets::movie::MovieFacetHandler));
+        facet_registry.register(Arc::new(
+            crate::catalog::facets::series::SeriesFacetHandler::new(MediaFacet::Series),
+        ));
+        facet_registry.register(Arc::new(
+            crate::catalog::facets::series::SeriesFacetHandler::new(MediaFacet::Anime),
+        ));
+
         AppUseCase::new(
             services,
             JwtAuthConfig {
@@ -1804,7 +1813,7 @@ mod tests {
                 access_ttl_seconds: 3600,
                 jwt_signing_salt: "test-salt".to_string(),
             },
-            Arc::new(FacetRegistry::new()),
+            Arc::new(facet_registry),
         )
     }
 
@@ -1843,6 +1852,7 @@ mod tests {
             episode_id: None,
             title_name: "Restart Recovery Show".to_string(),
             facet: Some("series".to_string()),
+            category: None,
             client_id: "client-1".to_string(),
             client_name: "NZBGet".to_string(),
             client_type: "nzbget".to_string(),
@@ -2653,6 +2663,45 @@ mod tests {
 
         assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
         assert_eq!(tracked.status, TrackedDownloadStatus::Error);
+    }
+
+    #[test]
+    fn failed_download_check_skips_parse_matched_foreign_download() {
+        let mut client_item = build_client_item();
+        client_item.state = DownloadQueueState::Failed;
+        client_item.attention_reason = Some("health below critical".to_string());
+        client_item.is_scryer_origin = false;
+        let mut tracked = TrackedDownload {
+            id: "client-1:failed-foreign".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "nzbget".to_string(),
+            client_item,
+            state: TrackedDownloadState::Downloading,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: Some("Foreign.Show.S01E01.1080p.WEB-DL".to_string()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::TitleParse,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+            skip_reacquire_on_failure: false,
+        };
+
+        crate::failed_download_handler::check(&mut tracked);
+
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert!(
+            tracked
+                .status_messages
+                .iter()
+                .any(|message| message.contains("wasn't grabbed by Scryer"))
+        );
     }
 
     #[tokio::test]

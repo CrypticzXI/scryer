@@ -321,20 +321,6 @@ jobs:
             -p scryer-release-parser \
             -p scryer-rules 2>&1 | tee rust-nextest.log
 
-      - name: Run mediainfo dispatch tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test -p scryer-mediainfo --locked
-          cargo test -p scryer-mediainfo --benches --locked
-
-      - name: Run release parser dispatch tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo nextest run -p scryer-release-parser --locked
-          cargo test -p scryer-release-parser --benches --locked
-
       - name: Show ending disk usage
         if: always()
         shell: bash

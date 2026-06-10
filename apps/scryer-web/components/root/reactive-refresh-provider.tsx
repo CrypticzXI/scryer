@@ -14,6 +14,7 @@ import {
   type QueueImportHistoryRefreshOptions,
   type QueueTitleOverviewDownloadFeedbackRefreshOptions,
   type QueueTitleOverviewNativeRefreshOptions,
+  reactiveRefreshEpoch,
   type ReactiveRefreshContextValue,
 } from "@/lib/context/reactive-refresh-context";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
@@ -123,6 +124,7 @@ function applyReactiveRefreshActionResult(
   action: ReactiveRefreshAction,
   actionPlan: ReactiveRefreshQueryActionPlan,
   payload: Record<string, unknown>,
+  requestEpoch: number,
   downloadFeedbackWarning: string | null = null,
 ) {
   switch (action.kind) {
@@ -141,6 +143,7 @@ function applyReactiveRefreshActionResult(
       >;
       action.apply(
         (payload[typedActionPlan.titleAlias] ?? null) as TitleRecord | null,
+        requestEpoch,
       );
       return;
     }
@@ -340,6 +343,7 @@ export function ReactiveRefreshProvider({
       const queryPlan = buildReactiveRefreshQuery(
         queuedActions.map(actionInputFromPendingAction),
       );
+      const requestEpoch = reactiveRefreshEpoch();
       const { data, error } = await client
         .query(queryPlan.query, queryPlan.variables, {
           requestPolicy: "network-only",
@@ -405,6 +409,7 @@ export function ReactiveRefreshProvider({
           action,
           actionPlan,
           payload,
+          requestEpoch,
           titleOverviewDownloadFeedbackWarningsByKey.get(actionPlan.key) ?? null,
         );
       });

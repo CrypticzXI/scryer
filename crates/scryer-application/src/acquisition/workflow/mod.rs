@@ -3,7 +3,7 @@ use super::*;
 use crate::acquisition_decision_helpers::is_old_failed_grab_title;
 use crate::acquisition_decision_helpers::{
     FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, extract_grabbed_release_title,
-    is_all_clients_failed_error, should_research_failed_grab,
+    is_download_submit_unavailable_error, should_research_failed_grab,
 };
 use crate::acquisition_policy::{
     SearchPhase, compute_search_schedule, episode_search_window_is_open,

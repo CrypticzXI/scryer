@@ -24,6 +24,10 @@ pub(crate) fn is_all_clients_failed_error(err: &AppError) -> bool {
     matches!(err, AppError::Repository(msg) if msg.contains("all prioritized download clients failed"))
 }
 
+pub(crate) fn is_download_submit_unavailable_error(err: &AppError) -> bool {
+    err.is_download_submit_unavailable() || is_all_clients_failed_error(err)
+}
+
 pub(crate) fn should_research_failed_grab(item: &WantedItem, now: &DateTime<Utc>) -> bool {
     !is_old_failed_grab_title(item, now)
         && is_last_search_stale(item.last_search_at.as_deref(), now)

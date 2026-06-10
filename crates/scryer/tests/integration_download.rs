@@ -19,8 +19,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{
-    DownloadClient, DownloadClientAddRequest, DownloadClientPluginProvider, DownloadSourceKind,
-    NullSettingsRepository, NullStagedNzbStore, StagedNzbRef,
+    AppError, DownloadClient, DownloadClientAddRequest, DownloadClientPluginProvider,
+    DownloadSourceKind, NullSettingsRepository, NullStagedNzbStore, StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
 use scryer_infrastructure::{
@@ -546,6 +546,7 @@ async fn nzbget_list_queue_item_has_correct_fields() {
 
     let first = &items[0];
     assert!(!first.title_name.is_empty(), "title_name should be set");
+    assert_eq!(first.category.as_deref(), Some("movies"));
     assert!(first.size_bytes.is_some(), "size should be set");
 }
 
@@ -594,6 +595,7 @@ async fn nzbget_list_history_recent_entries() {
         .await
         .unwrap();
     assert_eq!(items.len(), 2, "recent entries should pass 7-day cutoff");
+    assert_eq!(items[0].category.as_deref(), Some("movies"));
 }
 
 #[tokio::test]
@@ -775,6 +777,7 @@ async fn nzbget_list_completed_downloads() {
         "should return only SUCCESS entries, not FAILURE"
     );
     assert!(items[0].dest_dir.contains("Completed"));
+    assert_eq!(items[0].category.as_deref(), Some("movies"));
 }
 
 #[tokio::test]
@@ -1067,7 +1070,7 @@ async fn nzbget_submit_download_deletes_self_staged_nzb_on_failure() {
         .await
         .expect_err("submit should fail");
 
-    assert!(error.to_string().contains("500") || error.to_string().contains("failed"));
+    assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 0);
 }
 
@@ -1951,6 +1954,7 @@ async fn sabnzbd_list_queue_item_has_correct_fields() {
     assert_eq!(first.download_client_item_id, "SABnzbd_nzo_kyt1f0");
     assert_eq!(first.title_name, "My.Movie.2024.1080p.BluRay");
     assert_eq!(first.client_type, "sabnzbd");
+    assert_eq!(first.category.as_deref(), Some("movies"));
     assert_eq!(first.progress_percent, 60);
     assert!(first.size_bytes.is_some());
     assert!(first.remaining_seconds.is_some());
@@ -2010,6 +2014,7 @@ async fn sabnzbd_list_history_recent_entries() {
         .await
         .unwrap();
     assert_eq!(items.len(), 2, "recent entries should pass 7-day cutoff");
+    assert_eq!(items[0].category.as_deref(), Some("movies"));
 }
 
 #[tokio::test]
@@ -2110,6 +2115,7 @@ async fn sabnzbd_list_completed_downloads() {
     assert_eq!(items.len(), 1, "only Completed entries should be returned");
     assert!(items[0].dest_dir.contains("Completed"));
     assert_eq!(items[0].client_type, "sabnzbd");
+    assert_eq!(items[0].category.as_deref(), Some("movies"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2359,7 +2365,7 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         Arc::new(Semaphore::new(4)),
     );
 
-    client
+    let error = client
         .submit_to_download_queue(
             &test_title("Broken SAB Submit"),
             Some(format!("{}/getnzb?id=broken", server.uri())),
@@ -2371,6 +2377,7 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         .await
         .expect_err("submit should fail");
 
+    assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 0);
 }
 
@@ -2737,5 +2744,54 @@ async fn weaver_submit_download_uses_staged_cache_entry_without_refetch() {
             .count(),
         0
     );
+    assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn weaver_submit_download_unaccepted_response_maps_to_submit_unavailable() {
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "submitNzb": {
+                    "accepted": false,
+                    "clientRequestId": "scryer:title-staged-weaver:Rejected.Weaver.Release",
+                    "item": {
+                        "id": 42,
+                        "name": "Rejected.Weaver.Release",
+                        "state": "FAILED"
+                    }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+
+    let client = WeaverDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        Some("test-api-key".to_string()),
+        staged_nzb_store.clone(),
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let error = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Rejected Weaver"),
+            staged,
+            "Rejected.Weaver.Release",
+        ))
+        .await
+        .expect_err("submit should fail");
+
+    assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 1);
 }

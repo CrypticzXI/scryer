@@ -1599,6 +1599,67 @@ async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_t
     let _ = std::fs::remove_file(db);
 }
 
+#[tokio::test]
+async fn release_attempt_queries_exclude_pending_attempts_from_failed_signatures() {
+    let (services, db) = temp_services("scryer_release_pending_excluded").await;
+    let release_store = ReleaseStore::new(services.datastore());
+    let catalog = title_store(&services);
+
+    catalog
+        .create_or_get_existing(make_test_title("title-pending", None))
+        .await
+        .expect("title should insert");
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-pending".to_string()),
+        Some("client-unavailable".to_string()),
+        Some("Deferred.Movie.2024.1080p.WEB-DL-GRP".to_string()),
+        ReleaseDownloadAttemptOutcome::Pending,
+        Some("download client unavailable".to_string()),
+        None,
+    )
+    .await
+    .expect("pending release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert!(failures.is_empty());
+
+    let title_failures = ReleaseAttemptRepository::list_failed_release_signatures_for_title(
+        &release_store,
+        "title-pending",
+        10,
+    )
+    .await
+    .expect("title failed signatures should list");
+    assert!(title_failures.is_empty());
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-pending".to_string()),
+        Some("release-rejected".to_string()),
+        Some("Rejected.Movie.2024.1080p.WEB-DL-GRP".to_string()),
+        ReleaseDownloadAttemptOutcome::Failed,
+        Some("release rejected".to_string()),
+        None,
+    )
+    .await
+    .expect("failed release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].source_title.as_deref(),
+        Some("Rejected.Movie.2024.1080p.WEB-DL-GRP")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
 fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     Title {
         id: id.to_string(),
@@ -5460,6 +5521,205 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     assert_eq!(rows[0].id, "wanted-series-episode");
 
     let _ = std::fs::remove_file(db);
+}
+
+async fn seed_due_wanted_episode_order_fixture(
+    catalog: &TitleStore,
+    shows: &ShowStore,
+    workflow: &WantedStore,
+    prefix: &str,
+) -> Vec<String> {
+    let now = "2024-01-01T00:00:00Z".to_string();
+    let mut title = make_test_title(&format!("{prefix}-title"), None);
+    title.name = "Bluey".to_string();
+    title.sort_title = Some("Bluey".to_string());
+    title.facet = MediaFacet::Series;
+    TitleRepository::create(catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let collection = ShowRepository::create_collection(
+        shows,
+        Collection {
+            id: format!("{prefix}-season-1"),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("10".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("collection should insert");
+
+    let episodes = [
+        ("e10", Some("1"), Some("10")),
+        ("e2", Some("1"), Some("2")),
+        ("e1", Some("1"), Some("1")),
+        ("ealpha", Some("1"), Some("OVA")),
+        ("emissing", Some("1"), None),
+        ("s2e1", Some("2"), Some("1")),
+    ];
+
+    for (suffix, season_number, episode_number) in episodes {
+        let episode_id = format!("{prefix}-{suffix}");
+        ShowRepository::create_episode(
+            shows,
+            Episode {
+                id: episode_id.clone(),
+                title_id: title.id.clone(),
+                collection_id: Some(collection.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: episode_number.map(str::to_string),
+                season_number: season_number.map(str::to_string),
+                episode_label: None,
+                title: None,
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_800),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("episode should insert");
+
+        workflow
+            .upsert_wanted_item(&WantedItem {
+                id: format!("wanted-{episode_id}"),
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
+                episode_id: Some(episode_id.clone()),
+                collection_id: None,
+                season_number: season_number.map(str::to_string),
+                episode_number: None,
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(now.clone()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .await
+            .expect("wanted item should insert");
+    }
+
+    vec![
+        format!("wanted-{prefix}-e1"),
+        format!("wanted-{prefix}-e2"),
+        format!("wanted-{prefix}-e10"),
+        format!("wanted-{prefix}-ealpha"),
+        format!("wanted-{prefix}-emissing"),
+        format!("wanted-{prefix}-s2e1"),
+    ]
+}
+
+#[tokio::test]
+async fn sqlite_list_due_wanted_items_orders_episodes_by_season_and_episode() {
+    let (services, db) = temp_services("scryer_due_wanted_episode_order").await;
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
+    let expected =
+        seed_due_wanted_episode_order_fixture(&catalog, &shows, &workflow, "sqlite-order").await;
+
+    let rows = workflow
+        .list_due_wanted_items("2024-01-02T00:00:00Z", 20, &[])
+        .await
+        .expect("due wanted items query should succeed");
+    let ids = rows.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+
+    assert_eq!(ids, expected);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn postgres_list_due_wanted_items_orders_episodes_by_season_and_episode() {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "skipping PostgreSQL due wanted item ordering test; SCRYER_TEST_POSTGRES_URL is not set"
+        );
+        return;
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .expect("postgres test database should connect");
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .expect("test schema should create");
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url).expect("postgres test URL should parse");
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await
+                .expect("postgres services should initialize");
+        let workflow = WantedStore::new(services.datastore());
+        let catalog = TitleStore::new(services.datastore());
+        let shows = ShowStore::new(services.datastore());
+        let expected =
+            seed_due_wanted_episode_order_fixture(&catalog, &shows, &workflow, "postgres-order")
+                .await;
+
+        let rows = workflow
+            .list_due_wanted_items("2024-01-02T00:00:00Z", 20, &[])
+            .await
+            .expect("due wanted items query should succeed");
+        let ids = rows.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+
+        assert_eq!(ids, expected);
+        services.pool().close().await;
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.expect("test schema should drop");
+    result
 }
 
 #[tokio::test]

@@ -503,20 +503,37 @@ async fn handle_tracked_download_command(
                 ))));
                 return;
             }
+            let failure_identity = tracker
+                .find(&id)
+                .and_then(crate::failed_download_handler::tracked_download_failure_submission_identity);
+            let has_grabbed_submission = if let Some(identity) = failure_identity.as_ref() {
+                crate::failed_download_handler::download_submission_exists(app, identity).await
+            } else {
+                false
+            };
             let result = if let Some(td) = tracker.find_mut(&id) {
-                td.state = TrackedDownloadState::FailedPending;
-                td.status = TrackedDownloadStatus::Error;
-                td.status_messages.clear();
-                td.skip_reacquire_on_failure = skip_reacquire;
-                let _ = try_dispatch_tracked_download_background_work(
-                    app,
-                    actor,
-                    tracker,
-                    tracked_work_in_flight,
-                    tracked_work_result_tx,
-                    &id,
-                );
-                Ok(())
+                if !has_grabbed_submission {
+                    crate::failed_download_handler::warn_download_not_grabbed(td);
+                    if td.state == TrackedDownloadState::FailedPending {
+                        td.state = TrackedDownloadState::Downloading;
+                    }
+                    td.skip_reacquire_on_failure = false;
+                    Ok(())
+                } else {
+                    td.state = TrackedDownloadState::FailedPending;
+                    td.status = TrackedDownloadStatus::Error;
+                    td.status_messages.clear();
+                    td.skip_reacquire_on_failure = skip_reacquire;
+                    let _ = try_dispatch_tracked_download_background_work(
+                        app,
+                        actor,
+                        tracker,
+                        tracked_work_in_flight,
+                        tracked_work_result_tx,
+                        &id,
+                    );
+                    Ok(())
+                }
             } else {
                 Err(AppError::NotFound(format!(
                     "tracked download {requested_id}"
