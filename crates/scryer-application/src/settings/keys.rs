@@ -34,14 +34,6 @@ pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
 pub const MFA_REQUIRE_CONFIG_STEP_UP_KEY: &str = "auth.mfa.require_config_step_up";
 pub const MFA_REQUIRE_PASSWORD_LOGIN_KEY: &str = "auth.mfa.require_password_login";
 pub const TOTP_REQUIRE_JELLYFIN_LOGIN_KEY: &str = "auth.totp.require_jellyfin_login";
-pub const AUTH_ALLOWED_PROVIDERS_KEY: &str = "auth.providers.allowed";
-pub const AUTH_PROVIDER_LOGIN_ENABLED_KEY: &str = "auth.providers.login_enabled";
-pub const AUTH_PROVIDER_LINKING_ENABLED_KEY: &str = "auth.providers.linking_enabled";
-pub const AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY: &str =
-    "auth.providers.jellyfin.allowed_connection_ids";
-pub const AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY: &str = "auth.providers.plex.allowed_connection_ids";
-pub const AUTH_JELLYFIN_CONNECTIONS_KEY: &str = "auth.providers.jellyfin.connections";
-pub const AUTH_PLEX_CONNECTIONS_KEY: &str = "auth.providers.plex.connections";
 pub const RECYCLE_BIN_ENABLED_KEY: &str = "recycle_bin.enabled";
 pub const RECYCLE_BIN_PATH_KEY: &str = "recycle_bin.path";
 pub const RECYCLE_BIN_RETENTION_DAYS_KEY: &str = "recycle_bin.retention_days";

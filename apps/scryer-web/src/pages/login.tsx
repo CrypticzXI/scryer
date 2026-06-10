@@ -9,7 +9,7 @@ import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { backendClient } from "@/lib/graphql/urql-client";
-import { authProviderRuntimeSettingsQuery } from "@/lib/graphql/queries";
+import { externalAuthRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
   completeLoginMfaEnrollmentMutation,
   loginWithJellyfinMutation,
@@ -17,7 +17,7 @@ import {
   totpEnrollmentStartMutation,
 } from "@/lib/graphql/mutations";
 import type {
-  AuthProviderSettings,
+  ExternalAuthRuntimeSettings,
   TotpEnrollmentComplete,
   TotpEnrollmentStart,
 } from "@/lib/types/settings";
@@ -42,13 +42,8 @@ function resolveRedirectTarget(value: string | null): string {
   return value;
 }
 
-function connectionOptionLabel(connection: {
-  displayName: string;
-  userVisibleUrl: string | null;
-}): string {
-  return connection.userVisibleUrl
-    ? `${connection.displayName} (${connection.userVisibleUrl})`
-    : connection.displayName;
+function connectionOptionLabel(connection: { displayName: string }): string {
+  return connection.displayName;
 }
 
 function graphQlErrorCode(error: unknown): string | null {
@@ -101,8 +96,8 @@ export default function LoginPage() {
   const [localTotpPrompted, setLocalTotpPrompted] = useState(false);
   const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const [jellyfinSubmitting, setJellyfinSubmitting] = useState(false);
-  const [authProviderSettings, setAuthProviderSettings] =
-    useState<AuthProviderSettings | null>(null);
+  const [externalAuthSettings, setExternalAuthSettings] =
+    useState<ExternalAuthRuntimeSettings | null>(null);
   const [jellyfinConnectionId, setJellyfinConnectionId] = useState("");
   const [plexConnectionId, setPlexConnectionId] = useState("");
   const [jellyfinUsername, setJellyfinUsername] = useState("");
@@ -117,39 +112,18 @@ export default function LoginPage() {
   const [jellyfinMfaBusy, setJellyfinMfaBusy] = useState(false);
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
-  const availableJellyfinConnections =
-    authProviderSettings?.allowedJellyfinConnections?.length
-      ? authProviderSettings.allowedJellyfinConnections
-      : (authProviderSettings?.allowedJellyfinConnectionIds ?? []).map((id) => ({
-          id,
-          displayName: "Jellyfin",
-          userVisibleUrl: null,
-          baseUrl: null,
-          loginEnabled: true,
-          linkingEnabled: false,
-        }))
-        .filter((connection) => connection.loginEnabled);
   const jellyfinConnections =
-    authProviderSettings?.providerLoginEnabled.includes("jellyfin") &&
-    authProviderSettings.allowedProviders.includes("jellyfin")
-      ? availableJellyfinConnections.filter((connection) => connection.loginEnabled)
+    externalAuthSettings?.loginProviders.includes("jellyfin")
+      ? externalAuthSettings.connections.filter(
+          (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+        )
       : [];
-  const availablePlexConnections = authProviderSettings?.allowedPlexConnections?.length
-    ? authProviderSettings.allowedPlexConnections
-    : (authProviderSettings?.allowedPlexConnectionIds ?? []).map((id) => ({
-        id,
-        displayName: id,
-        userVisibleUrl: null,
-        baseUrl: null,
-        loginEnabled: true,
-        linkingEnabled: false,
-      }))
-      .filter((connection) => connection.loginEnabled);
   const plexConnections =
     isVisibleExternalAccountProvider("plex") &&
-    authProviderSettings?.providerLoginEnabled.includes("plex") &&
-    authProviderSettings.allowedProviders.includes("plex")
-      ? availablePlexConnections.filter((connection) => connection.loginEnabled)
+    externalAuthSettings?.loginProviders.includes("plex")
+      ? externalAuthSettings.connections.filter(
+          (connection) => connection.provider === "plex" && connection.loginEnabled,
+        )
       : [];
   const plexLoginAvailable = plexConnections.length > 0;
   const localPasswordAvailable = effectiveFormLoginEnabled !== false;
@@ -207,18 +181,19 @@ export default function LoginPage() {
     (async () => {
       try {
         const { data, error } = await backendClient
-          .query<{ authProviderRuntimeSettings?: AuthProviderSettings }>(
-            authProviderRuntimeSettingsQuery,
+          .query<{ externalAuthRuntimeSettings?: ExternalAuthRuntimeSettings }>(
+            externalAuthRuntimeSettingsQuery,
             {},
             { requestPolicy: "network-only" },
           )
           .toPromise();
         if (error || cancelled) return;
-        const settings = data?.authProviderRuntimeSettings ?? null;
-        setAuthProviderSettings(settings);
+        const settings = data?.externalAuthRuntimeSettings ?? null;
+        setExternalAuthSettings(settings);
         const firstJellyfinConnectionId =
-          settings?.allowedJellyfinConnections.find((connection) => connection.loginEnabled)?.id ??
-          settings?.allowedJellyfinConnectionIds[0] ??
+          settings?.connections.find(
+            (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+          )?.id ??
           "";
         if (firstJellyfinConnectionId) {
           setJellyfinConnectionId((current) =>
@@ -227,8 +202,9 @@ export default function LoginPage() {
         }
         if (isVisibleExternalAccountProvider("plex")) {
           const firstPlexConnectionId =
-            settings?.allowedPlexConnections.find((connection) => connection.loginEnabled)?.id ??
-            settings?.allowedPlexConnectionIds[0] ??
+            settings?.connections.find(
+              (connection) => connection.provider === "plex" && connection.loginEnabled,
+            )?.id ??
             "";
           if (firstPlexConnectionId) {
             setPlexConnectionId((current) => current || firstPlexConnectionId);

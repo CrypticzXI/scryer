@@ -111,23 +111,18 @@ export type MediaServerConnectionDraft = {
   pathMappingsText: string;
 };
 
-export type AuthProviderConnection = {
+export type ExternalAuthRuntimeConnection = {
   id: string;
+  provider: ExternalAccountProvider;
   displayName: string;
-  userVisibleUrl: string | null;
-  baseUrl: string | null;
   loginEnabled: boolean;
   linkingEnabled: boolean;
 };
 
-export type AuthProviderSettings = {
-  allowedProviders: ExternalAccountProvider[];
-  providerLoginEnabled: ExternalAccountProvider[];
-  providerLinkingEnabled: ExternalAccountProvider[];
-  allowedJellyfinConnectionIds: string[];
-  allowedPlexConnectionIds: string[];
-  allowedJellyfinConnections: AuthProviderConnection[];
-  allowedPlexConnections: AuthProviderConnection[];
+export type ExternalAuthRuntimeSettings = {
+  loginProviders: ExternalAccountProvider[];
+  linkingProviders: ExternalAccountProvider[];
+  connections: ExternalAuthRuntimeConnection[];
 };
 
 export type LinkedAccount = {

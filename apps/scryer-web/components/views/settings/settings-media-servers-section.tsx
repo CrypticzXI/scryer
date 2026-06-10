@@ -672,7 +672,7 @@ export function SettingsMediaServersSection({
                             }))
                           }
                         />
-                        <span>{t("settings.authProviderLoginEnabled")}</span>
+                        <span>{t("settings.externalAuthLoginEnabled")}</span>
                       </label>
                       <label className="flex items-center gap-3">
                         <Checkbox
@@ -686,7 +686,7 @@ export function SettingsMediaServersSection({
                             }))
                           }
                         />
-                        <span>{t("settings.authProviderLinkingEnabled")}</span>
+                        <span>{t("settings.externalAuthLinkingEnabled")}</span>
                       </label>
                       <label className="flex items-center gap-3">
                         <Checkbox

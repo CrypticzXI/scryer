@@ -33,9 +33,9 @@ import {
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
-  AuthProviderConnection,
-  AuthProviderSettings,
   ExternalAccountProvider,
+  ExternalAuthRuntimeConnection,
+  ExternalAuthRuntimeSettings,
   LinkedAccount,
 } from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -65,7 +65,7 @@ type ExternalAccountInvitesPanelProps = {
   providerUserOptions: ExternalInviteProviderUserOption[];
   providerUserSearchLoading: boolean;
   providerUserLookupError: string | null;
-  authProviderSettings: AuthProviderSettings;
+  externalAuthSettings: ExternalAuthRuntimeSettings;
   loading: boolean;
   externalInviteDraft: ExternalInviteDraft;
   externalInviteSubmitting: boolean;
@@ -85,42 +85,20 @@ function providerLabel(provider: ExternalAccountProvider): string {
 }
 
 function providerConnections(
-  settings: AuthProviderSettings,
+  settings: ExternalAuthRuntimeSettings,
   provider: ExternalAccountProvider,
-): AuthProviderConnection[] {
-  const descriptors =
-    provider === "jellyfin"
-      ? settings.allowedJellyfinConnections
-      : settings.allowedPlexConnections;
-
-  const loginDescriptors = descriptors.filter((connection) => connection.loginEnabled);
-  if (loginDescriptors.length > 0) {
-    return loginDescriptors;
-  }
-
-  const ids =
-    provider === "jellyfin"
-      ? settings.allowedJellyfinConnectionIds
-      : settings.allowedPlexConnectionIds;
-
-  return ids.map((id) => ({
-    id,
-    displayName: provider === "jellyfin" ? "Jellyfin" : id,
-    userVisibleUrl: null,
-    baseUrl: null,
-    loginEnabled: true,
-    linkingEnabled: false,
-  }));
+): ExternalAuthRuntimeConnection[] {
+  return settings.connections.filter(
+    (connection) => connection.provider === provider && connection.loginEnabled,
+  );
 }
 
-function providerConnectionLabel(connection: AuthProviderConnection): string {
-  return connection.userVisibleUrl
-    ? `${connection.displayName} (${connection.userVisibleUrl})`
-    : connection.displayName;
+function providerConnectionLabel(connection: ExternalAuthRuntimeConnection): string {
+  return connection.displayName;
 }
 
 function inviteConnectionLabel(
-  settings: AuthProviderSettings,
+  settings: ExternalAuthRuntimeSettings,
   invite: LinkedAccount,
 ): string {
   const connection = providerConnections(settings, invite.provider).find(
@@ -141,13 +119,20 @@ function providerIdentifierLabel(provider: ExternalAccountProvider, t: ReturnTyp
     : t("settings.plexUserId");
 }
 
-function inviteProviderOptions(settings: AuthProviderSettings): ExternalAccountProvider[] {
-  return settings.allowedProviders.filter(
-    (provider) =>
-      isVisibleExternalAccountProvider(provider) &&
-      settings.providerLoginEnabled.includes(provider) &&
-      providerConnections(settings, provider).length > 0,
-  );
+function inviteProviderOptions(settings: ExternalAuthRuntimeSettings): ExternalAccountProvider[] {
+  const providers: ExternalAccountProvider[] = [];
+  for (const connection of settings.connections) {
+    if (
+      !connection.loginEnabled ||
+      !settings.loginProviders.includes(connection.provider) ||
+      !isVisibleExternalAccountProvider(connection.provider) ||
+      providers.includes(connection.provider)
+    ) {
+      continue;
+    }
+    providers.push(connection.provider);
+  }
+  return providers;
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -389,7 +374,7 @@ export function ExternalAccountInvitesPanel({
   providerUserOptions,
   providerUserSearchLoading,
   providerUserLookupError,
-  authProviderSettings,
+  externalAuthSettings,
   loading,
   externalInviteDraft,
   externalInviteSubmitting,
@@ -397,8 +382,8 @@ export function ExternalAccountInvitesPanel({
   createExternalAccountInvite,
 }: ExternalAccountInvitesPanelProps) {
   const t = useTranslate();
-  const inviteProviders = inviteProviderOptions(authProviderSettings);
-  const inviteConnections = providerConnections(authProviderSettings, externalInviteDraft.provider);
+  const inviteProviders = inviteProviderOptions(externalAuthSettings);
+  const inviteConnections = providerConnections(externalAuthSettings, externalInviteDraft.provider);
   const providerIdentifierLabelText = providerIdentifierLabel(externalInviteDraft.provider, t);
   const isJellyfinInvite = externalInviteDraft.provider === "jellyfin";
   const inviteUnavailable = inviteProviders.length === 0 || users.length === 0;
@@ -484,7 +469,7 @@ export function ExternalAccountInvitesPanel({
                     const provider = value as ExternalAccountProvider;
                     updateExternalInviteDraft({
                       provider,
-                      connectionId: providerConnections(authProviderSettings, provider)[0]?.id ?? "",
+                      connectionId: providerConnections(externalAuthSettings, provider)[0]?.id ?? "",
                       providerUserIdentifier: "",
                     });
                   }}
@@ -647,7 +632,7 @@ export function ExternalAccountInvitesPanel({
                       >
                         <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
                         <TableCell>{providerLabel(invite.provider)}</TableCell>
-                        <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>
+                        <TableCell>{inviteConnectionLabel(externalAuthSettings, invite)}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <ProviderAvatar

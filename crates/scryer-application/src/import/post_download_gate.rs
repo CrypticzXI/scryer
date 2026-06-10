@@ -68,19 +68,27 @@ impl RuntimeSampleValidation {
     }
 }
 
+#[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const SAMPLE_RUNTIME_ZERO_CODE: &str = "sample_runtime_zero";
+#[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const SAMPLE_RUNTIME_TOO_SHORT_CODE: &str = "sample_runtime_too_short";
+#[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const SAMPLE_RUNTIME_INDETERMINATE_CODE: &str = "sample_runtime_indeterminate";
 
+#[cfg(any(feature = "runtime-media-analysis", test))]
 const MIN_EXPECTED_RUNTIME_FOR_SAMPLE_RATIO_SECONDS: i32 = 5 * 60;
+#[cfg(any(feature = "runtime-media-analysis", test))]
 const MIN_UNKNOWN_RUNTIME_SAMPLE_SECONDS: i32 = 60;
+#[cfg(any(feature = "runtime-media-analysis", test))]
 const MIN_RATIO_SAMPLE_SECONDS: i32 = 90;
+#[cfg(any(feature = "runtime-media-analysis", test))]
 const SAMPLE_RUNTIME_PERCENT: i32 = 10;
 
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
 }
 
+#[cfg(any(feature = "runtime-media-analysis", test))]
 fn runtime_sample_rejection(
     validation: RuntimeSampleValidation,
     actual_runtime_seconds: Option<i32>,
@@ -137,6 +145,7 @@ fn runtime_sample_rejection(
     None
 }
 
+#[cfg(any(feature = "runtime-media-analysis", test))]
 fn imported_runtime_sample_rejection(code: &'static str, message: String) -> ImportedFileRejection {
     ImportedFileRejection {
         message,

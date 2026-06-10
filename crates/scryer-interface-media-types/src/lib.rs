@@ -2416,50 +2416,19 @@ pub struct UpdateSecuritySettingsInput {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct AuthProviderConnectionPayload {
+pub struct ExternalAuthRuntimeConnectionPayload {
     pub id: String,
+    pub provider: ExternalAccountProviderValue,
     pub display_name: String,
-    pub user_visible_url: Option<String>,
-    pub base_url: Option<String>,
     pub login_enabled: bool,
     pub linking_enabled: bool,
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct AuthProviderSettingsPayload {
-    pub allowed_providers: Vec<ExternalAccountProviderValue>,
-    pub provider_login_enabled: Vec<ExternalAccountProviderValue>,
-    pub provider_linking_enabled: Vec<ExternalAccountProviderValue>,
-    pub allowed_jellyfin_connection_ids: Vec<String>,
-    pub allowed_plex_connection_ids: Vec<String>,
-    pub allowed_jellyfin_connections: Vec<AuthProviderConnectionPayload>,
-    pub allowed_plex_connections: Vec<AuthProviderConnectionPayload>,
-}
-
-#[derive(InputObject, Clone)]
-pub struct AuthProviderConnectionInput {
-    pub id: Option<String>,
-    pub display_name: Option<String>,
-    pub base_url: Option<String>,
-    pub machine_id: Option<String>,
-    pub login_enabled: Option<bool>,
-    pub linking_enabled: Option<bool>,
-}
-
-#[derive(InputObject, Clone)]
-pub struct TestJellyfinConnectionInput {
-    pub connection: AuthProviderConnectionInput,
-}
-
-#[derive(InputObject, Clone)]
-pub struct UpdateAuthProviderSettingsInput {
-    pub allowed_providers: Vec<ExternalAccountProviderValue>,
-    pub provider_login_enabled: Vec<ExternalAccountProviderValue>,
-    pub provider_linking_enabled: Vec<ExternalAccountProviderValue>,
-    pub allowed_jellyfin_connection_ids: Vec<String>,
-    pub allowed_plex_connection_ids: Vec<String>,
-    pub allowed_jellyfin_connections: Option<Vec<AuthProviderConnectionInput>>,
-    pub allowed_plex_connections: Option<Vec<AuthProviderConnectionInput>>,
+pub struct ExternalAuthRuntimeSettingsPayload {
+    pub login_providers: Vec<ExternalAccountProviderValue>,
+    pub linking_providers: Vec<ExternalAccountProviderValue>,
+    pub connections: Vec<ExternalAuthRuntimeConnectionPayload>,
 }
 
 #[derive(InputObject, Clone)]

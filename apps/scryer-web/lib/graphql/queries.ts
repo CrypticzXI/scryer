@@ -1802,52 +1802,14 @@ export const securitySettingsQuery = `query SecuritySettings {
   }
 }`;
 
-export const authProviderSettingsQuery = `query AuthProviderSettings {
-  authProviderSettings {
-    allowedProviders
-    providerLoginEnabled
-    providerLinkingEnabled
-    allowedJellyfinConnectionIds
-    allowedPlexConnectionIds
-    allowedJellyfinConnections {
+export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettings {
+  externalAuthRuntimeSettings {
+    loginProviders
+    linkingProviders
+    connections {
       id
+      provider
       displayName
-      userVisibleUrl
-      baseUrl
-      loginEnabled
-      linkingEnabled
-    }
-    allowedPlexConnections {
-      id
-      displayName
-      userVisibleUrl
-      baseUrl
-      loginEnabled
-      linkingEnabled
-    }
-  }
-}`;
-
-export const authProviderRuntimeSettingsQuery = `query AuthProviderRuntimeSettings {
-  authProviderRuntimeSettings {
-    allowedProviders
-    providerLoginEnabled
-    providerLinkingEnabled
-    allowedJellyfinConnectionIds
-    allowedPlexConnectionIds
-    allowedJellyfinConnections {
-      id
-      displayName
-      userVisibleUrl
-      baseUrl
-      loginEnabled
-      linkingEnabled
-    }
-    allowedPlexConnections {
-      id
-      displayName
-      userVisibleUrl
-      baseUrl
       loginEnabled
       linkingEnabled
     }

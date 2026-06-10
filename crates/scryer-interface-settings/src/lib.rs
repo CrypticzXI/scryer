@@ -58,44 +58,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_auth_provider_settings_redacts_connection_internals() {
+    fn external_auth_runtime_settings_maps_clean_connections() {
         let payload =
-            from_auth_provider_runtime_settings(scryer_application::AuthProviderSettings {
-                allowed_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
-                provider_login_enabled: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
-                provider_linking_enabled: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
-                allowed_jellyfin_connection_ids: vec!["jellyfin-main".to_string()],
-                allowed_plex_connection_ids: vec![],
-                allowed_jellyfin_connections: vec![scryer_application::AuthProviderConnection {
-                    id: "jellyfin-main".to_string(),
-                    display_name: "Main Jellyfin".to_string(),
-                    base_url: Some("https://jellyfin.example.test".to_string()),
-                    machine_id: None,
-                    login_enabled: true,
-                    linking_enabled: true,
-                }],
-                allowed_plex_connections: vec![scryer_application::AuthProviderConnection {
-                    id: "plex-main".to_string(),
-                    display_name: "Main Plex".to_string(),
-                    base_url: None,
-                    machine_id: Some("machine-1".to_string()),
-                    login_enabled: true,
-                    linking_enabled: true,
-                }],
+            from_external_auth_runtime_settings(scryer_application::ExternalAuthRuntimeSettings {
+                login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
+                connections: vec![
+                    scryer_application::ExternalAuthRuntimeConnection {
+                        id: "jellyfin-main".to_string(),
+                        provider: scryer_domain::ExternalAccountProvider::Jellyfin,
+                        display_name: "Main Jellyfin".to_string(),
+                        login_enabled: true,
+                        linking_enabled: false,
+                    },
+                    scryer_application::ExternalAuthRuntimeConnection {
+                        id: "plex-main".to_string(),
+                        provider: scryer_domain::ExternalAccountProvider::Plex,
+                        display_name: "Main Plex".to_string(),
+                        login_enabled: false,
+                        linking_enabled: true,
+                    },
+                ],
             });
 
-        assert_eq!(payload.allowed_jellyfin_connections[0].id, "jellyfin-main");
-        assert_eq!(
-            payload.allowed_jellyfin_connections[0].display_name,
-            "Main Jellyfin"
-        );
-        assert!(
-            payload.allowed_jellyfin_connections[0]
-                .user_visible_url
-                .is_none()
-        );
-        assert!(payload.allowed_jellyfin_connections[0].base_url.is_none());
-        assert!(payload.allowed_plex_connections[0].base_url.is_none());
+        assert!(matches!(
+            payload.login_providers.as_slice(),
+            [ExternalAccountProviderValue::Jellyfin]
+        ));
+        assert!(matches!(
+            payload.linking_providers.as_slice(),
+            [ExternalAccountProviderValue::Plex]
+        ));
+        assert_eq!(payload.connections.len(), 2);
+        assert_eq!(payload.connections[0].id, "jellyfin-main");
+        assert!(matches!(
+            payload.connections[0].provider,
+            ExternalAccountProviderValue::Jellyfin
+        ));
+        assert_eq!(payload.connections[0].display_name, "Main Jellyfin");
+        assert!(payload.connections[0].login_enabled);
+        assert!(!payload.connections[0].linking_enabled);
     }
 }
 
@@ -158,99 +160,31 @@ fn from_security_settings(
     }
 }
 
-fn auth_provider_connections(
-    connections: Vec<scryer_application::AuthProviderConnection>,
-) -> Vec<AuthProviderConnectionPayload> {
-    connections
-        .into_iter()
-        .map(|connection| AuthProviderConnectionPayload {
-            user_visible_url: connection.base_url.clone(),
-            id: connection.id,
-            display_name: connection.display_name,
-            base_url: connection.base_url,
-            login_enabled: connection.login_enabled,
-            linking_enabled: connection.linking_enabled,
-        })
-        .collect()
-}
-
-fn runtime_auth_provider_connections(
-    connections: Vec<scryer_application::AuthProviderConnection>,
-) -> Vec<AuthProviderConnectionPayload> {
-    connections
-        .into_iter()
-        .map(|connection| AuthProviderConnectionPayload {
-            id: connection.id,
-            display_name: connection.display_name,
-            user_visible_url: None,
-            base_url: None,
-            login_enabled: connection.login_enabled,
-            linking_enabled: connection.linking_enabled,
-        })
-        .collect()
-}
-
-fn from_auth_provider_settings(
-    settings: scryer_application::AuthProviderSettings,
-) -> AuthProviderSettingsPayload {
-    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
-    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
-
-    AuthProviderSettingsPayload {
-        allowed_providers: settings
-            .allowed_providers
+fn from_external_auth_runtime_settings(
+    settings: scryer_application::ExternalAuthRuntimeSettings,
+) -> ExternalAuthRuntimeSettingsPayload {
+    ExternalAuthRuntimeSettingsPayload {
+        login_providers: settings
+            .login_providers
             .into_iter()
             .map(ExternalAccountProviderValue::from_domain)
             .collect(),
-        provider_login_enabled: settings
-            .provider_login_enabled
+        linking_providers: settings
+            .linking_providers
             .into_iter()
             .map(ExternalAccountProviderValue::from_domain)
             .collect(),
-        provider_linking_enabled: settings
-            .provider_linking_enabled
+        connections: settings
+            .connections
             .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
+            .map(|connection| ExternalAuthRuntimeConnectionPayload {
+                id: connection.id,
+                provider: ExternalAccountProviderValue::from_domain(connection.provider),
+                display_name: connection.display_name,
+                login_enabled: connection.login_enabled,
+                linking_enabled: connection.linking_enabled,
+            })
             .collect(),
-        allowed_jellyfin_connections: auth_provider_connections(
-            settings.allowed_jellyfin_connections,
-        ),
-        allowed_plex_connections: auth_provider_connections(settings.allowed_plex_connections),
-        allowed_jellyfin_connection_ids,
-        allowed_plex_connection_ids,
-    }
-}
-
-fn from_auth_provider_runtime_settings(
-    settings: scryer_application::AuthProviderSettings,
-) -> AuthProviderSettingsPayload {
-    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
-    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
-
-    AuthProviderSettingsPayload {
-        allowed_providers: settings
-            .allowed_providers
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        provider_login_enabled: settings
-            .provider_login_enabled
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        provider_linking_enabled: settings
-            .provider_linking_enabled
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        allowed_jellyfin_connections: runtime_auth_provider_connections(
-            settings.allowed_jellyfin_connections,
-        ),
-        allowed_plex_connections: runtime_auth_provider_connections(
-            settings.allowed_plex_connections,
-        ),
-        allowed_jellyfin_connection_ids,
-        allowed_plex_connection_ids,
     }
 }
 
@@ -384,26 +318,14 @@ impl SettingsQueries {
         Ok(from_security_settings(settings, &auth_runtime.snapshot()))
     }
 
-    async fn auth_provider_settings(
+    async fn external_auth_runtime_settings(
         &self,
         ctx: &Context<'_>,
-    ) -> GqlResult<AuthProviderSettingsPayload> {
+    ) -> GqlResult<ExternalAuthRuntimeSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_auth_provider_settings(&actor)
+        app.get_external_auth_runtime_settings()
             .await
-            .map(from_auth_provider_settings)
-            .map_err(to_gql_error)
-    }
-
-    async fn auth_provider_runtime_settings(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<AuthProviderSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        app.get_auth_provider_runtime_settings()
-            .await
-            .map(from_auth_provider_runtime_settings)
+            .map(from_external_auth_runtime_settings)
             .map_err(to_gql_error)
     }
 

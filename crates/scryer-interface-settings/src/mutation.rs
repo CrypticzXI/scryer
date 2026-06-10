@@ -129,76 +129,6 @@ fn from_security_settings(
     }
 }
 
-fn auth_provider_connections(
-    connections: Vec<scryer_application::AuthProviderConnection>,
-) -> Vec<AuthProviderConnectionPayload> {
-    connections
-        .into_iter()
-        .map(|connection| AuthProviderConnectionPayload {
-            user_visible_url: connection.base_url.clone(),
-            id: connection.id,
-            display_name: connection.display_name,
-            base_url: connection.base_url,
-            login_enabled: connection.login_enabled,
-            linking_enabled: connection.linking_enabled,
-        })
-        .collect()
-}
-
-fn from_auth_provider_settings(
-    settings: scryer_application::AuthProviderSettings,
-) -> AuthProviderSettingsPayload {
-    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
-    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
-
-    AuthProviderSettingsPayload {
-        allowed_providers: settings
-            .allowed_providers
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        provider_login_enabled: settings
-            .provider_login_enabled
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        provider_linking_enabled: settings
-            .provider_linking_enabled
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
-        allowed_jellyfin_connections: auth_provider_connections(
-            settings.allowed_jellyfin_connections,
-        ),
-        allowed_plex_connections: auth_provider_connections(settings.allowed_plex_connections),
-        allowed_jellyfin_connection_ids,
-        allowed_plex_connection_ids,
-    }
-}
-
-fn app_auth_provider_connections(
-    connections: Option<Vec<AuthProviderConnectionInput>>,
-) -> Vec<scryer_application::AuthProviderConnection> {
-    connections
-        .unwrap_or_default()
-        .into_iter()
-        .map(app_auth_provider_connection)
-        .collect()
-}
-
-fn app_auth_provider_connection(
-    connection: AuthProviderConnectionInput,
-) -> scryer_application::AuthProviderConnection {
-    scryer_application::AuthProviderConnection {
-        id: connection.id.unwrap_or_default(),
-        display_name: connection.display_name.unwrap_or_default(),
-        base_url: connection.base_url,
-        machine_id: connection.machine_id,
-        login_enabled: connection.login_enabled.unwrap_or(false),
-        linking_enabled: connection.linking_enabled.unwrap_or(false),
-    }
-}
-
 fn media_server_app_permissions(
     permissions: Option<Vec<AppPermissionValue>>,
 ) -> scryer_domain::AppPermissionMask {
@@ -822,61 +752,6 @@ impl SettingsMutations {
         );
 
         Ok(from_security_settings(settings, &snapshot))
-    }
-
-    async fn update_auth_provider_settings(
-        &self,
-        ctx: &Context<'_>,
-        input: UpdateAuthProviderSettingsInput,
-    ) -> GqlResult<AuthProviderSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        require_config_step_up(ctx).await?;
-        let allowed_jellyfin_connections =
-            app_auth_provider_connections(input.allowed_jellyfin_connections);
-        let allowed_plex_connections =
-            app_auth_provider_connections(input.allowed_plex_connections);
-        app.update_auth_provider_settings(
-            &actor,
-            scryer_application::UpdateAuthProviderSettings {
-                allowed_providers: input
-                    .allowed_providers
-                    .into_iter()
-                    .map(ExternalAccountProviderValue::into_domain)
-                    .collect(),
-                provider_login_enabled: input
-                    .provider_login_enabled
-                    .into_iter()
-                    .map(ExternalAccountProviderValue::into_domain)
-                    .collect(),
-                provider_linking_enabled: input
-                    .provider_linking_enabled
-                    .into_iter()
-                    .map(ExternalAccountProviderValue::into_domain)
-                    .collect(),
-                allowed_jellyfin_connection_ids: input.allowed_jellyfin_connection_ids,
-                allowed_plex_connection_ids: input.allowed_plex_connection_ids,
-                allowed_jellyfin_connections,
-                allowed_plex_connections,
-            },
-        )
-        .await
-        .map(from_auth_provider_settings)
-        .map_err(to_gql_error)
-    }
-
-    async fn test_jellyfin_connection(
-        &self,
-        ctx: &Context<'_>,
-        input: TestJellyfinConnectionInput,
-    ) -> GqlResult<bool> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        require_config_step_up(ctx).await?;
-        app.test_jellyfin_connection(&actor, app_auth_provider_connection(input.connection))
-            .await
-            .map_err(to_gql_error)?;
-        Ok(true)
     }
 
     async fn create_media_server_connection(

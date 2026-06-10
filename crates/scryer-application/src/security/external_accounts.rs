@@ -1,51 +1,23 @@
 use super::*;
-use crate::settings::keys::{
-    AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY, AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY,
-    AUTH_ALLOWED_PROVIDERS_KEY, AUTH_JELLYFIN_CONNECTIONS_KEY, AUTH_PLEX_CONNECTIONS_KEY,
-    AUTH_PROVIDER_LINKING_ENABLED_KEY, AUTH_PROVIDER_LOGIN_ENABLED_KEY,
-};
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthProviderConnection {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalAuthRuntimeConnection {
     pub id: String,
-    #[serde(default)]
+    pub provider: scryer_domain::ExternalAccountProvider,
     pub display_name: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub machine_id: Option<String>,
-    #[serde(default)]
     pub login_enabled: bool,
-    #[serde(default)]
     pub linking_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AuthProviderSettings {
-    pub allowed_providers: Vec<scryer_domain::ExternalAccountProvider>,
-    pub provider_login_enabled: Vec<scryer_domain::ExternalAccountProvider>,
-    pub provider_linking_enabled: Vec<scryer_domain::ExternalAccountProvider>,
-    pub allowed_jellyfin_connection_ids: Vec<String>,
-    pub allowed_plex_connection_ids: Vec<String>,
-    pub allowed_jellyfin_connections: Vec<AuthProviderConnection>,
-    pub allowed_plex_connections: Vec<AuthProviderConnection>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct UpdateAuthProviderSettings {
-    pub allowed_providers: Vec<scryer_domain::ExternalAccountProvider>,
-    pub provider_login_enabled: Vec<scryer_domain::ExternalAccountProvider>,
-    pub provider_linking_enabled: Vec<scryer_domain::ExternalAccountProvider>,
-    pub allowed_jellyfin_connection_ids: Vec<String>,
-    pub allowed_plex_connection_ids: Vec<String>,
-    pub allowed_jellyfin_connections: Vec<AuthProviderConnection>,
-    pub allowed_plex_connections: Vec<AuthProviderConnection>,
+pub struct ExternalAuthRuntimeSettings {
+    pub login_providers: Vec<scryer_domain::ExternalAccountProvider>,
+    pub linking_providers: Vec<scryer_domain::ExternalAccountProvider>,
+    pub connections: Vec<ExternalAuthRuntimeConnection>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AuthProviderUse {
+enum ExternalAuthUse {
     Login,
     Linking,
     Invite,
@@ -56,161 +28,18 @@ fn normalize_provider_username(value: &str) -> String {
 }
 
 impl AppUseCase {
-    pub async fn get_auth_provider_settings(
+    pub async fn get_external_auth_runtime_settings(
         &self,
-        actor: &User,
-    ) -> AppResult<AuthProviderSettings> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
-        self.load_auth_provider_settings().await
-    }
-
-    pub async fn get_auth_provider_runtime_settings(&self) -> AppResult<AuthProviderSettings> {
-        self.load_auth_provider_settings().await
-    }
-
-    pub async fn test_jellyfin_connection(
-        &self,
-        actor: &User,
-        connection: AuthProviderConnection,
-    ) -> AppResult<()> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
-        let mut connections = normalize_auth_provider_connections(
-            vec![connection],
-            scryer_domain::ExternalAccountProvider::Jellyfin,
-        )?;
-        let connection = connections.pop().ok_or_else(|| {
-            AppError::Validation("Jellyfin connection requires a base URL".into())
-        })?;
-        let base_url = connection.base_url.as_deref().ok_or_else(|| {
-            AppError::Validation("Jellyfin connection requires a base URL".into())
-        })?;
-        self.services
-            .integrations
-            .external_identity_verifier
-            .test_jellyfin_connection(base_url)
-            .await
-    }
-
-    pub async fn update_auth_provider_settings(
-        &self,
-        actor: &User,
-        input: UpdateAuthProviderSettings,
-    ) -> AppResult<AuthProviderSettings> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
-
-        let allowed_jellyfin_connections = normalize_auth_provider_connections(
-            input.allowed_jellyfin_connections,
-            scryer_domain::ExternalAccountProvider::Jellyfin,
-        )?;
-        let allowed_jellyfin_connections = if allowed_jellyfin_connections.is_empty() {
-            auth_provider_connections_from_ids(
-                input.allowed_jellyfin_connection_ids,
-                scryer_domain::ExternalAccountProvider::Jellyfin,
-            )
-        } else {
-            allowed_jellyfin_connections
-        };
-        let allowed_plex_connections = normalize_auth_provider_connections(
-            input.allowed_plex_connections,
-            scryer_domain::ExternalAccountProvider::Plex,
-        )?;
-        let allowed_plex_connections = if allowed_plex_connections.is_empty() {
-            auth_provider_connections_from_ids(
-                input.allowed_plex_connection_ids,
-                scryer_domain::ExternalAccountProvider::Plex,
-            )
-        } else {
-            allowed_plex_connections
-        };
-
-        let settings = AuthProviderSettings {
-            allowed_providers: normalize_providers(input.allowed_providers),
-            provider_login_enabled: normalize_providers(input.provider_login_enabled),
-            provider_linking_enabled: normalize_providers(input.provider_linking_enabled),
-            allowed_jellyfin_connection_ids: auth_provider_connection_ids(
-                &allowed_jellyfin_connections,
-            ),
-            allowed_plex_connection_ids: auth_provider_connection_ids(&allowed_plex_connections),
-            allowed_jellyfin_connections,
-            allowed_plex_connections,
-        };
-
-        self.upsert_system_setting_json(
-            AUTH_ALLOWED_PROVIDERS_KEY,
-            &provider_strings(&settings.allowed_providers),
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_PROVIDER_LOGIN_ENABLED_KEY,
-            &provider_strings(&settings.provider_login_enabled),
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_PROVIDER_LINKING_ENABLED_KEY,
-            &provider_strings(&settings.provider_linking_enabled),
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY,
-            &settings.allowed_jellyfin_connection_ids,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_JELLYFIN_CONNECTIONS_KEY,
-            &settings.allowed_jellyfin_connections,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY,
-            &settings.allowed_plex_connection_ids,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            AUTH_PLEX_CONNECTIONS_KEY,
-            &settings.allowed_plex_connections,
-            Some(actor.id.clone()),
-        )
-        .await?;
-
-        self.emit_settings_saved(
-            actor,
-            "auth_provider_settings",
-            None,
-            vec![
-                AUTH_ALLOWED_PROVIDERS_KEY.to_string(),
-                AUTH_PROVIDER_LOGIN_ENABLED_KEY.to_string(),
-                AUTH_PROVIDER_LINKING_ENABLED_KEY.to_string(),
-                AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY.to_string(),
-                AUTH_JELLYFIN_CONNECTIONS_KEY.to_string(),
-                AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY.to_string(),
-                AUTH_PLEX_CONNECTIONS_KEY.to_string(),
-            ],
-        )
-        .await;
-
-        Ok(settings)
-    }
-
-    async fn load_auth_provider_settings(&self) -> AppResult<AuthProviderSettings> {
+    ) -> AppResult<ExternalAuthRuntimeSettings> {
         let media_connections = self
             .services
             .integrations
             .media_server_connections
             .list(None)
             .await?;
-        let mut allowed_jellyfin_connections = Vec::new();
-        let mut allowed_plex_connections = Vec::new();
-        let mut provider_login_enabled = Vec::new();
-        let mut provider_linking_enabled = Vec::new();
+        let mut connections = Vec::new();
+        let mut login_providers = Vec::new();
+        let mut linking_providers = Vec::new();
 
         for connection in media_connections
             .into_iter()
@@ -219,64 +48,37 @@ impl AppUseCase {
             if !connection.login_enabled && !connection.linking_enabled {
                 continue;
             }
-            match connection.provider {
+            let provider = match connection.provider {
                 scryer_domain::MediaServerProvider::Jellyfin => {
-                    if connection.login_enabled
-                        && !provider_login_enabled
-                            .contains(&scryer_domain::ExternalAccountProvider::Jellyfin)
-                    {
-                        provider_login_enabled
-                            .push(scryer_domain::ExternalAccountProvider::Jellyfin);
-                    }
-                    if connection.linking_enabled
-                        && !provider_linking_enabled
-                            .contains(&scryer_domain::ExternalAccountProvider::Jellyfin)
-                    {
-                        provider_linking_enabled
-                            .push(scryer_domain::ExternalAccountProvider::Jellyfin);
-                    }
-                    allowed_jellyfin_connections.push(media_server_auth_connection(&connection));
+                    scryer_domain::ExternalAccountProvider::Jellyfin
                 }
                 scryer_domain::MediaServerProvider::Plex => {
                     if connection.machine_id.is_none() {
                         continue;
                     }
-                    if connection.login_enabled
-                        && !provider_login_enabled
-                            .contains(&scryer_domain::ExternalAccountProvider::Plex)
-                    {
-                        provider_login_enabled.push(scryer_domain::ExternalAccountProvider::Plex);
-                    }
-                    if connection.linking_enabled
-                        && !provider_linking_enabled
-                            .contains(&scryer_domain::ExternalAccountProvider::Plex)
-                    {
-                        provider_linking_enabled.push(scryer_domain::ExternalAccountProvider::Plex);
-                    }
-                    allowed_plex_connections.push(media_server_auth_connection(&connection));
+                    scryer_domain::ExternalAccountProvider::Plex
                 }
-                scryer_domain::MediaServerProvider::Emby => {}
+                scryer_domain::MediaServerProvider::Emby => continue,
+            };
+            if connection.login_enabled && !login_providers.contains(&provider) {
+                login_providers.push(provider.clone());
             }
+            if connection.linking_enabled && !linking_providers.contains(&provider) {
+                linking_providers.push(provider.clone());
+            }
+            connections.push(ExternalAuthRuntimeConnection {
+                id: connection.id,
+                provider,
+                display_name: connection.display_name,
+                login_enabled: connection.login_enabled,
+                linking_enabled: connection.linking_enabled,
+            });
         }
 
-        let mut allowed_providers = Vec::new();
-        if !allowed_jellyfin_connections.is_empty() {
-            allowed_providers.push(scryer_domain::ExternalAccountProvider::Jellyfin);
-        }
-        if !allowed_plex_connections.is_empty() {
-            allowed_providers.push(scryer_domain::ExternalAccountProvider::Plex);
-        }
-
-        Ok(AuthProviderSettings {
-            allowed_providers,
-            provider_login_enabled,
-            provider_linking_enabled,
-            allowed_jellyfin_connection_ids: auth_provider_connection_ids(
-                &allowed_jellyfin_connections,
-            ),
-            allowed_plex_connection_ids: auth_provider_connection_ids(&allowed_plex_connections),
-            allowed_jellyfin_connections,
-            allowed_plex_connections,
+        Ok(ExternalAuthRuntimeSettings {
+            login_providers,
+            linking_providers,
+            connections,
         })
     }
 
@@ -284,7 +86,7 @@ impl AppUseCase {
         &self,
         provider: scryer_domain::ExternalAccountProvider,
         connection_id: &str,
-        usage: AuthProviderUse,
+        usage: ExternalAuthUse,
     ) -> AppResult<scryer_domain::MediaServerConnection> {
         let connection_id = connection_id.trim();
         let connection = self
@@ -320,17 +122,17 @@ impl AppUseCase {
             )));
         }
         let enabled = match usage {
-            AuthProviderUse::Login | AuthProviderUse::Invite => connection.login_enabled,
-            AuthProviderUse::Linking => connection.linking_enabled,
+            ExternalAuthUse::Login | ExternalAuthUse::Invite => connection.login_enabled,
+            ExternalAuthUse::Linking => connection.linking_enabled,
         };
         if !enabled {
             return Err(AppError::Validation(format!(
                 "{} is not enabled for {}",
                 provider.as_str(),
                 match usage {
-                    AuthProviderUse::Login => "login",
-                    AuthProviderUse::Linking => "linking",
-                    AuthProviderUse::Invite => "invites",
+                    ExternalAuthUse::Login => "login",
+                    ExternalAuthUse::Linking => "linking",
+                    ExternalAuthUse::Invite => "invites",
                 }
             )));
         }
@@ -425,7 +227,7 @@ impl AppUseCase {
             ));
         }
         let connection = self
-            .auth_connection_for_use(provider.clone(), &connection_id, AuthProviderUse::Invite)
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Invite)
             .await?;
         self.services
             .identity
@@ -529,7 +331,7 @@ impl AppUseCase {
         let provider = scryer_domain::ExternalAccountProvider::Plex;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
-            .auth_connection_for_use(provider.clone(), &connection_id, AuthProviderUse::Linking)
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Linking)
             .await?;
         let verified = self
             .services
@@ -555,7 +357,7 @@ impl AppUseCase {
         let provider = scryer_domain::ExternalAccountProvider::Jellyfin;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
-            .auth_connection_for_use(provider.clone(), &connection_id, AuthProviderUse::Linking)
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Linking)
             .await?;
         let verified = self
             .services
@@ -659,7 +461,7 @@ impl AppUseCase {
         let provider = scryer_domain::ExternalAccountProvider::Plex;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
-            .auth_connection_for_use(provider.clone(), &connection_id, AuthProviderUse::Login)
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Login)
             .await?;
         let verified = self
             .services
@@ -685,7 +487,7 @@ impl AppUseCase {
         let provider = scryer_domain::ExternalAccountProvider::Jellyfin;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
-            .auth_connection_for_use(provider.clone(), &connection_id, AuthProviderUse::Login)
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Login)
             .await?;
         let verified = self
             .services
@@ -936,165 +738,8 @@ impl AppUseCase {
     }
 }
 
-fn normalize_providers(
-    providers: Vec<scryer_domain::ExternalAccountProvider>,
-) -> Vec<scryer_domain::ExternalAccountProvider> {
-    let mut normalized = Vec::new();
-    for provider in providers {
-        if !normalized.contains(&provider) {
-            normalized.push(provider);
-        }
-    }
-    normalized
-}
-
-fn normalize_connection_ids(values: Vec<String>) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for value in values {
-        let value = normalize_connection_id(value);
-        if !value.is_empty() && !normalized.contains(&value) {
-            normalized.push(value);
-        }
-    }
-    normalized
-}
-
-fn auth_provider_connections_from_ids(
-    values: Vec<String>,
-    provider: scryer_domain::ExternalAccountProvider,
-) -> Vec<AuthProviderConnection> {
-    normalize_connection_ids(values)
-        .into_iter()
-        .map(|id| AuthProviderConnection {
-            display_name: match provider {
-                scryer_domain::ExternalAccountProvider::Jellyfin => "Jellyfin".to_string(),
-                scryer_domain::ExternalAccountProvider::Plex => id.clone(),
-            },
-            id,
-            base_url: None,
-            machine_id: None,
-            login_enabled: true,
-            linking_enabled: true,
-        })
-        .collect()
-}
-
-fn media_server_auth_connection(
-    connection: &scryer_domain::MediaServerConnection,
-) -> AuthProviderConnection {
-    AuthProviderConnection {
-        id: connection.id.clone(),
-        display_name: connection.display_name.clone(),
-        base_url: match connection.provider {
-            scryer_domain::MediaServerProvider::Jellyfin => Some(connection.base_url.clone()),
-            scryer_domain::MediaServerProvider::Plex | scryer_domain::MediaServerProvider::Emby => {
-                None
-            }
-        },
-        machine_id: match connection.provider {
-            scryer_domain::MediaServerProvider::Plex => connection.machine_id.clone(),
-            scryer_domain::MediaServerProvider::Jellyfin
-            | scryer_domain::MediaServerProvider::Emby => None,
-        },
-        login_enabled: connection.login_enabled,
-        linking_enabled: connection.linking_enabled,
-    }
-}
-
-fn auth_provider_connection_ids(connections: &[AuthProviderConnection]) -> Vec<String> {
-    normalize_connection_ids(
-        connections
-            .iter()
-            .map(|connection| connection.id.clone())
-            .collect(),
-    )
-}
-
-fn normalize_auth_provider_connections(
-    values: Vec<AuthProviderConnection>,
-    provider: scryer_domain::ExternalAccountProvider,
-) -> AppResult<Vec<AuthProviderConnection>> {
-    let mut normalized = Vec::new();
-    for value in values {
-        let id = normalize_connection_id(value.id);
-        let id = if id.is_empty()
-            && matches!(provider, scryer_domain::ExternalAccountProvider::Jellyfin)
-        {
-            scryer_domain::Id::new().0
-        } else {
-            id
-        };
-        if id.is_empty()
-            || normalized
-                .iter()
-                .any(|connection: &AuthProviderConnection| connection.id == id)
-        {
-            continue;
-        }
-        let display_name = value.display_name.trim();
-        normalized.push(AuthProviderConnection {
-            id: id.clone(),
-            display_name: if display_name.is_empty() {
-                match provider {
-                    scryer_domain::ExternalAccountProvider::Jellyfin => "Jellyfin".to_string(),
-                    scryer_domain::ExternalAccountProvider::Plex => id,
-                }
-            } else {
-                display_name.to_string()
-            },
-            base_url: match provider {
-                scryer_domain::ExternalAccountProvider::Jellyfin => {
-                    normalize_optional_base_url(value.base_url)?
-                }
-                scryer_domain::ExternalAccountProvider::Plex => None,
-            },
-            machine_id: match provider {
-                scryer_domain::ExternalAccountProvider::Plex => {
-                    normalize_optional_string(value.machine_id)
-                }
-                scryer_domain::ExternalAccountProvider::Jellyfin => None,
-            },
-            login_enabled: value.login_enabled,
-            linking_enabled: value.linking_enabled,
-        });
-    }
-    Ok(normalized)
-}
-
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn normalize_optional_base_url(value: Option<String>) -> AppResult<Option<String>> {
-    let Some(value) = normalize_optional_string(value) else {
-        return Ok(None);
-    };
-    let parsed = url::Url::parse(&value)
-        .map_err(|_| AppError::Validation("Jellyfin connection base URL is invalid".into()))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err(AppError::Validation(
-            "Jellyfin connection base URL must be an HTTP or HTTPS URL".into(),
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(AppError::Validation(
-            "Jellyfin connection base URL must not include a query or fragment".into(),
-        ));
-    }
-    Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
-}
-
 fn normalize_connection_id(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_string()
-}
-
-fn provider_strings(providers: &[scryer_domain::ExternalAccountProvider]) -> Vec<String> {
-    providers
-        .iter()
-        .map(|provider| provider.as_str().to_string())
-        .collect()
 }
 
 #[cfg(test)]
@@ -1490,6 +1135,26 @@ mod tests {
         users: Arc<dyn UserRepository>,
         external_accounts: Arc<dyn UserExternalAccountRepository>,
     ) -> AppUseCase {
+        test_app_with_identity_and_media_servers(
+            settings,
+            users,
+            external_accounts,
+            vec![
+                test_media_server_connection(
+                    scryer_domain::MediaServerProvider::Jellyfin,
+                    "jellyfin-main",
+                ),
+                test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main"),
+            ],
+        )
+    }
+
+    fn test_app_with_identity_and_media_servers(
+        settings: Arc<dyn SettingsRepository>,
+        users: Arc<dyn UserRepository>,
+        external_accounts: Arc<dyn UserExternalAccountRepository>,
+        media_server_connections: Vec<MediaServerConnection>,
+    ) -> AppUseCase {
         let assembly = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -1505,13 +1170,7 @@ mod tests {
         )
         .with_external_account_store(external_accounts)
         .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
-            vec![
-                test_media_server_connection(
-                    scryer_domain::MediaServerProvider::Jellyfin,
-                    "jellyfin-main",
-                ),
-                test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main"),
-            ],
+            media_server_connections,
         )))
         .build_partial_for_tests();
 
@@ -1611,35 +1270,6 @@ mod tests {
         }
     }
 
-    async fn enable_external_account_invites(app: &AppUseCase, admin: &User) {
-        app.update_auth_provider_settings(
-            admin,
-            UpdateAuthProviderSettings {
-                allowed_providers: vec![
-                    ExternalAccountProvider::Jellyfin,
-                    ExternalAccountProvider::Plex,
-                ],
-                provider_login_enabled: vec![
-                    ExternalAccountProvider::Jellyfin,
-                    ExternalAccountProvider::Plex,
-                ],
-                provider_linking_enabled: vec![],
-                allowed_jellyfin_connection_ids: vec![],
-                allowed_plex_connection_ids: vec![],
-                allowed_jellyfin_connections: auth_provider_connections_from_ids(
-                    vec!["jellyfin-main".to_string()],
-                    scryer_domain::ExternalAccountProvider::Jellyfin,
-                ),
-                allowed_plex_connections: auth_provider_connections_from_ids(
-                    vec!["plex-main".to_string()],
-                    scryer_domain::ExternalAccountProvider::Plex,
-                ),
-            },
-        )
-        .await
-        .expect("enable external account invites");
-    }
-
     #[tokio::test]
     async fn jellyfin_invite_uses_username_without_external_id() {
         let admin = admin_user();
@@ -1650,8 +1280,6 @@ mod tests {
             Arc::new(TestUserRepository::new(vec![target.clone()])),
             external_accounts.clone(),
         );
-        enable_external_account_invites(&app, &admin).await;
-
         let account = app
             .create_external_account_invite(
                 &admin,
@@ -1698,8 +1326,6 @@ mod tests {
             Arc::new(TestUserRepository::new(vec![target.clone()])),
             external_accounts,
         );
-        enable_external_account_invites(&app, &admin).await;
-
         let result = app
             .create_external_account_invite(
                 &admin,
@@ -1838,8 +1464,6 @@ mod tests {
             Arc::new(TestUserRepository::new(vec![target.clone()])),
             Arc::new(TestExternalAccountRepository::default()),
         );
-        enable_external_account_invites(&app, &admin).await;
-
         let account = app
             .create_external_account_invite(
                 &admin,
@@ -1870,8 +1494,6 @@ mod tests {
             Arc::new(TestUserRepository::new(vec![first.clone(), second.clone()])),
             external_accounts,
         );
-        enable_external_account_invites(&app, &admin).await;
-
         app.create_external_account_invite(
             &admin,
             &first.id,
@@ -1907,246 +1529,144 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_provider_settings_are_normalized_and_persisted() {
-        let app = test_app(Arc::new(TestSettingsRepository::default()));
-        let admin = admin_user();
+    async fn external_auth_runtime_settings_are_derived_from_media_servers() {
+        let mut jellyfin_login = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-login",
+        );
+        jellyfin_login.display_name = "Jellyfin Login".to_string();
+        jellyfin_login.login_enabled = true;
+        jellyfin_login.linking_enabled = false;
 
-        let saved = app
-            .update_auth_provider_settings(
-                &admin,
-                UpdateAuthProviderSettings {
-                    allowed_providers: vec![
-                        ExternalAccountProvider::Jellyfin,
-                        ExternalAccountProvider::Jellyfin,
-                        ExternalAccountProvider::Plex,
-                    ],
-                    provider_login_enabled: vec![
-                        ExternalAccountProvider::Plex,
-                        ExternalAccountProvider::Plex,
-                    ],
-                    provider_linking_enabled: vec![ExternalAccountProvider::Jellyfin],
-                    allowed_jellyfin_connection_ids: vec![
-                        " jellyfin-main ".to_string(),
-                        "jellyfin-main".to_string(),
-                        String::new(),
-                    ],
-                    allowed_plex_connection_ids: vec!["plex-main".to_string()],
-                    allowed_jellyfin_connections: vec![
-                        AuthProviderConnection {
-                            id: " jellyfin-main ".to_string(),
-                            display_name: "Main Jellyfin".to_string(),
-                            base_url: Some("https://jellyfin.example.test/".to_string()),
-                            machine_id: Some("ignored".to_string()),
-                            login_enabled: false,
-                            linking_enabled: false,
-                        },
-                        AuthProviderConnection {
-                            id: "jellyfin-main".to_string(),
-                            display_name: "duplicate".to_string(),
-                            base_url: Some("https://duplicate.example.test".to_string()),
-                            machine_id: None,
-                            login_enabled: false,
-                            linking_enabled: false,
-                        },
-                    ],
-                    allowed_plex_connections: vec![AuthProviderConnection {
-                        id: "plex-main".to_string(),
-                        display_name: String::new(),
-                        base_url: Some("https://ignored.example.test".to_string()),
-                        machine_id: Some(" machine-1 ".to_string()),
-                        login_enabled: false,
-                        linking_enabled: false,
-                    }],
-                },
-            )
+        let mut jellyfin_link = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-link",
+        );
+        jellyfin_link.display_name = "Jellyfin Link".to_string();
+        jellyfin_link.login_enabled = false;
+        jellyfin_link.linking_enabled = true;
+
+        let mut disabled_jellyfin = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-disabled",
+        );
+        disabled_jellyfin.enabled = false;
+
+        let mut auth_flags_off = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-off",
+        );
+        auth_flags_off.login_enabled = false;
+        auth_flags_off.linking_enabled = false;
+
+        let mut plex =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main");
+        plex.display_name = "Plex Main".to_string();
+
+        let mut plex_without_machine = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Plex,
+            "plex-no-machine",
+        );
+        plex_without_machine.machine_id = None;
+
+        let emby =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Emby, "emby-main");
+
+        let app = test_app_with_identity_and_media_servers(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(NullUserRepository),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![
+                jellyfin_login,
+                jellyfin_link,
+                disabled_jellyfin,
+                auth_flags_off,
+                plex,
+                plex_without_machine,
+                emby,
+            ],
+        );
+
+        let settings = app
+            .get_external_auth_runtime_settings()
             .await
-            .expect("save settings");
+            .expect("load runtime settings");
 
         assert_eq!(
-            saved.allowed_providers,
+            settings.login_providers,
             vec![
                 ExternalAccountProvider::Jellyfin,
                 ExternalAccountProvider::Plex
             ]
         );
         assert_eq!(
-            saved.provider_login_enabled,
-            vec![ExternalAccountProvider::Plex]
-        );
-        assert_eq!(saved.allowed_jellyfin_connection_ids, vec!["jellyfin-main"]);
-        assert_eq!(saved.allowed_plex_connection_ids, vec!["plex-main"]);
-        assert_eq!(
-            saved.allowed_jellyfin_connections,
-            vec![AuthProviderConnection {
-                id: "jellyfin-main".to_string(),
-                display_name: "Main Jellyfin".to_string(),
-                base_url: Some("https://jellyfin.example.test".to_string()),
-                machine_id: None,
-                login_enabled: false,
-                linking_enabled: false,
-            }]
+            settings.linking_providers,
+            vec![
+                ExternalAccountProvider::Jellyfin,
+                ExternalAccountProvider::Plex
+            ]
         );
         assert_eq!(
-            saved.allowed_plex_connections,
-            vec![AuthProviderConnection {
-                id: "plex-main".to_string(),
-                display_name: "plex-main".to_string(),
-                base_url: None,
-                machine_id: Some("machine-1".to_string()),
-                login_enabled: false,
-                linking_enabled: false,
-            }]
+            settings
+                .connections
+                .iter()
+                .map(|connection| connection.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["jellyfin-login", "jellyfin-link", "plex-main"]
         );
-
-        let loaded = app
-            .get_auth_provider_settings(&admin)
-            .await
-            .expect("load settings");
+        assert_eq!(settings.connections[0].display_name, "Jellyfin Login");
+        assert!(settings.connections[0].login_enabled);
+        assert!(!settings.connections[0].linking_enabled);
+        assert!(!settings.connections[1].login_enabled);
+        assert!(settings.connections[1].linking_enabled);
         assert_eq!(
-            loaded.allowed_jellyfin_connection_ids,
-            vec!["jellyfin-main"]
-        );
-        assert_eq!(loaded.allowed_plex_connection_ids, vec!["plex-main"]);
-        assert!(
-            loaded
-                .provider_login_enabled
-                .contains(&ExternalAccountProvider::Jellyfin)
-        );
-        assert!(
-            loaded
-                .provider_login_enabled
-                .contains(&ExternalAccountProvider::Plex)
+            settings.connections[2].provider,
+            ExternalAccountProvider::Plex
         );
     }
 
     #[tokio::test]
-    async fn jellyfin_connection_id_is_generated_when_missing() {
-        let app = test_app(Arc::new(TestSettingsRepository::default()));
-        let admin = admin_user();
-
-        let saved = app
-            .update_auth_provider_settings(
-                &admin,
-                UpdateAuthProviderSettings {
-                    allowed_providers: vec![ExternalAccountProvider::Jellyfin],
-                    provider_login_enabled: vec![ExternalAccountProvider::Jellyfin],
-                    provider_linking_enabled: vec![],
-                    allowed_jellyfin_connection_ids: vec![],
-                    allowed_plex_connection_ids: vec![],
-                    allowed_jellyfin_connections: vec![AuthProviderConnection {
-                        id: String::new(),
-                        display_name: "Home Jellyfin".to_string(),
-                        base_url: Some("https://jellyfin.example.test".to_string()),
-                        machine_id: None,
-                        login_enabled: false,
-                        linking_enabled: false,
-                    }],
-                    allowed_plex_connections: vec![],
-                },
-            )
-            .await
-            .expect("save settings");
-
-        assert_eq!(saved.allowed_jellyfin_connections.len(), 1);
-        assert!(!saved.allowed_jellyfin_connections[0].id.is_empty());
-        assert_eq!(
-            saved.allowed_jellyfin_connection_ids,
-            vec![saved.allowed_jellyfin_connections[0].id.clone()]
+    async fn external_auth_runtime_settings_empty_when_no_connection_exposes_auth() {
+        let mut disabled = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-disabled",
         );
-        assert_eq!(
-            saved.allowed_jellyfin_connections[0].display_name,
-            "Home Jellyfin"
+        disabled.enabled = false;
+
+        let mut flags_off = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-off",
         );
-    }
+        flags_off.login_enabled = false;
+        flags_off.linking_enabled = false;
 
-    #[tokio::test]
-    async fn jellyfin_connection_default_name_does_not_expose_generated_id() {
-        let app = test_app(Arc::new(TestSettingsRepository::default()));
-        let admin = admin_user();
+        let mut plex_without_machine = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Plex,
+            "plex-no-machine",
+        );
+        plex_without_machine.machine_id = None;
 
-        let saved = app
-            .update_auth_provider_settings(
-                &admin,
-                UpdateAuthProviderSettings {
-                    allowed_providers: vec![ExternalAccountProvider::Jellyfin],
-                    provider_login_enabled: vec![ExternalAccountProvider::Jellyfin],
-                    provider_linking_enabled: vec![],
-                    allowed_jellyfin_connection_ids: vec![],
-                    allowed_plex_connection_ids: vec![],
-                    allowed_jellyfin_connections: vec![AuthProviderConnection {
-                        id: String::new(),
-                        display_name: String::new(),
-                        base_url: Some("https://jellyfin.example.test".to_string()),
-                        machine_id: None,
-                        login_enabled: false,
-                        linking_enabled: false,
-                    }],
-                    allowed_plex_connections: vec![],
-                },
-            )
+        let app = test_app_with_identity_and_media_servers(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(NullUserRepository),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![disabled, flags_off, plex_without_machine],
+        );
+
+        let settings = app
+            .get_external_auth_runtime_settings()
             .await
-            .expect("save settings");
+            .expect("load runtime settings");
 
-        let connection = &saved.allowed_jellyfin_connections[0];
-        assert!(!connection.id.is_empty());
-        assert_eq!(connection.display_name, "Jellyfin");
-    }
-
-    #[tokio::test]
-    async fn jellyfin_connection_base_url_rejects_query_and_fragment() {
-        let app = test_app(Arc::new(TestSettingsRepository::default()));
-        let admin = admin_user();
-
-        for base_url in [
-            "https://jellyfin.example.test?token=leak",
-            "https://jellyfin.example.test/#fragment",
-        ] {
-            let result = app
-                .update_auth_provider_settings(
-                    &admin,
-                    UpdateAuthProviderSettings {
-                        allowed_providers: vec![ExternalAccountProvider::Jellyfin],
-                        provider_login_enabled: vec![ExternalAccountProvider::Jellyfin],
-                        provider_linking_enabled: vec![ExternalAccountProvider::Jellyfin],
-                        allowed_jellyfin_connection_ids: vec![],
-                        allowed_plex_connection_ids: vec![],
-                        allowed_jellyfin_connections: vec![AuthProviderConnection {
-                            id: "jellyfin-main".to_string(),
-                            display_name: "Main Jellyfin".to_string(),
-                            base_url: Some(base_url.to_string()),
-                            machine_id: None,
-                            login_enabled: false,
-                            linking_enabled: false,
-                        }],
-                        allowed_plex_connections: vec![],
-                    },
-                )
-                .await;
-
-            assert!(
-                matches!(result, Err(AppError::Validation(message)) if message.contains("query or fragment"))
-            );
-        }
+        assert!(settings.login_providers.is_empty());
+        assert!(settings.linking_providers.is_empty());
+        assert!(settings.connections.is_empty());
     }
 
     #[tokio::test]
     async fn link_rejects_connection_not_on_allowlist_before_verification() {
         let app = test_app(Arc::new(TestSettingsRepository::default()));
         let admin = admin_user();
-        app.update_auth_provider_settings(
-            &admin,
-            UpdateAuthProviderSettings {
-                allowed_providers: vec![ExternalAccountProvider::Jellyfin],
-                provider_login_enabled: vec![],
-                provider_linking_enabled: vec![ExternalAccountProvider::Jellyfin],
-                allowed_jellyfin_connection_ids: vec!["jellyfin-main".to_string()],
-                allowed_plex_connection_ids: vec![],
-                allowed_jellyfin_connections: vec![],
-                allowed_plex_connections: vec![],
-            },
-        )
-        .await
-        .expect("save settings");
 
         let result = app
             .link_jellyfin_account(

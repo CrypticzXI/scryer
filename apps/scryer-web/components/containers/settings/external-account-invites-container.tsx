@@ -8,7 +8,7 @@ import {
 } from "@/components/views/settings/external-account-invites-panel";
 import { createExternalAccountInviteMutation } from "@/lib/graphql/mutations";
 import {
-  authProviderRuntimeSettingsQuery,
+  externalAuthRuntimeSettingsQuery,
   externalAccountInvitesQuery,
   jellyfinServerUsersQuery,
   usersQuery,
@@ -18,20 +18,16 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useClient } from "urql";
 import type {
-  AuthProviderConnection,
-  AuthProviderSettings,
   ExternalAccountProvider,
+  ExternalAuthRuntimeConnection,
+  ExternalAuthRuntimeSettings,
   LinkedAccount,
 } from "@/lib/types/settings";
 
-const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
-  allowedProviders: [],
-  providerLoginEnabled: [],
-  providerLinkingEnabled: [],
-  allowedJellyfinConnectionIds: [],
-  allowedPlexConnectionIds: [],
-  allowedJellyfinConnections: [],
-  allowedPlexConnections: [],
+const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
+  loginProviders: [],
+  linkingProviders: [],
+  connections: [],
 };
 
 const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
@@ -50,46 +46,29 @@ export function notifyExternalAccountInviteSourcesChanged() {
   }
 }
 
-function connectionIdsForProvider(
-  settings: AuthProviderSettings,
-  provider: ExternalAccountProvider,
-): string[] {
-  return provider === "jellyfin"
-    ? settings.allowedJellyfinConnectionIds
-    : settings.allowedPlexConnectionIds;
-}
-
 function connectionDescriptorsForProvider(
-  settings: AuthProviderSettings,
+  settings: ExternalAuthRuntimeSettings,
   provider: ExternalAccountProvider,
-): AuthProviderConnection[] {
-  const descriptors =
-    provider === "jellyfin"
-      ? settings.allowedJellyfinConnections
-      : settings.allowedPlexConnections;
-
-  const loginDescriptors = descriptors.filter((connection) => connection.loginEnabled);
-  if (loginDescriptors.length > 0) {
-    return loginDescriptors;
-  }
-
-  return connectionIdsForProvider(settings, provider).map((id) => ({
-    id,
-    displayName: provider === "jellyfin" ? "Jellyfin" : id,
-    userVisibleUrl: null,
-    baseUrl: null,
-    loginEnabled: true,
-    linkingEnabled: false,
-  }));
+): ExternalAuthRuntimeConnection[] {
+  return settings.connections.filter(
+    (connection) => connection.provider === provider && connection.loginEnabled,
+  );
 }
 
-function inviteProviders(settings: AuthProviderSettings): ExternalAccountProvider[] {
-  return settings.allowedProviders.filter(
-    (provider) =>
-      isVisibleExternalAccountProvider(provider) &&
-      settings.providerLoginEnabled.includes(provider) &&
-      connectionDescriptorsForProvider(settings, provider).length > 0,
-  );
+function inviteProviders(settings: ExternalAuthRuntimeSettings): ExternalAccountProvider[] {
+  const providers: ExternalAccountProvider[] = [];
+  for (const connection of settings.connections) {
+    if (
+      !connection.loginEnabled ||
+      !settings.loginProviders.includes(connection.provider) ||
+      !isVisibleExternalAccountProvider(connection.provider) ||
+      providers.includes(connection.provider)
+    ) {
+      continue;
+    }
+    providers.push(connection.provider);
+  }
+  return providers;
 }
 
 function visibleExternalAccountInvites(invites: LinkedAccount[]): LinkedAccount[] {
@@ -106,8 +85,8 @@ export function ExternalAccountInvitesContainer() {
     useState<ExternalInviteProviderUserOption[]>([]);
   const [providerUserSearchLoading, setProviderUserSearchLoading] = useState(false);
   const [providerUserLookupError, setProviderUserLookupError] = useState<string | null>(null);
-  const [authProviderSettings, setAuthProviderSettings] =
-    useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
+  const [externalAuthSettings, setExternalAuthSettings] =
+    useState<ExternalAuthRuntimeSettings>(DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS);
   const [externalInviteDraft, setExternalInviteDraft] =
     useState<ExternalInviteDraft>(DEFAULT_EXTERNAL_INVITE_DRAFT);
   const [loading, setLoading] = useState(true);
@@ -131,17 +110,21 @@ export function ExternalAccountInvitesContainer() {
   const refreshInviteData = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersResult, authProviderResult, invitesResult] = await Promise.all([
+      const [usersResult, externalAuthResult, invitesResult] = await Promise.all([
         client.query(usersQuery, {}, { requestPolicy: "network-only" }).toPromise(),
         client
-          .query(authProviderRuntimeSettingsQuery, {}, { requestPolicy: "network-only" })
+          .query<{ externalAuthRuntimeSettings?: ExternalAuthRuntimeSettings }>(
+            externalAuthRuntimeSettingsQuery,
+            {},
+            { requestPolicy: "network-only" },
+          )
           .toPromise(),
         client
           .query(externalAccountInvitesQuery, {}, { requestPolicy: "network-only" })
           .toPromise(),
       ]);
       if (usersResult.error) throw usersResult.error;
-      if (authProviderResult.error) throw authProviderResult.error;
+      if (externalAuthResult.error) throw externalAuthResult.error;
       if (invitesResult.error) throw invitesResult.error;
 
       setUsers(
@@ -150,17 +133,17 @@ export function ExternalAccountInvitesContainer() {
           username: user.username,
         })),
       );
-      setAuthProviderSettings({
-        ...DEFAULT_AUTH_PROVIDER_SETTINGS,
-        ...authProviderResult.data?.authProviderRuntimeSettings,
-      });
+      setExternalAuthSettings(
+        externalAuthResult.data?.externalAuthRuntimeSettings ??
+          DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS,
+      );
       setInvites(
         visibleExternalAccountInvites(
           (invitesResult.data?.externalAccountInvites ?? []) as LinkedAccount[],
         ),
       );
     } catch (error) {
-      setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
+      setExternalAuthSettings(DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS);
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     } finally {
       setLoading(false);
@@ -194,11 +177,11 @@ export function ExternalAccountInvitesContainer() {
 
   useEffect(() => {
     setExternalInviteDraft((previous) => {
-      const providerOptions = inviteProviders(authProviderSettings);
+      const providerOptions = inviteProviders(externalAuthSettings);
       const provider = providerOptions.includes(previous.provider)
         ? previous.provider
         : providerOptions[0] ?? "jellyfin";
-      const connections = connectionDescriptorsForProvider(authProviderSettings, provider);
+      const connections = connectionDescriptorsForProvider(externalAuthSettings, provider);
       const connectionId = connections.some((connection) => connection.id === previous.connectionId)
         ? previous.connectionId
         : connections[0]?.id ?? "";
@@ -218,7 +201,7 @@ export function ExternalAccountInvitesContainer() {
           : previous.providerUserIdentifier,
       };
     });
-  }, [authProviderSettings, users]);
+  }, [externalAuthSettings, users]);
 
   useEffect(() => {
     if (
@@ -335,7 +318,7 @@ export function ExternalAccountInvitesContainer() {
       providerUserOptions={providerUserOptions}
       providerUserSearchLoading={providerUserSearchLoading}
       providerUserLookupError={providerUserLookupError}
-      authProviderSettings={authProviderSettings}
+      externalAuthSettings={externalAuthSettings}
       loading={loading}
       externalInviteDraft={externalInviteDraft}
       externalInviteSubmitting={externalInviteSubmitting}

@@ -690,32 +690,6 @@ const LINKED_ACCOUNT_FIELDS = `
     createdAt
     updatedAt`;
 
-export const updateAuthProviderSettingsMutation = `mutation UpdateAuthProviderSettings($input: UpdateAuthProviderSettingsInput!) {
-  updateAuthProviderSettings(input: $input) {
-    allowedProviders
-    providerLoginEnabled
-    providerLinkingEnabled
-    allowedJellyfinConnectionIds
-    allowedPlexConnectionIds
-    allowedJellyfinConnections {
-      id
-      displayName
-      userVisibleUrl
-      baseUrl
-      loginEnabled
-      linkingEnabled
-    }
-    allowedPlexConnections {
-      id
-      displayName
-      userVisibleUrl
-      baseUrl
-      loginEnabled
-      linkingEnabled
-    }
-  }
-}`;
-
 export const createMediaServerConnectionMutation = `mutation CreateMediaServerConnection($input: CreateMediaServerConnectionInput!) {
   createMediaServerConnection(input: $input) {${MEDIA_SERVER_CONNECTION_FIELDS}
   }
@@ -739,10 +713,6 @@ export const discoverPlexMediaServersMutation = `mutation DiscoverPlexMediaServe
     id
     name
   }
-}`;
-
-export const testJellyfinConnectionMutation = `mutation TestJellyfinConnection($input: TestJellyfinConnectionInput!) {
-  testJellyfinConnection(input: $input)
 }`;
 
 export const createExternalAccountInviteMutation = `mutation CreateExternalAccountInvite($input: CreateExternalAccountInviteInput!) {

@@ -15,8 +15,8 @@ import { QRCode } from "react-qr-code";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
-  AuthProviderConnection,
   ExternalAccountProvider,
+  ExternalAuthRuntimeConnection,
   LinkedAccount,
   PasskeySummary,
   TotpEnrollmentStart,
@@ -48,8 +48,8 @@ type Props = {
   totpRecoveryCodes: string[];
   linkedAccounts: LinkedAccount[];
   linkedAccountConnectionLabels: Record<string, string>;
-  linkableJellyfinConnections: AuthProviderConnection[];
-  linkablePlexConnections: AuthProviderConnection[];
+  linkableJellyfinConnections: ExternalAuthRuntimeConnection[];
+  linkablePlexConnections: ExternalAuthRuntimeConnection[];
   linkingProvider: ExternalAccountProvider | null;
   linkAccountConnectionId: string;
   linkAccountUsername: string;
@@ -107,10 +107,8 @@ function providerLabel(provider: LinkedAccount["provider"]): string {
   }
 }
 
-function connectionLabel(connection: AuthProviderConnection): string {
-  return connection.userVisibleUrl
-    ? `${connection.displayName} (${connection.userVisibleUrl})`
-    : connection.displayName;
+function connectionLabel(connection: ExternalAuthRuntimeConnection): string {
+  return connection.displayName;
 }
 
 function LinkedAccountAvatar({ account }: { account: LinkedAccount }) {

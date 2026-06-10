@@ -16,7 +16,7 @@ import {
   unlinkExternalAccountMutation,
 } from "@/lib/graphql/mutations";
 import {
-  authProviderRuntimeSettingsQuery,
+  externalAuthRuntimeSettingsQuery,
   linkedAccountsQuery,
   meQuery,
   myPasskeysQuery,
@@ -30,9 +30,9 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import type {
-  AuthProviderConnection,
-  AuthProviderSettings,
   ExternalAccountProvider,
+  ExternalAuthRuntimeConnection,
+  ExternalAuthRuntimeSettings,
   LinkedAccount,
   PasskeySummary,
   TotpEnrollmentComplete,
@@ -55,14 +55,10 @@ type LinkAccountDraft = {
   jellyfinPassword: string;
 };
 
-const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
-  allowedProviders: [],
-  providerLoginEnabled: [],
-  providerLinkingEnabled: [],
-  allowedJellyfinConnectionIds: [],
-  allowedPlexConnectionIds: [],
-  allowedJellyfinConnections: [],
-  allowedPlexConnections: [],
+const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
+  loginProviders: [],
+  linkingProviders: [],
+  connections: [],
 };
 
 const TOTP_CODE_LENGTH = 6;
@@ -72,35 +68,14 @@ function sanitizeTotpCode(value: string): string {
 }
 
 function connectionsForProvider(
-  settings: AuthProviderSettings,
+  settings: ExternalAuthRuntimeSettings,
   provider: ExternalAccountProvider,
-): AuthProviderConnection[] {
-  const connections =
-    provider === "jellyfin"
-      ? settings.allowedJellyfinConnections
-      : settings.allowedPlexConnections;
-  if (connections.length > 0) {
-    return connections;
-  }
-
-  const ids =
-    provider === "jellyfin"
-      ? settings.allowedJellyfinConnectionIds
-      : settings.allowedPlexConnectionIds;
-  return ids.map((id) => ({
-    id,
-    displayName: id,
-    userVisibleUrl: null,
-    baseUrl: null,
-    loginEnabled: settings.providerLoginEnabled.includes(provider),
-    linkingEnabled: settings.providerLinkingEnabled.includes(provider),
-  }));
+): ExternalAuthRuntimeConnection[] {
+  return settings.connections.filter((connection) => connection.provider === provider);
 }
 
-function connectionLabelForDisplay(connection: AuthProviderConnection): string {
-  return connection.userVisibleUrl
-    ? `${connection.displayName} (${connection.userVisibleUrl})`
-    : connection.displayName;
+function connectionLabelForDisplay(connection: ExternalAuthRuntimeConnection): string {
+  return connection.displayName;
 }
 
 export function SettingsProfileContainer({ userId, username }: Props) {
@@ -121,8 +96,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [totpActionCode, setTotpActionCode] = useState("");
   const [totpRecoveryCodes, setTotpRecoveryCodes] = useState<string[]>([]);
   const [linkedAccounts, setLinkedAccounts] = useState<LinkedAccount[]>([]);
-  const [authProviderSettings, setAuthProviderSettings] = useState<AuthProviderSettings>(
-    DEFAULT_AUTH_PROVIDER_SETTINGS,
+  const [externalAuthSettings, setExternalAuthSettings] = useState<ExternalAuthRuntimeSettings>(
+    DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS,
   );
   const [loadingPasskeys, setLoadingPasskeys] = useState(false);
   const [loadingTotp, setLoadingTotp] = useState(false);
@@ -326,9 +301,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     void loadLinkedAccounts();
   }, [loadLinkedAccounts]);
 
-  const loadAuthProviderSettings = useCallback(async () => {
+  const loadExternalAuthSettings = useCallback(async () => {
     if (!userId) {
-      setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
+      setExternalAuthSettings(DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS);
       setLoadingLinkOptions(false);
       return;
     }
@@ -336,8 +311,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setLoadingLinkOptions(true);
     try {
       const result = await client
-        .query<{ authProviderRuntimeSettings?: AuthProviderSettings }>(
-          authProviderRuntimeSettingsQuery,
+        .query<{ externalAuthRuntimeSettings?: ExternalAuthRuntimeSettings }>(
+          externalAuthRuntimeSettingsQuery,
           {},
           { requestPolicy: "network-only" },
         )
@@ -346,8 +321,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
         setGlobalStatus(result.error.message);
         return;
       }
-      setAuthProviderSettings(
-        result.data?.authProviderRuntimeSettings ?? DEFAULT_AUTH_PROVIDER_SETTINGS,
+      setExternalAuthSettings(
+        result.data?.externalAuthRuntimeSettings ?? DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS,
       );
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("profile.linkAccountLoadFailed"));
@@ -357,8 +332,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, userId]);
 
   useEffect(() => {
-    void loadAuthProviderSettings();
-  }, [loadAuthProviderSettings]);
+    void loadExternalAuthSettings();
+  }, [loadExternalAuthSettings]);
 
   const linkableConnections = useMemo(() => {
     const linkedPairs = new Set(
@@ -368,13 +343,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     const eligibleForProvider = (provider: ExternalAccountProvider) => {
       if (
         !isVisibleExternalAccountProvider(provider) ||
-        !authProviderSettings.allowedProviders.includes(provider) ||
-        !authProviderSettings.providerLinkingEnabled.includes(provider)
+        !externalAuthSettings.linkingProviders.includes(provider)
       ) {
         return [];
       }
 
-      return connectionsForProvider(authProviderSettings, provider).filter(
+      return connectionsForProvider(externalAuthSettings, provider).filter(
         (connection) =>
           connection.linkingEnabled && !linkedPairs.has(`${provider}:${connection.id}`),
       );
@@ -384,17 +358,17 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       jellyfin: eligibleForProvider("jellyfin"),
       plex: eligibleForProvider("plex"),
     };
-  }, [authProviderSettings, linkedAccounts]);
+  }, [externalAuthSettings, linkedAccounts]);
 
   const linkedAccountConnectionLabels = useMemo(() => {
     const labels: Record<string, string> = {};
     VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS.forEach((provider) => {
-      connectionsForProvider(authProviderSettings, provider).forEach((connection) => {
+      connectionsForProvider(externalAuthSettings, provider).forEach((connection) => {
         labels[`${provider}:${connection.id}`] = connectionLabelForDisplay(connection);
       });
     });
     return labels;
-  }, [authProviderSettings]);
+  }, [externalAuthSettings]);
 
   const handleAddPasskey = useCallback(async () => {
     if (!userId || hasPassword !== true || accountKind !== "local") return;
