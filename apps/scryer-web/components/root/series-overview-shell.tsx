@@ -157,7 +157,12 @@ export function SeriesOverviewShell() {
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <GlobalSearchProvider activeFacet="series" queueFacet="series" uiLanguage={uiLanguage}>
+          <GlobalSearchProvider
+            activeFacet="series"
+            authenticatedUser={permissionUser}
+            queueFacet="series"
+            uiLanguage={uiLanguage}
+          >
             <div className="min-h-screen bg-background text-foreground">
               <RootHeader
                 routeCommandPalette={routeCommandPaletteConfig}

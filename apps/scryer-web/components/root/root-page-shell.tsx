@@ -1410,6 +1410,7 @@ function AuthenticatedHomePage({
             <ReactiveRefreshProvider>
               <GlobalSearchProvider
                 activeFacet={activeFacet}
+                authenticatedUser={authenticatedUser}
                 queueFacet={queueFacet}
                 uiLanguage={uiLanguage}
               >

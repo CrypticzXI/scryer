@@ -37,7 +37,7 @@ import {
 import { FACET_REGISTRY, facetById } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
-import { useAuth } from "@/lib/hooks/use-auth";
+import type { AuthUser } from "@/lib/hooks/use-auth";
 import {
   hasAnyLibraryPermission,
   LIBRARY_PERMISSIONS,
@@ -213,9 +213,12 @@ const AUTOCOMPLETE_DEBOUNCE_MS = 250;
 const AUTOCOMPLETE_LIMIT = 10;
 
 type UseGlobalSearchArgs = {
+  authenticatedUser: AuthUser;
   queueFacet: Facet;
   uiLanguage: LocaleCode;
 };
+
+type CatalogConfigAccessMode = "manager" | "requester";
 
 export interface UseGlobalSearchResult {
   globalSearch: string;
@@ -327,14 +330,17 @@ function sameLibrariesByFacet(
 }
 
 export function useGlobalSearch({
+  authenticatedUser,
   queueFacet: initialQueueFacet,
   uiLanguage,
 }: UseGlobalSearchArgs): UseGlobalSearchResult {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { user } = useAuth();
-  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canManageTitle = hasAnyLibraryPermission(
+    authenticatedUser,
+    LIBRARY_PERMISSIONS.manageTitles,
+  );
   const [queueFacet, setQueueFacet] = useState<Facet>(initialQueueFacet);
   const catalogChangeSignal = 0;
   const sortByRelevance = useCallback((results: MetadataTvdbSearchItem[], query: string) => {
@@ -401,7 +407,11 @@ export function useGlobalSearch({
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
   const pendingRequestKeysRef = useRef<Set<string>>(new Set());
-  const catalogConfigRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const catalogConfigRefreshPromiseRef = useRef<{
+    mode: CatalogConfigAccessMode;
+    promise: Promise<void>;
+  } | null>(null);
+  const catalogConfigRefreshTokenRef = useRef(0);
 
   const cancelAutocomplete = useCallback(() => {
     autocompleteRequestId.current += 1;
@@ -464,9 +474,17 @@ export function useGlobalSearch({
   );
 
   const refreshCatalogQualityProfileState = useCallback(async () => {
-    if (catalogConfigRefreshPromiseRef.current) {
-      return catalogConfigRefreshPromiseRef.current;
+    const accessMode: CatalogConfigAccessMode = canManageTitle
+      ? "manager"
+      : "requester";
+    if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+      return catalogConfigRefreshPromiseRef.current.promise;
     }
+
+    const refreshToken = catalogConfigRefreshTokenRef.current + 1;
+    catalogConfigRefreshTokenRef.current = refreshToken;
+    const isCurrentRefresh = () =>
+      catalogConfigRefreshTokenRef.current === refreshToken;
 
     const refreshPromise = (async () => {
       setCatalogConfigLoading(true);
@@ -479,6 +497,7 @@ export function useGlobalSearch({
           )
           .toPromise();
         if (error) throw error;
+        if (!isCurrentRefresh()) return;
 
         const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
           (profile: { id: string; name: string }) => ({
@@ -564,6 +583,7 @@ export function useGlobalSearch({
             .query(requestableLibrariesQuery, {}, { requestPolicy: "network-only" })
             .toPromise();
           if (error) throw error;
+          if (!isCurrentRefresh()) return;
           const nextRequestableLibrariesByFacet = librariesByFacetFromList(
             data?.requestableLibraries ?? [],
           );
@@ -577,12 +597,19 @@ export function useGlobalSearch({
         }
         // ignore settings fetch failures here; search remains functional
       } finally {
-        setCatalogConfigLoading(false);
-        catalogConfigRefreshPromiseRef.current = null;
+        if (isCurrentRefresh()) {
+          setCatalogConfigLoading(false);
+          if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+            catalogConfigRefreshPromiseRef.current = null;
+          }
+        }
       }
     })();
 
-    catalogConfigRefreshPromiseRef.current = refreshPromise;
+    catalogConfigRefreshPromiseRef.current = {
+      mode: accessMode,
+      promise: refreshPromise,
+    };
     return refreshPromise;
   }, [canManageTitle, client]);
 

@@ -144,7 +144,12 @@ export function MovieOverviewShell() {
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <GlobalSearchProvider activeFacet="movie" queueFacet="movie" uiLanguage={uiLanguage}>
+          <GlobalSearchProvider
+            activeFacet="movie"
+            authenticatedUser={permissionUser}
+            queueFacet="movie"
+            uiLanguage={uiLanguage}
+          >
             <div className="min-h-screen bg-background text-foreground">
               <RootHeader
                 routeCommandPalette={routeCommandPaletteConfig}
