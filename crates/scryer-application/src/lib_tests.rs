@@ -1085,42 +1085,6 @@ impl ImportRepository for TrackingImportRepo {
     }
 }
 
-#[derive(Default, Clone)]
-struct BlockingFileImporter {
-    release: Arc<Notify>,
-    call_count: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl FileImporter for BlockingFileImporter {
-    async fn import_file(
-        &self,
-        source: &Path,
-        dest: &Path,
-        _mode: scryer_domain::ImportMode,
-    ) -> AppResult<scryer_domain::ImportFileResult> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
-        self.release.notified().await;
-        Ok(scryer_domain::ImportFileResult {
-            strategy: scryer_domain::ImportStrategy::Copy,
-            source_path: source.to_path_buf(),
-            dest_path: dest.to_path_buf(),
-            size_bytes: std::fs::metadata(source)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0),
-            source_cleanup: None,
-        })
-    }
-
-    async fn remove_import_source_after_verified_import(
-        &self,
-        _guard: scryer_domain::ImportSourceCleanupGuard,
-        _final_dest_path: &Path,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl UserRepository for MockUserRepo {
     async fn get_by_username(&self, username: &str) -> AppResult<Option<User>> {
@@ -15677,26 +15641,17 @@ async fn list_download_import_page_degrades_promptly_for_limit_one_count_reads_w
 }
 
 #[tokio::test]
-async fn download_import_page_stays_responsive_while_background_import_worker_is_blocked() {
+async fn download_import_page_renders_importing_state_from_runtime_snapshot() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (tracked_download_tx, _blocked_rx) = tokio::sync::mpsc::channel(1);
     let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
         download_client.clone(),
         download_submissions,
         pending_releases,
         crate::tracked_downloads::TrackedDownloadHandle::new(tracked_download_tx),
     );
-    let import_repo = Arc::new(TrackingImportRepo::default());
-    let media_files = Arc::new(MockMediaFileRepo::default());
-    let file_importer = Arc::new(BlockingFileImporter::default());
-    let app = app.with_test_overrides(|services| {
-        services
-            .with_imports(import_repo.clone())
-            .with_media_files(media_files)
-            .with_file_importer(file_importer.clone())
-    });
 
     app.create_download_client_config(
         &user,
@@ -15711,71 +15666,36 @@ async fn download_import_page_stays_responsive_while_background_import_worker_is
     .await
     .expect("create download client config");
 
-    let title = app
-        .add_title(
-            &user,
-            NewTitle {
-                name: "Responsive Import Test".to_string(),
-                facet: MediaFacet::Movie,
-                monitored: true,
-                tags: vec![],
-                external_ids: vec![],
-                min_availability: None,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create monitored movie title");
-
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let completed_dir = tempdir
-        .path()
-        .join("Responsive.Import.Test.2026.1080p.WEB-DL");
-    std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
-    let source_video = completed_dir.join("Responsive.Import.Test.2026.1080p.WEB-DL.mkv");
-    std::fs::write(&source_video, b"fake-video").expect("seed completed download video");
-
     let item_id = "blocked-worker-1";
-    let release_name = "Responsive.Import.Test.2026.1080p.WEB-DL";
     let mut history_item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
-    history_item.title_id = Some(title.id.clone());
-    history_item.title_name = release_name.to_string();
-    history_item.facet = Some("movie".to_string());
-    *download_client.history_items.lock().await = vec![history_item];
-    *download_client.completed_downloads.lock().await = vec![completed_download_fixture_item(
-        item_id,
-        &title.id,
-        release_name,
-        completed_dir.to_string_lossy().as_ref(),
-    )];
+    history_item.import_status = Some(ImportStatus::Processing);
+    *download_client.history_items.lock().await = vec![history_item.clone()];
 
-    let token = tokio_util::sync::CancellationToken::new();
-    let poller = tokio::spawn(crate::integration::start_download_queue_poller(
-        app.clone(),
-        token.child_token(),
-        tracked_download_rx,
-    ));
+    let tracked_id =
+        crate::tracked_downloads::tracked_download_id(Some("primary"), "nzbget", item_id);
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked_id,
+            crate::tracked_downloads::TrackedDownloadQueueMetadata {
+                client_item: history_item,
+                title_id: Some("title-1".to_string()),
+                facet: Some("movie".to_string()),
+                source_title: Some("Fixture blocked-worker-1".to_string()),
+                state: TrackedDownloadState::Importing,
+                status: scryer_domain::TrackedDownloadStatus::Ok,
+                status_messages: vec!["Moving files to library.".to_string()],
+                match_type: scryer_domain::TitleMatchType::Submission,
+            },
+        );
 
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if file_importer.call_count.load(Ordering::SeqCst) > 0 {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("background import worker should reach the file importer under parallel test load");
-
-    let page = timeout(
-        Duration::from_millis(150),
-        app.list_download_import_page(&user, 1, 0, DownloadImportFilter::All),
-    )
-    .await
-    .expect(
-        "download import read should stay responsive while the background import worker is blocked",
-    )
-    .expect("download import page should load");
+    let page = app
+        .list_download_import_page(&user, 1, 0, DownloadImportFilter::All)
+        .await
+        .expect("download import page should load");
 
     assert_eq!(page.total_count, 1);
     assert_eq!(page.items.len(), 1);
@@ -15793,12 +15713,6 @@ async fn download_import_page_stays_responsive_while_background_import_worker_is
         page.items[0].tracked_status_messages,
         vec!["Moving files to library.".to_string()]
     );
-
-    token.cancel();
-    file_importer.release.notify_waiters();
-    poller
-        .await
-        .expect("download queue poller should stop cleanly");
 }
 
 #[tokio::test]

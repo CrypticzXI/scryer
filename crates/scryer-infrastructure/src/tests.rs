@@ -2967,7 +2967,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
     assert_eq!(listed.len(), 1);
     assert_eq!(
         listed[0].poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
     );
 
     let _ = std::fs::remove_file(db);

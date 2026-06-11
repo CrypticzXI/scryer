@@ -1115,6 +1115,10 @@ async fn notification_event_types_query_returns_only_dispatchable_subscription_e
             "post_processing_completed",
             "subtitle_downloaded",
             "subtitle_search_failed",
+            "media_request_submitted",
+            "media_request_approved",
+            "media_request_rejected",
+            "media_request_canceled",
         ]
     );
 }
