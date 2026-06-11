@@ -40,6 +40,8 @@ import {
 } from "@/lib/utils/action-button-styles";
 import {
   selectorId,
+  seriesOverviewSeasonMonitorId,
+  seriesOverviewSeasonSearchId,
   seriesOverviewEpisodeAutoSearchId,
   seriesOverviewEpisodeInteractiveSearchId,
   seriesOverviewEpisodeRowId,
@@ -1010,6 +1012,7 @@ export function SeasonSection({
         >
           <div className="flex items-center gap-2">
             <button
+              id={seriesOverviewSeasonMonitorId(collection.id)}
               type="button"
               disabled={!onSetCollectionMonitored || seasonToggling}
               aria-label={t("title.seasonMonitored")}
@@ -1067,6 +1070,7 @@ export function SeasonSection({
                   <TooltipTrigger asChild>
                     <span>
                       <EpisodeTableActionButton
+                        id={seriesOverviewSeasonSearchId(collection.id)}
                         tone="auto"
                         aria-label={t("series.searchSeason")}
                         showTitleAttribute={false}

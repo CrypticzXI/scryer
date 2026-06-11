@@ -109,6 +109,14 @@ export function seriesOverviewEpisodeInteractiveSearchId(
   );
 }
 
+export function seriesOverviewSeasonMonitorId(collectionId: string): string {
+  return selectorId("series-overview-season-monitor", collectionId);
+}
+
+export function seriesOverviewSeasonSearchId(collectionId: string): string {
+  return selectorId("series-overview-season-search", collectionId);
+}
+
 export function globalSearchConfigureAddId(
   facet: string,
   result: MetadataSearchSelectorInput,
