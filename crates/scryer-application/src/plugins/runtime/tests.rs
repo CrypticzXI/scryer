@@ -74,15 +74,15 @@ mod sdk_compatibility_tests {
     }
 
     #[test]
-    fn downloaded_plugin_release_host_compatibility_accepts_legacy_minor_line_constraint() {
+    fn downloaded_plugin_release_host_compatibility_rejects_legacy_minor_line_constraint() {
         let release = DownloadedPluginReleaseContract {
             version: "0.2.0".to_string(),
-            sdk_version: Some("1.5.0".to_string()),
-            sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+            sdk_version: Some("2.3.0".to_string()),
+            sdk_constraint: ">=2.3.0, <3.0.0".to_string(),
             scryer_constraint: None,
         };
 
-        assert!(downloaded_plugin_release_is_host_compatible(
+        assert!(!downloaded_plugin_release_is_host_compatible(
             "jellyfin", &release
         ));
     }
@@ -106,15 +106,15 @@ mod sdk_compatibility_tests {
     }
 
     #[test]
-    fn installation_sdk_contract_is_host_compatible_accepts_legacy_minor_line_constraint() {
+    fn installation_sdk_contract_is_host_compatible_rejects_legacy_minor_line_constraint() {
         let installation = PluginInstallation {
             id: "install-1".to_string(),
             plugin_id: "jellyfin".to_string(),
             name: "Jellyfin".to_string(),
             description: "Jellyfin notifications".to_string(),
             version: "0.2.0".to_string(),
-            sdk_version: "1.5.0".to_string(),
-            sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+            sdk_version: "2.3.0".to_string(),
+            sdk_constraint: ">=2.3.0, <3.0.0".to_string(),
             scryer_constraint: None,
             plugin_type: "notification".to_string(),
             provider_type: "jellyfin".to_string(),
@@ -136,11 +136,11 @@ mod sdk_compatibility_tests {
             updated_at: Utc::now(),
         };
 
-        assert!(installation_sdk_contract_is_host_compatible(&installation));
+        assert!(!installation_sdk_contract_is_host_compatible(&installation));
     }
 
     #[test]
-    fn latest_compatible_child_release_accepts_legacy_minor_line_constraint() {
+    fn latest_compatible_child_release_skips_legacy_minor_line_constraint() {
         let catalog = ChildCatalog {
             schema_version: "scryer.plugin.child_catalog.v2".to_string(),
             id: "email".to_string(),
@@ -155,13 +155,13 @@ mod sdk_compatibility_tests {
             releases: vec![
                 ChildCatalogRelease {
                     version: "0.1.0".to_string(),
-                    sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+                    sdk_constraint: ">=2.3.0, <3.0.0".to_string(),
                     artifact_manifest_url: "https://example.invalid/email-v0.1.0.manifest.json"
                         .to_string(),
                 },
                 ChildCatalogRelease {
                     version: "0.2.0".to_string(),
-                    sdk_constraint: ">=999.0.0".to_string(),
+                    sdk_constraint: current_sdk_minor_line_constraint(),
                     artifact_manifest_url: "https://example.invalid/email-v0.2.0.manifest.json"
                         .to_string(),
                 },
@@ -170,7 +170,7 @@ mod sdk_compatibility_tests {
 
         let selected = latest_compatible_child_release(&catalog).expect("compatible release");
 
-        assert_eq!(selected.version, "0.1.0");
+        assert_eq!(selected.version, "0.2.0");
     }
 }
 #[cfg(test)]
@@ -203,6 +203,55 @@ mod catalog_artifact_selection_tests {
             min_scryer_version: None,
             artifacts,
         }
+    }
+
+    fn plugin(releases: Vec<CatalogV3PluginRelease>) -> CatalogV3PluginEntry {
+        CatalogV3PluginEntry {
+            id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: "Alpha plugin".to_string(),
+            plugin_type: "indexer".to_string(),
+            provider_type: "alpha".to_string(),
+            publisher: "scryer".to_string(),
+            support_tier: PluginSupportTier::Official,
+            status: PluginLifecycleStatus::Active,
+            docs_url: "https://example.invalid/docs".to_string(),
+            source_repo: "https://github.com/scryer-media/alpha".to_string(),
+            required_signer: RequiredSigner {
+                github_repository: "scryer-media/alpha".to_string(),
+                github_workflow: None,
+            },
+            releases,
+        }
+    }
+
+    #[test]
+    fn catalog_selection_skips_sdk2_release_and_selects_sdk3_release() {
+        let mut sdk2_release = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-sdk2.zst",
+        )]);
+        sdk2_release.version = "1.0.0".to_string();
+        sdk2_release.sdk_constraint = ">=2.3.0, <3.0.0".to_string();
+
+        let mut sdk3_release = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-sdk3.zst",
+        )]);
+        sdk3_release.version = "2.0.0".to_string();
+        sdk3_release.sdk_constraint = ">=3.0.0, <4.0.0".to_string();
+
+        let plugin = plugin(vec![sdk2_release, sdk3_release]);
+
+        let (selected_release, selected_artifact) = select_catalog_release_and_artifact(
+            &plugin,
+            &HashSet::new(),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("SDK 3 release");
+
+        assert_eq!(selected_release.version, "2.0.0");
+        assert_eq!(selected_artifact.url, "https://example.invalid/plugin-sdk3.zst");
     }
 
     #[test]
@@ -279,29 +328,13 @@ mod catalog_artifact_selection_tests {
 
     #[test]
     fn portable_native_build_can_select_simd_artifact_from_runtime_features() {
-        let plugin = CatalogV3PluginEntry {
-            id: "alpha".to_string(),
-            name: "Alpha".to_string(),
-            description: "Alpha plugin".to_string(),
-            plugin_type: "indexer".to_string(),
-            provider_type: "alpha".to_string(),
-            publisher: "scryer".to_string(),
-            support_tier: PluginSupportTier::Official,
-            status: PluginLifecycleStatus::Active,
-            docs_url: "https://example.invalid/docs".to_string(),
-            source_repo: "https://github.com/scryer-media/alpha".to_string(),
-            required_signer: RequiredSigner {
-                github_repository: "scryer-media/alpha".to_string(),
-                github_workflow: None,
-            },
-            releases: vec![release(vec![
-                artifact(&[], "https://example.invalid/plugin.zst"),
-                artifact(
-                    &["simd128", "relaxed-simd"],
-                    "https://example.invalid/plugin-relaxed.zst",
-                ),
-            ])],
-        };
+        let plugin = plugin(vec![release(vec![
+            artifact(&[], "https://example.invalid/plugin.zst"),
+            artifact(
+                &["simd128", "relaxed-simd"],
+                "https://example.invalid/plugin-relaxed.zst",
+            ),
+        ])]);
 
         let (_, selected) = select_catalog_release_and_artifact(
             &plugin,
@@ -326,23 +359,7 @@ mod catalog_artifact_selection_tests {
         newer_release.version = "2.0.0".to_string();
         newer_release.min_scryer_version = Some("999.0.0".to_string());
 
-        let plugin = CatalogV3PluginEntry {
-            id: "alpha".to_string(),
-            name: "Alpha".to_string(),
-            description: "Alpha plugin".to_string(),
-            plugin_type: "indexer".to_string(),
-            provider_type: "alpha".to_string(),
-            publisher: "scryer".to_string(),
-            support_tier: PluginSupportTier::Official,
-            status: PluginLifecycleStatus::Active,
-            docs_url: "https://example.invalid/docs".to_string(),
-            source_repo: "https://github.com/scryer-media/alpha".to_string(),
-            required_signer: RequiredSigner {
-                github_repository: "scryer-media/alpha".to_string(),
-                github_workflow: None,
-            },
-            releases: vec![compatible_release, newer_release],
-        };
+        let plugin = plugin(vec![compatible_release, newer_release]);
 
         let (selected_release, _) = select_catalog_release_and_artifact(
             &plugin,

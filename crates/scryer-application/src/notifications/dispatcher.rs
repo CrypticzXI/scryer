@@ -880,6 +880,7 @@ async fn enrich_notification(
     }
     notification.payload.media_files =
         resolve_notification_media_files(app, event, notification.payload.file.as_ref()).await;
+    enrich_episode_media_file_associations(app, event, &mut notification.payload).await;
     enrich_release_from_media_files(&mut notification.payload);
 
     notification
@@ -1008,6 +1009,194 @@ async fn resolve_notification_media_files(
     media_files
 }
 
+async fn enrich_episode_media_file_associations(
+    app: &AppUseCase,
+    event: &DomainEvent,
+    payload: &mut NotificationPayload,
+) {
+    let Some(title_id) = event.title_id.as_deref() else {
+        return;
+    };
+
+    let mut episode_ids = BTreeSet::new();
+    if let Some(summary) = payload.episode.as_ref() {
+        episode_ids.extend(summary.episode_ids.iter().cloned());
+    }
+    for episode in &payload.episodes {
+        if let Some(id) = episode.id.as_ref() {
+            episode_ids.insert(id.clone());
+        }
+        episode_ids.extend(episode.episode_ids.iter().cloned());
+    }
+    if episode_ids.is_empty() {
+        return;
+    }
+
+    let episode_id_list = episode_ids.iter().cloned().collect::<Vec<_>>();
+    let scoped_files = match app
+        .services
+        .library
+        .media_files
+        .list_live_media_files_for_episode_ids(title_id, &episode_id_list)
+        .await
+    {
+        Ok(scoped_files) => scoped_files,
+        Err(error) => {
+            warn!(
+                title_id,
+                error = %error,
+                "failed to load notification media file episode associations"
+            );
+            return;
+        }
+    };
+
+    let mut associations: BTreeMap<String, Option<(String, String)>> = BTreeMap::new();
+    for scoped_file in scoped_files {
+        let media_file_id = scoped_file.media_file.id.clone();
+        let media_file_path = scoped_file.media_file.file_path.clone();
+        for episode_id in scoped_file.episode_ids {
+            if !episode_ids.contains(&episode_id) {
+                continue;
+            }
+
+            match associations.get_mut(&episode_id) {
+                Some(Some((existing_file_id, _))) if existing_file_id != &media_file_id => {
+                    associations.insert(episode_id, None);
+                }
+                Some(_) => {}
+                None => {
+                    associations.insert(
+                        episode_id,
+                        Some((media_file_id.clone(), media_file_path.clone())),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(summary) = payload.episode.as_mut() {
+        apply_episode_media_file_association(summary, &associations);
+    }
+    for episode in &mut payload.episodes {
+        apply_episode_media_file_association(episode, &associations);
+    }
+}
+
+fn apply_episode_media_file_association(
+    episode: &mut NotificationEpisodePayload,
+    associations: &BTreeMap<String, Option<(String, String)>>,
+) {
+    let Some((media_file_id, media_file_path)) =
+        notification_episode_media_file_association(episode, associations)
+    else {
+        return;
+    };
+
+    episode.media_file_id = Some(media_file_id.clone());
+    episode.media_file_path = Some(media_file_path.clone());
+}
+
+fn notification_episode_media_file_association<'a>(
+    episode: &NotificationEpisodePayload,
+    associations: &'a BTreeMap<String, Option<(String, String)>>,
+) -> Option<&'a (String, String)> {
+    if let Some(id) = episode.id.as_deref() {
+        match associations.get(id) {
+            Some(Some(association)) => return Some(association),
+            Some(None) => return None,
+            None => {}
+        }
+    }
+
+    let mut selected = None;
+    for episode_id in &episode.episode_ids {
+        match associations.get(episode_id) {
+            Some(Some(association)) => {
+                if selected.is_some_and(|existing| existing != association) {
+                    return None;
+                }
+                selected = Some(association);
+            }
+            Some(None) => return None,
+            None => {}
+        }
+    }
+    selected
+}
+
+#[cfg(test)]
+mod media_file_association_tests {
+    use super::*;
+
+    fn association(file_id: &str, path: &str) -> Option<(String, String)> {
+        Some((file_id.to_string(), path.to_string()))
+    }
+
+    #[test]
+    fn episode_media_file_association_uses_exact_episode_id() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            id: Some("episode-1".to_string()),
+            episode_ids: vec!["episode-1".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id.as_deref(), Some("file-1"));
+        assert_eq!(episode.media_file_path.as_deref(), Some("/show/e1.mkv"));
+    }
+
+    #[test]
+    fn episode_media_file_association_allows_multi_episode_same_file() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1e2.mkv"),
+        );
+        associations.insert(
+            "episode-2".to_string(),
+            association("file-1", "/show/e1e2.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id.as_deref(), Some("file-1"));
+        assert_eq!(episode.media_file_path.as_deref(), Some("/show/e1e2.mkv"));
+    }
+
+    #[test]
+    fn episode_media_file_association_rejects_ambiguous_files() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1.mkv"),
+        );
+        associations.insert(
+            "episode-2".to_string(),
+            association("file-2", "/show/e2.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id, None);
+        assert_eq!(episode.media_file_path, None);
+    }
+}
+
 fn enrich_release_from_media_files(payload: &mut NotificationPayload) {
     let Some(release) = payload.release.as_mut() else {
         return;
@@ -1128,6 +1317,8 @@ fn episode_payload_from_episode(episode: &Episode) -> NotificationEpisodePayload
     NotificationEpisodePayload {
         id: Some(episode.id.clone()),
         episode_ids: vec![episode.id.clone()],
+        media_file_id: None,
+        media_file_path: None,
         display: episode_display(episode),
         collection_id: episode.collection_id.clone(),
         season_number: episode.season_number.clone(),

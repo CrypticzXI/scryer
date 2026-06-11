@@ -2027,6 +2027,8 @@ pub struct NotificationTitlePayload {
 pub struct NotificationEpisodePayload {
     pub id: Option<String>,
     pub episode_ids: Vec<String>,
+    pub media_file_id: Option<String>,
+    pub media_file_path: Option<String>,
     pub display: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,

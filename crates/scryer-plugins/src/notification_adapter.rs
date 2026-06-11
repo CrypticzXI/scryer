@@ -341,6 +341,8 @@ fn map_episode(episode: &NotificationEpisodePayload) -> PluginNotificationEpisod
     PluginNotificationEpisode {
         id: episode.id.clone(),
         episode_ids: episode.episode_ids.clone(),
+        media_file_id: episode.media_file_id.clone(),
+        media_file_path: episode.media_file_path.clone(),
         display: episode.display.clone(),
         collection_id: episode.collection_id.clone(),
         season_number: episode.season_number.clone(),
