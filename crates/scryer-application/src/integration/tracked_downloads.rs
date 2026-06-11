@@ -448,12 +448,13 @@ impl TrackedDownloadService {
     /// Reconstruct state from persistent storage after restart.
     async fn reconstruct_state(app: &AppUseCase, td: &mut TrackedDownload) {
         let observed_identity = observed_queue_item_identity(&td.client_item);
+        let observed_source_identity = queue_item_source_identity(&td.client_item);
         if !download_submission_identity_is_empty(&observed_identity)
             && let Ok(Some(tracked_state)) = app
                 .services
                 .workflow
                 .download_submissions
-                .get_identity_tracked_state(&observed_identity)
+                .get_identity_tracked_state(&observed_identity, Some(&observed_source_identity))
                 .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
             && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
@@ -869,6 +870,14 @@ fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionI
     })
 }
 
+fn queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(item.client_id.as_str()),
+        item.client_type.as_str(),
+        item.download_client_item_id.as_str(),
+    )
+}
+
 pub(crate) fn tracked_download_id_for_item(item: &DownloadQueueItem) -> String {
     let observed_identity = observed_queue_item_identity(item);
     if let Some(download_id) = observed_identity
@@ -956,6 +965,41 @@ mod tests {
         tracked_state: Option<String>,
         tracked_state_updates: Arc<Mutex<Vec<String>>>,
         recorded_submissions: Arc<Mutex<Vec<crate::DownloadSubmission>>>,
+        identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    fn test_download_identity_state_key(
+        identity: &crate::DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> Option<String> {
+        let download_id = identity
+            .download_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        if download_id.starts_with("scryer-download:")
+            || (matches!(download_id.len(), 40 | 64)
+                && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
+        {
+            return Some(format!("download:{download_id}"));
+        }
+
+        let source_identity = source_identity?;
+        let client_type = source_identity.client_type.trim();
+        if client_type.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "client:{}:{}:download:{}",
+            source_identity
+                .client_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default(),
+            client_type.to_ascii_lowercase(),
+            download_id
+        ))
     }
 
     #[async_trait]
@@ -1045,6 +1089,34 @@ mod tests {
 
         async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
             Ok(self.tracked_state.clone())
+        }
+
+        async fn record_identity_tracked_state(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+            tracked_state: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> AppResult<()> {
+            if let Some(key) = test_download_identity_state_key(identity, source_identity) {
+                self.identity_tracked_states
+                    .lock()
+                    .await
+                    .insert(key, tracked_state.to_string());
+            }
+            Ok(())
+        }
+
+        async fn get_identity_tracked_state(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+        ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
+            Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
         }
     }
 
@@ -2008,6 +2080,7 @@ mod tests {
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
@@ -2045,6 +2118,36 @@ mod tests {
                 .as_slice(),
             ["imported"]
         );
+    }
+
+    #[tokio::test]
+    async fn reconstruct_state_does_not_recover_client_local_state_from_other_client() {
+        let download_id = "10010";
+        let identity = crate::DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        download_submissions
+            .record_identity_tracked_state(
+                &identity,
+                Some(&other_client_source),
+                TrackedDownloadState::Imported.as_str(),
+                None,
+                None,
+            )
+            .await
+            .expect("other client state should record");
+        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some(download_id.to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
     }
 
     #[tokio::test]
@@ -2207,6 +2310,7 @@ mod tests {
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
         let tempdir = tempfile::tempdir().expect("tempdir");

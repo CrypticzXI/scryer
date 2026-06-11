@@ -252,38 +252,42 @@ async fn matched_completed_download_submission(
 
 async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
+    completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
 ) -> AppResult<bool> {
     if matches!(
         resolution,
         CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
             | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
-            | CompletedDownloadSubmissionResolution::Foreign
     ) {
         return Ok(false);
     }
 
-    if completed_download_terminal_state_for_resolution(app, resolution).await?
+    if completed_download_terminal_state_for_resolution(app, completed, resolution).await?
         == Some(TrackedDownloadState::Imported)
     {
         return Ok(true);
     }
 
-    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
-        return Ok(false);
+    let source_identity = match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched) => {
+            let source_identity = submission_source_identity(&matched.submission);
+            if let Some(identity) = matched.identity.as_ref()
+                && !download_submission_identity_is_empty(identity)
+            {
+                return app
+                    .services
+                    .workflow
+                    .imports
+                    .is_already_imported_by_download_id(&source_identity, identity)
+                    .await;
+            }
+            source_identity
+        }
+        CompletedDownloadSubmissionResolution::Foreign => completed_download_identity(completed),
+        CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
+        | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => unreachable!(),
     };
-
-    let source_identity = submission_source_identity(&matched.submission);
-    if let Some(identity) = matched.identity.as_ref()
-        && !download_submission_identity_is_empty(identity)
-    {
-        return app
-            .services
-            .workflow
-            .imports
-            .is_already_imported_by_download_id(&source_identity, identity)
-            .await;
-    }
 
     app.services
         .workflow
@@ -317,22 +321,26 @@ fn completed_download_for_submission_cleanup(
 
 async fn completed_download_terminal_state_for_resolution(
     app: &AppUseCase,
+    completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
 ) -> AppResult<Option<TrackedDownloadState>> {
-    let identity = match resolution {
-        CompletedDownloadSubmissionResolution::Matched(matched) => matched.identity.as_ref(),
+    let identity_and_source = match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched) => matched
+            .identity
+            .as_ref()
+            .map(|identity| (identity, submission_source_identity(&matched.submission))),
         CompletedDownloadSubmissionResolution::MissingDownloadId { identity } => {
-            Some(identity)
+            Some((identity, completed_download_identity(completed)))
         }
         _ => None,
     };
-    if let Some(identity) = identity
+    if let Some((identity, source_identity)) = identity_and_source
         && !download_submission_identity_is_empty(identity)
         && let Some(state) = app
             .services
             .workflow
             .download_submissions
-            .get_identity_tracked_state(identity)
+            .get_identity_tracked_state(identity, Some(&source_identity))
             .await?
             .and_then(|value| TrackedDownloadState::from_str_opt(&value))
     {
@@ -595,7 +603,8 @@ pub async fn try_import_completed_downloads(
             };
 
         if let Ok(Some(state)) =
-            completed_download_terminal_state_for_resolution(app, &submission_resolution).await
+            completed_download_terminal_state_for_resolution(app, &completed, &submission_resolution)
+                .await
             && matches!(
                 state,
                 TrackedDownloadState::Imported | TrackedDownloadState::Failed
@@ -647,6 +656,7 @@ pub async fn try_import_completed_downloads(
 
         let already_imported = match completed_download_already_imported_for_current_attempt(
             app,
+            &completed,
             &submission_resolution,
         )
         .await

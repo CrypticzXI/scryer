@@ -6844,7 +6844,7 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
         .expect("identity tracked state should persist");
 
     let tracked_state = workflow_store
-        .get_identity_tracked_state(&identity)
+        .get_identity_tracked_state(&identity, None)
         .await
         .expect("identity tracked state lookup should succeed");
     assert_eq!(tracked_state.as_deref(), Some("import_blocked"));
@@ -6875,6 +6875,135 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
     assert_eq!(client_type, "weaver");
     assert_eq!(item_id, "10010");
     assert_eq!(reason, "unresolved_download_id");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_scopes_client_local_download_ids_by_source_client() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_scoped_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("10010".to_string()),
+    };
+    let client_a = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+    let client_b = DownloadSourceIdentity::new(Some("client-b"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_a), "import_blocked", None, None)
+        .await
+        .expect("client a state should persist");
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_b), "failed", None, None)
+        .await
+        .expect("client b state should persist");
+
+    let client_a_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_a))
+        .await
+        .expect("client a state lookup should succeed");
+    let client_b_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_b))
+        .await
+        .expect("client b state lookup should succeed");
+    let unscoped_state = workflow_store
+        .get_identity_tracked_state(&identity, None)
+        .await
+        .expect("unscoped state lookup should succeed");
+
+    assert_eq!(client_a_state.as_deref(), Some("import_blocked"));
+    assert_eq!(client_b_state.as_deref(), Some("failed"));
+    assert_eq!(unscoped_state, None);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_identity_states WHERE download_id = ?")
+            .bind("10010")
+            .fetch_one(services.pool())
+            .await
+            .expect("identity state count should load");
+    assert_eq!(row_count, 2);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_keeps_torrent_hash_download_ids_global() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_hash_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+    };
+    let client_a = DownloadSourceIdentity::new(Some("client-a"), "weaver", "hash-item-a");
+    let client_b = DownloadSourceIdentity::new(Some("client-b"), "weaver", "hash-item-b");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_a), "import_blocked", None, None)
+        .await
+        .expect("hash state should persist");
+
+    let unscoped_state = workflow_store
+        .get_identity_tracked_state(&identity, None)
+        .await
+        .expect("unscoped hash lookup should succeed");
+    let other_client_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_b))
+        .await
+        .expect("other client hash lookup should succeed");
+
+    assert_eq!(unscoped_state.as_deref(), Some("import_blocked"));
+    assert_eq!(other_client_state.as_deref(), Some("import_blocked"));
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_ignores_client_local_download_id_without_source_client() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_unscoped_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("10010".to_string()),
+    };
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, None, "import_blocked", None, None)
+        .await
+        .expect("unscoped client-local state should be ignored");
+
+    let scoped_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&source_identity))
+        .await
+        .expect("scoped state lookup should succeed");
+    assert_eq!(scoped_state, None);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_identity_states WHERE download_id = ?")
+            .bind("10010")
+            .fetch_one(services.pool())
+            .await
+            .expect("identity state count should load");
+    assert_eq!(row_count, 0);
 
     drop(services);
     let _ = std::fs::remove_file(db);

@@ -995,6 +995,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn get_identity_tracked_state(
         &self,
         _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
     ) -> AppResult<Option<String>> {
         Ok(None)
     }

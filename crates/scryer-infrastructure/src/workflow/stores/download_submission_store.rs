@@ -21,13 +21,42 @@ impl DownloadSubmissionStore {
     }
 }
 
-fn download_identity_state_key(identity: &DownloadSubmissionIdentity) -> Option<String> {
-    identity
+fn download_identity_state_key(
+    identity: &DownloadSubmissionIdentity,
+    source_identity: Option<&DownloadSourceIdentity>,
+) -> Option<String> {
+    let download_id = identity
         .download_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| format!("download:{value}"))
+        .map(str::to_string)?;
+
+    if download_identity_state_is_global(&download_id) {
+        return Some(format!("download:{download_id}"));
+    }
+
+    let source_identity = source_identity?;
+    let client_type = source_identity.client_type.trim();
+    if client_type.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "client:{}:{}:download:{}",
+        normalize_download_client_id(source_identity.client_id.as_deref()),
+        client_type.to_ascii_lowercase(),
+        download_id
+    ))
+}
+
+fn download_identity_state_is_global(download_id: &str) -> bool {
+    let value = download_id.trim();
+    value.starts_with("scryer-download:") || looks_like_torrent_info_hash(value)
+}
+
+fn looks_like_torrent_info_hash(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 #[async_trait]
@@ -165,7 +194,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()> {
-        let Some(identity_key) = download_identity_state_key(identity) else {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
             return Ok(());
         };
         let identity = identity.clone();
@@ -236,33 +265,19 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn get_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
     ) -> AppResult<Option<String>> {
-        let mut clauses = Vec::new();
-        let mut args = Vec::new();
-        if let Some(download_id) = identity
-            .download_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            clauses.push("download_id = {}");
-            args.push(SqlArg::Text(download_id.to_string()));
-        }
-        if clauses.is_empty() {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
             return Ok(None);
-        }
+        };
 
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            &format!(
-                "SELECT tracked_state
-                 FROM download_identity_states
-                 WHERE {}
-                 ORDER BY updated_at DESC
-                 LIMIT 1",
-                clauses.join(" OR ")
-            ),
-            &args,
+            "SELECT tracked_state
+             FROM download_identity_states
+             WHERE identity_key = {}
+             LIMIT 1",
+            &[SqlArg::Text(identity_key)],
         )
         .await?;
         row.map(|row| row.text("tracked_state")).transpose()

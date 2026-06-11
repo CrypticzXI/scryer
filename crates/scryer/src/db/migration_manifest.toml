@@ -308,6 +308,40 @@ file = "postgres/migrations/0126_0_16_release_rollup_download_identity.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 127
+description = "active import download identity unique"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0127_active_import_download_identity_unique.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0127_active_import_download_identity_unique.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 128
+description = "download identity state client scope"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0128_download_identity_state_client_scope.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0128_download_identity_state_client_scope.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

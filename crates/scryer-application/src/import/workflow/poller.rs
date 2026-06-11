@@ -82,7 +82,8 @@ async fn prepare_completed_import_request(
     }
 
     // 1. DEDUP CHECK
-    if completed_download_already_imported_for_current_attempt(app, &submission_resolution).await?
+    if completed_download_already_imported_for_current_attempt(app, &completed, &submission_resolution)
+        .await?
     {
         let result = ImportResult {
             decision: ImportDecision::Skipped,

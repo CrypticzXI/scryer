@@ -91,7 +91,9 @@ pub(crate) async fn check_with_lookup(
     }
 
     let queue_identity = observed_queue_item_identity(&td.client_item);
-    if let Some(state) = download_id_tracked_state(app, &queue_identity).await
+    let queue_source_identity = queue_item_source_identity(&td.client_item);
+    if let Some(state) =
+        download_id_tracked_state(app, &queue_identity, Some(&queue_source_identity)).await
         && state.is_terminal()
     {
         apply_download_id_state(td, state);
@@ -112,7 +114,9 @@ pub(crate) async fn check_with_lookup(
     };
 
     let completed_identity = observed_completed_download_identity(&completed);
-    if let Some(state) = download_id_tracked_state(app, &completed_identity).await
+    let completed_source_identity = completed_download_source_identity(&completed);
+    if let Some(state) =
+        download_id_tracked_state(app, &completed_identity, Some(&completed_source_identity)).await
         && state.is_terminal()
     {
         apply_download_id_state(td, state);
@@ -569,6 +573,14 @@ fn observed_queue_item_identity(item: &DownloadQueueItem) -> crate::DownloadSubm
     })
 }
 
+fn queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(item.client_id.as_str()),
+        item.client_type.as_str(),
+        item.download_client_item_id.as_str(),
+    )
+}
+
 fn observed_completed_download_identity(
     completed: &CompletedDownload,
 ) -> crate::DownloadSubmissionIdentity {
@@ -579,9 +591,18 @@ fn observed_completed_download_identity(
     })
 }
 
+fn completed_download_source_identity(completed: &CompletedDownload) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(completed.client_id.as_str()),
+        completed.client_type.as_str(),
+        completed.download_client_item_id.as_str(),
+    )
+}
+
 async fn download_id_tracked_state(
     app: &AppUseCase,
     identity: &crate::DownloadSubmissionIdentity,
+    source_identity: Option<&DownloadSourceIdentity>,
 ) -> Option<TrackedDownloadState> {
     if crate::download_submission_identity_is_empty(identity) {
         return None;
@@ -589,7 +610,7 @@ async fn download_id_tracked_state(
     app.services
         .workflow
         .download_submissions
-        .get_identity_tracked_state(identity)
+        .get_identity_tracked_state(identity, source_identity)
         .await
         .ok()
         .flatten()
@@ -1856,7 +1877,40 @@ mod tests {
     struct TestDownloadSubmissionRepo {
         rows: Arc<Mutex<Vec<(DownloadSubmission, DownloadSubmissionIdentity)>>>,
         tracked_states: Arc<Mutex<Vec<(DownloadSourceIdentity, String)>>>,
-        identity_tracked_states: Arc<Mutex<Vec<(DownloadSubmissionIdentity, String)>>>,
+        identity_tracked_states: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    fn test_download_identity_state_key(
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> Option<String> {
+        let download_id = identity
+            .download_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        if download_id.starts_with("scryer-download:")
+            || (matches!(download_id.len(), 40 | 64)
+                && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
+        {
+            return Some(format!("download:{download_id}"));
+        }
+
+        let source_identity = source_identity?;
+        let client_type = source_identity.client_type.trim();
+        if client_type.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "client:{}:{}:download:{}",
+            source_identity
+                .client_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default(),
+            client_type.to_ascii_lowercase(),
+            download_id
+        ))
     }
 
     #[async_trait]
@@ -1937,19 +1991,19 @@ mod tests {
         async fn record_identity_tracked_state(
             &self,
             identity: &DownloadSubmissionIdentity,
-            _source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&DownloadSourceIdentity>,
             tracked_state: &str,
             _reason: Option<&str>,
             _detail: Option<&str>,
         ) -> AppResult<()> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(());
+            };
             let mut states = self.identity_tracked_states.lock().await;
-            if let Some((_, state)) = states
-                .iter_mut()
-                .find(|(stored_identity, _)| stored_identity == identity)
-            {
+            if let Some((_, state)) = states.iter_mut().find(|(stored_key, _)| stored_key == &key) {
                 *state = tracked_state.to_string();
             } else {
-                states.push((identity.clone(), tracked_state.to_string()));
+                states.push((key, tracked_state.to_string()));
             }
             Ok(())
         }
@@ -1957,13 +2011,17 @@ mod tests {
         async fn get_identity_tracked_state(
             &self,
             identity: &DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
         ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
             Ok(self
                 .identity_tracked_states
                 .lock()
                 .await
                 .iter()
-                .find(|(stored_identity, _)| stored_identity == identity)
+                .find(|(stored_key, _)| stored_key == &key)
                 .map(|(_, state)| state.clone()))
         }
 
@@ -3490,6 +3548,61 @@ mod tests {
         assert_eq!(td.state, TrackedDownloadState::Imported);
         assert_eq!(td.status, TrackedDownloadStatus::Ok);
         assert!(td.status_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_does_not_apply_client_local_terminal_state_from_other_client() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "10010";
+        let identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
+        let current_client_source = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        submission_repo
+            .record_identity_tracked_state(
+                &identity,
+                Some(&other_client_source),
+                TrackedDownloadState::Imported.as_str(),
+                None,
+                None,
+            )
+            .await
+            .expect("record other client identity state");
+
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo.clone(),
+        );
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:{download_id}");
+        td.client_item.download_id = Some(download_id.to_string());
+
+        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        let current_client_state = submission_repo
+            .get_identity_tracked_state(&identity, Some(&current_client_source))
+            .await
+            .expect("current client state lookup");
+        let other_client_state = submission_repo
+            .get_identity_tracked_state(&identity, Some(&other_client_source))
+            .await
+            .expect("other client state lookup");
+        assert_eq!(
+            current_client_state.as_deref(),
+            Some(TrackedDownloadState::ImportBlocked.as_str())
+        );
+        assert_eq!(
+            other_client_state.as_deref(),
+            Some(TrackedDownloadState::Imported.as_str())
+        );
     }
 
     #[tokio::test]

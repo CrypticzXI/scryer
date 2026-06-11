@@ -4414,13 +4414,40 @@ fn download_source_identity_key(identity: &DownloadSourceIdentity) -> TrackedDow
     )
 }
 
-fn download_identity_state_key(identity: &DownloadSubmissionIdentity) -> Option<String> {
-    identity
+fn download_identity_state_key(
+    identity: &DownloadSubmissionIdentity,
+    source_identity: Option<&DownloadSourceIdentity>,
+) -> Option<String> {
+    let download_id = identity
         .download_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| format!("download:{value}"))
+        .map(str::to_string)?;
+
+    if download_id.starts_with("scryer-download:")
+        || (matches!(download_id.len(), 40 | 64)
+            && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return Some(format!("download:{download_id}"));
+    }
+
+    let source_identity = source_identity?;
+    let client_type = source_identity.client_type.trim();
+    if client_type.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "client:{}:{}:download:{}",
+        source_identity
+            .client_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default(),
+        client_type.to_ascii_lowercase(),
+        download_id
+    ))
 }
 
 #[async_trait]
@@ -4524,12 +4551,12 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn record_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
-        _source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
         _reason: Option<&str>,
         _detail: Option<&str>,
     ) -> AppResult<()> {
-        if let Some(key) = download_identity_state_key(identity) {
+        if let Some(key) = download_identity_state_key(identity, source_identity) {
             self.identity_states
                 .lock()
                 .await
@@ -4541,8 +4568,9 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn get_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
     ) -> AppResult<Option<String>> {
-        let Some(key) = download_identity_state_key(identity) else {
+        let Some(key) = download_identity_state_key(identity, source_identity) else {
             return Ok(None);
         };
         Ok(self.identity_states.lock().await.get(&key).cloned())
@@ -16317,9 +16345,12 @@ async fn try_import_completed_downloads_blocks_ambiguous_download_id_instead_of_
     assert!(!processed.contains(item_id));
     assert!(download_client.deleted_requests.lock().await.is_empty());
     let state = download_submissions
-        .get_identity_tracked_state(&DownloadSubmissionIdentity {
-            download_id: Some("scryer-download:ambiguous".to_string()),
-        })
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:ambiguous".to_string()),
+            },
+            None,
+        )
         .await
         .expect("identity state lookup");
     assert_eq!(
@@ -16369,9 +16400,12 @@ async fn try_import_completed_downloads_blocks_missing_download_id_submission() 
     assert!(!processed.contains(item_id));
     assert!(download_client.deleted_requests.lock().await.is_empty());
     let state = download_submissions
-        .get_identity_tracked_state(&DownloadSubmissionIdentity {
-            download_id: Some("scryer-download:missing".to_string()),
-        })
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:missing".to_string()),
+            },
+            None,
+        )
         .await
         .expect("identity state lookup");
     assert_eq!(
