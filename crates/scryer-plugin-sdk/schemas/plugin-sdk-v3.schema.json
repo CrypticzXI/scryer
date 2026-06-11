@@ -2832,6 +2832,24 @@
             "null"
           ]
         },
+        "nzb_bytes_base64": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nzb_file_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nzb_content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source_title": {
           "type": [
             "string",
@@ -2852,13 +2870,7 @@
     "PluginDownloadRelease": {
       "type": "object",
       "properties": {
-        "request_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fingerprint": {
+        "download_id": {
           "type": [
             "string",
             "null"
@@ -4174,6 +4186,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "media_file_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_file_path": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "display": {
           "type": [

@@ -34,7 +34,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "2.3.0";
+pub const SDK_VERSION: &str = "3.0.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -231,7 +231,7 @@ fn legacy_sdk_constraint(version: &str) -> String {
         (version.major, version.minor)
     };
     let upper_major = if version.major == 1 {
-        // SDK 2 keeps the SDK-v1 guest ABI loadable; SDK 3 is the next hard boundary.
+        // SDK 2 kept the SDK-v1 guest ABI loadable; SDK 3 is the hard boundary.
         3
     } else {
         version.major + 1
@@ -1882,6 +1882,10 @@ pub struct PluginNotificationEpisode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episode_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_id: Option<String>,
@@ -2349,8 +2353,8 @@ mod tests {
     };
 
     #[test]
-    fn current_sdk_constraint_uses_current_v2_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=2.3.0, <3.0.0");
+    fn current_sdk_constraint_uses_current_v3_major_floor() {
+        assert_eq!(current_sdk_constraint(), ">=3.0.0, <4.0.0");
     }
 
     #[test]
@@ -2374,9 +2378,17 @@ mod tests {
     }
 
     #[test]
-    fn validate_sdk_contract_accepts_legacy_minor_line_plugin_on_current_host() {
-        validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
-            .expect("legacy minor-line plugin should stay compatible on ABI 1");
+    fn validate_sdk_contract_rejects_legacy_minor_line_plugin_on_sdk3_host() {
+        let err = validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
+            .expect_err("legacy minor-line plugin should not load across SDK 3 boundary");
+        assert!(err.contains("host sdk_version 3.0.0"));
+    }
+
+    #[test]
+    fn validate_sdk_contract_rejects_sdk2_plugin_on_sdk3_host() {
+        let err = validate_sdk_contract("sdk2-plugin", "2.3.0", ">=2.3.0, <3.0.0", SDK_VERSION)
+            .expect_err("SDK 2 plugin should not load on SDK 3 host");
+        assert!(err.contains("host sdk_version 3.0.0"));
     }
 
     #[test]
@@ -2920,7 +2932,7 @@ mod tests {
     #[test]
     fn committed_schema_matches_generated_types() {
         let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("schemas/plugin-sdk-v1.schema.json");
+            .join("schemas/plugin-sdk-v3.schema.json");
         let expected = std::fs::read_to_string(schema_path).unwrap();
         assert_eq!(expected, plugin_sdk_schema_json());
     }
