@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, EpisodeUpdate, PrimaryCollectionSummary,
-    ScopedExternalId, ShowRepository,
+    AppError, AppResult, CollectionUpdate, EpisodeImageUrlUpdate, EpisodeUpdate,
+    PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id,
@@ -27,7 +27,7 @@ const COLLECTION_COLUMNS: &str = "id, title_id, collection_type, collection_inde
 
 const EPISODE_COLUMNS: &str = "id, title_id, collection_id, episode_type, episode_number, season_number, \
     episode_label, title, air_date, duration_seconds, has_multi_audio, has_subtitle, is_filler, is_recap, \
-    absolute_number, overview, tvdb_id, monitored, created_at";
+    absolute_number, overview, tvdb_id, image_url, monitored, created_at";
 
 const COLLECTION_INSERT_SQL: &str = "INSERT INTO collections (
     id, title_id, collection_type, collection_index, label, ordered_path, narrative_order,
@@ -86,9 +86,9 @@ const EPISODE_INSERT_SQL: &str = "INSERT INTO episodes (
     id, title_id, collection_id, episode_type, episode_number, season_number,
     episode_label, title, air_date, duration_seconds, has_multi_audio,
     has_subtitle, is_filler, is_recap, absolute_number, overview, tvdb_id,
-    monitored, created_at
+    image_url, monitored, created_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 const EPISODE_UPDATE_SQL: &str = "UPDATE episodes SET
@@ -108,6 +108,7 @@ const EPISODE_UPDATE_SQL: &str = "UPDATE episodes SET
     absolute_number = {},
     overview = {},
     tvdb_id = {},
+    image_url = {},
     monitored = {}
 WHERE id = {}";
 
@@ -402,6 +403,37 @@ impl ShowRepository for ShowStore {
         .await
     }
 
+    async fn update_episode_image_urls(&self, updates: &[EpisodeImageUrlUpdate]) -> AppResult<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let updates = updates.to_vec();
+        SqlRuntime::run_in_transaction(&self.datastore, "update_episode_image_urls", move |tx| {
+            let updates = updates.clone();
+            Box::pin(async move {
+                let mut changed = 0_u64;
+                for update in updates {
+                    let rows = tx
+                        .execute(
+                            "UPDATE episodes
+                                SET image_url = {}
+                              WHERE id = {}
+                                AND COALESCE(image_url, '') <> COALESCE({}, '')",
+                            &[
+                                SqlArg::OptText(update.image_url.clone()),
+                                SqlArg::Text(update.episode_id.clone()),
+                                SqlArg::OptText(update.image_url),
+                            ],
+                        )
+                        .await?;
+                    changed += rows;
+                }
+                Ok(changed)
+            })
+        })
+        .await
+    }
+
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()> {
         let title_id = title_id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "delete_episodes_for_title", move |tx| {
@@ -691,7 +723,7 @@ async fn find_episode_by_title_and_numbers_query(
     let sql = "SELECT e.id, e.title_id, e.collection_id, e.episode_type, e.episode_number, \
                e.season_number, e.episode_label, e.title, e.air_date, e.duration_seconds, \
                e.has_multi_audio, e.has_subtitle, e.is_filler, e.is_recap, e.absolute_number, \
-               e.overview, e.tvdb_id, e.monitored, e.created_at \
+               e.overview, e.tvdb_id, e.image_url, e.monitored, e.created_at \
           FROM episodes e \
           INNER JOIN collections c ON c.id = e.collection_id \
          WHERE e.title_id = {} \
@@ -964,6 +996,7 @@ async fn insert_episode_tx(tx: &mut SqlTx<'_>, episode: &Episode) -> AppResult<(
         SqlArg::OptText(episode.absolute_number.clone()),
         SqlArg::OptText(episode.overview.clone()),
         SqlArg::OptText(episode.tvdb_id.clone()),
+        SqlArg::OptText(episode.image_url.clone()),
         SqlArg::Bool(episode.monitored),
         SqlArg::Timestamp(episode.created_at),
     ];
@@ -991,6 +1024,7 @@ async fn persist_episode_tx(tx: &mut SqlTx<'_>, episode: &Episode) -> AppResult<
         SqlArg::OptText(episode.absolute_number.clone()),
         SqlArg::OptText(episode.overview.clone()),
         SqlArg::OptText(episode.tvdb_id.clone()),
+        SqlArg::OptText(episode.image_url.clone()),
         SqlArg::Bool(episode.monitored),
     ];
 
@@ -1159,6 +1193,8 @@ fn episode_update_is_empty(update: &EpisodeUpdate) -> bool {
         && update.collection_id.is_none()
         && update.overview.is_none()
         && update.tvdb_id.is_none()
+        && update.image_url.is_none()
+        && !update.clear_image_url
 }
 
 fn apply_episode_update(episode: &mut Episode, update: EpisodeUpdate) {
@@ -1200,6 +1236,11 @@ fn apply_episode_update(episode: &mut Episode, update: EpisodeUpdate) {
     }
     if let Some(value) = update.tvdb_id {
         episode.tvdb_id = Some(value);
+    }
+    if update.clear_image_url {
+        episode.image_url = None;
+    } else if let Some(value) = update.image_url {
+        episode.image_url = Some(value);
     }
 }
 
@@ -1356,6 +1397,7 @@ fn row_to_episode(row: &SqlRow) -> AppResult<Episode> {
         absolute_number: row.opt_text("absolute_number")?,
         overview: row.opt_text("overview")?,
         tvdb_id: row.opt_text("tvdb_id")?,
+        image_url: row.opt_text("image_url")?,
         monitored: row.bool("monitored")?,
         created_at: row.timestamp("created_at")?,
     })

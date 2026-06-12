@@ -17,6 +17,15 @@ pub(crate) struct ImportColumnRule {
     pub(crate) kind: ImportColumnKind,
 }
 
+pub(crate) fn strip_nonportable_backup_fields(
+    table: &str,
+    object: &mut JsonMap<String, JsonValue>,
+) {
+    if table == "plugin_installations" {
+        object.remove("wasm_bytes");
+    }
+}
+
 pub(crate) fn normalize_import_object_for_target(
     table: &str,
     object: &mut JsonMap<String, JsonValue>,
@@ -24,6 +33,7 @@ pub(crate) fn normalize_import_object_for_target(
     columns: &[ImportColumnRule],
     line_number: usize,
 ) -> AppResult<()> {
+    strip_nonportable_backup_fields(table, object);
     normalize_import_object(table, object, now)?;
 
     for column in columns {
@@ -172,7 +182,6 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
         "year",
         "overview",
         "poster_url",
-        "banner_url",
         "background_url",
         "sort_title",
         "slug",
@@ -279,7 +288,93 @@ mod tests {
     use chrono::TimeZone;
     use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
-    use super::{ImportColumnKind, ImportColumnRule, normalize_import_object_for_target};
+    use super::{
+        ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
+        strip_nonportable_backup_fields,
+    };
+
+    #[test]
+    fn plugin_installation_backup_rows_drop_wasm_bytes_but_keep_metadata() {
+        let mut object = JsonMap::from_iter([
+            (
+                "plugin_id".to_string(),
+                JsonValue::String("demo".to_string()),
+            ),
+            (
+                "descriptor_json".to_string(),
+                JsonValue::String("{\"name\":\"demo\"}".to_string()),
+            ),
+            ("is_enabled".to_string(), JsonValue::Bool(true)),
+            (
+                "wasm_bytes".to_string(),
+                json!({
+                    "__scryer_type": "blob",
+                    "base64": "AQIDBA==",
+                }),
+            ),
+        ]);
+
+        strip_nonportable_backup_fields("plugin_installations", &mut object);
+
+        assert!(!object.contains_key("wasm_bytes"));
+        assert_eq!(
+            object.get("plugin_id"),
+            Some(&JsonValue::String("demo".to_string()))
+        );
+        assert_eq!(
+            object.get("descriptor_json"),
+            Some(&JsonValue::String("{\"name\":\"demo\"}".to_string()))
+        );
+        assert_eq!(object.get("is_enabled"), Some(&JsonValue::Bool(true)));
+    }
+
+    #[test]
+    fn plugin_installation_import_normalization_ignores_wasm_bytes() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 15, 9, 30, 0)
+            .single()
+            .expect("fixed timestamp");
+        let mut object = JsonMap::from_iter([
+            (
+                "plugin_id".to_string(),
+                JsonValue::String("demo".to_string()),
+            ),
+            ("name".to_string(), JsonValue::String("Demo".to_string())),
+            (
+                "wasm_bytes".to_string(),
+                json!({
+                    "__scryer_type": "blob",
+                    "base64": "AQIDBA==",
+                }),
+            ),
+        ]);
+
+        normalize_import_object_for_target(
+            "plugin_installations",
+            &mut object,
+            now,
+            &[
+                ImportColumnRule {
+                    name: "plugin_id".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "name".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+            ],
+            3,
+        )
+        .expect("plugin installation row should normalize");
+
+        assert!(!object.contains_key("wasm_bytes"));
+    }
 
     #[test]
     fn settings_values_normalization_fills_required_fields() {

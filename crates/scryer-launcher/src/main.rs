@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::env;
 use std::ffi::{CString, OsString};
 use std::fs;
@@ -11,33 +10,9 @@ use std::process::Command;
 
 const CONFIG_DIR: &str = "/config";
 const DEFAULT_DB_PATH: &str = "/config/scryer.db";
-const PORTABLE_PAYLOAD_NAME: &str = "scryer-portable";
-const HASWELL_PAYLOAD_NAME: &str = "scryer-haswell";
-const ARM64_OPTIMIZED_PAYLOAD_NAME: &str = "scryer-arm64-optimized";
+const PAYLOAD_NAME: &str = "scryer";
 const LAUNCHER_UID_DEFAULT: u32 = 1000;
 const LAUNCHER_GID_DEFAULT: u32 = 1000;
-const X86_REQUIRED_FEATURES: &[&str] = &[
-    "avx",
-    "avx2",
-    "bmi1",
-    "bmi2",
-    "f16c",
-    "fma",
-    "lzcnt",
-    "movbe",
-    "pclmulqdq",
-    "popcnt",
-    "rdrand",
-    "sse3",
-    "sse4.1",
-    "sse4.2",
-    "ssse3",
-    "xsave",
-    "xsaveopt",
-];
-const ARM_REQUIRED_FEATURES: &[&str] = &[
-    "aes", "crc32", "dotprod", "fp16", "lse", "neon", "rdm", "sha2",
-];
 
 fn main() {
     let config = LaunchConfig::from_env(env::args_os().skip(1).collect());
@@ -52,10 +27,8 @@ fn main() {
 #[derive(Clone, Debug)]
 struct LaunchConfig {
     args: Vec<OsString>,
-    cpuinfo_path: PathBuf,
     payload_root: PathBuf,
     db_path: PathBuf,
-    container_arch_override: Option<String>,
     requested_uid: Option<String>,
     requested_gid: Option<String>,
     umask: Option<String>,
@@ -66,14 +39,10 @@ impl LaunchConfig {
         let db_path = resolved_db_path(env::var("SCRYER_DB_PATH").ok());
         Self {
             args,
-            cpuinfo_path: env::var_os("SCRYER_CPUINFO_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/proc/cpuinfo")),
             payload_root: env::var_os("SCRYER_PAYLOAD_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/opt/scryer")),
             db_path,
-            container_arch_override: env::var("SCRYER_CONTAINER_ARCH").ok(),
             requested_uid: env::var("PUID").ok(),
             requested_gid: env::var("PGID").ok(),
             umask: env::var("UMASK").ok(),
@@ -89,31 +58,14 @@ impl LaunchConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Arch {
-    Amd64,
-    Arm64,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Lane {
-    Portable,
-    Haswell,
-    Arm64Optimized,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeLaunch {
     primary: PathBuf,
-    fallback: Option<PathBuf>,
-    lane: Lane,
 }
 
 trait LauncherOps {
     fn effective_uid(&self) -> u32;
     fn effective_gid(&self) -> u32;
-    fn read_to_string(&self, path: &Path) -> io::Result<String>;
     fn create_dir_all(&self, path: &Path) -> io::Result<()>;
     fn path_is_dir(&self, path: &Path) -> bool;
     fn path_is_executable_file(&self, path: &Path) -> bool;
@@ -139,10 +91,6 @@ impl LauncherOps for RealLauncherOps {
     fn effective_gid(&self) -> u32 {
         // SAFETY: getegid has no preconditions.
         unsafe { libc::getegid() }
-    }
-
-    fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        fs::read_to_string(path)
     }
 
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
@@ -211,177 +159,23 @@ fn run_with_ops<O: LauncherOps>(ops: &O, config: &LaunchConfig) -> Result<(), St
     }
 
     let args = config.launch_args();
-    match ops.exec(&runtime.primary, &args) {
-        Ok(()) => Ok(()),
-        Err(primary_error) => {
-            if let Some(fallback) = runtime.fallback {
-                ops.warn(&format!(
-                    "failed to launch optimized payload '{}': {primary_error}; retrying portable payload",
-                    runtime.primary.display()
-                ));
-                match ops.exec(&fallback, &args) {
-                    Ok(()) => Ok(()),
-                    Err(fallback_error) => Err(format!(
-                        "failed to launch '{}' ({primary_error}) and fallback '{}' ({fallback_error})",
-                        runtime.primary.display(),
-                        fallback.display()
-                    )),
-                }
-            } else {
-                Err(format!(
-                    "failed to launch '{}': {primary_error}",
-                    runtime.primary.display()
-                ))
-            }
-        }
-    }
+    ops.exec(&runtime.primary, &args)
+        .map_err(|error| format!("failed to launch '{}': {error}", runtime.primary.display()))
 }
 
 fn resolve_runtime_launch<O: LauncherOps>(
     ops: &O,
     config: &LaunchConfig,
 ) -> Result<RuntimeLaunch, String> {
-    let arch = detect_arch(config.container_arch_override.as_deref());
-    let lane = determine_lane(ops, arch, &config.cpuinfo_path);
-    let portable = config.payload_root.join(PORTABLE_PAYLOAD_NAME);
-    let optimized = match lane {
-        Lane::Haswell => Some(config.payload_root.join(HASWELL_PAYLOAD_NAME)),
-        Lane::Arm64Optimized => Some(config.payload_root.join(ARM64_OPTIMIZED_PAYLOAD_NAME)),
-        Lane::Portable => None,
-    };
-
-    let portable_ok = ops.path_is_executable_file(&portable);
-    let optimized_ok = optimized
-        .as_ref()
-        .is_some_and(|path| ops.path_is_executable_file(path));
-
-    match (portable_ok, optimized_ok, optimized) {
-        (_, true, Some(optimized_path)) => Ok(RuntimeLaunch {
-            primary: optimized_path,
-            fallback: portable_ok.then_some(portable),
-            lane,
-        }),
-        (true, _, _) => Ok(RuntimeLaunch {
-            primary: portable,
-            fallback: None,
-            lane: Lane::Portable,
-        }),
-        _ => Err(format!(
-            "no executable scryer payload found under {}",
-            config.payload_root.display()
-        )),
+    let payload = config.payload_root.join(PAYLOAD_NAME);
+    if ops.path_is_executable_file(&payload) {
+        Ok(RuntimeLaunch { primary: payload })
+    } else {
+        Err(format!(
+            "no executable scryer payload found at {}",
+            payload.display()
+        ))
     }
-}
-
-fn detect_arch(override_value: Option<&str>) -> Arch {
-    let machine = override_value.unwrap_or(std::env::consts::ARCH);
-
-    match machine.to_ascii_lowercase().as_str() {
-        "x86_64" | "amd64" => Arch::Amd64,
-        "aarch64" | "arm64" => Arch::Arm64,
-        _ => Arch::Unknown,
-    }
-}
-
-fn determine_lane<O: LauncherOps>(ops: &O, arch: Arch, cpuinfo_path: &Path) -> Lane {
-    let Ok(contents) = ops.read_to_string(cpuinfo_path) else {
-        return Lane::Portable;
-    };
-    let Some(features) = normalized_features(&contents, arch) else {
-        return Lane::Portable;
-    };
-
-    match arch {
-        Arch::Amd64 if feature_set_has_all(&features, X86_REQUIRED_FEATURES) => Lane::Haswell,
-        Arch::Arm64 if feature_set_has_all(&features, ARM_REQUIRED_FEATURES) => {
-            Lane::Arm64Optimized
-        }
-        _ => Lane::Portable,
-    }
-}
-
-fn normalized_features(contents: &str, arch: Arch) -> Option<HashSet<&'static str>> {
-    if matches!(arch, Arch::Unknown) {
-        return None;
-    }
-
-    let mut feature_sets = Vec::new();
-    for line in contents.lines() {
-        let Some((key, values)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key.trim();
-        if key != "flags" && key != "Features" {
-            continue;
-        }
-
-        let mut line_features = HashSet::new();
-        for token in values.split_whitespace() {
-            let normalized = match arch {
-                Arch::Amd64 => normalize_x86_feature(token),
-                Arch::Arm64 => normalize_arm_feature(token),
-                Arch::Unknown => None,
-            };
-            if let Some(feature) = normalized {
-                line_features.insert(feature);
-            }
-        }
-
-        if !line_features.is_empty() {
-            feature_sets.push(line_features);
-        }
-    }
-
-    let mut features = feature_sets.into_iter();
-    let mut common = features.next()?;
-    for feature_set in features {
-        common.retain(|feature| feature_set.contains(feature));
-        if common.is_empty() {
-            return None;
-        }
-    }
-    Some(common)
-}
-
-fn normalize_x86_feature(token: &str) -> Option<&'static str> {
-    match token.trim().to_ascii_lowercase().as_str() {
-        "avx" | "avx1.0" => Some("avx"),
-        "avx2" | "avx2.0" => Some("avx2"),
-        "bmi1" => Some("bmi1"),
-        "bmi2" => Some("bmi2"),
-        "f16c" => Some("f16c"),
-        "fma" => Some("fma"),
-        "abm" | "lzcnt" => Some("lzcnt"),
-        "movbe" => Some("movbe"),
-        "pclmul" | "pclmulqdq" => Some("pclmulqdq"),
-        "popcnt" => Some("popcnt"),
-        "rdrand" => Some("rdrand"),
-        "sse3" => Some("sse3"),
-        "sse4_1" | "sse4.1" => Some("sse4.1"),
-        "sse4_2" | "sse4.2" => Some("sse4.2"),
-        "ssse3" => Some("ssse3"),
-        "osxsave" | "xsave" => Some("xsave"),
-        "xsaveopt" => Some("xsaveopt"),
-        _ => None,
-    }
-}
-
-fn normalize_arm_feature(token: &str) -> Option<&'static str> {
-    match token.trim().to_ascii_lowercase().as_str() {
-        "aes" => Some("aes"),
-        "crc" | "crc32" => Some("crc32"),
-        "asimd" | "neon" => Some("neon"),
-        "fphp" | "asimdhp" | "fp16" => Some("fp16"),
-        "atomics" | "lse" => Some("lse"),
-        "asimdrdm" | "rdm" => Some("rdm"),
-        "asimddp" | "dotprod" => Some("dotprod"),
-        "sha2" => Some("sha2"),
-        _ => None,
-    }
-}
-
-fn feature_set_has_all(features: &HashSet<&'static str>, required: &[&'static str]) -> bool {
-    required.iter().all(|feature| features.contains(feature))
 }
 
 fn resolved_db_path(raw: Option<String>) -> PathBuf {
@@ -548,7 +342,6 @@ mod tests {
     struct MockEntry {
         is_dir: bool,
         executable: bool,
-        contents: Option<String>,
     }
 
     impl MockEntry {
@@ -556,7 +349,6 @@ mod tests {
             Self {
                 is_dir: true,
                 executable: false,
-                contents: None,
             }
         }
 
@@ -564,15 +356,6 @@ mod tests {
             Self {
                 is_dir: false,
                 executable: true,
-                contents: None,
-            }
-        }
-
-        fn text_file(contents: &str) -> Self {
-            Self {
-                is_dir: false,
-                executable: false,
-                contents: Some(contents.to_string()),
             }
         }
     }
@@ -587,7 +370,6 @@ mod tests {
         uid: u32,
         gid: u32,
         entries: RefCell<HashMap<PathBuf, MockEntry>>,
-        read_failures: RefCell<HashSet<PathBuf>>,
         warnings: RefCell<Vec<String>>,
         chown_calls: RefCell<Vec<(PathBuf, u32, u32)>>,
         drop_calls: RefCell<Vec<(u32, u32)>>,
@@ -605,7 +387,6 @@ mod tests {
                 uid: 0,
                 gid: 0,
                 entries: RefCell::new(HashMap::new()),
-                read_failures: RefCell::new(HashSet::new()),
                 warnings: RefCell::new(Vec::new()),
                 chown_calls: RefCell::new(Vec::new()),
                 drop_calls: RefCell::new(Vec::new()),
@@ -624,12 +405,6 @@ mod tests {
             self.entries
                 .borrow_mut()
                 .insert(path.as_ref().to_path_buf(), entry);
-        }
-
-        fn add_read_failure<P: AsRef<Path>>(&self, path: P) {
-            self.read_failures
-                .borrow_mut()
-                .insert(path.as_ref().to_path_buf());
         }
 
         fn push_exec_results(&self, results: &[MockExecResult]) {
@@ -666,17 +441,6 @@ mod tests {
 
         fn effective_gid(&self) -> u32 {
             self.gid
-        }
-
-        fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            if self.read_failures.borrow().contains(path) {
-                return Err(io::Error::other("read failed"));
-            }
-            self.entries
-                .borrow()
-                .get(path)
-                .and_then(|entry| entry.contents.clone())
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing file"))
         }
 
         fn create_dir_all(&self, path: &Path) -> io::Result<()> {
@@ -755,10 +519,8 @@ mod tests {
     fn base_config() -> LaunchConfig {
         LaunchConfig {
             args: vec![OsString::from("--version")],
-            cpuinfo_path: PathBuf::from("/cpuinfo"),
             payload_root: PathBuf::from("/payloads"),
             db_path: PathBuf::from(DEFAULT_DB_PATH),
-            container_arch_override: Some("amd64".into()),
             requested_uid: Some("1000".into()),
             requested_gid: Some("1000".into()),
             umask: None,
@@ -766,111 +528,22 @@ mod tests {
     }
 
     #[test]
-    fn amd64_should_select_optimized_when_haswell_features_are_present() {
-        let features = normalized_features(
-            include_str!("../tests/fixtures/amd64-haswell.cpuinfo"),
-            Arch::Amd64,
-        )
-        .expect("features should parse");
-        assert!(feature_set_has_all(&features, X86_REQUIRED_FEATURES));
-    }
-
-    #[test]
-    fn amd64_should_fallback_to_portable_when_required_features_are_missing() {
+    fn runtime_launch_should_select_single_payload() {
         let ops = MockLauncherOps::default();
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/amd64-portable.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         let config = base_config();
-        let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
+        let runtime = resolve_runtime_launch(&ops, &config).expect("runtime payload");
+        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer"));
     }
 
     #[test]
-    fn arm64_should_select_optimized_when_required_features_are_present() {
+    fn runtime_launch_should_report_missing_single_payload() {
         let ops = MockLauncherOps::default();
-        let mut config = base_config();
-        config.container_arch_override = Some("arm64".into());
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/arm64-optimized.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        ops.insert_entry(
-            "/payloads/scryer-arm64-optimized",
-            MockEntry::executable_file(),
-        );
-        let runtime = resolve_runtime_launch(&ops, &config).expect("arm64 optimized runtime");
+        let error = resolve_runtime_launch(&ops, &base_config()).expect_err("missing payload");
         assert_eq!(
-            runtime.primary,
-            PathBuf::from("/payloads/scryer-arm64-optimized")
+            error,
+            "no executable scryer payload found at /payloads/scryer"
         );
-        assert_eq!(
-            runtime.fallback,
-            Some(PathBuf::from("/payloads/scryer-portable"))
-        );
-    }
-
-    #[test]
-    fn arm64_should_fallback_to_portable_when_required_features_are_missing() {
-        let ops = MockLauncherOps::default();
-        let mut config = base_config();
-        config.container_arch_override = Some("arm64".into());
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/arm64-portable.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
-    }
-
-    #[test]
-    fn unknown_arch_should_fallback_to_portable() {
-        let ops = MockLauncherOps::default();
-        let mut config = base_config();
-        config.container_arch_override = Some("mips64".into());
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
-    }
-
-    #[test]
-    fn unreadable_cpuinfo_should_fallback_to_portable() {
-        let ops = MockLauncherOps::default();
-        ops.add_read_failure("/cpuinfo");
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        let runtime = resolve_runtime_launch(&ops, &base_config()).expect("portable runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-    }
-
-    #[test]
-    fn malformed_cpuinfo_should_fallback_to_portable() {
-        let features = normalized_features(
-            include_str!("../tests/fixtures/malformed.cpuinfo"),
-            Arch::Amd64,
-        );
-        assert!(features.is_none());
-    }
-
-    #[test]
-    fn heterogeneous_cpuinfo_should_require_common_features_before_selecting_optimized() {
-        let features = normalized_features(
-            "\
-processor   : 0\n\
-flags       : avx avx2 bmi1 bmi2 f16c fma abm movbe pclmulqdq popcnt rdrand sse3 sse4_1 sse4_2 ssse3 xsave xsaveopt\n\
-\n\
-processor   : 1\n\
-flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse4_1 sse4_2 ssse3 xsave xsaveopt\n",
-            Arch::Amd64,
-        )
-        .expect("common features should still parse");
-        assert!(!feature_set_has_all(&features, X86_REQUIRED_FEATURES));
     }
 
     #[test]
@@ -886,41 +559,13 @@ flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse
     }
 
     #[test]
-    fn missing_optimized_payload_should_fallback_to_portable() {
-        let ops = MockLauncherOps::default();
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/amd64-haswell.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        let runtime = resolve_runtime_launch(&ops, &base_config()).expect("portable runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-    }
-
-    #[test]
-    fn missing_portable_payload_with_valid_optimized_payload_should_launch_optimized() {
-        let ops = MockLauncherOps::default();
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/amd64-haswell.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-haswell", MockEntry::executable_file());
-        let runtime = resolve_runtime_launch(&ops, &base_config()).expect("optimized runtime");
-        assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-haswell"));
-        assert_eq!(runtime.fallback, None);
-    }
-
-    #[test]
     fn invalid_umask_should_still_attempt_to_launch() {
         let ops = MockLauncherOps::default();
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         let mut config = base_config();
         config.umask = Some("not-octal".into());
         run_with_ops(&ops, &config).expect("launch should still proceed");
-        assert_eq!(
-            ops.exec_paths(),
-            vec![PathBuf::from("/payloads/scryer-portable")]
-        );
+        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
         assert!(
             ops.warnings()
                 .iter()
@@ -934,12 +579,9 @@ flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse
             fail_chown: true,
             ..Default::default()
         };
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         run_with_ops(&ops, &base_config()).expect("launch should still proceed");
-        assert_eq!(
-            ops.exec_paths(),
-            vec![PathBuf::from("/payloads/scryer-portable")]
-        );
+        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
         assert!(
             ops.warnings()
                 .iter()
@@ -953,12 +595,9 @@ flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse
             fail_drop: true,
             ..Default::default()
         };
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         run_with_ops(&ops, &base_config()).expect("launch should still proceed");
-        assert_eq!(
-            ops.exec_paths(),
-            vec![PathBuf::from("/payloads/scryer-portable")]
-        );
+        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
         assert!(
             ops.warnings()
                 .iter()
@@ -973,40 +612,27 @@ flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse
             gid: 1002,
             ..Default::default()
         };
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         run_with_ops(&ops, &base_config()).expect("launch should proceed");
         assert!(ops.chown_calls().is_empty());
         assert!(ops.drop_calls().is_empty());
-        assert_eq!(
-            ops.exec_paths(),
-            vec![PathBuf::from("/payloads/scryer-portable")]
-        );
+        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
     }
 
     #[test]
-    fn failed_optimized_exec_should_retry_portable() {
+    fn failed_exec_should_report_single_payload_error() {
         let ops = MockLauncherOps::default();
-        ops.insert_entry(
-            "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/amd64-haswell.cpuinfo")),
-        );
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        ops.insert_entry("/payloads/scryer-haswell", MockEntry::executable_file());
-        ops.push_exec_results(&[MockExecResult::Failure, MockExecResult::Success]);
-        run_with_ops(&ops, &base_config()).expect("portable fallback should succeed");
-        assert_eq!(
-            ops.exec_paths(),
-            vec![
-                PathBuf::from("/payloads/scryer-haswell"),
-                PathBuf::from("/payloads/scryer-portable"),
-            ]
-        );
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
+        ops.push_exec_results(&[MockExecResult::Failure]);
+        let error = run_with_ops(&ops, &base_config()).expect_err("exec should fail");
+        assert!(error.contains("failed to launch '/payloads/scryer'"));
+        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
     }
 
     #[test]
     fn launcher_should_prefix_data_dir_before_user_args() {
         let ops = MockLauncherOps::default();
-        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
         let mut config = base_config();
         config.args = vec![OsString::from("--version")];
         run_with_ops(&ops, &config).expect("launch should proceed");

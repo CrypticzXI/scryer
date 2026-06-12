@@ -1,10 +1,30 @@
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
+import type { FormEvent } from "react";
+import { QRCode } from "react-qr-code";
+import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
+import type {
+  ExternalAccountProvider,
+  ExternalAuthRuntimeConnection,
+  LinkedAccount,
+  PasskeySummary,
+  TotpEnrollmentStart,
+  TotpStatus,
+} from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
+
+const TOTP_CODE_LENGTH = 6;
 
 type Props = {
   username?: string;
@@ -12,11 +32,103 @@ type Props = {
   newPassword: string;
   confirmPassword: string;
   saving: boolean;
+  canChangePassword: boolean;
+  requiresCurrentPassword: boolean;
   onCurrentPasswordChange: (value: string) => void;
   onNewPasswordChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
   onChangePassword: () => void;
+  showPasskeys: boolean;
+  canAddPasskey: boolean;
+  passkeys: PasskeySummary[];
+  totpStatus: TotpStatus | null;
+  totpEnrollment: TotpEnrollmentStart | null;
+  totpEnrollmentCode: string;
+  totpActionCode: string;
+  totpRecoveryCodes: string[];
+  linkedAccounts: LinkedAccount[];
+  linkedAccountConnectionLabels: Record<string, string>;
+  linkableJellyfinConnections: ExternalAuthRuntimeConnection[];
+  linkablePlexConnections: ExternalAuthRuntimeConnection[];
+  linkingProvider: ExternalAccountProvider | null;
+  linkAccountConnectionId: string;
+  linkAccountUsername: string;
+  linkAccountPassword: string;
+  linkAccountBusy: boolean;
+  linkAccountError: string | null;
+  loadingPasskeys: boolean;
+  loadingTotp: boolean;
+  loadingLinkedAccounts: boolean;
+  loadingLinkOptions: boolean;
+  addingPasskey: boolean;
+  totpBusy: boolean;
+  deletingPasskeyId: string | null;
+  unlinkingAccountId: string | null;
+  onAddPasskey: () => void;
+  onDeletePasskey: (id: string) => void;
+  onStartTotpEnrollment: () => void;
+  onTotpEnrollmentCodeChange: (value: string) => void;
+  onCompleteTotpEnrollment: () => void;
+  onTotpActionCodeChange: (value: string) => void;
+  onVerifyTotpStepUp: () => void;
+  onDisableTotp: () => void;
+  onRegenerateTotpRecoveryCodes: () => void;
+  onStartLinkAccount: (provider: ExternalAccountProvider) => void;
+  onCancelLinkAccount: () => void;
+  onLinkAccountConnectionChange: (value: string) => void;
+  onLinkAccountUsernameChange: (value: string) => void;
+  onLinkAccountPasswordChange: (value: string) => void;
+  onSubmitJellyfinLink: (event: FormEvent<HTMLFormElement>) => void;
+  onSubmitPlexLink: (event: FormEvent<HTMLFormElement>) => void;
+  onUnlinkExternalAccount: (id: string) => void;
 };
+
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString();
+}
+
+function providerLabel(provider: LinkedAccount["provider"]): string {
+  switch (provider) {
+    case "plex":
+      return "Plex";
+    case "jellyfin":
+      return "Jellyfin";
+    default:
+      return provider;
+  }
+}
+
+function connectionLabel(connection: ExternalAuthRuntimeConnection): string {
+  return connection.displayName;
+}
+
+function LinkedAccountAvatar({ account }: { account: LinkedAccount }) {
+  const label = account.displayName || account.username;
+  return account.avatarUrl ? (
+    <img
+      src={account.avatarUrl}
+      alt=""
+      className="h-9 w-9 shrink-0 rounded-full border border-border object-cover"
+      loading="lazy"
+    />
+  ) : (
+    <span
+      aria-hidden="true"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-sm font-medium text-muted-foreground"
+    >
+      {label.trim().slice(0, 1).toUpperCase() || "?"}
+    </span>
+  );
+}
 
 export function SettingsProfileSection({
   username,
@@ -24,14 +136,81 @@ export function SettingsProfileSection({
   newPassword,
   confirmPassword,
   saving,
+  canChangePassword,
+  requiresCurrentPassword,
   onCurrentPasswordChange,
   onNewPasswordChange,
   onConfirmPasswordChange,
   onChangePassword,
+  showPasskeys,
+  canAddPasskey,
+  passkeys,
+  totpStatus,
+  totpEnrollment,
+  totpEnrollmentCode,
+  totpActionCode,
+  totpRecoveryCodes,
+  linkedAccounts,
+  linkedAccountConnectionLabels,
+  linkableJellyfinConnections,
+  linkablePlexConnections,
+  linkingProvider,
+  linkAccountConnectionId,
+  linkAccountUsername,
+  linkAccountPassword,
+  linkAccountBusy,
+  linkAccountError,
+  loadingPasskeys,
+  loadingTotp,
+  loadingLinkedAccounts,
+  loadingLinkOptions,
+  addingPasskey,
+  totpBusy,
+  deletingPasskeyId,
+  unlinkingAccountId,
+  onAddPasskey,
+  onDeletePasskey,
+  onStartTotpEnrollment,
+  onTotpEnrollmentCodeChange,
+  onCompleteTotpEnrollment,
+  onTotpActionCodeChange,
+  onVerifyTotpStepUp,
+  onDisableTotp,
+  onRegenerateTotpRecoveryCodes,
+  onStartLinkAccount,
+  onCancelLinkAccount,
+  onLinkAccountConnectionChange,
+  onLinkAccountUsernameChange,
+  onLinkAccountPasswordChange,
+  onSubmitJellyfinLink,
+  onSubmitPlexLink,
+  onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
   const passwordMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
-  const canSubmit = currentPassword.length > 0 && newPassword.length > 0 && !passwordMismatch && !saving;
+  const canSubmit =
+    (!requiresCurrentPassword || currentPassword.length > 0) &&
+    newPassword.length > 0 &&
+    !passwordMismatch &&
+    !saving;
+  const selectedLinkConnections =
+    linkingProvider === "jellyfin"
+      ? linkableJellyfinConnections
+      : isVisibleExternalAccountProvider("plex")
+        ? linkablePlexConnections
+        : [];
+  const selectedLinkConnection = selectedLinkConnections.find(
+    (connection) => connection.id === linkAccountConnectionId,
+  );
+  const visibleLinkedAccounts = linkedAccounts.filter((account) =>
+    isVisibleExternalAccountProvider(account.provider),
+  );
+  const canSubmitJellyfinLink =
+    Boolean(linkAccountConnectionId) &&
+    linkAccountUsername.trim().length > 0 &&
+    linkAccountPassword.length > 0 &&
+    !linkAccountBusy;
+  const canSubmitPlexLink = Boolean(linkAccountConnectionId) && !linkAccountBusy;
 
   return (
     <div id="settings-profile-section" className="space-y-6 text-sm">
@@ -39,58 +218,532 @@ export function SettingsProfileSection({
         <h3 className="text-base font-medium">{t("profile.accountInfo")}</h3>
         <div className="flex items-center gap-2 text-muted-foreground">
           <span>{t("settings.username")}:</span>
-          <span className="font-medium text-foreground">{username ?? "—"}</span>
+          <span id="settings-profile-username" className="font-medium text-foreground">
+            {username ?? "—"}
+          </span>
         </div>
       </div>
 
-      <Separator />
+      {canChangePassword ? (
+        <>
+          <Separator />
 
+          <div className="space-y-4">
+            <h3 className="text-base font-medium">{t("profile.changePassword")}</h3>
+            <div className="grid max-w-sm gap-3">
+              {requiresCurrentPassword ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="current-password">{t("profile.currentPassword")}</Label>
+                  <Input
+                    id="current-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(e) => onCurrentPasswordChange(e.target.value)}
+                  />
+                </div>
+              ) : null}
+              <div className="space-y-1.5">
+                <Label htmlFor="new-password">{t("profile.newPassword")}</Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => onNewPasswordChange(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="confirm-password">{t("profile.confirmPassword")}</Label>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => onConfirmPasswordChange(e.target.value)}
+                />
+                {passwordMismatch ? (
+                  <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
+                ) : null}
+              </div>
+              <Button
+                id={selectorId("settings-profile-change-password")}
+                onClick={onChangePassword}
+                disabled={!canSubmit}
+                className="w-fit"
+              >
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.changePassword")}
+              </Button>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {showPasskeys ? (
+        <>
+          <Separator />
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className="text-base font-medium">{t("profile.passkeys")}</h3>
+                <p className="text-sm text-muted-foreground">{t("profile.passkeysDescription")}</p>
+              </div>
+              {canAddPasskey ? (
+                <Button
+                  id={selectorId("settings-profile-add-passkey")}
+                  onClick={onAddPasskey}
+                  disabled={addingPasskey}
+                  className="w-fit"
+                >
+                  {addingPasskey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {addingPasskey ? t("profile.passkeyAdding") : t("profile.passkeyAdd")}
+                </Button>
+              ) : null}
+            </div>
+
+            {loadingPasskeys ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{t("label.loading")}</span>
+              </div>
+            ) : passkeys.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t("profile.passkeysEmpty")}</p>
+            ) : (
+              <div className="space-y-3">
+                {passkeys.map((passkey) => (
+                  <div
+                    key={passkey.id}
+                    className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="space-y-1">
+                      <div className="font-medium text-foreground">
+                        {passkey.friendlyName || t("profile.passkeyLabel")}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {t("profile.passkeyCreatedAt")}: {formatTimestamp(passkey.createdAt)}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {t("profile.passkeyLastUsedAt")}:{" "}
+                        {passkey.lastUsedAt
+                          ? formatTimestamp(passkey.lastUsedAt)
+                          : t("profile.passkeyNeverUsed")}
+                      </div>
+                    </div>
+                    <Button
+                      id={selectorId(`settings-profile-delete-passkey-${passkey.id}`)}
+                      variant="outline"
+                      onClick={() => onDeletePasskey(passkey.id)}
+                      disabled={deletingPasskeyId === passkey.id}
+                      className="w-fit"
+                    >
+                      {deletingPasskeyId === passkey.id ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : null}
+                      {t("label.delete")}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      <Separator />
       <div className="space-y-4">
-        <h3 className="text-base font-medium">{t("profile.changePassword")}</h3>
-        <div className="grid max-w-sm gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="current-password">{t("profile.currentPassword")}</Label>
-            <Input
-              id="current-password"
-              type="password"
-              autoComplete="current-password"
-              value={currentPassword}
-              onChange={(e) => onCurrentPasswordChange(e.target.value)}
-            />
+        <div className="space-y-1">
+          <h3 className="text-base font-medium">{t("profile.totp")}</h3>
+          <p className="text-sm text-muted-foreground">{t("profile.totpDescription")}</p>
+        </div>
+
+        {loadingTotp ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="new-password">{t("profile.newPassword")}</Label>
-            <Input
-              id="new-password"
-              type="password"
-              autoComplete="new-password"
-              value={newPassword}
-              onChange={(e) => onNewPasswordChange(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-password">{t("profile.confirmPassword")}</Label>
-            <Input
-              id="confirm-password"
-              type="password"
-              autoComplete="new-password"
-              value={confirmPassword}
-              onChange={(e) => onConfirmPasswordChange(e.target.value)}
-            />
-            {passwordMismatch ? (
-              <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
+        ) : totpStatus?.enabled ? (
+          <div className="space-y-3 rounded-md border border-border bg-background/60 p-4">
+            <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+              <div>
+                <span className="text-foreground">{t("profile.totpEnabledAt")}: </span>
+                {formatTimestamp(totpStatus.createdAt)}
+              </div>
+              <div>
+                <span className="text-foreground">{t("profile.totpLastUsedAt")}: </span>
+                {formatTimestamp(totpStatus.lastUsedAt)}
+              </div>
+              <div>
+                <span className="text-foreground">{t("profile.totpRecoveryRemaining")}: </span>
+                {totpStatus.recoveryCodesRemaining}
+              </div>
+            </div>
+
+            {totpRecoveryCodes.length > 0 ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <div className="mb-2 text-sm font-medium">{t("profile.totpRecoveryCodes")}</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {totpRecoveryCodes.map((code) => (
+                    <code
+                      id={selectorId("settings-profile-totp-recovery-code", code)}
+                      key={code}
+                      className="rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                    >
+                      {code}
+                    </code>
+                  ))}
+                </div>
+              </div>
             ) : null}
+
+            <div className="grid max-w-sm gap-2">
+              <Label htmlFor="totp-action-code">{t("profile.totpCode")}</Label>
+              <Input
+                id="totp-action-code"
+                {...integerInputProps}
+                inputMode="numeric"
+                maxLength={TOTP_CODE_LENGTH}
+                autoComplete="one-time-code"
+                value={totpActionCode}
+                onChange={(event) => onTotpActionCodeChange(event.target.value)}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  id={selectorId("settings-profile-totp-step-up")}
+                  type="button"
+                  variant="outline"
+                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
+                  onClick={onVerifyTotpStepUp}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.mfaVerifyStepUp")}
+                </Button>
+                <Button
+                  id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
+                  type="button"
+                  variant="outline"
+                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
+                  onClick={onRegenerateTotpRecoveryCodes}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpRegenerateRecoveryCodes")}
+                </Button>
+                <Button
+                  id={selectorId("settings-profile-totp-disable")}
+                  type="button"
+                  variant="destructive"
+                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
+                  onClick={onDisableTotp}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpDisable")}
+                </Button>
+              </div>
+            </div>
           </div>
+        ) : totpEnrollment ? (
+          <div className="space-y-4 rounded-md border border-border bg-background/60 p-4">
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <div className="w-fit rounded-md bg-white p-3">
+                <QRCode value={totpEnrollment.otpauthUrl} size={168} />
+              </div>
+              <div className="min-w-0 space-y-3">
+                <a
+                  id={selectorId("settings-profile-totp-setup-link")}
+                  className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  href={totpEnrollment.otpauthUrl}
+                >
+                  {t("profile.totpOpenSetupLink")}
+                </a>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
+                  <code
+                    id={selectorId("settings-profile-totp-secret")}
+                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                  >
+                    {totpEnrollment.secretBase32}
+                  </code>
+                </div>
+              </div>
+            </div>
+            <div className="grid max-w-sm gap-2">
+              <Label htmlFor="totp-enrollment-code">{t("profile.totpCode")}</Label>
+              <Input
+                id="totp-enrollment-code"
+                {...integerInputProps}
+                inputMode="numeric"
+                maxLength={TOTP_CODE_LENGTH}
+                autoComplete="one-time-code"
+                value={totpEnrollmentCode}
+                onChange={(event) => onTotpEnrollmentCodeChange(event.target.value)}
+              />
+              <Button
+                id={selectorId("settings-profile-totp-verify-enable")}
+                type="button"
+                disabled={totpBusy || totpEnrollmentCode.length !== TOTP_CODE_LENGTH}
+                onClick={onCompleteTotpEnrollment}
+                className="w-fit"
+              >
+                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.totpVerifyAndEnable")}
+              </Button>
+            </div>
+          </div>
+        ) : (
           <Button
-            id={selectorId("settings-profile-change-password")}
-            onClick={onChangePassword}
-            disabled={!canSubmit}
+            id={selectorId("settings-profile-start-totp")}
+            type="button"
+            onClick={onStartTotpEnrollment}
+            disabled={totpBusy}
             className="w-fit"
           >
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {t("profile.changePassword")}
+            {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {t("profile.totpStartEnrollment")}
           </Button>
+        )}
+      </div>
+
+      <Separator />
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <h3 className="text-base font-medium">{t("profile.linkedAccounts")}</h3>
+            <p className="text-sm text-muted-foreground">
+              {t("profile.linkedAccountsDescription")}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {loadingLinkOptions ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{t("label.loading")}</span>
+              </div>
+            ) : null}
+            {linkableJellyfinConnections.length > 0 ? (
+              <Button
+                id="settings-profile-link-jellyfin-start"
+                type="button"
+                variant={linkingProvider === "jellyfin" ? "secondary" : "outline"}
+                onClick={() => onStartLinkAccount("jellyfin")}
+                disabled={linkAccountBusy}
+              >
+                {t("profile.linkJellyfinAccount")}
+              </Button>
+            ) : null}
+            {isVisibleExternalAccountProvider("plex") && linkablePlexConnections.length > 0 ? (
+              <Button
+                type="button"
+                variant={linkingProvider === "plex" ? "secondary" : "outline"}
+                onClick={() => onStartLinkAccount("plex")}
+                disabled={linkAccountBusy}
+              >
+                {t("profile.linkPlexAccount")}
+              </Button>
+            ) : null}
+          </div>
         </div>
+
+        {linkingProvider === "jellyfin" ? (
+          <form
+            className="grid gap-3 rounded-md border border-border bg-background/60 p-4 md:max-w-xl"
+            onSubmit={onSubmitJellyfinLink}
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="profile-link-jellyfin-connection">
+                {t("profile.linkAccountConnection")}
+              </Label>
+              {selectedLinkConnections.length > 1 ? (
+                <Select
+                  value={linkAccountConnectionId}
+                  onValueChange={onLinkAccountConnectionChange}
+                  disabled={linkAccountBusy}
+                >
+                  <SelectTrigger id="profile-link-jellyfin-connection" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedLinkConnections.map((connection) => (
+                      <SelectItem key={connection.id} value={connection.id}>
+                        {connectionLabel(connection)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="rounded-md border border-input bg-muted/40 px-3 py-2 text-sm">
+                  {selectedLinkConnection
+                    ? connectionLabel(selectedLinkConnection)
+                    : t("profile.linkAccountNoConnections")}
+                </div>
+              )}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="profile-link-jellyfin-username">
+                  {t("profile.linkAccountUsername")}
+                </Label>
+                <Input
+                  id="profile-link-jellyfin-username"
+                  type="text"
+                  autoComplete="username"
+                  value={linkAccountUsername}
+                  onChange={(event) => onLinkAccountUsernameChange(event.target.value)}
+                  disabled={linkAccountBusy}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="profile-link-jellyfin-password">
+                  {t("profile.linkAccountPassword")}
+                </Label>
+                <Input
+                  id="profile-link-jellyfin-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={linkAccountPassword}
+                  onChange={(event) => onLinkAccountPasswordChange(event.target.value)}
+                  disabled={linkAccountBusy}
+                />
+              </div>
+            </div>
+            {linkAccountError ? (
+              <p id="settings-profile-link-jellyfin-error" className="text-sm text-destructive">
+                {linkAccountError}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                id="settings-profile-link-jellyfin-submit"
+                type="submit"
+                disabled={!canSubmitJellyfinLink}
+                className="w-fit"
+              >
+                {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.linkAccountSubmit")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onCancelLinkAccount}
+                disabled={linkAccountBusy}
+                className="w-fit"
+              >
+                {t("profile.linkAccountCancel")}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+
+        {isVisibleExternalAccountProvider("plex") && linkingProvider === "plex" ? (
+          <form
+            className="grid gap-3 rounded-md border border-border bg-background/60 p-4 md:max-w-xl"
+            onSubmit={onSubmitPlexLink}
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="profile-link-plex-connection">
+                {t("profile.linkAccountConnection")}
+              </Label>
+              {selectedLinkConnections.length > 1 ? (
+                <Select
+                  value={linkAccountConnectionId}
+                  onValueChange={onLinkAccountConnectionChange}
+                  disabled={linkAccountBusy}
+                >
+                  <SelectTrigger id="profile-link-plex-connection" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedLinkConnections.map((connection) => (
+                      <SelectItem key={connection.id} value={connection.id}>
+                        {connectionLabel(connection)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="rounded-md border border-input bg-muted/40 px-3 py-2 text-sm">
+                  {selectedLinkConnection
+                    ? connectionLabel(selectedLinkConnection)
+                    : t("profile.linkAccountNoConnections")}
+                </div>
+              )}
+            </div>
+            {linkAccountError ? (
+              <p className="text-sm text-destructive">{linkAccountError}</p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" disabled={!canSubmitPlexLink} className="w-fit">
+                {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.signInWithPlexToLink")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onCancelLinkAccount}
+                disabled={linkAccountBusy}
+                className="w-fit"
+              >
+                {t("profile.linkAccountCancel")}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+
+        {loadingLinkedAccounts ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : visibleLinkedAccounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("profile.linkedAccountsEmpty")}</p>
+        ) : (
+          <div className="space-y-3">
+            {visibleLinkedAccounts.map((account) => (
+              <div
+                id={selectorId(
+                  "settings-profile-linked-account",
+                  account.provider,
+                  account.username,
+                )}
+                key={account.id}
+                className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+              >
+                <div className="flex min-w-0 items-start gap-3">
+                  <LinkedAccountAvatar account={account} />
+                  <div className="min-w-0 space-y-1">
+                    <div className="truncate font-medium text-foreground">
+                      {providerLabel(account.provider)} · {account.displayName || account.username}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {t("profile.linkedAccountConnection")}:{" "}
+                      {linkedAccountConnectionLabels[
+                        `${account.provider}:${account.connectionId}`
+                      ] ?? t("profile.linkedAccountUnknownConnection")}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {t("profile.linkedAccountStatus")}: {account.status}
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  id={selectorId(
+                    "settings-profile-unlink-account",
+                    account.provider,
+                    account.username,
+                  )}
+                  variant="outline"
+                  onClick={() => onUnlinkExternalAccount(account.id)}
+                  disabled={unlinkingAccountId === account.id}
+                  className="w-fit"
+                >
+                  {unlinkingAccountId === account.id ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  {t("profile.unlinkAccount")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -34,8 +34,6 @@ fn test_title(facet: MediaFacet) -> Title {
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -90,6 +88,7 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
         client_type: "weaver".to_string(),
         client_id: "client-1".to_string(),
         download_client_item_id: "job-1".to_string(),
+        download_id: None,
         name: name.to_string(),
         dest_dir: dest_dir.to_string_lossy().to_string(),
         category: None,
@@ -317,7 +316,10 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
 
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
-    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+    assert_eq!(
+        parsed.source.as_ref().map(|source| source.as_str()),
+        Some("BluRay")
+    );
 }
 
 #[test]
@@ -335,7 +337,10 @@ fn build_augmented_movie_import_metadata_uses_immediate_parent_for_obfuscated_fi
     assert_eq!(parsed.normalized_title, "PAPER LANTERN");
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
-    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+    assert_eq!(
+        parsed.source.as_ref().map(|source| source.as_str()),
+        Some("BluRay")
+    );
 }
 
 #[test]
@@ -934,6 +939,7 @@ fn prefer_broader_coverage_episodes_returns_claimed_pack() {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     }];
@@ -956,6 +962,7 @@ fn prefer_broader_coverage_episodes_returns_claimed_pack() {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     });

@@ -10,6 +10,7 @@ mod middleware;
 mod rate_limit;
 mod settings_bootstrap;
 mod splash;
+mod startup_migrations;
 mod ui_assets;
 
 use std::ffi::OsString;
@@ -29,18 +30,16 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime,
-    PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad,
-    SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
-    TitleImageKind, TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
-    start_background_acquisition_poller, start_background_auto_backup_scheduler,
-    start_background_banner_loop, start_background_download_delete_poller,
-    start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_manual_import_poller, start_background_poster_loop,
+    AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
+    MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
+    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
+    start_background_auto_backup_scheduler, start_background_download_delete_poller,
+    start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_download_queue_poller, start_notification_dispatcher,
+    start_background_title_image_loop, start_download_queue_poller, start_notification_dispatcher,
     tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
@@ -61,10 +60,11 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
+use url::Url;
+use webauthn_rs::WebauthnBuilder;
 
 use admin_routes::{
     AdminSettingsQuery, admin_migrations_handler, admin_settings_list, bootstrap_admin_password,
-    seed_indexer_configs_from_env,
 };
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
@@ -88,6 +88,47 @@ use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
+
+fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
+    scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
+        .expect("SCRYER_COMPILED_BUILD_LANE must be emitted by build.rs")
+}
+
+fn spawn_plugin_catalog_refresh_task(app_use_case: AppUseCase) {
+    tokio::spawn(async move {
+        if let Err(error) = app_use_case.refresh_plugin_catalog_internal().await {
+            tracing::warn!(error = %error, "failed to refresh plugin catalog in background");
+            return;
+        }
+        if let Err(error) = app_use_case
+            .migrate_nzbgeek_builtin_to_official_internal()
+            .await
+        {
+            tracing::warn!(error = %error, "failed to migrate nzbgeek builtin plugin");
+        }
+    });
+}
+
+fn spawn_sigstore_trust_root_prime_task(app_use_case: AppUseCase) {
+    tokio::spawn(async move {
+        loop {
+            match app_use_case.prime_plugin_trust_roots_internal().await {
+                Ok(()) => {
+                    tracing::info!("sigstore trust roots primed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to prime sigstore trust roots; retrying in 5 minutes"
+                    );
+                    tokio::time::sleep(Duration::from_secs(300)).await;
+                }
+            }
+        }
+    });
+}
 
 fn restore_datastore_config(config: &DatastoreConfig) -> RestoreDatastoreConfig {
     RestoreDatastoreConfig {
@@ -279,11 +320,11 @@ impl SelfRestartController {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum VersionLifecycle {
     FirstRun,
     Unchanged,
-    Upgraded,
+    Upgraded { previous: String },
 }
 
 fn log_smg_version_incompatibility(
@@ -410,12 +451,14 @@ async fn main() {
             .init();
     }
 
-    if let Err(error) =
-        finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await
-    {
-        tracing::error!(error = %error, "failed to finalize pending restore");
-        std::process::exit(1);
-    }
+    let finalized_pending_restore =
+        match finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await {
+            Ok(finalized) => finalized,
+            Err(error) => {
+                tracing::error!(error = %error, "failed to finalize pending restore");
+                std::process::exit(1);
+            }
+        };
 
     load_env_file(Some(&data_dir), true);
 
@@ -504,6 +547,7 @@ async fn main() {
                 match bootstrap_application(
                     datastore_config,
                     migration_mode,
+                    finalized_pending_restore,
                     jwt_issuer,
                     jwt_access_ttl_seconds,
                     bootstrap_bind,
@@ -593,6 +637,7 @@ async fn main() {
 async fn bootstrap_application(
     datastore_config: DatastoreConfig,
     _migration_mode: MigrationMode,
+    finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
     bind: String,
@@ -643,8 +688,11 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    let _version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
-    clear_legacy_history_retention_forever_override(bootstrap_settings_store.clone()).await;
+    let version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    startup_migrations::_0001_legacy_history_retention_forever_override::clear_legacy_history_retention_forever_override(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
 
     let t = std::time::Instant::now();
     if let Err(error) =
@@ -772,7 +820,7 @@ async fn bootstrap_application(
             .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
     );
     let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-    bootstrap_plugin_installations(&customization_store)
+    bootstrap_plugin_installations(&customization_store, finalized_pending_restore)
         .await
         .map_err(|e| format!("failed to bootstrap plugin installations: {e}"))?;
     let (runtime_plugins, disabled_builtin_plugins) =
@@ -854,10 +902,6 @@ async fn bootstrap_application(
         .filter(|v| !v.is_empty())
         .or_else(|| SMG_GRAPHQL_URL.map(String::from))
         .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string());
-    // TODO: Remove SCRYER_METADATA_GATEWAY_INSECURE once the gateway has proper TLS certificates.
-    let metadata_gateway_insecure = std::env::var("SCRYER_METADATA_GATEWAY_INSECURE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
     let smg_registration_secret = SMG_REGISTRATION_SECRET
         .map(String::from)
         .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
@@ -879,16 +923,10 @@ async fn bootstrap_application(
         },
     };
 
-    let smg_ca_cert = SMG_CA_CERT
-        .map(String::from)
-        .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
-        .filter(|s| !s.is_empty());
     let metadata_gateway = Arc::new(datastore.metadata_gateway_client(
         metadata_gateway_url,
-        metadata_gateway_insecure,
         SmgEnrollmentConfig {
             registration_secret: smg_registration_secret,
-            ca_cert: smg_ca_cert,
         },
     ));
     let library_scanner = Arc::new(FileSystemLibraryScanner::new());
@@ -951,16 +989,15 @@ async fn bootstrap_application(
     );
     let services = datastore
         .app_services_builder(indexer_client, download_client)
+        .with_runtime_environment(
+            compiled_binary_lane(),
+            data_dir.clone(),
+            scryer_plugins::detect_supported_plugin_required_features(),
+        )
         .with_smg_registration_secret(
             SMG_REGISTRATION_SECRET
                 .map(String::from)
                 .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
-                .filter(|value| !value.is_empty()),
-        )
-        .with_smg_ca_cert(
-            SMG_CA_CERT
-                .map(String::from)
-                .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
                 .filter(|value| !value.is_empty()),
         )
         .with_smg_gateway_url(Some(
@@ -993,7 +1030,9 @@ async fn bootstrap_application(
         .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
         .build();
 
-    let app_use_case = AppUseCase::new(
+    let webauthn = build_webauthn_runtime();
+    let webauthn_configured = webauthn.is_some();
+    let app_use_case = AppUseCase::new_with_webauthn(
         services,
         scryer_application::JwtAuthConfig {
             issuer: jwt_issuer,
@@ -1001,16 +1040,49 @@ async fn bootstrap_application(
             jwt_signing_salt,
         },
         facet_registry,
+        webauthn,
     );
+    tracing::info!(
+        build_lane = %app_use_case.runtime_build_lane(),
+        build_class = %app_use_case.runtime_build_class(),
+        "initialized runtime build identity"
+    );
+    app_use_case.warm_runtime_performance();
+    if finalized_pending_restore {
+        tracing::info!("recovering restored plugins from remote catalogs");
+        if let Err(error) = app_use_case
+            .recover_restored_plugins_after_backup_restore()
+            .await
+        {
+            tracing::error!(error = %error, "failed to recover restored plugins");
+            std::process::exit(1);
+        }
+    }
+    let previous_version = match &version_lifecycle {
+        VersionLifecycle::Upgraded { previous } => Some(previous.as_str()),
+        VersionLifecycle::FirstRun | VersionLifecycle::Unchanged => None,
+    };
+    startup_migrations::_0002_enhanced_subsync_plugin_016::migrate_enhanced_subsync_plugin_for_016_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        previous_version,
+        VERSION,
+    )
+    .await;
+    startup_migrations::_0003_title_image_artwork_url_refresh::refresh_title_image_artwork_urls_for_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        previous_version,
+        VERSION,
+    )
+    .await;
 
     app_use_case.connect_library_scan_tracker().await;
+    spawn_sigstore_trust_root_prime_task(app_use_case.clone());
+    spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
     if let Err(e) = app_use_case.reconcile_default_library_roots().await {
         tracing::warn!(error = %e, "failed to reconcile default library roots on startup");
-    }
-
-    if let Err(e) = app_use_case.refresh_plugin_catalog_internal().await {
-        tracing::warn!(error = %e, "failed to refresh plugin catalog on startup");
     }
 
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {
@@ -1037,9 +1109,6 @@ async fn bootstrap_application(
     if let Err(e) = app_use_case.reconcile_indexer_configs().await {
         tracing::warn!(error = %e, "failed to reconcile indexer configs on startup");
     }
-    if let Err(error) = seed_indexer_configs_from_env(&app_use_case).await {
-        tracing::warn!(error = %error, "failed to seed indexer configs from environment");
-    }
     if let Err(e) = app_use_case
         .ensure_indexer_routing_entries_for_existing_indexers()
         .await
@@ -1057,11 +1126,14 @@ async fn bootstrap_application(
         .await
         .map_err(|error| format!("failed to load security settings: {error}"))?;
     let auth_mode = resolve_auth_mode_from_env();
+    let effective_form_login_enabled =
+        auth_mode.effective_form_login_enabled(saved_security_settings.form_login_enabled);
     let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
         form_login_enabled: saved_security_settings.form_login_enabled,
         skip_login_for_local_ips: saved_security_settings.skip_login_for_local_ips,
-        effective_form_login_enabled: auth_mode
-            .effective_form_login_enabled(saved_security_settings.form_login_enabled),
+        effective_form_login_enabled,
+        webauthn_configured,
+        passkey_enabled: webauthn_configured && effective_form_login_enabled,
         env_override_active: auth_mode.env_override_active(),
         env_override_description: auth_mode.env_override_description.clone(),
         epoch: 0,
@@ -1141,15 +1213,7 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
-    tokio::spawn(start_background_poster_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_banner_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_fanart_loop(
+    tokio::spawn(start_background_title_image_loop(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
@@ -1284,6 +1348,7 @@ async fn bootstrap_application(
 
 async fn title_image_handler(
     State(repository): State<Arc<dyn TitleImageRepository>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     AxumPath((title_id, kind, variant)): AxumPath<(String, String, String)>,
 ) -> Response {
@@ -1309,21 +1374,20 @@ async fn title_image_handler(
         }
     };
 
-    let quoted_etag = format!("\"{}\"", blob.etag);
+    let etag = title_image_digest_value(&blob.etag).to_string();
+    let quoted_etag = format!("\"{etag}\"");
+    let cache_control = title_image_cache_control(&etag, query.get("v").map(String::as_str));
     if headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| if_none_match_matches(value, &quoted_etag, &blob.etag))
+        .is_some_and(|value| if_none_match_matches(value, &quoted_etag, &etag))
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         let headers = response.headers_mut();
         if let Ok(value) = HeaderValue::from_str(&quoted_etag) {
             headers.insert(header::ETAG, value);
         }
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        );
+        headers.insert(header::CACHE_CONTROL, cache_control);
         return response;
     }
 
@@ -1336,14 +1400,31 @@ async fn title_image_handler(
     if let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
         headers.insert(header::CONTENT_LENGTH, value);
     }
-    if let Ok(value) = HeaderValue::from_str(&format!("\"{}\"", blob.etag)) {
+    if let Ok(value) = HeaderValue::from_str(&quoted_etag) {
         headers.insert(header::ETAG, value);
     }
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
-    );
+    headers.insert(header::CACHE_CONTROL, cache_control);
     response
+}
+
+fn title_image_cache_control(etag: &str, query_version: Option<&str>) -> HeaderValue {
+    let expected_version = title_image_version_from_etag(etag);
+    if query_version.is_some_and(|version| version == expected_version.as_str()) {
+        HeaderValue::from_static("public, max-age=31536000, immutable")
+    } else {
+        HeaderValue::from_static("public, max-age=0, must-revalidate")
+    }
+}
+
+fn title_image_version_from_etag(etag: &str) -> String {
+    title_image_digest_value(etag).chars().take(16).collect()
+}
+
+fn title_image_digest_value(value: &str) -> &str {
+    value
+        .split_once(':')
+        .map(|(_, digest)| digest)
+        .unwrap_or(value)
 }
 
 fn if_none_match_matches(raw_header: &str, quoted_etag: &str, bare_etag: &str) -> bool {
@@ -1511,6 +1592,58 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
+    let rp_id = normalize_env_option("SCRYER_WEBAUTHN_RP_ID");
+    let rp_origin = normalize_env_option("SCRYER_WEBAUTHN_RP_ORIGIN");
+    let rp_name =
+        normalize_env_option("SCRYER_WEBAUTHN_RP_NAME").unwrap_or_else(|| "Scryer".to_string());
+
+    match (rp_id, rp_origin) {
+        (Some(rp_id), Some(rp_origin)) => {
+            let origin = match Url::parse(&rp_origin) {
+                Ok(origin) => origin,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because SCRYER_WEBAUTHN_RP_ORIGIN is invalid"
+                    );
+                    return None;
+                }
+            };
+
+            let builder = match WebauthnBuilder::new(&rp_id, &origin) {
+                Ok(builder) => builder,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because the WebAuthn RP config is invalid"
+                    );
+                    return None;
+                }
+            }
+            .rp_name(&rp_name);
+
+            match builder.build() {
+                Ok(runtime) => Some(Arc::new(runtime)),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because the WebAuthn runtime could not be built"
+                    );
+                    None
+                }
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            tracing::warn!(
+                "disabling passkeys because SCRYER_WEBAUTHN_RP_ID and SCRYER_WEBAUTHN_RP_ORIGIN must both be set"
+            );
+            None
+        }
+        (None, None) => None,
+    }
+}
+
 fn load_or_create_persistent_jwt_signing_salt(data_dir: &Path) -> std::io::Result<String> {
     use aws_lc_rs::rand::{SecureRandom, SystemRandom};
     use std::io::Write;
@@ -1637,7 +1770,9 @@ async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLif
                 current_version = VERSION,
                 "upgraded from {prev} to {VERSION}"
             );
-            VersionLifecycle::Upgraded
+            VersionLifecycle::Upgraded {
+                previous: prev.to_string(),
+            }
         }
         None => {
             tracing::info!(version = VERSION, "first run — recording version");
@@ -1654,43 +1789,6 @@ async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLif
     }
 
     lifecycle
-}
-
-async fn clear_legacy_history_retention_forever_override(settings_store: Arc<SettingsStore>) {
-    let keep_forever = settings_store
-        .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
-        .await
-        .ok()
-        .flatten();
-    let retention_days = settings_store
-        .get_setting_with_defaults("system", HISTORY_RETENTION_DAYS_KEY, None)
-        .await
-        .ok()
-        .flatten();
-
-    let should_clear = keep_forever.as_ref().is_some_and(|record| {
-        record.source.as_deref() == Some("migration")
-            && record.value_json.as_deref() == Some("true")
-            && !retention_days
-                .as_ref()
-                .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
-    });
-
-    if !should_clear {
-        return;
-    }
-
-    if let Err(error) = settings_store
-        .delete_setting_value("system", HISTORY_KEEP_FOREVER_KEY, None)
-        .await
-    {
-        tracing::warn!(
-            error = %error,
-            "failed to clear legacy history retention override"
-        );
-    } else {
-        tracing::info!("cleared legacy history retention forever override");
-    }
 }
 
 pub(crate) fn normalize_env_option_with_legacy<'a>(
@@ -1733,28 +1831,101 @@ fn runtime_installation_is_host_blocked(installation: &scryer_domain::PluginInst
     )
 }
 
-fn runtime_installation_sdk_contract_is_host_compatible(
+#[derive(Debug)]
+struct RuntimePluginSdkContractFailure {
+    plugin_id: String,
+    version: String,
+    sdk_version: String,
+    sdk_constraint: String,
+    error: String,
+}
+
+type RuntimePluginLoadInput = (
+    scryer_domain::PluginInstallation,
+    Option<scryer_domain::PersistedPluginWasmPayload>,
+);
+type RuntimePluginLoadCandidate = (
+    scryer_domain::PluginInstallation,
+    scryer_domain::PersistedPluginWasmPayload,
+);
+
+fn runtime_installation_sdk_contract_failure(
     installation: &scryer_domain::PluginInstallation,
-) -> bool {
-    match scryer_plugins::validate_sdk_contract(
+) -> Option<RuntimePluginSdkContractFailure> {
+    scryer_plugins::validate_sdk_contract(
         installation.plugin_id.as_str(),
         installation.sdk_version.as_str(),
         installation.sdk_constraint.as_str(),
         scryer_plugins::SDK_VERSION,
-    ) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!(
-                plugin_id = installation.plugin_id.as_str(),
-                version = installation.version.as_str(),
-                sdk_version = installation.sdk_version.as_str(),
-                sdk_constraint = installation.sdk_constraint.as_str(),
-                error = %error,
-                "skipping installed plugin with incompatible sdk contract"
-            );
-            false
+    )
+    .err()
+    .map(|error| RuntimePluginSdkContractFailure {
+        plugin_id: installation.plugin_id.clone(),
+        version: installation.version.clone(),
+        sdk_version: installation.sdk_version.clone(),
+        sdk_constraint: installation.sdk_constraint.clone(),
+        error: error.to_string(),
+    })
+}
+
+fn log_runtime_plugin_sdk_contract_failures(failures: &[RuntimePluginSdkContractFailure]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let plugin_ids = failures
+        .iter()
+        .map(|failure| failure.plugin_id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::warn!(
+        plugin_count = failures.len(),
+        plugin_ids = %plugin_ids,
+        "skipping installed plugins with incompatible sdk contracts; upgrade them from Plugins"
+    );
+    for failure in failures {
+        tracing::debug!(
+            plugin_id = failure.plugin_id.as_str(),
+            version = failure.version.as_str(),
+            sdk_version = failure.sdk_version.as_str(),
+            sdk_constraint = failure.sdk_constraint.as_str(),
+            error = failure.error.as_str(),
+            "installed plugin sdk contract is incompatible with this host"
+        );
+    }
+}
+
+fn collect_runtime_plugin_load_candidates(
+    enabled_plugins: Vec<RuntimePluginLoadInput>,
+) -> (
+    Vec<RuntimePluginLoadCandidate>,
+    Vec<RuntimePluginSdkContractFailure>,
+) {
+    let mut pending_plugins = Vec::new();
+    let mut sdk_contract_failures = Vec::new();
+
+    for (installation, payload) in enabled_plugins {
+        if !matches!(
+            installation.source_kind,
+            scryer_domain::PluginSourceKind::Downloaded
+                | scryer_domain::PluginSourceKind::Community
+                | scryer_domain::PluginSourceKind::Manual
+        ) {
+            continue;
+        }
+        if let Some(failure) = runtime_installation_sdk_contract_failure(&installation) {
+            sdk_contract_failures.push(failure);
+            continue;
+        }
+        if runtime_installation_is_host_blocked(&installation) {
+            continue;
+        }
+        if let Some(payload) = payload {
+            pending_plugins.push((installation, payload));
         }
     }
+
+    (pending_plugins, sdk_contract_failures)
 }
 
 async fn load_runtime_external_plugin_entry(
@@ -1783,25 +1954,10 @@ async fn load_runtime_plugin_state(
         .await
         .map_err(|error| error.to_string())?;
     let mut runtime_plugins = Vec::new();
-    let mut pending_plugins = enabled_plugins
-        .into_iter()
-        .filter_map(|(installation, payload)| {
-            if !matches!(
-                installation.source_kind,
-                scryer_domain::PluginSourceKind::Downloaded
-                    | scryer_domain::PluginSourceKind::Manual
-            ) {
-                return None;
-            }
-            if !runtime_installation_sdk_contract_is_host_compatible(&installation) {
-                return None;
-            }
-            if runtime_installation_is_host_blocked(&installation) {
-                return None;
-            }
-
-            payload.map(|payload| (installation, payload))
-        });
+    let (pending_plugins, sdk_contract_failures) =
+        collect_runtime_plugin_load_candidates(enabled_plugins);
+    log_runtime_plugin_sdk_contract_failures(&sdk_contract_failures);
+    let mut pending_plugins = pending_plugins.into_iter();
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..RUNTIME_PLUGIN_LOAD_CONCURRENCY {
         let Some((installation, payload)) = pending_plugins.next() else {
@@ -1837,9 +1993,10 @@ async fn load_runtime_plugin_state(
 
 async fn bootstrap_plugin_installations(
     customization_store: &DatastoreCustomizationStore,
+    finalized_pending_restore: bool,
 ) -> Result<(), String> {
     let removed = customization_store
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(finalized_pending_restore)
         .await
         .map_err(|error| error.to_string())?;
     for plugin_id in removed {
@@ -1850,6 +2007,14 @@ async fn bootstrap_plugin_installations(
     }
 
     seed_builtin_plugin_installations(customization_store).await
+}
+
+fn preserves_legacy_nzbgeek_builtin_for_catalog_migration(
+    installation: &scryer_domain::PluginInstallation,
+) -> bool {
+    installation.plugin_id == LEGACY_NZBGEEK_PLUGIN_ID
+        && installation.is_builtin
+        && installation.source_kind == scryer_domain::PluginSourceKind::Bundled
 }
 
 async fn seed_builtin_plugin_installations(
@@ -2037,6 +2202,7 @@ async fn seed_builtin_plugin_installations(
         .into_iter()
         .filter(|installation| {
             installation.is_builtin
+                && !preserves_legacy_nzbgeek_builtin_for_catalog_migration(installation)
                 && !builtin_keys.contains(&builtin_lookup_key(
                     &installation.plugin_type,
                     &installation.provider_type,
@@ -2058,10 +2224,9 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, SelfRestartController, VersionLifecycle, bootstrap_plugin_installations,
-        check_version_upgrade, clear_legacy_history_retention_forever_override,
-        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts,
-        seed_service_setting_definitions, title_image_handler,
+        AuthModeConfig, SelfRestartController, bootstrap_plugin_installations,
+        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2073,21 +2238,15 @@ mod tests {
     use std::time::Duration;
 
     use crate::base_path::{BasePath, mount_router};
-    use crate::{
-        HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-        settings_bootstrap::SETTINGS_SCOPE_SYSTEM,
-    };
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use axum::routing::get;
     use scryer_application::{
         AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
-        TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
+        TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     };
-    use scryer_infrastructure::{
-        DatastoreCustomizationStore, MigrationMode, SettingsStore, SqliteServices,
-    };
+    use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -2142,10 +2301,10 @@ mod tests {
 
     #[async_graphql::async_trait::async_trait]
     impl TitleImageRepository for MockTitleImageRepository {
-        async fn list_titles_requiring_image_refresh(
+        async fn list_title_image_refresh_work(
             &self,
-            _kind: TitleImageKind,
             _limit: usize,
+            _skipped: &[TitleImageSyncTask],
         ) -> AppResult<Vec<TitleImageSyncTask>> {
             Ok(Vec::new())
         }
@@ -2154,33 +2313,13 @@ mod tests {
             Ok(())
         }
 
-        async fn replace_title_image(
+        async fn upsert_title_image_source_result(
             &self,
             _title_id: &str,
-            _replacement: TitleImageReplacement,
-        ) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn replace_title_image_and_append_event(
-            &self,
-            _title_id: &str,
-            _replacement: TitleImageReplacement,
-            event: scryer_domain::NewDomainEvent,
-        ) -> AppResult<scryer_domain::DomainEvent> {
-            Ok(scryer_domain::DomainEvent {
-                sequence: 1,
-                event_id: event.event_id,
-                occurred_at: event.occurred_at,
-                actor_user_id: event.actor_user_id,
-                title_id: event.title_id,
-                facet: event.facet,
-                correlation_id: event.correlation_id,
-                causation_id: event.causation_id,
-                schema_version: event.schema_version,
-                stream: event.stream,
-                payload: event.payload,
-            })
+            _result: TitleImageSourceResult,
+            _event: Option<scryer_domain::NewDomainEvent>,
+        ) -> AppResult<Option<scryer_domain::DomainEvent>> {
+            Ok(None)
         }
 
         async fn get_title_image_blob(
@@ -2215,6 +2354,130 @@ mod tests {
                 used_legacy_dev_auto_login: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_preserves_legacy_nzbgeek_builtin_for_catalog_migration() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = DatastoreCustomizationStore::new(services.datastore());
+        let now = Utc::now();
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "nzbgeek".to_string(),
+                    name: "NZBGeek Indexer".to_string(),
+                    description: "legacy builtin".to_string(),
+                    version: "0.2.10".to_string(),
+                    sdk_version: "1.3.0".to_string(),
+                    sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+                    scryer_constraint: None,
+                    plugin_type: "indexer".to_string(),
+                    provider_type: "nzbgeek".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Bundled,
+                    is_enabled: true,
+                    is_builtin: true,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+                    wasm_digest_algo: None,
+                    source_url: None,
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: Some("scryer".to_string()),
+                    docs_url: None,
+                    source_repo: None,
+                    manifest_url: None,
+                    wasm_digest: None,
+                    artifact_digest: None,
+                    descriptor_json: None,
+                    installed_at: now,
+                    updated_at: now,
+                },
+                None,
+            )
+            .await
+            .expect("seed legacy nzbgeek builtin row");
+
+        bootstrap_plugin_installations(&customization, false)
+            .await
+            .expect("bootstrap plugin installations");
+
+        let installation = customization
+            .get_plugin_installation("nzbgeek")
+            .await
+            .expect("read plugin installation")
+            .expect("legacy nzbgeek builtin should be preserved for catalog migration");
+        assert!(installation.is_builtin);
+        assert_eq!(
+            installation.source_kind,
+            scryer_domain::PluginSourceKind::Bundled
+        );
+    }
+
+    #[test]
+    fn runtime_plugin_load_candidates_collect_sdk_contract_failures() {
+        fn installation(
+            plugin_id: &str,
+            sdk_version: &str,
+            sdk_constraint: &str,
+        ) -> scryer_domain::PluginInstallation {
+            let now = Utc::now();
+            scryer_domain::PluginInstallation {
+                id: scryer_domain::Id::new().0,
+                plugin_id: plugin_id.to_string(),
+                name: plugin_id.to_string(),
+                description: plugin_id.to_string(),
+                version: "0.1.0".to_string(),
+                sdk_version: sdk_version.to_string(),
+                sdk_constraint: sdk_constraint.to_string(),
+                scryer_constraint: None,
+                plugin_type: "notification".to_string(),
+                provider_type: plugin_id.to_string(),
+                source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                is_enabled: true,
+                is_builtin: false,
+                wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+                wasm_digest_algo: None,
+                source_url: Some(format!("https://example.com/{plugin_id}.wasm")),
+                support_tier: scryer_domain::PluginSupportTier::Official,
+                publisher: Some("scryer".to_string()),
+                docs_url: None,
+                source_repo: None,
+                manifest_url: None,
+                wasm_digest: None,
+                artifact_digest: None,
+                descriptor_json: None,
+                installed_at: now,
+                updated_at: now,
+            }
+        }
+
+        let payload = scryer_domain::PersistedPluginWasmPayload {
+            encoding: scryer_domain::PluginWasmEncoding::Identity,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let (pending, failures) = collect_runtime_plugin_load_candidates(vec![
+            (
+                installation("legacy-email", "1.6.0", ">=1.6.0, <1.7.0"),
+                Some(payload.clone()),
+            ),
+            (
+                installation(
+                    "current-email",
+                    scryer_plugins::SDK_VERSION,
+                    &scryer_plugins::sdk_constraint_or_legacy(scryer_plugins::SDK_VERSION, ""),
+                ),
+                Some(payload),
+            ),
+        ]);
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.plugin_id, "current-email");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].plugin_id, "legacy-email");
     }
 
     #[tokio::test]
@@ -2262,7 +2525,7 @@ mod tests {
             .await
             .expect("seed legacy plugin row");
 
-        bootstrap_plugin_installations(&customization)
+        bootstrap_plugin_installations(&customization, false)
             .await
             .expect("bootstrap plugin installations");
 
@@ -2279,6 +2542,76 @@ mod tests {
                 .expect("read plugin installation")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_preserves_restored_downloaded_plugin_rows_until_recovery() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = DatastoreCustomizationStore::new(services.datastore());
+        let now = Utc::now();
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "email".to_string(),
+                    name: "Email".to_string(),
+                    description: "Email notifications".to_string(),
+                    version: "0.1.9".to_string(),
+                    sdk_version: scryer_plugins::SDK_VERSION.to_string(),
+                    sdk_constraint: scryer_plugins::sdk_constraint_or_legacy(
+                        scryer_plugins::SDK_VERSION,
+                        "",
+                    ),
+                    scryer_constraint: None,
+                    plugin_type: "notification".to_string(),
+                    provider_type: "email".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                    is_enabled: true,
+                    is_builtin: false,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+                    wasm_digest_algo: Some("blake3".to_string()),
+                    source_url: Some("https://example.com/email.wasm.zst".to_string()),
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: Some("scryer".to_string()),
+                    docs_url: Some("https://example.com/email/docs".to_string()),
+                    source_repo: Some("https://github.com/scryer-media/scryer-plugins".to_string()),
+                    manifest_url: Some("https://example.com/email.manifest.json".to_string()),
+                    wasm_digest: Some("a".repeat(64)),
+                    artifact_digest: Some("blake3:abcd".to_string()),
+                    descriptor_json: Some(
+                        r#"{"id":"email","name":"Email","version":"0.1.9","sdk_version":"1.6.0","sdk_constraint":">=1.6.0, <2.0.0","socket_permissions":[],"provider":{"kind":"notification","provider_type":"email","provider_aliases":[],"config_fields":[],"allowed_hosts":[],"default_base_url":null,"capabilities":{"supported_events":[]}}}"#.to_string(),
+                    ),
+                    installed_at: now,
+                    updated_at: now,
+                },
+                None,
+            )
+            .await
+            .expect("seed restored downloaded plugin row");
+
+        bootstrap_plugin_installations(&customization, true)
+            .await
+            .expect("bootstrap plugin installations");
+
+        assert!(
+            customization
+                .get_plugin_installation("email")
+                .await
+                .expect("read plugin installation")
+                .is_some()
+        );
+
+        let (runtime_plugins, disabled_builtins) = load_runtime_plugin_state(&customization)
+            .await
+            .expect("load runtime plugin state");
+
+        assert!(runtime_plugins.is_empty());
+        assert!(disabled_builtins.is_empty());
     }
 
     #[tokio::test]
@@ -2334,7 +2667,7 @@ mod tests {
             .await
             .expect("seed corrupt plugin row");
 
-        bootstrap_plugin_installations(&customization)
+        bootstrap_plugin_installations(&customization, false)
             .await
             .expect("bootstrap plugin installations");
 
@@ -2394,7 +2727,7 @@ mod tests {
         let repo: Arc<dyn TitleImageRepository> = Arc::new(MockTitleImageRepository {
             blob: Some(TitleImageBlob {
                 content_type: "image/avif".to_string(),
-                etag: "abc123".to_string(),
+                etag: "blake3:abc123def4567890abc123def4567890".to_string(),
                 bytes: vec![1, 2, 3, 4],
             }),
         });
@@ -2406,7 +2739,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/images/titles/title-1/poster/w500")
+                    .uri("/images/titles/title-1/poster/w500?v=abc123def4567890")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -2418,11 +2751,51 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/avif"
         );
-        assert_eq!(response.headers().get(header::ETAG).unwrap(), "\"abc123\"");
+        assert_eq!(
+            response.headers().get(header::ETAG).unwrap(),
+            "\"abc123def4567890abc123def4567890\""
+        );
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "public, max-age=31536000, immutable"
         );
+    }
+
+    #[tokio::test]
+    async fn title_image_route_revalidates_unversioned_or_mismatched_variant_urls() {
+        let repo: Arc<dyn TitleImageRepository> = Arc::new(MockTitleImageRepository {
+            blob: Some(TitleImageBlob {
+                content_type: "image/avif".to_string(),
+                etag: "blake3:abc123def4567890abc123def4567890".to_string(),
+                bytes: vec![1, 2, 3, 4],
+            }),
+        });
+        let app = Router::new().route(
+            "/images/titles/{title_id}/{kind}/{variant}",
+            get(title_image_handler).with_state(repo),
+        );
+
+        for uri in [
+            "/images/titles/title-1/poster/w70",
+            "/images/titles/title-1/poster/w70?v=w250digest",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=0, must-revalidate"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2444,6 +2817,27 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let app = Router::new().route(
+            "/images/titles/{title_id}/{kind}/{variant}",
+            get(title_image_handler).with_state(Arc::new(MockTitleImageRepository::default())),
+        );
+        for uri in [
+            "/images/titles/title-1/poster/original",
+            "/images/titles/title-1/fanart/master",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 
     #[tokio::test]
@@ -2463,7 +2857,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/images/titles/title-1/poster/w500")
+                    .uri("/images/titles/title-1/poster/w500?v=abc123")
                     .header(header::IF_NONE_MATCH, "\"abc123\"")
                     .body(Body::empty())
                     .expect("request"),
@@ -2507,118 +2901,5 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
-        let temp = tempdir().expect("tempdir");
-        let db_path = temp.path().join("scryer.db");
-        let services = SqliteServices::new_with_mode(
-            db_path.to_string_lossy().to_string(),
-            MigrationMode::Apply,
-        )
-        .await
-        .expect("sqlite services");
-        let store = Arc::new(SettingsStore::new(
-            services.datastore(),
-            services.encryption_key_state(),
-        ));
-        seed_service_setting_definitions(store.clone())
-            .await
-            .expect("seed setting definitions");
-        (temp, store)
-    }
-
-    #[tokio::test]
-    async fn legacy_migration_history_override_is_cleared_back_to_default() {
-        let (_temp, store) = bootstrap_settings_store().await;
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                "last_run_version",
-                None,
-                "\"0.10.0\"",
-                "test",
-                None,
-            )
-            .await
-            .expect("seed previous version");
-
-        let lifecycle = check_version_upgrade(store.clone()).await;
-        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
-
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_KEEP_FOREVER_KEY,
-                None,
-                "true",
-                "migration",
-                None,
-            )
-            .await
-            .expect("seed legacy migration override");
-
-        clear_legacy_history_retention_forever_override(store.clone()).await;
-
-        let keep_forever = store
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
-            .await
-            .expect("load keep forever")
-            .expect("setting exists");
-        assert_eq!(keep_forever.effective_value_json, "false");
-        assert_eq!(keep_forever.value_json, None);
-        assert_eq!(keep_forever.source, None);
-    }
-
-    #[tokio::test]
-    async fn legacy_migration_history_override_is_preserved_when_user_has_retention_override() {
-        let (_temp, store) = bootstrap_settings_store().await;
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                "last_run_version",
-                None,
-                "\"0.10.0\"",
-                "test",
-                None,
-            )
-            .await
-            .expect("seed previous version");
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_RETENTION_DAYS_KEY,
-                None,
-                "30",
-                "ui",
-                Some("user-1".to_string()),
-            )
-            .await
-            .expect("seed explicit retention override");
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_KEEP_FOREVER_KEY,
-                None,
-                "true",
-                "migration",
-                None,
-            )
-            .await
-            .expect("seed legacy migration override");
-
-        let lifecycle = check_version_upgrade(store.clone()).await;
-        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
-
-        clear_legacy_history_retention_forever_override(store.clone()).await;
-
-        let keep_forever = store
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
-            .await
-            .expect("load keep forever")
-            .expect("setting exists");
-        assert_eq!(keep_forever.effective_value_json, "true");
-        assert_eq!(keep_forever.value_json.as_deref(), Some("true"));
-        assert_eq!(keep_forever.source.as_deref(), Some("migration"));
     }
 }

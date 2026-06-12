@@ -5,14 +5,17 @@ use chrono::Utc;
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     AppPermissionMask, DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus,
-    ImportType, Library, LibraryGrant, MediaFacet, NewDomainEvent, TitleHistoryEventType,
+    ImportType, Library, LibraryGrant, MediaFacet, MediaRequest, NewDomainEvent,
+    TitleHistoryEventType, User,
 };
 
 use scryer_domain::RuleSet;
 
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
-    AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit, WantedItemsQuery,
+    AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
+    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
+    MediaServerConnectionRepository, PlexServerDiscovery, SuccessfulGrabCommit, WantedItemsQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -22,20 +25,25 @@ use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     CutoffUnmetQualitySummary, DomainEventRepository, DownloadQueueCommandRecord,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
-    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryRepository, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    NewBlocklistEntry, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    DownloadSubmissionRepository, ExternalIdentityVerifier,
+    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
+    MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
+    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository, ports::DatastoreInfo,
-    ports::LogicalBackupExporter,
+    TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
+    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
+    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
+    ports::TotpRepository, types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
+    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -309,7 +317,22 @@ pub struct NullFileImporter;
 
 #[async_trait]
 impl FileImporter for NullFileImporter {
-    async fn import_file(&self, _source: &Path, _dest: &Path) -> AppResult<ImportFileResult> {
+    async fn import_file(
+        &self,
+        _source: &Path,
+        _dest: &Path,
+        _mode: scryer_domain::ImportMode,
+    ) -> AppResult<ImportFileResult> {
+        Err(AppError::Repository(
+            "file importer is not configured".to_string(),
+        ))
+    }
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        _guard: scryer_domain::ImportSourceCleanupGuard,
+        _final_dest_path: &Path,
+    ) -> AppResult<()> {
         Err(AppError::Repository(
             "file importer is not configured".to_string(),
         ))
@@ -321,10 +344,10 @@ pub struct NullTitleImageRepository;
 
 #[async_trait]
 impl TitleImageRepository for NullTitleImageRepository {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        _kind: TitleImageKind,
         _limit: usize,
+        _skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>> {
         Ok(vec![])
     }
@@ -333,22 +356,12 @@ impl TitleImageRepository for NullTitleImageRepository {
         Ok(())
     }
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         _title_id: &str,
-        _replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        Err(AppError::Repository(
-            "title image repository is not configured".to_string(),
-        ))
-    }
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        _title_id: &str,
-        _replacement: TitleImageReplacement,
-        _event: NewDomainEvent,
-    ) -> AppResult<DomainEvent> {
+        _result: TitleImageSourceResult,
+        _event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>> {
         Err(AppError::Repository(
             "title image repository is not configured".to_string(),
         ))
@@ -373,7 +386,8 @@ impl TitleImageProcessor for NullTitleImageProcessor {
         &self,
         _kind: TitleImageKind,
         _source_url: &str,
-    ) -> AppResult<TitleImageReplacement> {
+        _variants: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult> {
         Err(AppError::Repository(
             "title image processor is not configured".to_string(),
         ))
@@ -661,6 +675,9 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn delete_plugin_catalog_source(&self, _source_key: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
@@ -797,6 +814,13 @@ impl NotificationSubscriptionRepository for NullNotificationSubscriptionReposito
     async fn list_subscriptions_for_channel(
         &self,
         _channel_id: &str,
+    ) -> AppResult<Vec<scryer_domain::NotificationSubscription>> {
+        Ok(vec![])
+    }
+    async fn list_subscriptions_for_target(
+        &self,
+        _target_kind: scryer_domain::NotificationTargetKind,
+        _target_id: &str,
     ) -> AppResult<Vec<scryer_domain::NotificationSubscription>> {
         Ok(vec![])
     }
@@ -1291,6 +1315,15 @@ impl JobRunRepository for NullJobRunRepository {
         Ok(Vec::new())
     }
 
+    async fn list_job_runs_for_actor(
+        &self,
+        _job_key: Option<JobKey>,
+        _actor_user_id: &str,
+        _limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         Ok(Vec::new())
     }
@@ -1458,6 +1491,404 @@ impl LibraryRepository for NullLibraryRepository {
 
     async fn title_library_id(&self, _title_id: &str) -> AppResult<Option<String>> {
         Ok(None)
+    }
+}
+
+#[derive(Default)]
+pub struct NullMediaRequestRepository;
+
+#[async_trait]
+impl MediaRequestRepository for NullMediaRequestRepository {
+    async fn submit(
+        &self,
+        _request: NewMediaRequest,
+        _requester: &User,
+        _submitted_event: NewDomainEvent,
+    ) -> AppResult<MediaRequestSubmissionResult> {
+        Err(AppError::Repository(
+            "media request repository not configured".into(),
+        ))
+    }
+
+    async fn list(&self, _query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
+        Ok(Vec::new())
+    }
+
+    async fn get(&self, _request_id: &str) -> AppResult<Option<MediaRequest>> {
+        Ok(None)
+    }
+
+    async fn resolve_pending_overlapping(
+        &self,
+        _request: &MediaRequest,
+        _resolution: MediaRequestResolution,
+    ) -> AppResult<MediaRequestResolutionResult> {
+        Ok(MediaRequestResolutionResult {
+            updated: 0,
+            event: None,
+        })
+    }
+
+    async fn resolve_pending(
+        &self,
+        _request_id: &str,
+        _resolution: MediaRequestResolution,
+    ) -> AppResult<MediaRequestResolutionResult> {
+        Ok(MediaRequestResolutionResult {
+            updated: 0,
+            event: None,
+        })
+    }
+
+    async fn update_pending_request_preferences(
+        &self,
+        _request_id: &str,
+        _requested_quality_profile_id: String,
+        _requested_quality_profile_name: String,
+        _requested_monitor_type: Option<String>,
+        _updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequestUpdateResult> {
+        Err(AppError::Repository(
+            "media request repository not configured".into(),
+        ))
+    }
+
+    async fn count_pending_by_facet(
+        &self,
+        _library_ids: &[String],
+    ) -> AppResult<MediaRequestCounts> {
+        Ok(MediaRequestCounts::default())
+    }
+}
+
+#[derive(Default)]
+pub struct NullWebauthnRepository;
+
+#[async_trait]
+impl WebauthnRepository for NullWebauthnRepository {
+    async fn list_credentials_for_user(&self, _: &str) -> AppResult<Vec<WebauthnCredentialRecord>> {
+        Ok(vec![])
+    }
+
+    async fn get_credential_by_id_for_user(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn get_credential_by_credential_id(
+        &self,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn create_credential(
+        &self,
+        _: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update_credential(
+        &self,
+        _: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update_credential_if_current(
+        &self,
+        _: WebauthnCredentialRecord,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete_credential_for_user(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn create_challenge(
+        &self,
+        _: WebauthnChallengeRecord,
+    ) -> AppResult<WebauthnChallengeRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_challenge(&self, _: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn take_challenge(&self, _: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_challenge(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_expired_challenges(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullTotpRepository;
+
+#[async_trait]
+impl TotpRepository for NullTotpRepository {
+    async fn get_credential_for_user(&self, _: &str) -> AppResult<Option<TotpCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_credential(&self, _: TotpCredentialRecord) -> AppResult<TotpCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete_credential_for_user(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn create_enrollment_challenge(
+        &self,
+        _: TotpEnrollmentChallengeRecord,
+    ) -> AppResult<TotpEnrollmentChallengeRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_enrollment_challenge(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<TotpEnrollmentChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_enrollment_challenge(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_enrollment_challenges_for_user(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn delete_expired_enrollment_challenges(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn reset_user_mfa_and_invalidate_sessions(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_recovery_codes(
+        &self,
+        _: &str,
+        codes: Vec<TotpRecoveryCodeRecord>,
+    ) -> AppResult<()> {
+        if codes.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Repository("not configured".into()))
+        }
+    }
+
+    async fn list_recovery_codes_for_user(
+        &self,
+        _: &str,
+    ) -> AppResult<Vec<TotpRecoveryCodeRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_recovery_code_used(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_failed_attempt(&self, _: TotpFailedAttemptRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn count_failed_attempts_since(&self, _: &str, _: &str) -> AppResult<i64> {
+        Ok(0)
+    }
+
+    async fn clear_failed_attempts(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullUserExternalAccountRepository;
+
+#[async_trait]
+impl UserExternalAccountRepository for NullUserExternalAccountRepository {
+    async fn create(
+        &self,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn list_by_user_id(&self, _: &str) -> AppResult<Vec<scryer_domain::UserExternalAccount>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _: &str) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
+    async fn get_by_provider_identity(
+        &self,
+        _: scryer_domain::ExternalAccountProvider,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
+    async fn get_pending_claim_by_provider_username(
+        &self,
+        _: scryer_domain::ExternalAccountProvider,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
+    async fn update(
+        &self,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn create_auto_added_user_with_account(
+        &self,
+        _: scryer_domain::User,
+        _: scryer_domain::AppPermissionMask,
+        _: Vec<scryer_domain::LibraryGrant>,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<(scryer_domain::User, scryer_domain::UserExternalAccount)> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullMediaServerConnectionRepository;
+
+#[async_trait]
+impl MediaServerConnectionRepository for NullMediaServerConnectionRepository {
+    async fn list(
+        &self,
+        _: Option<scryer_domain::MediaServerProvider>,
+    ) -> AppResult<Vec<scryer_domain::MediaServerConnection>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _: &str) -> AppResult<Option<scryer_domain::MediaServerConnection>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        _: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update(
+        &self,
+        _: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn has_external_accounts(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn has_notification_channels(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+}
+
+#[derive(Default)]
+pub struct NullExternalIdentityVerifier;
+
+#[async_trait]
+impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
+    async fn verify_plex(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn discover_plex_servers(&self, _: &str) -> AppResult<Vec<PlexServerDiscovery>> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn verify_jellyfin(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<String> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn list_jellyfin_users(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> AppResult<Vec<JellyfinServerUser>> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
     }
 }
 
@@ -1745,6 +2176,9 @@ pub mod test_nulls {
             Ok(vec![])
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<User>> {
+            Ok(None)
+        }
+        async fn auth_session_version(&self, _: &str) -> AppResult<Option<String>> {
             Ok(None)
         }
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {

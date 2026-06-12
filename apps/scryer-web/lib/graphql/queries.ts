@@ -15,8 +15,6 @@ export const TITLE_CORE_FIELDS = `
     overview
     posterUrl
     posterSourceUrl
-    bannerUrl
-    bannerSourceUrl
     backgroundUrl
     backgroundSourceUrl
     sortTitle
@@ -87,6 +85,7 @@ const COLLECTION_EPISODE_FIELDS = `
       isFiller
       isRecap
       absoluteNumber
+      imageUrl
       monitored
       createdAt`;
 
@@ -207,6 +206,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     attentionRequired
     attentionReason
     downloadClientItemId
+    downloadId
     importStatus
     importErrorCode
     importErrorMessage
@@ -362,20 +362,55 @@ const NOTIFICATION_CHANNEL_FIELDS = `
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
+    createdAt
+    updatedAt`;
+
+export const MEDIA_SERVER_CONNECTION_FIELDS = `
+    id
+    provider
+    displayName
+    baseUrl
+    enabled
+    loginEnabled
+    linkingEnabled
+    autoAddEnabled
+    defaultAppPermissions
+    defaultLibraryGrants {
+      libraryId
+      permissions
+    }
+    machineIdPresent
+    apiKeyPresent
+    pathMappings {
+      sourcePath
+      destinationPath
+    }
     createdAt
     updatedAt`;
 
 const NOTIFICATION_SUBSCRIPTION_FIELDS = `
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId
     isEnabled
     createdAt
     updatedAt`;
+
+const NOTIFICATION_TARGET_FIELDS = `
+    id
+    targetKind
+    name
+    providerType
+    mediaServerProvider
+    mediaServerConnectionId
+    isEnabled`;
 
 export const BACKUP_INFO_FIELDS = `
     filename
@@ -491,6 +526,20 @@ export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: 
 
 export const deleteTitlePreviewQuery = `query DeleteTitlePreview($input: DeleteTitlePreviewInput!) {
   deleteTitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+  }
+}`;
+
+export const deleteTitlesPreviewQuery = `query DeleteTitlesPreview($input: DeleteTitlesPreviewInput!) {
+  deleteTitlesPreview(input: $input) {
+    preview {${DELETE_PREVIEW_FIELDS}
+    }
+    items {
+      titleId
+      error
+      preview {${DELETE_PREVIEW_FIELDS}
+      }
+    }
+    failedCount
   }
 }`;
 
@@ -787,12 +836,50 @@ export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permiss
   }
 }`;
 
+export const mediaRequestAdminLibrariesQuery = `query MediaRequestAdminLibraries($facet: MediaFacetValue) {
+  libraries(facet: $facet, permission: manageTitles) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    qualityProfileId
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
+export const mediaRequestRequesterLibrariesQuery = `query MediaRequestRequesterLibraries($facet: MediaFacetValue) {
+  libraries(facet: $facet, permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
 export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) {
   librarySettings(libraryId: $libraryId) {
     requiredAudioLanguagesOverride
     requiredAudioLanguages
     qualityProfileIdOverride
     qualityProfileId
+    requestQualityProfileIdsOverride
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
     scoringPersonaOverride
     scoringPersona
     fillerPolicyOverride
@@ -809,6 +896,8 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
     nfoWriteOnImport
     plexmatchWriteOnImportOverride
     plexmatchWriteOnImport
+    importModeOverride
+    importMode
     indexerRoutingOverride {
       indexerId
       enabled
@@ -1254,6 +1343,10 @@ export const usersQuery = `query Users {
   users {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -1311,6 +1404,20 @@ export const downloadClientsQuery = `query DownloadClients {
     lastSeenAt
     createdAt
     updatedAt
+  }
+}`;
+
+export const mediaServerConnectionsQuery = `query MediaServerConnections($provider: MediaServerProviderValue) {
+  mediaServerConnections(provider: $provider) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId: String!, $search: String) {
+  jellyfinServerUsers(connectionId: $connectionId, search: $search) {
+    id
+    username
+    displayName
+    avatarUrl
   }
 }`;
 
@@ -1469,7 +1576,8 @@ const mediaSettingsFieldSelection = `
     interSeasonMovies
     monitorFillerMovies
     nfoWriteOnImport
-    plexmatchWriteOnImport`;
+    plexmatchWriteOnImport
+    importMode`;
 
 const libraryPathsFieldSelection = `
     moviePath
@@ -1483,6 +1591,15 @@ const serviceSettingsFieldSelection = `
 // Batched query for quality profiles page: 5 requests → 1
 export const qualityProfilesInitQuery = `query QualityProfilesInit {
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
+  }
+}`;
+
+export const qualityProfileOptionsQuery = `query QualityProfileOptions {
+  qualityProfileSettings {
+    profiles {
+      id
+      name
+    }
   }
 }`;
 
@@ -1570,11 +1687,61 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
       isDefault
     }
   }
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
   movieSettings: mediaSettings(scope: movie) {${mediaSettingsFieldSelection}
   }
   seriesSettings: mediaSettings(scope: series) {${mediaSettingsFieldSelection}
   }
   animeSettings: mediaSettings(scope: anime) {${mediaSettingsFieldSelection}
+  }
+}`;
+
+export const globalSearchRequesterInitQuery = `query GlobalSearchRequesterInit {
+  qualityProfileSettings {${qualityProfileSettingsFieldSelection}
+  }
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
+export const requestableLibrariesQuery = `query RequestableLibraries {
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
   }
 }`;
 
@@ -1625,10 +1792,64 @@ export const generalSettingsQuery = `query GeneralSettings {
 export const securitySettingsQuery = `query SecuritySettings {
   securitySettings {
     formLoginEnabled
+    passwordMinLength
     skipLoginForLocalIps
+    mfaRequireConfigStepUp
+    mfaRequirePasswordLogin
+    totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettings {
+  externalAuthRuntimeSettings {
+    loginProviders
+    linkingProviders
+    connections {
+      id
+      provider
+      displayName
+      loginEnabled
+      linkingEnabled
+    }
+  }
+}`;
+
+export const linkedAccountsQuery = `query LinkedAccounts($userId: String) {
+  linkedAccounts(userId: $userId) {
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    lastLoginAt
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const externalAccountInvitesQuery = `query ExternalAccountInvites {
+  externalAccountInvites {
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    lastLoginAt
+    createdAt
+    updatedAt
   }
 }`;
 
@@ -1711,6 +1932,10 @@ export const meQuery = `query Me {
   me {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -1723,6 +1948,28 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
   authRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
+    passkeyEnabled
+    envOverrideActive
+    mfaRequirePasswordLogin
+    totpRequireJellyfinLogin
+  }
+}`;
+
+export const myPasskeysQuery = `query MyPasskeys {
+  myPasskeys {
+    id
+    friendlyName
+    createdAt
+    lastUsedAt
+  }
+}`;
+
+export const myTotpQuery = `query MyTotp {
+  myTotp {
+    enabled
+    createdAt
+    lastUsedAt
+    recoveryCodesRemaining
   }
 }`;
 
@@ -1733,6 +1980,14 @@ export const importHistoryQuery = `query ImportHistory($limit: Int) {
 
 export const importHistoryChangedSubscription = `subscription ImportHistoryChanged {
   importHistoryChanged
+}`;
+
+export const mediaRequestsChangedSubscription = `subscription MediaRequestsChanged {
+  mediaRequestsChanged
+}`;
+
+export const indexersChangedSubscription = `subscription IndexersChanged {
+  indexersChanged
 }`;
 
 export const providerCatalogChangedSubscription = `subscription ProviderCatalogChanged {
@@ -1791,10 +2046,6 @@ export const externalImportMonitorWarmupProgressSubscription = `subscription Ext
 
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
-}`;
-
-export const indexersChangedSubscription = `subscription IndexersChanged {
-  indexersChanged
 }`;
 
 export const systemHealthQuery = `query SystemHealth {
@@ -1856,6 +2107,32 @@ export const serviceLogLinesSubscription = `subscription ServiceLogLines {
 
 export const previewManualImportQuery = `query PreviewManualImport($clientId: String, $downloadClientItemId: String!, $titleId: String!) {
   previewManualImport(clientId: $clientId, downloadClientItemId: $downloadClientItemId, titleId: $titleId) {
+    files {
+      filePath
+      fileName
+      sizeBytes
+      quality
+      parsedSeason
+      parsedEpisodes
+      suggestedEpisodeId
+      suggestedEpisodeLabel
+    }
+    availableEpisodes {
+      id
+      titleId
+      collectionId
+      episodeType
+      episodeNumber
+      seasonNumber
+      episodeLabel
+      title
+      monitored
+    }
+  }
+}`;
+
+export const previewManualImportPathQuery = `query PreviewManualImportPath($input: PreviewManualImportPathInput!) {
+  previewManualImportPath(input: $input) {
     files {
       filePath
       fileName
@@ -1949,12 +2226,14 @@ export const pluginsQuery = `query Plugins {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -1968,6 +2247,7 @@ export const pluginsQuery = `query Plugins {
     lastCheckedAt
     outageMessage
     blockedActions
+    restoreWarnings
     lastError
   }
 }`;
@@ -2047,6 +2327,11 @@ export const notificationChannelsQuery = `query NotificationChannels {
   }
 }`;
 
+export const notificationTargetsQuery = `query NotificationTargets {
+  notificationTargets {${NOTIFICATION_TARGET_FIELDS}
+  }
+}`;
+
 export const notificationSubscriptionsQuery = `query NotificationSubscriptions {
   notificationSubscriptions {${NOTIFICATION_SUBSCRIPTION_FIELDS}
   }
@@ -2063,6 +2348,10 @@ export const notificationEventTypesQuery = `query NotificationEventTypes {
 
 export const notificationsInitQuery = `query NotificationsInit {
   notificationChannels {${NOTIFICATION_CHANNEL_FIELDS}
+  }
+  mediaServerConnections {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+  notificationTargets {${NOTIFICATION_TARGET_FIELDS}
   }
   notificationSubscriptions {${NOTIFICATION_SUBSCRIPTION_FIELDS}
   }
@@ -2104,6 +2393,11 @@ export const pendingImportCountsQuery = `query PendingImportCounts {
 export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
   navigationBadgeCounts {
     pendingImportCounts {
+      movie
+      series
+      anime
+    }
+    pendingMediaRequestCounts {
       movie
       series
       anime
@@ -2231,6 +2525,7 @@ export const metadataSeriesQuery = `query MetadataSeries($id: String!, $includeE
       aired
       runtimeMinutes
       isFiller
+      imageUrl
     }
   }
 }`;
@@ -2361,6 +2656,86 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       createdAt
     }
     totalCount
+  }
+}`;
+
+export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+  mediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    sortTitle
+    slug
+    posterUrl
+    year
+    overview
+    runtimeMinutes
+    language
+    contentStatus
+    requestedQualityProfileId
+    requestedQualityProfileName
+    requestedMonitorType
+    resolvedByUserId
+    resolvedAt
+    createdTitleId
+    approvedQualityProfileId
+    approvedQualityProfileName
+    externalIds {
+      source
+      value
+    }
+    requesters {
+      userId
+      username
+      avatarUrl
+      requestedAt
+    }
+    createdByUserId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+  myMediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    sortTitle
+    slug
+    posterUrl
+    year
+    overview
+    runtimeMinutes
+    language
+    contentStatus
+    requestedQualityProfileId
+    requestedQualityProfileName
+    requestedMonitorType
+    resolvedByUserId
+    resolvedAt
+    createdTitleId
+    approvedQualityProfileId
+    approvedQualityProfileName
+    externalIds {
+      source
+      value
+    }
+    requesters {
+      userId
+      username
+      avatarUrl
+      requestedAt
+    }
+    createdByUserId
+    createdAt
+    updatedAt
   }
 }`;
 

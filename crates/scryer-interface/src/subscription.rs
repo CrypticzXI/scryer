@@ -547,6 +547,127 @@ impl SubscriptionRoot {
         guard_subscription_stream(ctx, Box::pin(stream))
     }
 
+    async fn media_requests_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, bool> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!("media_requests_changed: app_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(e) => {
+                tracing::warn!("media_requests_changed: actor_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        match app.can_access_media_requests(&actor).await {
+            Ok(true) => {}
+            Ok(false) => return empty_box_stream(),
+            Err(e) => {
+                tracing::warn!("media_requests_changed: permission check failed: {e}");
+                return empty_box_stream();
+            }
+        }
+
+        let receiver = match app.subscribe_domain_event_sequences(&actor).await {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                tracing::warn!("media_requests_changed: subscribe failed: {e}");
+                return empty_box_stream();
+            }
+        };
+
+        tracing::debug!(
+            "media_requests_changed: subscription started for user {}",
+            actor.id
+        );
+
+        let stream = unfold(
+            (
+                receiver,
+                Option::<i64>::None,
+                VecDeque::<DomainEvent>::new(),
+            ),
+            move |(mut receiver, mut cursor, mut pending)| {
+                let app = app.clone();
+                let actor = actor.clone();
+                async move {
+                    loop {
+                        if let Some(event) = pending.pop_front() {
+                            cursor = Some(event.sequence);
+                            return Some((true, (receiver, cursor, pending)));
+                        }
+
+                        let after_sequence = match cursor {
+                            Some(cursor) => cursor,
+                            None => match receiver.recv().await {
+                                Ok(sequence) => {
+                                    cursor = Some(sequence.saturating_sub(1));
+                                    continue;
+                                }
+                                Err(RecvError::Lagged(n)) => {
+                                    tracing::debug!(
+                                        "media_requests_changed: receiver lagged, skipped {n} wakeups"
+                                    );
+                                    continue;
+                                }
+                                Err(RecvError::Closed) => {
+                                    tracing::debug!(
+                                        "media_requests_changed: broadcast channel closed"
+                                    );
+                                    return None;
+                                }
+                            },
+                        };
+
+                        let events = match app
+                            .list_media_request_lifecycle_events_for_actor(
+                                &actor,
+                                after_sequence,
+                                100,
+                            )
+                            .await
+                        {
+                            Ok(events) if !events.is_empty() => events,
+                            Ok(_) => match receiver.recv().await {
+                                Ok(sequence) => {
+                                    if sequence > after_sequence {
+                                        cursor = Some(sequence.saturating_sub(1));
+                                    }
+                                    continue;
+                                }
+                                Err(RecvError::Lagged(n)) => {
+                                    tracing::debug!(
+                                        "media_requests_changed: receiver lagged, skipped {n} wakeups"
+                                    );
+                                    continue;
+                                }
+                                Err(RecvError::Closed) => {
+                                    tracing::debug!(
+                                        "media_requests_changed: broadcast channel closed"
+                                    );
+                                    return None;
+                                }
+                            },
+                            Err(error) => {
+                                tracing::warn!("media_requests_changed: list failed: {error}");
+                                return None;
+                            }
+                        };
+
+                        pending = events.into_iter().collect();
+                    }
+                }
+            },
+        );
+
+        guard_subscription_stream(ctx, Box::pin(stream))
+    }
+
     async fn indexers_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, bool> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
@@ -892,6 +1013,7 @@ mod tests {
             episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
+            category: None,
             client_id: "client-1".to_string(),
             client_name: "Weaver".to_string(),
             client_type: "weaver".to_string(),
@@ -904,6 +1026,7 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: id.to_string(),
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,

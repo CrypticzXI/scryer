@@ -671,7 +671,7 @@ export function SettingsIndexersSection({
                 );
               })}
               {settingsIndexers.length === 0 ? (
-                <TableRow>
+                <TableRow id="settings-indexers-empty-row">
                   <TableCell colSpan={8} className="text-muted-foreground">
                     {t("settings.noIndexersFound")}
                   </TableCell>

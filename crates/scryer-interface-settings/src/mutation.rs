@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
+    AcquisitionSettings as AppAcquisitionSettings, LoginFailureTimingClass,
+    MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
@@ -10,15 +13,27 @@ use scryer_application::{
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
-use scryer_interface_core::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
+use scryer_interface_core::{
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
+    mfa_verification_from_ctx, to_gql_error, to_login_gql_error, to_login_gql_error_after_timing,
+};
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_settings, from_quality_profile_settings, from_service_settings, from_user,
+    from_media_server_connection, from_media_settings, from_plex_server_discovery,
+    from_quality_profile_settings, from_service_settings, from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
 #[derive(Default)]
 pub struct SettingsMutations;
+
+fn parse_import_mode_input(raw: Option<String>) -> GqlResult<Option<scryer_domain::ImportMode>> {
+    raw.map(|value| {
+        scryer_domain::ImportMode::from_setting(&value)
+            .map_err(|message| Error::new(format!("invalid importMode: {message}")))
+    })
+    .transpose()
+}
 
 fn from_subtitle_settings(
     settings: scryer_application::SubtitleSettings,
@@ -103,10 +118,110 @@ fn from_security_settings(
 ) -> SecuritySettingsPayload {
     SecuritySettingsPayload {
         form_login_enabled: settings.form_login_enabled,
+        password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        mfa_require_config_step_up: settings.mfa_require_config_step_up,
+        mfa_require_password_login: settings.mfa_require_password_login,
+        totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
+    }
+}
+
+fn media_server_app_permissions(
+    permissions: Option<Vec<AppPermissionValue>>,
+) -> scryer_domain::AppPermissionMask {
+    scryer_domain::AppPermissionMask::from_permissions(
+        permissions
+            .unwrap_or_default()
+            .into_iter()
+            .map(AppPermissionValue::into_domain),
+    )
+}
+
+fn media_server_library_grants(
+    grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
+) -> Vec<scryer_domain::MediaServerDefaultLibraryGrant> {
+    grants
+        .unwrap_or_default()
+        .into_iter()
+        .map(|grant| scryer_domain::MediaServerDefaultLibraryGrant {
+            library_id: grant.library_id,
+            permissions: scryer_domain::LibraryPermissionMask::from_permissions(
+                grant
+                    .permissions
+                    .into_iter()
+                    .map(LibraryPermissionValue::into_domain),
+            )
+            .normalized_for_storage(),
+        })
+        .collect()
+}
+
+fn media_server_path_mappings(
+    mappings: Option<Vec<MediaServerPathMappingInput>>,
+) -> Vec<scryer_domain::MediaServerPathMapping> {
+    mappings
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, mapping)| scryer_domain::MediaServerPathMapping {
+            source_path: mapping.source_path,
+            destination_path: mapping.destination_path,
+            sort_order: index as i64,
+        })
+        .collect()
+}
+
+fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerConnectionDraft {
+    MediaServerConnectionDraft {
+        provider: input.provider.into_domain(),
+        display_name: input.display_name,
+        base_url: input.base_url,
+        enabled: input.enabled.unwrap_or(true),
+        login_enabled: input.login_enabled.unwrap_or(false),
+        linking_enabled: input.linking_enabled.unwrap_or(false),
+        auto_add_enabled: input.auto_add_enabled.unwrap_or(false),
+        default_app_permissions: media_server_app_permissions(input.default_app_permissions),
+        default_library_grants: media_server_library_grants(input.default_library_grants),
+        machine_id: input.machine_id,
+        plex_auth_token: input.plex_auth_token,
+        plex_server_id: input.plex_server_id,
+        api_key: input.api_key,
+        admin_username: input.admin_username,
+        admin_password: input.admin_password,
+        path_mappings: media_server_path_mappings(input.path_mappings),
+    }
+}
+
+fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerConnectionPatch {
+    MediaServerConnectionPatch {
+        id: input.id,
+        provider: input.provider.map(MediaServerProviderValue::into_domain),
+        display_name: input.display_name,
+        base_url: input.base_url,
+        enabled: input.enabled,
+        login_enabled: input.login_enabled,
+        linking_enabled: input.linking_enabled,
+        auto_add_enabled: input.auto_add_enabled,
+        default_app_permissions: input
+            .default_app_permissions
+            .map(|permissions| media_server_app_permissions(Some(permissions))),
+        default_library_grants: input
+            .default_library_grants
+            .map(|grants| media_server_library_grants(Some(grants))),
+        machine_id: input.machine_id,
+        clear_machine_id: input.clear_machine_id.unwrap_or(false),
+        plex_auth_token: input.plex_auth_token,
+        plex_server_id: input.plex_server_id,
+        api_key: input.api_key,
+        clear_api_key: input.clear_api_key.unwrap_or(false),
+        admin_username: input.admin_username,
+        admin_password: input.admin_password,
+        path_mappings: input
+            .path_mappings
+            .map(|mappings| media_server_path_mappings(Some(mappings))),
     }
 }
 
@@ -130,6 +245,123 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
         priority: profile.priority,
         enabled: profile.enabled,
     }
+}
+
+fn from_webauthn_challenge_start(
+    challenge: scryer_application::WebauthnChallengeStart,
+) -> WebauthnChallengePayload {
+    WebauthnChallengePayload {
+        challenge_id: challenge.challenge_id,
+        options_json: challenge.options_json,
+    }
+}
+
+fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
+    PasskeySummaryPayload {
+        id: summary.id,
+        friendly_name: summary.friendly_name,
+        created_at: summary.created_at,
+        last_used_at: summary.last_used_at,
+    }
+}
+
+fn from_totp_status(status: scryer_application::TotpStatus) -> TotpStatusPayload {
+    TotpStatusPayload {
+        enabled: status.enabled,
+        created_at: status.created_at,
+        last_used_at: status.last_used_at,
+        recovery_codes_remaining: status.recovery_codes_remaining,
+    }
+}
+
+fn from_totp_enrollment_start(
+    start: scryer_application::TotpEnrollmentStart,
+) -> TotpEnrollmentStartPayload {
+    TotpEnrollmentStartPayload {
+        challenge_id: start.challenge_id,
+        otpauth_url: start.otpauth_url,
+        secret_base32: start.secret_base32,
+        expires_at: start.expires_at,
+    }
+}
+
+fn from_totp_enrollment_complete(
+    complete: scryer_application::TotpEnrollmentComplete,
+) -> TotpEnrollmentCompletePayload {
+    TotpEnrollmentCompletePayload {
+        status: from_totp_status(complete.status),
+        recovery_codes: complete.recovery_codes,
+    }
+}
+
+async fn login_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+    mfa_verified_until: Option<chrono::DateTime<Utc>>,
+    mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+) -> Result<LoginPayload, Error> {
+    let user = app
+        .load_user_for_auth_payload(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app
+        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
+        .await
+        .map_err(to_gql_error)?;
+    let auth_factor_status = app
+        .user_auth_factor_status(&user.id)
+        .await
+        .map_err(to_gql_error)?;
+    let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user_with_auth_factor_status(user, auth_factor_status),
+        expires_at,
+        mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
+        mfa_enrollment_required: false,
+    })
+}
+
+async fn login_mfa_enrollment_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> Result<LoginPayload, Error> {
+    let user = app
+        .load_user_for_auth_payload(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app
+        .issue_mfa_enrollment_token(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let auth_factor_status = app
+        .user_auth_factor_status(&user.id)
+        .await
+        .map_err(to_gql_error)?;
+    let expires_at =
+        (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user_with_auth_factor_status(user, auth_factor_status),
+        expires_at,
+        mfa_verified_until: None,
+        mfa_enrollment_required: true,
+    })
+}
+
+async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<()> {
+    if !auth_runtime_from_ctx(ctx)
+        .snapshot()
+        .effective_form_login_enabled
+    {
+        return Ok(());
+    }
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    let mfa = mfa_verification_from_ctx(ctx);
+    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+        .await
+        .map_err(to_gql_error)
 }
 
 fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
@@ -160,6 +392,20 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
             .filter(|codec| seen.insert(codec.to_string()))
             .collect::<Vec<_>>()
     };
+    let normalize_source_list = |values: Vec<scryer_application::ReleaseSource>| {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .into_iter()
+            .filter(|source| seen.insert(source.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let normalize_audio_codec_list = |values: Vec<scryer_application::AudioCodec>| {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .into_iter()
+            .filter(|codec| seen.insert(codec.to_string()))
+            .collect::<Vec<_>>()
+    };
 
     let criteria = profile.criteria;
     let mut facet_persona_overrides = std::collections::HashMap::new();
@@ -179,12 +425,12 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
                 .map(|value| value.trim().to_ascii_uppercase())
                 .filter(|value| !value.is_empty()),
             allow_unknown_quality: criteria.allow_unknown_quality,
-            source_allowlist: normalize_list(criteria.source_allowlist),
-            source_blocklist: normalize_list(criteria.source_blocklist),
+            source_allowlist: normalize_source_list(criteria.source_allowlist),
+            source_blocklist: normalize_source_list(criteria.source_blocklist),
             video_codec_allowlist: normalize_video_codec_list(criteria.video_codec_allowlist),
             video_codec_blocklist: normalize_video_codec_list(criteria.video_codec_blocklist),
-            audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
-            audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
+            audio_codec_allowlist: normalize_audio_codec_list(criteria.audio_codec_allowlist),
+            audio_codec_blocklist: normalize_audio_codec_list(criteria.audio_codec_blocklist),
             atmos_preferred: criteria.atmos_preferred,
             dolby_vision_allowed: criteria.dolby_vision_allowed,
             detected_hdr_allowed: criteria.detected_hdr_allowed,
@@ -210,6 +456,10 @@ fn quality_profile_from_input(
     existing: Option<&QualityProfile>,
 ) -> GqlResult<QualityProfile> {
     let criteria = input.criteria;
+    let source_allowlist =
+        parse_source_values(criteria.source_allowlist, "criteria.source_allowlist")?;
+    let source_blocklist =
+        parse_source_values(criteria.source_blocklist, "criteria.source_blocklist")?;
     let video_codec_allowlist = parse_video_codec_values(
         criteria.video_codec_allowlist,
         "criteria.video_codec_allowlist",
@@ -217,6 +467,14 @@ fn quality_profile_from_input(
     let video_codec_blocklist = parse_video_codec_values(
         criteria.video_codec_blocklist,
         "criteria.video_codec_blocklist",
+    )?;
+    let audio_codec_allowlist = parse_audio_codec_values(
+        criteria.audio_codec_allowlist,
+        "criteria.audio_codec_allowlist",
+    )?;
+    let audio_codec_blocklist = parse_audio_codec_values(
+        criteria.audio_codec_blocklist,
+        "criteria.audio_codec_blocklist",
     )?;
 
     let profile = normalize_quality_profile(QualityProfile {
@@ -226,12 +484,12 @@ fn quality_profile_from_input(
             quality_tiers: criteria.quality_tiers,
             archival_quality: criteria.archival_quality,
             allow_unknown_quality: criteria.allow_unknown_quality,
-            source_allowlist: criteria.source_allowlist,
-            source_blocklist: criteria.source_blocklist,
+            source_allowlist,
+            source_blocklist,
             video_codec_allowlist,
             video_codec_blocklist,
-            audio_codec_allowlist: criteria.audio_codec_allowlist,
-            audio_codec_blocklist: criteria.audio_codec_blocklist,
+            audio_codec_allowlist,
+            audio_codec_blocklist,
             atmos_preferred: existing
                 .map(|profile| profile.criteria.atmos_preferred)
                 .unwrap_or(false),
@@ -280,6 +538,36 @@ fn parse_video_codec_values(
         .collect()
 }
 
+fn parse_source_values(
+    values: Vec<String>,
+    field: &str,
+) -> GqlResult<Vec<scryer_application::ReleaseSource>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            scryer_application::ReleaseSource::parse(trimmed.as_str()).ok_or_else(|| {
+                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_audio_codec_values(
+    values: Vec<String>,
+    field: &str,
+) -> GqlResult<Vec<scryer_application::AudioCodec>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            scryer_application::AudioCodec::parse(trimmed.as_str()).ok_or_else(|| {
+                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+            })
+        })
+        .collect()
+}
+
 #[Object]
 impl SettingsMutations {
     async fn update_subtitle_settings(
@@ -289,6 +577,7 @@ impl SettingsMutations {
     ) -> GqlResult<SubtitleSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_subtitle_settings(
@@ -331,6 +620,7 @@ impl SettingsMutations {
     ) -> GqlResult<AcquisitionSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_acquisition_settings(
@@ -359,6 +649,7 @@ impl SettingsMutations {
     ) -> GqlResult<GeneralSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_general_settings(
@@ -378,6 +669,7 @@ impl SettingsMutations {
     async fn clear_title_image_cache(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         app.clear_title_image_cache(&actor)
             .await
             .map_err(to_gql_error)
@@ -390,6 +682,7 @@ impl SettingsMutations {
     ) -> GqlResult<RecycleBinSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_recycle_bin_settings(
@@ -411,6 +704,7 @@ impl SettingsMutations {
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_auto_backup_settings(
@@ -436,13 +730,18 @@ impl SettingsMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
+        require_config_step_up(ctx).await?;
 
         let settings = app
             .update_security_settings(
                 &actor,
                 AppUpdateSecuritySettings {
                     form_login_enabled: input.form_login_enabled,
+                    password_min_length: input.password_min_length,
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
+                    mfa_require_config_step_up: input.mfa_require_config_step_up,
+                    mfa_require_password_login: input.mfa_require_password_login,
+                    totp_require_jellyfin_login: input.totp_require_jellyfin_login,
                 },
             )
             .await
@@ -455,6 +754,82 @@ impl SettingsMutations {
         Ok(from_security_settings(settings, &snapshot))
     }
 
+    async fn create_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateMediaServerConnectionInput,
+    ) -> GqlResult<MediaServerConnectionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.create_media_server_connection(&actor, media_server_draft(input))
+            .await
+            .map(from_media_server_connection)
+            .map_err(to_gql_error)
+    }
+
+    async fn update_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateMediaServerConnectionInput,
+    ) -> GqlResult<MediaServerConnectionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.update_media_server_connection(&actor, media_server_patch(input))
+            .await
+            .map(from_media_server_connection)
+            .map_err(to_gql_error)
+    }
+
+    async fn delete_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.delete_media_server_connection(&actor, &id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(true)
+    }
+
+    async fn test_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        plex_auth_token: Option<String>,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.test_media_server_connection(&actor, &id, plex_auth_token.as_deref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(true)
+    }
+
+    async fn discover_plex_media_servers(
+        &self,
+        ctx: &Context<'_>,
+        plex_auth_token: String,
+    ) -> GqlResult<Vec<PlexServerDiscoveryPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.discover_plex_media_servers(&actor, &plex_auth_token)
+            .await
+            .map(|servers| {
+                servers
+                    .into_iter()
+                    .map(from_plex_server_discovery)
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+
     async fn upsert_delay_profile(
         &self,
         ctx: &Context<'_>,
@@ -462,6 +837,7 @@ impl SettingsMutations {
     ) -> GqlResult<DelayProfilePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
 
         let profile = app
             .upsert_delay_profile(
@@ -497,6 +873,7 @@ impl SettingsMutations {
     ) -> GqlResult<DelayProfileDeletionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         let id = app
             .delete_delay_profile(&actor, &input.id)
             .await
@@ -511,7 +888,9 @@ impl SettingsMutations {
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         let scope = input.scope;
+        let import_mode = parse_import_mode_input(input.import_mode)?;
         app.update_media_settings(
             &actor,
             scope.into_media_facet(),
@@ -538,6 +917,7 @@ impl SettingsMutations {
                 monitor_filler_movies: input.monitor_filler_movies,
                 nfo_write_on_import: input.nfo_write_on_import,
                 plexmatch_write_on_import: input.plexmatch_write_on_import,
+                import_mode,
             },
         )
         .await
@@ -552,6 +932,7 @@ impl SettingsMutations {
     ) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         app.update_library_paths(
             &actor,
             scryer_application::UpdateLibraryPaths {
@@ -572,6 +953,7 @@ impl SettingsMutations {
     ) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         app.update_service_settings(
             &actor,
             scryer_application::UpdateServiceSettings {
@@ -591,6 +973,7 @@ impl SettingsMutations {
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         let current = app
             .get_quality_profile_settings(&actor)
             .await
@@ -654,6 +1037,7 @@ impl SettingsMutations {
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         let scope = input.scope;
         app.update_download_client_routing(
             &actor,
@@ -691,6 +1075,7 @@ impl SettingsMutations {
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         let scope = input.scope;
         app.update_indexer_routing(
             &actor,
@@ -723,30 +1108,251 @@ impl SettingsMutations {
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
         app.delete_quality_profile(&actor, &input.profile_id)
             .await
             .map(from_quality_profile_settings)
             .map_err(to_gql_error)
     }
 
+    async fn webauthn_register_start(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.webauthn_register_start(&actor, auth_runtime.snapshot().effective_form_login_enabled)
+            .await
+            .map(from_webauthn_challenge_start)
+            .map_err(to_gql_error)
+    }
+
+    async fn webauthn_register_complete(
+        &self,
+        ctx: &Context<'_>,
+        input: WebauthnRegisterCompleteInput,
+    ) -> GqlResult<PasskeySummaryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.webauthn_register_complete(
+            &actor,
+            &input.challenge_id,
+            &input.response_json,
+            input.friendly_name,
+            auth_runtime.snapshot().effective_form_login_enabled,
+        )
+        .await
+        .map(from_passkey_summary)
+        .map_err(to_gql_error)
+    }
+
+    async fn totp_enrollment_start(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<TotpEnrollmentStartPayload> {
+        let app = app_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
+        let actor = if mfa.session_scope == scryer_application::JwtSessionScope::MfaEnrollment {
+            mfa_enrollment_actor_from_ctx(ctx)?
+        } else {
+            actor_from_ctx(ctx)?
+        };
+        app.totp_enrollment_start(&actor)
+            .await
+            .map(from_totp_enrollment_start)
+            .map_err(to_gql_error)
+    }
+
+    async fn totp_enrollment_complete(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpEnrollmentCompleteInput,
+    ) -> GqlResult<TotpEnrollmentCompletePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.totp_enrollment_complete(&actor, &input.challenge_id, &input.code)
+            .await
+            .map(from_totp_enrollment_complete)
+            .map_err(to_gql_error)
+    }
+
+    async fn complete_login_mfa_enrollment(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpEnrollmentCompleteInput,
+    ) -> GqlResult<LoginMfaEnrollmentCompletePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = mfa_enrollment_actor_from_ctx(ctx)?;
+        let complete = app
+            .totp_enrollment_complete(&actor, &input.challenge_id, &input.code)
+            .await
+            .map_err(to_gql_error)?;
+        let login =
+            login_payload_from_user(&app, actor, Some(app.mfa_freshness_verified_until()), None)
+                .await?;
+        Ok(LoginMfaEnrollmentCompletePayload {
+            status: from_totp_status(complete.status),
+            recovery_codes: complete.recovery_codes,
+            login,
+        })
+    }
+
+    async fn mfa_verify_step_up(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpVerifyInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let mfa_step_up_verified_until = app
+            .mfa_verify_step_up(&actor, &input.code)
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until)).await
+    }
+
+    async fn totp_disable(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpVerifyInput,
+    ) -> GqlResult<TotpStatusPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.totp_disable(&actor, &input.code)
+            .await
+            .map(from_totp_status)
+            .map_err(to_gql_error)
+    }
+
+    async fn totp_regenerate_recovery_codes(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpVerifyInput,
+    ) -> GqlResult<TotpEnrollmentCompletePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.totp_regenerate_recovery_codes(&actor, &input.code)
+            .await
+            .map(from_totp_enrollment_complete)
+            .map_err(to_gql_error)
+    }
+
+    async fn webauthn_authenticate_start(
+        &self,
+        ctx: &Context<'_>,
+        username: Option<String>,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        let form_login_enabled = auth_runtime.snapshot().effective_form_login_enabled;
+        let started_at = Instant::now();
+        let start = match app
+            .webauthn_authenticate_start(username.as_deref(), form_login_enabled)
+            .await
+        {
+            Ok(start) => start,
+            Err(err) => {
+                if !form_login_enabled {
+                    return Err(to_login_gql_error("passkey", err));
+                }
+                return Err(to_login_gql_error_after_timing(
+                    "passkey",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
+        Ok(from_webauthn_challenge_start(start))
+    }
+
+    async fn webauthn_authenticate_complete(
+        &self,
+        ctx: &Context<'_>,
+        input: WebauthnCompleteInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        let form_login_enabled = auth_runtime.snapshot().effective_form_login_enabled;
+        let started_at = Instant::now();
+        let user = match app
+            .webauthn_authenticate_complete(
+                &input.challenge_id,
+                &input.response_json,
+                form_login_enabled,
+            )
+            .await
+        {
+            Ok(user) => user,
+            Err(err) => {
+                if !form_login_enabled {
+                    return Err(to_login_gql_error("passkey", err));
+                }
+                return Err(to_login_gql_error_after_timing(
+                    "passkey",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
+        login_payload_from_user(&app, user, None, None).await
+    }
+
+    async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.delete_my_passkey(
+            &actor,
+            &id,
+            auth_runtime.snapshot().effective_form_login_enabled,
+        )
+        .await
+        .map(|_| true)
+        .map_err(to_gql_error)
+    }
+
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let user = app
+        let user = match app
             .authenticate_credentials(&input.username, &input.password)
             .await
-            .map_err(to_gql_error)?;
-        let user = app
-            .attach_user_authorization(user)
-            .await
-            .map_err(to_gql_error)?;
-        let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
-        let expires_at =
-            (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
-        Ok(LoginPayload {
-            token,
-            user: from_user(user),
-            expires_at,
-        })
+        {
+            Ok(user) => user,
+            Err(err) => return Err(to_login_gql_error("local", err)),
+        };
+        let effective_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        let password_login_mfa_required = effective_login_enabled
+            && app
+                .security_settings()
+                .await
+                .map_err(to_gql_error)?
+                .mfa_require_password_login;
+        let mfa_verified_until = if password_login_mfa_required {
+            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
+                return login_mfa_enrollment_payload_from_user(&app, user).await;
+            }
+            let code = input.totp_code.as_deref().ok_or_else(|| {
+                to_gql_error(scryer_application::AppError::MfaStepUpRequired(
+                    "MFA code is required for password login".into(),
+                ))
+            })?;
+            Some(
+                app.verify_totp_for_user(&user, code)
+                    .await
+                    .map_err(to_gql_error)?,
+            )
+        } else {
+            None
+        };
+        login_payload_from_user(&app, user, mfa_verified_until, None).await
     }
 
     /// Mark the setup wizard as complete.

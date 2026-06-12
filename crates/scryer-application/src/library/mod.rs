@@ -1,6 +1,7 @@
 pub(crate) use crate::*;
 
 pub(crate) mod discovery;
+pub(crate) mod filename_parser;
 pub mod filesystem_walk;
 pub(crate) mod nfo;
 pub(crate) mod pending_imports;

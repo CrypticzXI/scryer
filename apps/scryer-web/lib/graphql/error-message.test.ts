@@ -16,6 +16,15 @@ test("normalizeGraphQlErrorMessage strips GraphQL validation prefixes", () => {
   );
 });
 
+test("normalizeGraphQlErrorMessage strips nested GraphQL repository validation prefixes", () => {
+  assert.equal(
+    normalizeGraphQlErrorMessage(
+      "[GraphQL] repository: validation: passkeys require a password-backed account",
+    ),
+    "passkeys require a password-backed account",
+  );
+});
+
 test("userFacingGraphQlErrorMessage passes plain Error.message through", () => {
   assert.equal(userFacingGraphQlErrorMessage(new Error("queue failed"), "fallback"), "queue failed");
 });

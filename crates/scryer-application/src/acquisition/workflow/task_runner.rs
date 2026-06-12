@@ -1,0 +1,1934 @@
+async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
+    let blocked_facets = app
+        .runtime
+        .library
+        .library_scan_tracker
+        .active_facets()
+        .await;
+    if blocked_facets.is_empty() {
+        return Vec::new();
+    }
+
+    metrics::counter!("scryer_background_acquisition_scan_owned_yields_total").increment(1);
+    debug!(
+        blocked_facets = ?active_scan_facet_labels(&blocked_facets),
+        wait_secs = ACQUISITION_SCAN_QUIET_WAIT.as_secs(),
+        "background acquisition: yielding while library scan owns active facet"
+    );
+
+    let _ = tokio::time::timeout(
+        ACQUISITION_SCAN_QUIET_WAIT,
+        app.runtime
+            .library
+            .library_scan_tracker
+            .wait_for_active_facets_change(&blocked_facets),
+    )
+    .await;
+
+    let blocked_facets = app
+        .runtime
+        .library
+        .library_scan_tracker
+        .active_facets()
+        .await;
+
+    if !blocked_facets.is_empty() {
+        debug!(
+            blocked_facets = ?active_scan_facet_labels(&blocked_facets),
+            "background acquisition: deferring due wanted items for actively scanning facets"
+        );
+    }
+
+    blocked_facets
+}
+/// Process due wanted items: search indexers and auto-grab best releases.
+async fn process_due_wanted_items(app: &AppUseCase) {
+    let blocked_facets = blocked_acquisition_facets_after_quiet_wait(app).await;
+    process_due_wanted_items_with_blocked_facets(app, &blocked_facets).await;
+}
+fn select_due_items_for_cooperative_slice(
+    due_items: Vec<WantedItem>,
+) -> (Vec<WantedItem>, HashMap<String, usize>) {
+    let mut due_items = due_items;
+    due_items.sort_by(compare_due_wanted_items_for_search);
+
+    let mut selected = Vec::with_capacity(due_items.len());
+    let mut selected_per_title: HashMap<String, usize> = HashMap::new();
+    let mut deferred_per_title: HashMap<String, usize> = HashMap::new();
+
+    for item in due_items {
+        let selected_for_title = selected_per_title.entry(item.title_id.clone()).or_insert(0);
+        if *selected_for_title >= ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE {
+            *deferred_per_title.entry(item.title_id.clone()).or_insert(0) += 1;
+            continue;
+        }
+
+        *selected_for_title += 1;
+        selected.push(item);
+    }
+
+    (selected, deferred_per_title)
+}
+fn compare_due_wanted_items_for_search(
+    left: &WantedItem,
+    right: &WantedItem,
+) -> std::cmp::Ordering {
+    left.next_search_at
+        .cmp(&right.next_search_at)
+        .then_with(|| wanted_due_title_order(left).cmp(&wanted_due_title_order(right)))
+        .then_with(|| left.title_id.cmp(&right.title_id))
+        .then_with(|| wanted_due_media_order(left).cmp(&wanted_due_media_order(right)))
+        .then_with(|| {
+            wanted_due_numeric_text_order(left.season_number.as_deref())
+                .cmp(&wanted_due_numeric_text_order(right.season_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_text_order(left.season_number.as_deref())
+                .cmp(&wanted_due_text_order(right.season_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_numeric_text_order(left.episode_number.as_deref())
+                .cmp(&wanted_due_numeric_text_order(right.episode_number.as_deref()))
+        })
+        .then_with(|| {
+            wanted_due_text_order(left.episode_number.as_deref())
+                .cmp(&wanted_due_text_order(right.episode_number.as_deref()))
+        })
+        .then_with(|| left.created_at.cmp(&right.created_at))
+        .then_with(|| left.id.cmp(&right.id))
+}
+fn wanted_due_title_order(item: &WantedItem) -> String {
+    item.title_name
+        .as_deref()
+        .unwrap_or(&item.title_id)
+        .trim()
+        .to_lowercase()
+}
+fn wanted_due_media_order(item: &WantedItem) -> u8 {
+    if item.media_type == "episode" { 0 } else { 1 }
+}
+fn wanted_due_numeric_text_order(value: Option<&str>) -> (u8, u64) {
+    let value = value.unwrap_or("").trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return (1, 0);
+    }
+
+    (0, value.parse::<u64>().unwrap_or(u64::MAX))
+}
+fn wanted_due_text_order(value: Option<&str>) -> (u8, String) {
+    let value = value.unwrap_or("").trim();
+    if value.is_empty() {
+        return (1, String::new());
+    }
+
+    (0, value.to_lowercase())
+}
+
+pub(crate) async fn process_due_wanted_items_with_blocked_facets(
+    app: &AppUseCase,
+    blocked_facets: &[MediaFacet],
+) {
+    prune_standby_candidates(app).await;
+
+    // Check for download failures first — re-queues failed items with
+    // next_search_at=NOW so they appear in the due list below.
+    let dl_snapshot = DownloadClientSnapshot::fetch(app).await;
+    check_grabbed_for_failures(app, &dl_snapshot).await;
+
+    // Capture `now` AFTER failure check so that items just re-queued
+    // are guaranteed to satisfy `next_search_at <= now`.
+    let now = Utc::now();
+    let now_str = now.to_rfc3339();
+
+    let batch_size = match app.acquisition_settings().await {
+        Ok(settings) => settings.batch_size.clamp(1, 500) as i64,
+        Err(err) => {
+            warn!(error = %err, "failed to load acquisition settings, using default batch size");
+            50
+        }
+    };
+
+    let due_items = match app
+        .services
+        .workflow
+        .wanted_items
+        .list_due_wanted_items(&now_str, batch_size, blocked_facets)
+        .await
+    {
+        Ok(items) => {
+            if !items.is_empty() {
+                info!(
+                    count = items.len(),
+                    now = now_str.as_str(),
+                    "background acquisition: found due wanted items"
+                );
+            }
+            items
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to list due wanted items");
+            return;
+        }
+    };
+
+    if due_items.is_empty() {
+        return;
+    }
+
+    let fetched_due_count = due_items.len();
+    let (due_items, deferred_per_title) = select_due_items_for_cooperative_slice(due_items);
+    if !deferred_per_title.is_empty() {
+        info!(
+            fetched_due_count,
+            selected_due_count = due_items.len(),
+            deferred_due_count = deferred_per_title.values().copied().sum::<usize>(),
+            deferred_title_count = deferred_per_title.len(),
+            per_title_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE,
+            deferred_titles = ?deferred_per_title,
+            "background acquisition: deferring excess wanted items for cooperative processing"
+        );
+    }
+
+    if !has_enabled_download_clients(app).await {
+        warn!(
+            count = due_items.len(),
+            "background acquisition: no enabled download clients configured, skipping indexer search"
+        );
+        return;
+    }
+
+    debug!(count = due_items.len(), "processing due wanted items");
+
+    // Track URLs already submitted this cycle to avoid sending the same NZB
+    // multiple times (e.g. a season pack matching several episode wanted items).
+    let mut grabbed_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track (title_id, season_num) for which a season pack search was attempted this cycle.
+    let mut season_pack_attempted: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
+    // Track (title_id, season_num) for which a season pack was successfully grabbed this cycle.
+    let mut season_pack_grabbed: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
+    let mut recent_failed_season_packs_by_title: std::collections::HashMap<String, HashSet<u32>> =
+        std::collections::HashMap::new();
+
+    // Count due episode items per (title_id, season_num). Season pack search is only
+    // worthwhile when >= 2 episodes from the same season are due this cycle — mirroring
+    // Sonarr's rule of "count > 1 missing" before issuing a SeasonSearchCriteria.
+    let mut season_due_counts: std::collections::HashMap<(String, u32), usize> =
+        std::collections::HashMap::new();
+    for item in &due_items {
+        if item.media_type == "episode"
+            && let Some(sn) = item.season_number.as_deref()
+            && let Ok(n) = sn.parse::<u32>()
+            && n > 0
+        {
+            *season_due_counts
+                .entry((item.title_id.clone(), n))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let mut processed_in_slice = 0usize;
+    for item in &due_items {
+        if let Err(err) = process_single_wanted_item(
+            app,
+            item,
+            &now,
+            &mut grabbed_urls,
+            &mut season_pack_attempted,
+            &mut season_pack_grabbed,
+            &mut recent_failed_season_packs_by_title,
+            &season_due_counts,
+            &dl_snapshot,
+        )
+        .await
+        {
+            warn!(
+                wanted_item_id = item.id.as_str(),
+                title_id = item.title_id.as_str(),
+                error = %err,
+                "failed to process wanted item"
+            );
+        }
+        processed_in_slice += 1;
+        if processed_in_slice.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
+            tokio::task::yield_now().await;
+        }
+
+        // Re-read the wanted item status after processing.  If the item was
+        // successfully grabbed inside process_single_wanted_item (status changed
+        // to "grabbed"), we must NOT overwrite it with a search schedule — doing
+        // so would reset it to "wanted" and prevent check_grabbed_for_failures
+        // from ever detecting download failures.
+        let current = app
+            .services
+            .workflow
+            .wanted_items
+            .get_wanted_item_by_id(&item.id)
+            .await
+            .ok()
+            .flatten();
+
+        if let Some(ref wi) = current
+            && wi.status == WantedStatus::Grabbed
+        {
+            // Item was grabbed — don't touch it.  The download failure
+            // detector will handle re-queuing if the download fails.
+            continue;
+        }
+
+        // Item is still "wanted" (no grab succeeded, or all candidates were
+        // exhausted).  Update the search schedule with backoff.
+        let schedule = compute_search_schedule(
+            &item.media_type,
+            item.baseline_date.as_deref(),
+            &item.search_phase,
+            &now,
+        );
+
+        let _ = app
+            .services
+            .workflow
+            .wanted_items
+            .schedule_wanted_item_search(&WantedSearchTransition {
+                id: item.id.clone(),
+                next_search_at: Some(schedule.next_search_at),
+                last_search_at: Some(now.to_rfc3339()),
+                search_count: item.search_count + 1,
+                current_score: item.current_score,
+                grabbed_release: item.grabbed_release.clone(),
+            })
+            .await;
+    }
+}
+impl AppUseCase {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn run_acquisition_cycle_once(&self) {
+        process_due_wanted_items(self).await;
+    }
+}
+#[expect(
+    clippy::too_many_arguments,
+    reason = "wanted-item processing coordinates shared acquisition state across a single loop iteration"
+)]
+async fn process_single_wanted_item(
+    app: &AppUseCase,
+    item: &WantedItem,
+    now: &DateTime<Utc>,
+    grabbed_urls: &mut std::collections::HashSet<String>,
+    season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
+    season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
+    recent_failed_season_packs_by_title: &mut std::collections::HashMap<String, HashSet<u32>>,
+    season_due_counts: &std::collections::HashMap<(String, u32), usize>,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> AppResult<()> {
+    // Load the title to get search context
+    let title = match app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&item.title_id)
+        .await?
+    {
+        Some(t) => t,
+        None => {
+            warn!(
+                title_id = item.title_id.as_str(),
+                "wanted item references missing title"
+            );
+            return Ok(());
+        }
+    };
+
+    if item.search_count == 0 {
+        let queue_delay_ms = item
+            .next_search_at
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| {
+                now.signed_duration_since(value.with_timezone(&Utc))
+                    .num_milliseconds()
+            })
+            .unwrap_or_default();
+        info!(
+            wanted_item_id = item.id.as_str(),
+            title_id = item.title_id.as_str(),
+            title = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            search_phase = item.search_phase.as_str(),
+            search_count = item.search_count,
+            queue_delay_ms,
+            "background acquisition: first pass for wanted item"
+        );
+    }
+
+    // Load episode data for episode-type wanted items
+    let episode = if item.media_type == "episode" {
+        if let Some(ep_id) = item.episode_id.as_deref() {
+            match app.services.catalog.shows.get_episode_by_id(ep_id).await {
+                Ok(ep) => ep,
+                Err(err) => {
+                    warn!(episode_id = ep_id, error = %err, "failed to load episode for wanted item");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Item-aware gate: skip only when an active/recent submission blocks this
+    // wanted item, not every sibling episode on the same title.
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&item.title_id)
+        .await
+        .unwrap_or_default();
+    let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
+
+    let has_blocking_active_or_completed_submission = submissions.iter().any(|submission| {
+        submission_is_active_or_completed(submission, dl_snapshot)
+            && submission_blocks_wanted_item(submission, item, episode_collection_id.as_deref())
+    });
+
+    if has_blocking_active_or_completed_submission {
+        info!(
+            title = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            episode_id = item.episode_id.as_deref(),
+            collection_id = episode_collection_id
+                .as_deref()
+                .or(item.collection_id.as_deref()),
+            "skipping search — download for this wanted item is already active or completed"
+        );
+        return Ok(());
+    }
+
+    // For interstitial movies, build a synthetic title from the collection's movie metadata
+    // so the search uses the movie's name/year/IMDB ID instead of the parent series'
+    let search_title = if item.media_type == "interstitial_movie" {
+        if let Some(ref coll_id) = item.collection_id
+            && let Ok(Some(collection)) = app
+                .services
+                .catalog
+                .shows
+                .get_collection_by_id(coll_id)
+                .await
+        {
+            interstitial_movie_search_title(&title, &collection)
+        } else {
+            title.clone()
+        }
+    } else {
+        title.clone()
+    };
+
+    let search_title = if item.media_type == "episode" {
+        if let Some(anidb_id) = app
+            .local_scoped_anidb_id_for_episode(episode.as_ref())
+            .await
+        {
+            let mut title = search_title;
+            title.external_ids.retain(|id| {
+                !matches!(
+                    id.source.trim().to_ascii_lowercase().as_str(),
+                    "anidb" | "anidb_id"
+                )
+            });
+            title.external_ids.push(scryer_domain::ExternalId {
+                source: "anidb".into(),
+                value: anidb_id,
+            });
+            title
+        } else {
+            search_title
+        }
+    } else {
+        search_title
+    };
+
+    let subject = app
+        .resolve_release_search_subject_for_wanted_item(&search_title, item, episode.as_ref())
+        .await;
+    let search_season = subject.season;
+
+    // Derive the download client category separately — search_category ("series")
+    // is for Newznab query type, download_category ("series") is for NZBGet routing.
+    //
+    // ── Season pack priority ──────────────────────────────────────────────────
+    // For episode wanted items, try a season pack search first. Season packs are
+    // a first-class release type on Usenet and are more efficient than individual
+    // episodes. Individual episode searches only run if no season pack was found
+    // this cycle for this (title, season).
+    if item.media_type == "episode"
+        && let Some(season_num) = search_season
+    {
+        let season_key = (title.id.clone(), season_num);
+
+        // Only attempt a season pack search when >= 2 episodes from this season
+        // are due this cycle (mirrors Sonarr: count > 1 missing → SeasonSearchCriteria).
+        let due_count = season_due_counts.get(&season_key).copied().unwrap_or(0);
+
+        if due_count >= 2 && !season_pack_attempted.contains(&season_key) {
+            season_pack_attempted.insert(season_key.clone());
+
+            let recent_failed_seasons =
+                if let Some(cached) = recent_failed_season_packs_by_title.get(&title.id) {
+                    cached.clone()
+                } else {
+                    let loaded =
+                        load_recent_failed_season_pack_seasons_for_title(app, &title.id, now).await;
+                    recent_failed_season_packs_by_title.insert(title.id.clone(), loaded.clone());
+                    loaded
+                };
+
+            if recent_failed_seasons.contains(&season_num) {
+                info!(
+                    title = title.name.as_str(),
+                    season = season_num,
+                    cooldown_minutes = FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES,
+                    "skipping season-pack search after recent failed season-pack attempt"
+                );
+            } else {
+                // Load season episodes for runtime scoring and upgrade checking.
+                let season_episodes = if let Some(ref coll_id) = item.collection_id {
+                    app.services
+                        .catalog
+                        .shows
+                        .list_episodes_for_collection(coll_id)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                // Calculate total season runtime for accurate size scoring.
+                // A 10-episode × 24-min season should expect ~10× a single episode's size.
+                let pack_runtime = if !season_episodes.is_empty() {
+                    let ep_count = season_episodes.len().max(1) as i32;
+                    let per_ep = title.runtime_minutes.unwrap_or(24);
+                    Some(per_ep * ep_count)
+                } else {
+                    title.runtime_minutes
+                };
+
+                let pack_subject = app
+                    .resolve_release_search_subject_for_season_pack(
+                        &search_title,
+                        item,
+                        episode.as_ref(),
+                        season_num,
+                        pack_runtime,
+                    )
+                    .await?;
+
+                let pack_results = match app
+                    .search_and_evaluate_subject(
+                        &search_title,
+                        &pack_subject,
+                        "background_acquisition_season_pack",
+                        SearchMode::Auto,
+                    )
+                    .await
+                {
+                    Ok(results) => results,
+                    Err(err) => {
+                        warn!(
+                            title_id = title.id.as_str(),
+                            season = season_num,
+                            error = %err,
+                            "season pack search failed"
+                        );
+                        Vec::new()
+                    }
+                };
+
+                for candidate in pack_results
+                    .iter()
+                    .filter(|candidate| candidate_is_season_pack_for_season(candidate, season_num))
+                {
+                    let decision_code = annotated_auto_decision_code(candidate);
+                    record_release_decision(app, item, &title, candidate, decision_code, now).await;
+                }
+
+                if let Some(best_pack) = pack_results.iter().find(|candidate| {
+                    candidate_is_season_pack_for_season(candidate, season_num)
+                        && candidate.auto_eligible == Some(true)
+                }) {
+                    // ── Season pack upgrade guard ───────────────────────────────
+                    // Check whether grabbing this pack benefits at least 1 episode.
+                    // If every episode already has a file with an equal or better
+                    // score, the pack is pure waste — skip it and fall through to
+                    // individual episode searches (which will also be skipped by
+                    // the per-episode cutoff/upgrade checks).
+                    //
+                    // TODO: make this user-configurable via quality profile. Some
+                    // users may want a stricter threshold (e.g. "only grab season
+                    // packs if ≥50% of episodes benefit") to reduce download
+                    // bandwidth, rather than the current "any 1 episode" policy.
+                    let pack_dominated = if !season_episodes.is_empty() {
+                        let pack_score = best_pack
+                            .quality_profile_decision
+                            .as_ref()
+                            .map(|d| d.preference_score)
+                            .unwrap_or(0);
+
+                        let existing_files = app
+                            .services
+                            .library
+                            .media_files
+                            .list_media_files_for_title(&title.id)
+                            .await
+                            .unwrap_or_default();
+
+                        let episode_file_scores: std::collections::HashMap<String, i32> =
+                            existing_files
+                                .iter()
+                                .filter_map(|f| {
+                                    f.episode_id
+                                        .as_ref()
+                                        .zip(f.acquisition_score)
+                                        .map(|(eid, score)| (eid.clone(), score))
+                                })
+                                .collect();
+
+                        // Pack is dominated (no benefit) when every episode in the
+                        // season already has a file with score >= pack_score.
+                        !season_episodes.iter().any(|ep| {
+                            episode_file_scores
+                                .get(&ep.id)
+                                .map(|&existing| pack_score > existing)
+                                .unwrap_or(true) // no file → episode benefits
+                        })
+                    } else {
+                        false // can't determine episodes → allow grab
+                    };
+
+                    if pack_dominated {
+                        info!(
+                            title = title.name.as_str(),
+                            season = season_num,
+                            release = best_pack.title.as_str(),
+                            "season pack skipped: all episodes already have equal or better files"
+                        );
+                        // Don't grab — fall through to individual episode search
+                    } else {
+                        // ── End season pack upgrade guard ────────────────────────────
+
+                        let pack_url = best_pack
+                            .download_url
+                            .clone()
+                            .or_else(|| best_pack.link.clone());
+                        let url_str = pack_url.as_deref().unwrap_or("").to_string();
+
+                        if !url_str.is_empty() && grabbed_urls.insert(url_str.clone()) {
+                            let download_cat = app.derive_download_category(&title.facet).await;
+                            let is_recent = app.is_recent_for_queue_priority(
+                                best_pack
+                                    .published_at
+                                    .as_deref()
+                                    .or(episode.as_ref().and_then(|item| item.air_date.as_deref()))
+                                    .or(title.first_aired.as_deref())
+                                    .or(title.digital_release_date.as_deref()),
+                            );
+                            let pack_title = Some(best_pack.title.clone());
+                            let pack_hint = normalize_release_attempt_hint(pack_url.as_deref());
+                            let pack_title_norm =
+                                normalize_release_attempt_title(pack_title.as_deref());
+                            let pack_password =
+                                normalize_release_password(best_pack.password_hint.as_deref());
+                            let request_signature = normalize_release_selection_signature(
+                                pack_url.as_deref(),
+                                pack_title.as_deref(),
+                                best_pack.source_kind,
+                            );
+                            let info_hash_hint = best_pack
+                                .extra
+                                .get("info_hash")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string);
+                            let download_id = crate::download_identity::new_download_id();
+                            let submission_identity = DownloadSubmissionIdentity {
+                                download_id: Some(download_id.clone()),
+                            };
+
+                            let grab_result = app
+                                .services
+                                .integrations
+                                .download_client
+                                .submit_download(&DownloadClientAddRequest {
+                                    title: title.clone(),
+                                    download_id: Some(download_id),
+                                    source_hint: pack_url.clone(),
+                                    staged_nzb: None,
+                                    source_kind: best_pack.source_kind,
+                                    source_title: pack_title.clone(),
+                                    source_password: pack_password.clone(),
+                                    category: Some(download_cat),
+                                    queue_priority: None,
+                                    download_directory: None,
+                                    release_title: Some(best_pack.title.clone()),
+                                    indexer_name: Some(best_pack.source.clone()),
+                                    info_hash_hint: info_hash_hint.clone(),
+                                    seed_goal_ratio: None,
+                                    seed_goal_seconds: None,
+                                    is_recent,
+                                    season_pack: Some(true),
+                                })
+                                .await;
+
+                            match grab_result {
+                                Ok(grab) => {
+                                    let download_job_id = grab.job_id.clone();
+                                    let facet_label = serde_json::to_string(&title.facet)
+                                        .unwrap_or_else(|_| "\"other\"".to_string())
+                                        .trim_matches('"')
+                                        .to_string();
+                                    metrics::counter!("scryer_grabs_total", "indexer" => best_pack.source.clone(), "facet" => facet_label).increment(1);
+                                    let accepted_identity =
+                                        crate::download_identity::accepted_download_submission_identity(
+                                            crate::download_identity::AcceptedDownloadIdentityInput {
+                                                initial_download_id: submission_identity
+                                                    .download_id
+                                                    .as_deref(),
+                                                source_kind: best_pack.source_kind,
+                                                source_hint: pack_url.as_deref(),
+                                                info_hash_hint: info_hash_hint.as_deref(),
+                                                client_type: Some(grab.client_type.as_str()),
+                                                client_item_id: Some(grab.job_id.as_str()),
+                                                accepted_info_hash: grab.info_hash.as_deref(),
+                                            },
+                                        );
+                                    season_pack_grabbed.insert(season_key.clone());
+                                    let _ = app
+                                        .services
+                                        .workflow
+                                        .release_attempts
+                                        .record_release_attempt(
+                                            Some(title.id.clone()),
+                                            pack_hint,
+                                            pack_title_norm,
+                                            ReleaseDownloadAttemptOutcome::Success,
+                                            None,
+                                            pack_password,
+                                        )
+                                        .await;
+                                    let facet_str = serde_json::to_string(&title.facet)
+                                        .unwrap_or_else(|_| "\"other\"".to_string());
+                                    let submission_scope =
+                                        collection_download_submission_scope_for_wanted_item(
+                                            item,
+                                            episode.as_ref(),
+                                        );
+                                    let covered_wanted_item_ids = app
+                                        .covered_wanted_item_ids_for_submission_scope(
+                                            &title.id,
+                                            &submission_scope,
+                                            &item.id,
+                                        )
+                                        .await?;
+                                    let grabbed_json = serde_json::json!({
+                                        "title": best_pack.title,
+                                        "score": best_pack
+                                            .quality_profile_decision
+                                            .as_ref()
+                                            .map(|decision| decision.preference_score)
+                                            .unwrap_or(0),
+                                        "grabbed_at": now.to_rfc3339(),
+                                        "season_pack": true,
+                                    })
+                                    .to_string();
+                                    app.services
+                                        .workflow
+                                        .acquisition_state
+                                        .commit_successful_grab(&SuccessfulGrabCommit {
+                                            wanted_item_id: item.id.clone(),
+                                            covered_wanted_item_ids,
+                                            search_count: item.search_count + 1,
+                                            current_score: item.current_score,
+                                            grabbed_release: grabbed_json,
+                                            last_search_at: Some(now.to_rfc3339()),
+                                            download_submission: DownloadSubmission {
+                                                title_id: title.id.clone(),
+                                                facet: facet_str.trim_matches('"').to_string(),
+                                                download_client_id: grab.client_id.clone(),
+                                                download_client_type: grab.client_type.clone(),
+                                                download_client_item_id: grab.job_id.clone(),
+                                                source_hint: None,
+                                                source_kind: None,
+                                                source_title: Some(best_pack.title.clone()),
+                                                request_signature: request_signature.clone(),
+                                                scope: submission_scope,
+                                            },
+                                            download_submission_identity: Some(accepted_identity),
+                                            grabbed_pending_release_id: None,
+                                            grabbed_at: Some(now.to_rfc3339()),
+                                        })
+                                        .await?;
+                                    let pack_score = best_pack
+                                        .quality_profile_decision
+                                        .as_ref()
+                                        .map(|d| d.preference_score)
+                                        .unwrap_or(0);
+                                    let mut grab_meta = HashMap::new();
+                                    grab_meta.insert(
+                                        "title_name".to_string(),
+                                        serde_json::json!(title.name),
+                                    );
+                                    grab_meta.insert(
+                                        "release_title".to_string(),
+                                        serde_json::json!(best_pack.title),
+                                    );
+                                    grab_meta.insert(
+                                        "indexer".to_string(),
+                                        serde_json::json!(best_pack.source),
+                                    );
+                                    grab_meta
+                                        .insert("score".to_string(), serde_json::json!(pack_score));
+                                    let _ = app
+                                        .append_domain_event(new_title_domain_event(
+                                            None,
+                                            &title,
+                                            DomainEventPayload::ReleaseGrabbed(
+                                                ReleaseGrabbedEventData {
+                                                    title: title_context_snapshot(&title),
+                                                    source_title: Some(best_pack.title.clone()),
+                                                    source_hint: Some(best_pack.source.clone()),
+                                                    download_id: Some(download_job_id),
+                                                    episode_ids: item
+                                                        .episode_id
+                                                        .iter()
+                                                        .cloned()
+                                                        .collect(),
+                                                },
+                                            ),
+                                        ))
+                                        .await;
+                                    info!(
+                                        title = title.name.as_str(),
+                                        season = season_num,
+                                        release = best_pack.title.as_str(),
+                                        "season pack grabbed; skipping individual episode searches for this season"
+                                    );
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        title = title.name.as_str(),
+                                        season = season_num,
+                                        error = %err,
+                                        "season pack grab failed, will fall back to individual episode search"
+                                    );
+                                    let _ = app
+                                        .services
+                                        .workflow
+                                        .release_attempts
+                                        .record_release_attempt(
+                                            Some(title.id.clone()),
+                                            pack_hint,
+                                            pack_title_norm,
+                                            if is_download_submit_unavailable_error(&err) {
+                                                ReleaseDownloadAttemptOutcome::Pending
+                                            } else {
+                                                ReleaseDownloadAttemptOutcome::Failed
+                                            },
+                                            Some(err.to_string()),
+                                            pack_password,
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    } // close else (pack not dominated)
+                }
+            }
+        }
+
+        // If a season pack was grabbed this cycle (by this item or an earlier
+        // item for the same season), skip the individual episode search.
+        if season_pack_grabbed.contains(&season_key) {
+            return Ok(());
+        }
+    }
+    // ── End season pack priority ──────────────────────────────────────────────
+    // Uses the per-facet default download category; the selected client's
+    // explicit routing category overrides this inside the router.
+    let download_cat = app.derive_download_category(&title.facet).await;
+
+    if subject.queries.is_empty() {
+        info!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            "background acquisition: no search queries built, skipping"
+        );
+        return Ok(());
+    }
+
+    debug!(
+        title_id = title.id.as_str(),
+        title_name = title.name.as_str(),
+        queries = ?subject.queries,
+        imdb_id = subject.imdb_id.as_deref().unwrap_or(""),
+        tvdb_id = subject.tvdb_id.as_deref().unwrap_or(""),
+        category = subject.category.as_str(),
+        "background acquisition: searching indexers"
+    );
+
+    // Search and score releases
+    let results = match app
+        .search_and_evaluate_subject(
+            &search_title,
+            &subject,
+            "background_acquisition",
+            SearchMode::Auto,
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            warn!(
+                title_id = title.id.as_str(),
+                error = %err,
+                "background search failed"
+            );
+            return Ok(());
+        }
+    };
+
+    app.emit_acquisition_search_completed_event(None, &title, results.len() as i64)
+        .await;
+
+    if results.is_empty() {
+        debug!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            "background acquisition: search returned 0 results"
+        );
+        return Ok(());
+    }
+
+    info!(
+        title_id = title.id.as_str(),
+        title_name = title.name.as_str(),
+        result_count = results.len(),
+        "background acquisition: evaluating candidates"
+    );
+
+    // Load DB-level blocklist (covers post-import failures like fake/non-video files,
+    // in addition to the download-client snapshot checked below).
+    let _db_blocklist: std::collections::HashSet<String> = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 200)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| e.source_title)
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+
+    let upgrade_context = app
+        .resolve_upgrade_context_for_title_with_category(
+            &search_title,
+            item.grabbed_release.as_deref(),
+            Some(subject.category.as_str()),
+        )
+        .await;
+    let profile = &upgrade_context.profile;
+
+    // Cutoff tier check — skip upgrades if the existing file meets the cutoff quality.
+    // This is independent of any candidate and can short-circuit before the loop.
+    if upgrade_context.cutoff_reached {
+        tracing::debug!(
+            title_id = title.id.as_str(),
+            cutoff = profile.criteria.cutoff_tier.as_deref().unwrap_or(""),
+            "cutoff quality reached, skipping upgrade"
+        );
+        return Ok(());
+    }
+    let delay_profiles = app.load_delay_profiles().await;
+
+    // ── Candidate fallthrough loop ──────────────────────────────────────────
+    // Iterate ranked candidates (sorted by preference_score DESC).  If a grab
+    // fails, try the next candidate instead of re-searching from scratch next
+    // cycle.  Mirrors Sonarr's ProcessDownloadDecisions loop.
+    let mut had_allowed_candidate = false;
+    let mut had_quality_allowed_candidate = false;
+    let mut skipped_for_failed = false;
+    let mut skipped_for_title_mismatch = false;
+    let mut grab_attempts: usize = 0;
+    // Track source kinds where ALL download clients failed.  Avoids hammering
+    // dead clients with more candidates of the same protocol.
+    let mut failed_source_kinds: Vec<DownloadSourceKind> = Vec::new();
+
+    for (candidate_index, candidate) in results.iter().enumerate() {
+        let is_allowed = candidate
+            .quality_profile_decision
+            .as_ref()
+            .map(|d| d.allowed)
+            .unwrap_or(false);
+        let decision_code = if is_allowed {
+            effective_auto_decision_code(candidate, &failed_source_kinds)
+        } else {
+            ReleaseAutoDecisionCode::QualityBlocked
+        };
+        if !is_allowed {
+            record_release_decision(app, item, &title, candidate, decision_code, now).await;
+            app.emit_acquisition_candidate_rejected_event(
+                None,
+                &title,
+                candidate.title.clone(),
+                decision_code.as_str().to_string(),
+            )
+            .await;
+            continue;
+        }
+
+        had_quality_allowed_candidate = true;
+
+        let candidate_score = candidate
+            .quality_profile_decision
+            .as_ref()
+            .map(|d| d.preference_score)
+            .unwrap_or(0);
+
+        if !matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+            had_allowed_candidate = true;
+        }
+        if matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+            skipped_for_title_mismatch = true;
+        }
+        if matches!(decision_code, ReleaseAutoDecisionCode::DbBlocklisted) {
+            skipped_for_failed = true;
+        }
+
+        record_release_decision(app, item, &title, candidate, decision_code, now).await;
+
+        if !decision_code.is_eligible() {
+            app.emit_acquisition_candidate_rejected_event(
+                None,
+                &title,
+                candidate.title.clone(),
+                decision_code.as_str().to_string(),
+            )
+            .await;
+            if matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::NegativeScore
+                    | ReleaseAutoDecisionCode::UpgradeRejected
+                    | ReleaseAutoDecisionCode::CutoffReached
+            ) {
+                break;
+            }
+            if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
+                let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
+                    serde_json::to_string(
+                        &decision
+                            .scoring_log
+                            .iter()
+                            .map(|entry| serde_json::json!({"code": entry.code, "delta": entry.delta}))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap_or_default()
+                });
+
+                app.insert_pending_release(
+                    item,
+                    &title,
+                    &candidate.title,
+                    candidate
+                        .download_url
+                        .as_deref()
+                        .or(candidate.link.as_deref()),
+                    candidate.source_kind,
+                    candidate.size_bytes,
+                    candidate_score,
+                    scoring_json,
+                    Some(candidate.source.as_str()),
+                    candidate.guid.as_deref(),
+                    crate::delay_profile::resolve_delay_decision(
+                        &delay_profiles,
+                        &search_title.tags,
+                        &search_title.facet,
+                        candidate.source_kind,
+                        candidate
+                            .published_at
+                            .as_deref()
+                            .and_then(crate::quality_profile::parse_published_at),
+                        candidate_score,
+                        now,
+                    )
+                    .map(|delay| delay.effective_delay_minutes)
+                    .unwrap_or_default(),
+                    candidate.password_hint.as_deref(),
+                    candidate.published_at.as_deref(),
+                    candidate
+                        .extra
+                        .get("info_hash")
+                        .and_then(|value| value.as_str()),
+                )
+                .await;
+                return Ok(());
+            }
+            continue;
+        }
+
+        // ── Grab attempt ────────────────────────────────────────────────────
+        grab_attempts += 1;
+        if grab_attempts > 10 {
+            warn!(
+                title = title.name.as_str(),
+                "reached max grab attempts (10), deferring to next cycle"
+            );
+            break;
+        }
+
+        // Submit to download client
+        let source_hint = candidate
+            .download_url
+            .clone()
+            .or_else(|| candidate.link.clone());
+
+        // Deduplicate submit attempts without inventing grabbed state. Covered
+        // wanted items are marked grabbed only by commit_successful_grab.
+        if let Some(url) = source_hint.as_deref() {
+            if grabbed_urls.contains(url) {
+                info!(
+                    title = title.name.as_str(),
+                    release = candidate.title.as_str(),
+                    "skipping duplicate release already submitted this cycle"
+                );
+                continue;
+            }
+            grabbed_urls.insert(url.to_string());
+        }
+
+        let source_title = Some(candidate.title.clone());
+        let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
+        let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
+        let source_password = normalize_release_password(candidate.password_hint.as_deref());
+        let request_signature = normalize_release_selection_signature(
+            source_hint.as_deref(),
+            source_title.as_deref(),
+            candidate.source_kind,
+        );
+
+        let _ = app
+            .services
+            .workflow
+            .release_attempts
+            .record_release_attempt(
+                Some(title.id.clone()),
+                source_hint_for_attempt.clone(),
+                source_title_for_attempt.clone(),
+                ReleaseDownloadAttemptOutcome::Pending,
+                None,
+                source_password.clone(),
+            )
+            .await;
+
+        let is_recent = app.is_recent_for_queue_priority(
+            candidate
+                .published_at
+                .as_deref()
+                .or(episode.as_ref().and_then(|item| item.air_date.as_deref()))
+                .or(item.baseline_date.as_deref())
+                .or(title.first_aired.as_deref())
+                .or(title.digital_release_date.as_deref()),
+        );
+
+        info!(
+            title = title.name.as_str(),
+            release = candidate.title.as_str(),
+            score = candidate_score,
+            decision = decision_code.as_str(),
+            attempt = grab_attempts,
+            "auto-grabbing release"
+        );
+
+        let info_hash_hint = candidate
+            .extra
+            .get("info_hash")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let download_id = crate::download_identity::new_download_id();
+        let submission_identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.clone()),
+        };
+
+        let grab_result = app
+            .services
+            .integrations
+            .download_client
+            .submit_download(&DownloadClientAddRequest {
+                title: title.clone(),
+                download_id: Some(download_id),
+                source_hint: source_hint.clone(),
+                staged_nzb: None,
+                source_kind: candidate.source_kind,
+                source_title: source_title.clone(),
+                source_password: source_password.clone(),
+                category: Some(download_cat.clone()),
+                queue_priority: None,
+                download_directory: None,
+                release_title: Some(candidate.title.clone()),
+                indexer_name: Some(candidate.source.clone()),
+                info_hash_hint: info_hash_hint.clone(),
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent,
+                season_pack: Some(false),
+            })
+            .await;
+
+        match grab_result {
+            Ok(grab) => {
+                // ── Success ─────────────────────────────────────────────────
+                {
+                    let facet_label = serde_json::to_string(&title.facet)
+                        .unwrap_or_else(|_| "\"other\"".to_string())
+                        .trim_matches('"')
+                        .to_string();
+                    metrics::counter!("scryer_grabs_total", "indexer" => candidate.source.clone(), "facet" => facet_label).increment(1);
+                }
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind: candidate.source_kind,
+                            source_hint: source_hint.as_deref(),
+                            info_hash_hint: info_hash_hint.as_deref(),
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
+
+                let _ = app
+                    .services
+                    .workflow
+                    .release_attempts
+                    .record_release_attempt(
+                        Some(title.id.clone()),
+                        source_hint_for_attempt.clone(),
+                        source_title_for_attempt.clone(),
+                        ReleaseDownloadAttemptOutcome::Success,
+                        None,
+                        source_password.clone(),
+                    )
+                    .await;
+
+                // Record title history: Grabbed
+                // Record download submission for auto-import matching
+                let facet_str =
+                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let grabbed_json = serde_json::json!({
+                    "title": candidate.title,
+                    "score": candidate_score,
+                    "grabbed_at": now.to_rfc3339(),
+                })
+                .to_string();
+                let download_job_id = grab.job_id.clone();
+                let submission_scope = if let Some(parsed) =
+                    candidate.parsed_release_metadata.as_ref()
+                {
+                    let catalog_episodes = app
+                        .services
+                        .catalog
+                        .shows
+                        .list_episodes_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    let catalog_collections = app
+                        .services
+                        .catalog
+                        .shows
+                        .list_collections_for_title(&title.id)
+                        .await
+                        .unwrap_or_default();
+                    crate::acquisition_coverage::resolve_release_coverage(
+                        parsed,
+                        &catalog_episodes,
+                        &catalog_collections,
+                        episode.as_ref(),
+                    )
+                    .submission_scope_or(
+                        &direct_download_submission_scope_for_wanted_item(item, episode.as_ref()),
+                    )
+                } else {
+                    direct_download_submission_scope_for_wanted_item(item, episode.as_ref())
+                };
+                let covered_wanted_item_ids = app
+                    .covered_wanted_item_ids_for_submission_scope(
+                        &title.id,
+                        &submission_scope,
+                        &item.id,
+                    )
+                    .await?;
+
+                app.services
+                    .workflow
+                    .acquisition_state
+                    .commit_successful_grab(&SuccessfulGrabCommit {
+                        wanted_item_id: item.id.clone(),
+                        covered_wanted_item_ids,
+                        search_count: item.search_count + 1,
+                        current_score: item.current_score,
+                        grabbed_release: grabbed_json,
+                        last_search_at: Some(now.to_rfc3339()),
+                        download_submission: DownloadSubmission {
+                            title_id: title.id.clone(),
+                            facet: facet_str.trim_matches('"').to_string(),
+                            download_client_id: grab.client_id.clone(),
+                            download_client_type: grab.client_type.clone(),
+                            download_client_item_id: grab.job_id.clone(),
+                            source_hint: None,
+                            source_kind: None,
+                            source_title: source_title.clone(),
+                            request_signature: request_signature.clone(),
+                            scope: submission_scope,
+                        },
+                        download_submission_identity: Some(accepted_identity),
+                        grabbed_pending_release_id: None,
+                        grabbed_at: Some(now.to_rfc3339()),
+                    })
+                    .await?;
+
+                persist_standby_candidates(
+                    app,
+                    item,
+                    &title,
+                    &results,
+                    candidate_index + 1,
+                    now,
+                    &failed_source_kinds,
+                )
+                .await;
+
+                let _ = app
+                    .append_domain_event(new_title_domain_event(
+                        None,
+                        &title,
+                        DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
+                            title: title_context_snapshot(&title),
+                            source_title: Some(candidate.title.clone()),
+                            source_hint: Some(candidate.source.clone()),
+                            download_id: Some(download_job_id),
+                            episode_ids: item.episode_id.iter().cloned().collect(),
+                        }),
+                    ))
+                    .await;
+
+                return Ok(());
+            }
+            Err(err) => {
+                if matches!(err, AppError::DownloadSubmitAmbiguous(_)) {
+                    warn!(
+                        title = title.name.as_str(),
+                        release = candidate.title.as_str(),
+                        attempt = grab_attempts,
+                        error = %err,
+                        "download submission result is ambiguous; deferring acquisition retry without blocklisting or failover"
+                    );
+
+                    let retry_at = (Utc::now() + chrono::Duration::seconds(60)).to_rfc3339();
+                    let _ = app
+                        .services
+                        .workflow
+                        .wanted_items
+                        .schedule_wanted_item_search(&WantedSearchTransition {
+                            id: item.id.clone(),
+                            next_search_at: Some(retry_at),
+                            last_search_at: Some(now.to_rfc3339()),
+                            search_count: item.search_count + 1,
+                            current_score: item.current_score,
+                            grabbed_release: item.grabbed_release.clone(),
+                        })
+                        .await;
+
+                    return Ok(());
+                }
+
+                // ── Grab failed — try next candidate ────────────────────────
+                warn!(
+                    title = title.name.as_str(),
+                    release = candidate.title.as_str(),
+                    attempt = grab_attempts,
+                    error = %err,
+                    "grab failed, trying next candidate"
+                );
+
+                let failure_reason = format!(
+                    "grab failed for '{}' (attempt {}/10, trying next): {}",
+                    candidate.title, grab_attempts, err
+                );
+                let submit_unavailable = is_download_submit_unavailable_error(&err);
+
+                if submit_unavailable {
+                    let _ = app
+                        .services
+                        .workflow
+                        .release_attempts
+                        .record_release_attempt(
+                            Some(title.id.clone()),
+                            source_hint_for_attempt.clone(),
+                            source_title_for_attempt.clone(),
+                            ReleaseDownloadAttemptOutcome::Pending,
+                            Some(failure_reason.clone()),
+                            source_password.clone(),
+                        )
+                        .await;
+                } else {
+                    let attribution = FailedReleaseAttribution {
+                        title: Some(title.clone()),
+                        episode_ids: item.episode_id.iter().cloned().collect(),
+                        collection_id: item.collection_id.clone(),
+                    };
+                    let candidate_source_hint = candidate
+                        .download_url
+                        .clone()
+                        .or_else(|| candidate.link.clone())
+                        .unwrap_or_else(|| candidate.source.clone());
+                    let quality = candidate
+                        .parsed_release_metadata
+                        .as_ref()
+                        .and_then(|parsed| parsed.quality.clone())
+                        .or_else(|| release_quality_hint(Some(candidate.title.as_str())));
+
+                    record_failed_release_outcome(
+                        app,
+                        Some(title.id.as_str()),
+                        &attribution,
+                        Some(candidate.title.clone()),
+                        Some(candidate_source_hint),
+                        None,
+                        None,
+                        None,
+                        None,
+                        quality,
+                        Some(failure_reason),
+                        None,
+                        source_password.clone(),
+                    )
+                    .await;
+                }
+
+                // If download-client submit is unavailable for this source kind,
+                // skip remaining candidates with the same protocol this run.
+                if submit_unavailable
+                    && let Some(sk) = candidate.source_kind
+                {
+                    if !failed_source_kinds.contains(&sk) {
+                        failed_source_kinds.push(sk);
+                    }
+                    info!(
+                        source_kind = ?sk,
+                        "download client submit unavailable for source kind, skipping remaining candidates with same protocol"
+                    );
+                }
+
+                // Add URL to exclusion set so we don't re-select this exact
+                // release if the same URL appears from a different indexer.
+                if let Some(url) = source_hint.as_deref() {
+                    grabbed_urls.insert(url.to_string());
+                }
+
+                // CONTINUE — try the next candidate
+            }
+        }
+    }
+    // ── End candidate fallthrough loop ───────────────────────────────────────
+
+    // All candidates exhausted without a successful grab.
+    if grab_attempts > 0 {
+        warn!(
+            title = title.name.as_str(),
+            attempts = grab_attempts,
+            "all grab attempts failed, re-queuing for next cycle"
+        );
+    } else if had_allowed_candidate && skipped_for_failed {
+        warn!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            "background acquisition: no suitable candidates found after skipping blocklisted or active releases"
+        );
+    } else if had_allowed_candidate {
+        debug!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            "background acquisition: all allowed candidates were already active or had negative scores"
+        );
+    } else if had_quality_allowed_candidate && skipped_for_title_mismatch {
+        debug!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            result_count = results.len(),
+            "background acquisition: quality-allowed candidates were rejected by title matching"
+        );
+    } else {
+        debug!(
+            title_id = title.id.as_str(),
+            title_name = title.name.as_str(),
+            result_count = results.len(),
+            "background acquisition: no allowed candidates found (all blocked by quality profile)"
+        );
+    }
+
+    // Re-queue for next cycle
+    let _ = app
+        .services
+        .workflow
+        .wanted_items
+        .schedule_wanted_item_search(&WantedSearchTransition {
+            id: item.id.clone(),
+            next_search_at: Some(now.to_rfc3339()),
+            last_search_at: Some(now.to_rfc3339()),
+            search_count: item.search_count + 1,
+            current_score: item.current_score,
+            grabbed_release: item.grabbed_release.clone(),
+        })
+        .await;
+
+    Ok(())
+}
+pub async fn start_background_acquisition_poller(
+    app: AppUseCase,
+    token: tokio_util::sync::CancellationToken,
+) {
+    // Check feature flag
+    let enabled = std::env::var("SCRYER_BACKGROUND_ACQUISITION")
+        .map(|v| !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off"))
+        .unwrap_or(true);
+
+    if !enabled {
+        info!("background acquisition poller is disabled (SCRYER_BACKGROUND_ACQUISITION=false)");
+        return;
+    }
+
+    let settings = match app.acquisition_settings().await {
+        Ok(settings) => settings,
+        Err(err) => {
+            warn!(error = %err, "failed to load acquisition settings, using defaults");
+            crate::AcquisitionSettings {
+                enabled: true,
+                upgrade_cooldown_hours: 24,
+                same_tier_min_delta: 120,
+                cross_tier_min_delta: 30,
+                forced_upgrade_delta_bypass: 400,
+                poll_interval_seconds: 60,
+                sync_interval_seconds: 3600,
+                batch_size: 50,
+            }
+        }
+    };
+
+    if !settings.enabled {
+        info!("background acquisition poller is disabled (acquisition.enabled != true)");
+        return;
+    }
+
+    info!("background acquisition poller started");
+
+    // Initial wanted state sync
+    if let Err(err) = app
+        .run_scheduled_job_now(JobKey::WantedSync, JobTriggerSource::SystemInternal)
+        .await
+    {
+        warn!(error = %err, "initial wanted state sync failed");
+    }
+
+    // Reset items that were searched but never found anything. This recovers
+    // from scenarios where a bug (e.g. broken capability filter) caused searches
+    // to return 0 results and items got rescheduled far into the future.
+    let now_str = Utc::now().to_rfc3339();
+    match app
+        .services
+        .workflow
+        .wanted_items
+        .reset_fruitless_wanted_items(&now_str)
+        .await
+    {
+        Ok(count) if count > 0 => {
+            info!(count, "reset fruitless wanted items to search immediately");
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to reset fruitless wanted items");
+        }
+        _ => {}
+    }
+
+    // Run initial health checks after a short delay to let services initialize
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if let Err(error) = app
+                .run_scheduled_job_now(JobKey::HealthChecks, JobTriggerSource::ScheduledStartup)
+                .await
+            {
+                warn!(error = %error, "initial health checks failed");
+            }
+        });
+    }
+
+    // Refresh managed Prowlarr children as soon as the app is up so startup
+    // picks up upstream indexer/config changes without waiting for the first
+    // 5-minute interval.
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            if let Err(error) = app
+                .run_scheduled_job_now(JobKey::ProwlarrSync, JobTriggerSource::ScheduledStartup)
+                .await
+            {
+                warn!(error = %error, "initial Prowlarr sync failed");
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let actor = scryer_domain::User::new_admin("system-indexer-caps");
+            if let Err(error) = app.refresh_enabled_direct_nab_caps_snapshots(&actor).await {
+                warn!(error = %error, "initial direct indexer caps refresh failed");
+            }
+        });
+    }
+
+    app.set_job_next_run_at(
+        JobKey::WantedSync,
+        Utc::now() + chrono::Duration::seconds(settings.sync_interval_seconds.max(1) as i64),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::MetadataRefresh,
+        Utc::now() + chrono::Duration::hours(12),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::PluginRegistryRefresh,
+        Utc::now() + chrono::Duration::hours(24),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::HealthChecks,
+        Utc::now() + chrono::Duration::seconds(30),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::StagedNzbPrune,
+        Utc::now() + chrono::Duration::hours(1),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::Housekeeping,
+        Utc::now() + chrono::Duration::hours(24),
+    )
+    .await;
+    app.set_job_next_run_at(
+        JobKey::ProwlarrSync,
+        Utc::now() + chrono::Duration::minutes(5),
+    )
+    .await;
+    app.set_job_next_run_at(JobKey::RssSync, Utc::now() + chrono::Duration::minutes(15))
+        .await;
+    app.set_job_next_run_at(
+        JobKey::PendingReleaseProcessing,
+        Utc::now() + chrono::Duration::minutes(1),
+    )
+    .await;
+
+    let mut poll_interval = new_skip_interval(std::time::Duration::from_secs(
+        settings.poll_interval_seconds.max(1) as u64,
+    ));
+    let mut sync_interval = tokio::time::interval(std::time::Duration::from_secs(
+        settings.sync_interval_seconds.max(1) as u64,
+    ));
+    let mut metadata_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(12));
+    let mut registry_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(24));
+    let mut health_check_interval = tokio::time::interval(std::time::Duration::from_hours(6));
+    let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
+    let mut housekeeping_interval = tokio::time::interval(std::time::Duration::from_hours(24));
+    let mut prowlarr_sync_interval = tokio::time::interval(std::time::Duration::from_mins(5));
+    let mut direct_indexer_caps_interval =
+        tokio::time::interval(std::time::Duration::from_hours(24));
+    let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(15));
+    let mut pending_release_interval = tokio::time::interval(std::time::Duration::from_mins(1));
+
+    // Consume the first tick immediately
+    poll_interval.tick().await;
+    sync_interval.tick().await;
+    metadata_refresh_interval.tick().await;
+    registry_refresh_interval.tick().await;
+    health_check_interval.tick().await;
+    staged_nzb_prune_interval.tick().await;
+    housekeeping_interval.tick().await;
+    prowlarr_sync_interval.tick().await;
+    direct_indexer_caps_interval.tick().await;
+    rss_sync_interval.tick().await;
+    pending_release_interval.tick().await;
+
+    let wake = app.runtime.acquisition.acquisition_wake.clone();
+
+    /// Run a scheduled task inside a spawned task to isolate panics.
+    /// If the task panics, the error is logged and the scheduler loop continues.
+    async fn run_task(
+        task_name: &'static str,
+        fut: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let t = std::time::Instant::now();
+        match tokio::spawn(fut).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!(
+                    task = task_name,
+                    error = %e,
+                    "CRITICAL: scheduled task panicked — scheduler continues but this task failed"
+                );
+                metrics::counter!("scryer_task_panics_total", "task" => task_name).increment(1);
+            }
+        }
+        metrics::counter!("scryer_task_runs_total", "task" => task_name).increment(1);
+        metrics::histogram!("scryer_task_duration_seconds", "task" => task_name)
+            .record(t.elapsed().as_secs_f64());
+    }
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                info!("background acquisition poller shutting down");
+                break;
+            }
+            _ = wake.notified() => {
+                let app = app.clone();
+                run_task("wanted_items", async move {
+                    process_due_wanted_items(&app).await;
+                }).await;
+            }
+            _ = poll_interval.tick() => {
+                let app = app.clone();
+                run_task("wanted_items", async move {
+                    process_due_wanted_items(&app).await;
+                }).await;
+            }
+            _ = sync_interval.tick() => {
+                let app = app.clone();
+                run_task("sync_state", async move {
+                    let sync_interval_seconds = app
+                        .acquisition_settings()
+                        .await
+                        .map(|settings| settings.sync_interval_seconds.max(1) as i64)
+                        .unwrap_or(60);
+                    app.set_job_next_run_at(
+                        JobKey::WantedSync,
+                        Utc::now() + chrono::Duration::seconds(sync_interval_seconds),
+                    ).await;
+                    if let Err(err) = app.run_scheduled_job_now(JobKey::WantedSync, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %err, "periodic wanted state sync failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "sync_state").increment(1);
+                    }
+                }).await;
+            }
+            _ = metadata_refresh_interval.tick() => {
+                let app = app.clone();
+                run_task("metadata_refresh", async move {
+                    app.set_job_next_run_at(
+                        JobKey::MetadataRefresh,
+                        Utc::now() + chrono::Duration::hours(12),
+                    ).await;
+                    if let Err(err) = app.run_scheduled_job_now(JobKey::MetadataRefresh, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %err, "periodic metadata refresh failed");
+                    }
+                }).await;
+            }
+            _ = registry_refresh_interval.tick() => {
+                let app = app.clone();
+                run_task("registry_refresh", async move {
+                    app.set_job_next_run_at(
+                        JobKey::PluginRegistryRefresh,
+                        Utc::now() + chrono::Duration::hours(24),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::PluginRegistryRefresh, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic plugin registry refresh failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "registry_refresh").increment(1);
+                    }
+                }).await;
+            }
+            _ = health_check_interval.tick() => {
+                let app = app.clone();
+                run_task("health_check", async move {
+                    app.set_job_next_run_at(
+                        JobKey::HealthChecks,
+                        Utc::now() + chrono::Duration::hours(6),
+                    ).await;
+                    if let Err(err) = app.run_scheduled_job_now(JobKey::HealthChecks, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %err, "periodic health checks failed");
+                    }
+                }).await;
+            }
+            _ = staged_nzb_prune_interval.tick() => {
+                let app = app.clone();
+                run_task("staged_nzb_prune", async move {
+                    app.set_job_next_run_at(
+                        JobKey::StagedNzbPrune,
+                        Utc::now() + chrono::Duration::hours(1),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::StagedNzbPrune, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic staged nzb prune failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "staged_nzb_prune").increment(1);
+                    }
+                }).await;
+            }
+            _ = housekeeping_interval.tick() => {
+                let app = app.clone();
+                run_task("housekeeping", async move {
+                    app.set_job_next_run_at(
+                        JobKey::Housekeeping,
+                        Utc::now() + chrono::Duration::hours(24),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::Housekeeping, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic housekeeping failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "housekeeping").increment(1);
+                    }
+                }).await;
+            }
+            _ = pending_release_interval.tick() => {
+                let app = app.clone();
+                run_task("pending_releases", async move {
+                    app.set_job_next_run_at(
+                        JobKey::PendingReleaseProcessing,
+                        Utc::now() + chrono::Duration::minutes(1),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::PendingReleaseProcessing, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "pending release processor failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "pending_releases").increment(1);
+                    }
+                }).await;
+            }
+            _ = prowlarr_sync_interval.tick() => {
+                let app = app.clone();
+                run_task("prowlarr_sync", async move {
+                    app.set_job_next_run_at(
+                        JobKey::ProwlarrSync,
+                        Utc::now() + chrono::Duration::minutes(5),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::ProwlarrSync, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic Prowlarr sync failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "prowlarr_sync").increment(1);
+                    }
+                }).await;
+            }
+            _ = direct_indexer_caps_interval.tick() => {
+                let app = app.clone();
+                run_task("direct_indexer_caps", async move {
+                    let actor = scryer_domain::User::new_admin("system-indexer-caps");
+                    if let Err(error) = app.refresh_enabled_direct_nab_caps_snapshots(&actor).await {
+                        warn!(error = %error, "periodic direct indexer caps refresh failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "direct_indexer_caps").increment(1);
+                    }
+                }).await;
+            }
+            _ = rss_sync_interval.tick() => {
+                let app = app.clone();
+                run_task("rss_sync", async move {
+                    app.set_job_next_run_at(
+                        JobKey::RssSync,
+                        Utc::now() + chrono::Duration::minutes(15),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::RssSync, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic RSS sync failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "rss_sync").increment(1);
+                    }
+                }).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod task_runner_tests {
+    use super::*;
+
+    fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> WantedItem {
+        WantedItem {
+            id: format!("{title_id}-e{episode_number}"),
+            title_id: title_id.to_string(),
+            title_name: Some(title_name.to_string()),
+            title_slug: None,
+            title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: Some(format!("{title_id}-episode-{episode_number}")),
+            collection_id: None,
+            season_number: Some("1".to_string()),
+            episode_number: Some(episode_number.to_string()),
+            media_type: "episode".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn cooperative_slice_selects_first_ten_episodes_for_large_title() {
+        let due_items = (1..=154)
+            .rev()
+            .map(|episode| wanted_episode_item("title-bluey", "Bluey", episode))
+            .collect::<Vec<_>>();
+
+        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let selected_ids = selected
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        let expected_ids = (1..=10)
+            .map(|episode| format!("title-bluey-e{episode}"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected_ids, expected_ids);
+        assert_eq!(deferred.get("title-bluey"), Some(&144));
+    }
+
+    #[test]
+    fn cooperative_slice_keeps_per_title_limit_after_ordering() {
+        let due_items = (1..=12)
+            .rev()
+            .flat_map(|episode| {
+                [
+                    wanted_episode_item("title-alpha", "Alpha", episode),
+                    wanted_episode_item("title-beta", "Beta", episode),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let alpha = selected
+            .iter()
+            .filter(|item| item.title_id == "title-alpha")
+            .count();
+        let beta = selected
+            .iter()
+            .filter(|item| item.title_id == "title-beta")
+            .count();
+
+        assert_eq!(alpha, 10);
+        assert_eq!(beta, 10);
+        assert_eq!(deferred.get("title-alpha"), Some(&2));
+        assert_eq!(deferred.get("title-beta"), Some(&2));
+    }
+}

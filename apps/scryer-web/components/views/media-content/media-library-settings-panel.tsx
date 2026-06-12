@@ -4,6 +4,7 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -33,6 +34,7 @@ import type {
   RootFolderOption,
   ScoringPersonaId,
 } from "@/lib/types";
+import type { ImportMode } from "@/lib/types/settings";
 import type { DownloadClientRoutingSettingsByClient } from "@/lib/types/download-clients";
 import {
   buildDownloadClientRoutingState,
@@ -59,6 +61,11 @@ const BOOLEAN_OVERRIDE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
   { value: BOOLEAN_TRUE_VALUE, labelKey: "label.enabled" },
   { value: BOOLEAN_FALSE_VALUE, labelKey: "label.disabled" },
+] as const;
+const IMPORT_MODE_OPTIONS = [
+  { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
+  { value: "hardlink_or_copy", labelKey: "settings.importModeHardlinkCopy" },
+  { value: "move", labelKey: "settings.importModeMove" },
 ] as const;
 
 type LibraryMutationInput = {
@@ -172,6 +179,12 @@ function recapPolicyLabelKey(value: string | null | undefined): string {
     : "settings.recapPolicyDownloadAll";
 }
 
+function importModeLabelKey(value: ImportMode | null | undefined): string {
+  return value === "move"
+    ? "settings.importModeMove"
+    : "settings.importModeHardlinkCopy";
+}
+
 export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySettingsPanel({
   facet,
   settingsTitle,
@@ -205,6 +218,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [settingsError, setSettingsError] = React.useState<string | null>(null);
   const [draftRequiredAudioLanguages, setDraftRequiredAudioLanguages] = React.useState<string[]>([]);
   const [draftQualityProfileId, setDraftQualityProfileId] = React.useState(INHERIT_VALUE);
+  const [draftRequestQualityProfileIds, setDraftRequestQualityProfileIds] = React.useState<string[]>([]);
   const [draftScoringPersona, setDraftScoringPersona] = React.useState(INHERIT_VALUE);
   const [draftFillerPolicy, setDraftFillerPolicy] = React.useState(INHERIT_VALUE);
   const [draftRecapPolicy, setDraftRecapPolicy] = React.useState(INHERIT_VALUE);
@@ -213,6 +227,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftMonitorFillerMovies, setDraftMonitorFillerMovies] = React.useState(INHERIT_VALUE);
   const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
+  const [draftImportMode, setDraftImportMode] = React.useState(INHERIT_VALUE);
   const [draftDownloadClientRoutingMode, setDraftDownloadClientRoutingMode] =
     React.useState<"inherit" | "custom">("inherit");
   const [draftDownloadClientRouting, setDraftDownloadClientRouting] =
@@ -250,6 +265,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(settings);
       setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
       setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
+      setDraftRequestQualityProfileIds(settings?.requestQualityProfileIdsOverride ?? []);
       setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
       setDraftFillerPolicy(settings?.fillerPolicyOverride ?? INHERIT_VALUE);
       setDraftRecapPolicy(settings?.recapPolicyOverride ?? INHERIT_VALUE);
@@ -266,6 +282,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftPlexmatchWriteOnImport(
         booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
       );
+      setDraftImportMode(settings?.importModeOverride ?? INHERIT_VALUE);
     },
     [],
   );
@@ -298,6 +315,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(null);
       setDraftRequiredAudioLanguages([]);
       setDraftQualityProfileId(INHERIT_VALUE);
+      setDraftRequestQualityProfileIds([]);
       setDraftScoringPersona(INHERIT_VALUE);
       setDraftFillerPolicy(INHERIT_VALUE);
       setDraftRecapPolicy(INHERIT_VALUE);
@@ -306,6 +324,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftImportMode(INHERIT_VALUE);
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -458,6 +477,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         draftRequiredAudioLanguages.length > 0 ? draftRequiredAudioLanguages : null,
       qualityProfileId:
         draftQualityProfileId === INHERIT_VALUE ? null : draftQualityProfileId,
+      requestQualityProfileIds:
+        draftRequestQualityProfileIds.length > 0
+          ? draftRequestQualityProfileIds
+          : null,
       scoringPersona:
         draftScoringPersona === INHERIT_VALUE
           ? null
@@ -476,18 +499,22 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       plexmatchWriteOnImport: showPlexmatch
         ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
         : null,
+      importMode:
+        draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
       indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       downloadClientRouting: draftDownloadClientRoutingEntries,
     }),
     [
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
+      draftImportMode,
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
       draftMonitorSpecials,
       draftNfoWriteOnImport,
       draftPlexmatchWriteOnImport,
       draftQualityProfileId,
+      draftRequestQualityProfileIds,
       draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
@@ -502,6 +529,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       (draftRequiredAudioLanguages.join("\n") !==
         (savedSettings.requiredAudioLanguagesOverride ?? []).join("\n") ||
         settingsDraft.qualityProfileId !== savedSettings.qualityProfileIdOverride ||
+        (settingsDraft.requestQualityProfileIds ?? []).join("\n") !==
+          (savedSettings.requestQualityProfileIdsOverride ?? []).join("\n") ||
         settingsDraft.scoringPersona !== savedSettings.scoringPersonaOverride ||
         settingsDraft.fillerPolicy !== savedSettings.fillerPolicyOverride ||
         settingsDraft.recapPolicy !== savedSettings.recapPolicyOverride ||
@@ -512,6 +541,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.nfoWriteOnImport !== savedSettings.nfoWriteOnImportOverride ||
         settingsDraft.plexmatchWriteOnImport !==
           savedSettings.plexmatchWriteOnImportOverride ||
+        settingsDraft.importMode !== savedSettings.importModeOverride ||
         (draftDownloadClientRoutingMode === "custom") !==
           Boolean(savedDownloadClientRoutingEntries) ||
         (draftDownloadClientRoutingMode === "custom" &&
@@ -539,6 +569,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(null);
       setDraftRequiredAudioLanguages([]);
       setDraftQualityProfileId(INHERIT_VALUE);
+      setDraftRequestQualityProfileIds([]);
       setDraftScoringPersona(INHERIT_VALUE);
       setDraftFillerPolicy(INHERIT_VALUE);
       setDraftRecapPolicy(INHERIT_VALUE);
@@ -547,6 +578,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftImportMode(INHERIT_VALUE);
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -617,6 +649,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setSavedSettings(null);
     setDraftRequiredAudioLanguages([]);
     setDraftQualityProfileId(INHERIT_VALUE);
+    setDraftRequestQualityProfileIds([]);
     setDraftScoringPersona(INHERIT_VALUE);
     setDraftFillerPolicy(INHERIT_VALUE);
     setDraftRecapPolicy(INHERIT_VALUE);
@@ -625,6 +658,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftMonitorFillerMovies(INHERIT_VALUE);
     setDraftNfoWriteOnImport(INHERIT_VALUE);
     setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+    setDraftImportMode(INHERIT_VALUE);
     setDraftDownloadClientRoutingMode("inherit");
     setDraftDownloadClientRouting({});
     setDraftDownloadClientRoutingOrder([]);
@@ -999,6 +1033,34 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       })}
                     </p>
                   ) : null}
+                  <div className="space-y-2 rounded-md border border-border/70 p-2">
+                    <Label>{t("settings.libraryRequestQualityProfilesLabel")}</Label>
+                    {qualityProfiles.map((profile) => {
+                      const checked = draftRequestQualityProfileIds.includes(profile.id);
+                      return (
+                        <label
+                          key={profile.id}
+                          className="flex items-center gap-2 text-xs text-muted-foreground"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            disabled={settingsBusy}
+                            onCheckedChange={(value) => {
+                              setDraftRequestQualityProfileIds((current) =>
+                                value
+                                  ? [...current, profile.id]
+                                  : current.filter((profileId) => profileId !== profile.id),
+                              );
+                            }}
+                          />
+                          <span>{profile.name}</span>
+                        </label>
+                      );
+                    })}
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryRequestQualityProfilesHelp")}
+                    </p>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>
@@ -1061,6 +1123,42 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             (choice) => choice.value === savedSettings.scoringPersona,
                           )?.labelKey ?? "qualityProfile.personaBalanced",
                         ),
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
+                <div className="max-w-md space-y-2">
+                  <Label>{t("settings.importModeLabel")}</Label>
+                  <Select
+                    value={draftImportMode}
+                    onValueChange={setDraftImportMode}
+                    disabled={settingsBusy}
+                  >
+                    <SelectTrigger id="media-library-import-mode-trigger">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {IMPORT_MODE_OPTIONS.map((option) => (
+                        <SelectItem
+                          id={selectorId("media-library-import-mode-option", option.value)}
+                          key={option.value}
+                          value={option.value}
+                        >
+                          {t(option.labelKey)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.importModeDescription")}
+                  </p>
+                  {savedSettings ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryEffectiveProfile", {
+                        value: t(importModeLabelKey(savedSettings.importMode)),
                       })}
                     </p>
                   ) : null}

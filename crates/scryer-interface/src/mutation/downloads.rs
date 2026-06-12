@@ -223,6 +223,44 @@ impl DownloadMutations {
         }))
     }
 
+    async fn queue_path_manual_import(
+        &self,
+        ctx: &Context<'_>,
+        input: QueuePathManualImportInput,
+    ) -> GqlResult<DownloadQueueActionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let source_path = input.path.clone();
+        let import_id = app
+            .queue_path_manual_import(
+                &actor,
+                input.title_id,
+                source_path.clone(),
+                input
+                    .files
+                    .into_iter()
+                    .map(|file| scryer_application::ManualImportFileMapping {
+                        file_path: file.file_path,
+                        episode_id: file.episode_id,
+                        quality: file.quality,
+                    })
+                    .collect(),
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(download_queue_action_payload(DownloadQueueActionParts {
+            kind: DownloadQueueActionKindValue::QueuedManualImport,
+            download_client_item_id: source_path,
+            client_id: None,
+            client_type: Some("path".to_string()),
+            import_id: Some(import_id),
+            command_id: None,
+            removed: false,
+            queue_item: None,
+        }))
+    }
+
     /// Retry a previously failed import, optionally with an archive password.
     async fn retry_import(
         &self,
@@ -283,6 +321,46 @@ impl DownloadMutations {
 
         Ok(download_queue_action_payload(DownloadQueueActionParts {
             kind: DownloadQueueActionKindValue::IgnoredTrackedDownload,
+            download_client_item_id,
+            client_id,
+            client_type: Some(client_type),
+            import_id: None,
+            command_id: None,
+            removed: false,
+            queue_item,
+        }))
+    }
+
+    async fn mark_tracked_download_failed(
+        &self,
+        ctx: &Context<'_>,
+        input: MarkTrackedDownloadFailedInput,
+    ) -> GqlResult<DownloadQueueActionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let client_type = input.client_type.clone();
+        let client_id = input.client_id.clone();
+        let download_client_item_id = input.download_client_item_id.clone();
+        app.mark_tracked_download_failed(
+            &actor,
+            input.client_id.as_deref(),
+            &input.client_type,
+            &input.download_client_item_id,
+            input.skip_reacquire.unwrap_or(false),
+        )
+        .await
+        .map_err(to_gql_error)?;
+        let queue_item = queue_item_payload_for_action(
+            &app,
+            &actor,
+            client_id.as_deref(),
+            Some(&client_type),
+            &download_client_item_id,
+        )
+        .await?;
+
+        Ok(download_queue_action_payload(DownloadQueueActionParts {
+            kind: DownloadQueueActionKindValue::MarkedTrackedDownloadFailed,
             download_client_item_id,
             client_id,
             client_type: Some(client_type),

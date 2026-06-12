@@ -1,24 +1,132 @@
 import {
   BACKUP_INFO_FIELDS,
   JOB_RUN_FIELDS,
+  MEDIA_SERVER_CONNECTION_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_CORE_FIELDS,
 } from "./queries";
 
-export const loginMutation = `mutation Login($input: LoginInput!) {
-  login(input: $input) {
-    token
-    user {
+const AUTH_USER_FIELDS = `
       id
       username
+      hasPassword
+      hasMfa
+      hasPasskey
+      accountKind
       appPermissions
       libraryPermissions {
         libraryId
         permissions
-      }
+      }`;
+
+const LOGIN_PAYLOAD_FIELDS = `
+    token
+    user {${AUTH_USER_FIELDS}
     }
     expiresAt
+    mfaVerifiedUntil
+    mfaEnrollmentRequired`;
+
+export const loginMutation = `mutation Login($input: LoginInput!) {
+  login(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const webauthnRegisterStartMutation = `mutation WebauthnRegisterStart {
+  webauthnRegisterStart {
+    challengeId
+    optionsJson
+  }
+}`;
+
+export const webauthnRegisterCompleteMutation = `mutation WebauthnRegisterComplete($input: WebauthnRegisterCompleteInput!) {
+  webauthnRegisterComplete(input: $input) {
+    id
+    friendlyName
+    createdAt
+    lastUsedAt
+  }
+}`;
+
+export const webauthnAuthenticateStartMutation = `mutation WebauthnAuthenticateStart($username: String) {
+  webauthnAuthenticateStart(username: $username) {
+    challengeId
+    optionsJson
+  }
+}`;
+
+export const webauthnAuthenticateCompleteMutation = `mutation WebauthnAuthenticateComplete($input: WebauthnCompleteInput!) {
+  webauthnAuthenticateComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
+  deleteMyPasskey(id: $id)
+}`;
+
+export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
+  totpEnrollmentStart {
+    challengeId
+    otpauthUrl
+    secretBase32
+    expiresAt
+  }
+}`;
+
+export const totpEnrollmentCompleteMutation = `mutation TotpEnrollmentComplete($input: TotpEnrollmentCompleteInput!) {
+  totpEnrollmentComplete(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
+  }
+}`;
+
+export const completeLoginMfaEnrollmentMutation = `mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+  completeLoginMfaEnrollment(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
+    login {
+${LOGIN_PAYLOAD_FIELDS}
+    }
+  }
+}`;
+
+export const mfaVerifyStepUpMutation = `mutation MfaVerifyStepUp($input: TotpVerifyInput!) {
+  mfaVerifyStepUp(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const totpDisableMutation = `mutation TotpDisable($input: TotpVerifyInput!) {
+  totpDisable(input: $input) {
+    enabled
+    createdAt
+    lastUsedAt
+    recoveryCodesRemaining
+  }
+}`;
+
+export const totpRegenerateRecoveryCodesMutation = `mutation TotpRegenerateRecoveryCodes($input: TotpVerifyInput!) {
+  totpRegenerateRecoveryCodes(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
   }
 }`;
 
@@ -26,6 +134,10 @@ export const createUserMutation = `mutation CreateUser($input: CreateUserInput!)
   createUser(input: $input) {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -38,6 +150,10 @@ export const setUserPasswordMutation = `mutation SetUserPassword($input: SetUser
   setUserPassword(input: $input) {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -50,6 +166,10 @@ export const setUserAppPermissionsMutation = `mutation SetUserAppPermissions($in
   setUserAppPermissions(input: $input) {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -62,6 +182,10 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
   setUserLibraryPermissions(input: $input) {
     id
     username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -74,8 +198,45 @@ export const deleteUserMutation = `mutation DeleteUser($input: DeleteUserInput!)
   deleteUser(input: $input)
 }`;
 
+export const resetUserMfaMutation = `mutation ResetUserMfa($input: ResetUserMfaInput!) {
+  resetUserMfa(input: $input) {
+    id
+    username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
+  }
+}`;
+
 export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInput!) {
   deleteTitle(input: $input)
+}`;
+
+export const deleteTitlesMutation = `mutation DeleteTitles($input: DeleteTitlesInput!) {
+  deleteTitles(input: $input) {
+    acceptedTitleIds
+    jobRun {
+      id
+      jobKey
+      displayName
+      category
+      section
+      status
+      triggerSource
+      startedAt
+      completedAt
+      summaryJson
+      summaryText
+      errorText
+      progressJson
+    }
+  }
 }`;
 
 export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndexerConfigInput!) {
@@ -225,12 +386,57 @@ export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTi
   }
 }`;
 
+export const submitMediaRequestMutation = `mutation SubmitMediaRequest($input: SubmitMediaRequestInput!) {
+  submitMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
+export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input: ApproveMediaRequestInput!) {
+  approveMediaRequest(input: $input) {
+    accepted
+    titleId
+    wantedSearch {
+      queuedCount
+      skippedInProgressCount
+    }
+    searchError
+  }
+}`;
+
+export const dismissMediaRequestMutation = `mutation DismissMediaRequest($input: MediaRequestActionInput!) {
+  dismissMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
+export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($input: UpdateMediaRequestInput!) {
+  updateMyMediaRequest(input: $input) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    requestedQualityProfileId
+    requestedQualityProfileName
+    requestedMonitorType
+    updatedAt
+  }
+}`;
+
+export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($input: MediaRequestActionInput!) {
+  cancelMyMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
   deleteMediaFile(input: $input)
 }`;
 
-export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!) {
-  scanLibrary(libraryId: $libraryId) {
+export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!, $importWarmupSessionId: String) {
+  scanLibrary(libraryId: $libraryId, importWarmupSessionId: $importWarmupSessionId) {
     sessionId
     facet
     mode
@@ -458,10 +664,85 @@ export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettin
 export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($input: UpdateSecuritySettingsInput!) {
   updateSecuritySettings(input: $input) {
     formLoginEnabled
+    passwordMinLength
     skipLoginForLocalIps
+    mfaRequireConfigStepUp
+    mfaRequirePasswordLogin
+    totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+const LINKED_ACCOUNT_FIELDS = `
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    lastLoginAt
+    createdAt
+    updatedAt`;
+
+export const createMediaServerConnectionMutation = `mutation CreateMediaServerConnection($input: CreateMediaServerConnectionInput!) {
+  createMediaServerConnection(input: $input) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const updateMediaServerConnectionMutation = `mutation UpdateMediaServerConnection($input: UpdateMediaServerConnectionInput!) {
+  updateMediaServerConnection(input: $input) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: String!) {
+  deleteMediaServerConnection(id: $id)
+}`;
+
+export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($id: String!, $plexAuthToken: String) {
+  testMediaServerConnection(id: $id, plexAuthToken: $plexAuthToken)
+}`;
+
+export const discoverPlexMediaServersMutation = `mutation DiscoverPlexMediaServers($plexAuthToken: String!) {
+  discoverPlexMediaServers(plexAuthToken: $plexAuthToken) {
+    id
+    name
+  }
+}`;
+
+export const createExternalAccountInviteMutation = `mutation CreateExternalAccountInvite($input: CreateExternalAccountInviteInput!) {
+  createExternalAccountInvite(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const linkPlexAccountMutation = `mutation LinkPlexAccount($input: LinkPlexAccountInput!) {
+  linkPlexAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input: LinkJellyfinAccountInput!) {
+  linkJellyfinAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($input: UnlinkExternalAccountInput!) {
+  unlinkExternalAccount(input: $input)
+}`;
+
+export const loginWithPlexMutation = `mutation LoginWithPlex($input: LoginWithPlexInput!) {
+  loginWithPlex(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginWithJellyfinMutation = `mutation LoginWithJellyfin($input: LoginWithJellyfinInput!) {
+  loginWithJellyfin(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
 
@@ -566,7 +847,8 @@ const mediaSettingsFieldSelection = `
     interSeasonMovies
     monitorFillerMovies
     nfoWriteOnImport
-    plexmatchWriteOnImport`;
+    plexmatchWriteOnImport
+    importMode`;
 
 const libraryPathsFieldSelection = `
     moviePath
@@ -697,6 +979,17 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
   }
 }`;
 
+export const queuePathManualImportMutation = `mutation QueuePathManualImport($input: QueuePathManualImportInput!) {
+  queuePathManualImport(input: $input) {
+    kind
+    downloadClientItemId
+    clientId
+    clientType
+    importId
+    removed
+  }
+}`;
+
 export const pauseDownloadMutation = `mutation PauseDownload($input: PauseDownloadInput!) {
   pauseDownload(input: $input) {
     kind
@@ -758,7 +1051,8 @@ export function buildIgnoreTrackedDownloadBatchMutation(count: number): string {
   ).join(", ");
   const fields = Array.from(
     { length: count },
-    (_, index) => `item${index}: ignoreTrackedDownload(input: $input${index}) { kind }`,
+    (_, index) =>
+      `item${index}: ignoreTrackedDownload(input: $input${index}) { kind }`,
   ).join("\n");
 
   return `mutation IgnoreTrackedDownloads(${variables}) {
@@ -773,7 +1067,8 @@ export function buildDeleteDownloadBatchMutation(count: number): string {
   ).join(", ");
   const fields = Array.from(
     { length: count },
-    (_, index) => `item${index}: deleteDownload(input: $input${index}) { kind removed commandId }`,
+    (_, index) =>
+      `item${index}: deleteDownload(input: $input${index}) { kind removed commandId }`,
   ).join("\n");
 
   return `mutation DeleteDownloads(${variables}) {
@@ -989,12 +1284,14 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -1016,12 +1313,14 @@ export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -1157,12 +1456,14 @@ export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo
       official
       publisher
       supportTier
+      status
       docsUrl
       sourceRepo
       builtin
       sourceUrl
       sourceKind
       blockedReason
+      bytes
       isInstalled
       isEnabled
       installedVersion
@@ -1254,6 +1555,7 @@ export const createNotificationChannelMutation = `mutation CreateNotificationCha
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
     createdAt
@@ -1266,6 +1568,7 @@ export const updateNotificationChannelMutation = `mutation UpdateNotificationCha
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
     createdAt
@@ -1285,6 +1588,8 @@ export const createNotificationSubscriptionMutation = `mutation CreateNotificati
   createNotificationSubscription(input: $input) {
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId
@@ -1298,6 +1603,8 @@ export const updateNotificationSubscriptionMutation = `mutation UpdateNotificati
   updateNotificationSubscription(input: $input) {
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId
@@ -1490,6 +1797,11 @@ export type DownloadClientApiKeyOverride = {
   apiKey: string;
 };
 
+export type DownloadClientPasswordOverride = {
+  dedupKey: string;
+  password: string;
+};
+
 export type IndexerApiKeyOverride = {
   dedupKey: string;
   apiKey: string;
@@ -1546,6 +1858,27 @@ export const retryImportMutation = `mutation RetryImport($input: RetryImportInpu
 
 export const ignoreTrackedDownloadMutation = `mutation IgnoreTrackedDownload($input: IgnoreTrackedDownloadInput!) {
   ignoreTrackedDownload(input: $input) {
+    kind
+    downloadClientItemId
+    clientId
+    clientType
+    removed
+    queueItem {
+      id
+      titleId
+      titleName
+      clientId
+      clientType
+      downloadClientItemId
+      state
+      trackedState
+      trackedStatus
+    }
+  }
+}`;
+
+export const markTrackedDownloadFailedMutation = `mutation MarkTrackedDownloadFailed($input: MarkTrackedDownloadFailedInput!) {
+  markTrackedDownloadFailed(input: $input) {
     kind
     downloadClientItemId
     clientId

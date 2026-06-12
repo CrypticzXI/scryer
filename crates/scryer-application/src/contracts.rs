@@ -86,6 +86,11 @@ pub struct DownloadSubmission {
     pub scope: SubmissionScope,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DownloadSubmissionIdentity {
+    pub download_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DownloadSourceIdentity {
     pub client_id: Option<String>,
@@ -136,6 +141,7 @@ pub struct SuccessfulGrabCommit {
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
     pub download_submission: DownloadSubmission,
+    pub download_submission_identity: Option<DownloadSubmissionIdentity>,
     pub grabbed_pending_release_id: Option<String>,
     pub grabbed_at: Option<String>,
 }
@@ -434,6 +440,8 @@ pub struct EpisodeUpdate {
     pub collection_id: Option<String>,
     pub overview: Option<String>,
     pub tvdb_id: Option<String>,
+    pub image_url: Option<String>,
+    pub clear_image_url: bool,
 }
 
 impl EpisodeUpdate {
@@ -451,6 +459,8 @@ impl EpisodeUpdate {
             || self.collection_id.is_some()
             || self.overview.is_some()
             || self.tvdb_id.is_some()
+            || self.image_url.is_some()
+            || self.clear_image_url
     }
 
     pub fn has_non_monitor_changes(&self) -> bool {
@@ -466,6 +476,8 @@ impl EpisodeUpdate {
             || self.collection_id.is_some()
             || self.overview.is_some()
             || self.tvdb_id.is_some()
+            || self.image_url.is_some()
+            || self.clear_image_url
     }
 }
 
@@ -636,6 +648,7 @@ pub struct IndexerRoutingPlan {
 #[derive(Clone, Debug)]
 pub struct DownloadClientAddRequest {
     pub title: Title,
+    pub download_id: Option<String>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
     pub source_kind: Option<DownloadSourceKind>,
@@ -664,6 +677,7 @@ impl DownloadClientAddRequest {
     ) -> Self {
         Self {
             title: title.clone(),
+            download_id: None,
             source_hint,
             staged_nzb: None,
             source_kind,

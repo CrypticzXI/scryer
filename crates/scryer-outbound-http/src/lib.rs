@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use metrics::{counter, histogram};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
-use reqwest::{Certificate, Client, Identity, RequestBuilder, Response, StatusCode};
+use reqwest::{
+    Certificate, Client, RequestBuilder, Response, StatusCode, blocking::Client as BlockingClient,
+};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
@@ -209,9 +211,31 @@ impl RateLimitRegistry {
     }
 }
 
+pub const DEFAULT_USER_AGENT: &str = concat!("Scryer/", env!("CARGO_PKG_VERSION"));
+pub const STANDARD_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn reqwest_client_builder() -> reqwest::ClientBuilder {
     install_default_rustls_provider();
     Client::builder()
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .timeout(STANDARD_HTTP_TIMEOUT)
+        .user_agent(DEFAULT_USER_AGENT)
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .zstd(true)
+}
+
+fn blocking_reqwest_client_builder() -> reqwest::blocking::ClientBuilder {
+    install_default_rustls_provider();
+    BlockingClient::builder()
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .timeout(STANDARD_HTTP_TIMEOUT)
+        .user_agent(DEFAULT_USER_AGENT)
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .zstd(true)
 }
 
 pub fn install_default_rustls_provider() {
@@ -223,86 +247,92 @@ pub fn install_default_rustls_provider() {
     });
 }
 
-pub fn default_reqwest_client() -> Client {
-    reqwest_client_builder()
-        .build()
-        .expect("default reqwest client should build")
-}
-
-pub fn timeout_reqwest_client(timeout: Option<Duration>) -> Result<Client, reqwest::Error> {
-    let mut builder = reqwest_client_builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    builder.build()
-}
-
-pub fn no_redirect_timeout_reqwest_client(
-    timeout: Option<Duration>,
-) -> Result<Client, reqwest::Error> {
-    let mut builder = reqwest_client_builder().redirect(reqwest::redirect::Policy::none());
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    builder.build()
-}
-
-pub fn user_agent_reqwest_client(user_agent: &str) -> Result<Client, reqwest::Error> {
-    reqwest_client_builder().user_agent(user_agent).build()
-}
-
-pub fn title_image_reqwest_client(
-    user_agent: &str,
-    connect_timeout: Duration,
-    request_timeout: Duration,
-) -> Result<Client, reqwest::Error> {
-    reqwest_client_builder()
-        .user_agent(user_agent)
-        .connect_timeout(connect_timeout)
-        .timeout(request_timeout)
-        .build()
+pub fn generic_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .build()
+            .expect("generic reqwest client should build")
+    });
+    CLIENT.clone()
 }
 
 pub fn external_arr_reqwest_client() -> Client {
-    reqwest_client_builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap_or_else(|_| default_reqwest_client())
-}
-
-pub fn metadata_gateway_reqwest_client(
-    accept_invalid_certs: bool,
-    user_agent: &str,
-) -> Result<Client, reqwest::Error> {
-    reqwest_client_builder()
-        .timeout(Duration::from_secs(100))
-        .user_agent(user_agent)
-        .danger_accept_invalid_certs(accept_invalid_certs)
-        .build()
-}
-
-pub fn metadata_gateway_mtls_reqwest_client(
-    identity: Identity,
-    ca_cert: Certificate,
-) -> Result<Client, reqwest::Error> {
-    reqwest_client_builder()
-        .timeout(Duration::from_secs(100))
-        .identity(identity)
-        .add_root_certificate(ca_cert)
-        .build()
-}
-
-pub fn enrollment_reqwest_client(
-    ca_cert_override: Option<Certificate>,
-    user_agent: &str,
-) -> Result<Client, reqwest::Error> {
-    let mut builder = reqwest_client_builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent(user_agent);
-    if let Some(ca_cert_override) = ca_cert_override {
-        builder = builder.add_root_certificate(ca_cert_override);
+    let mut builder = reqwest_client_builder().timeout(Duration::from_secs(15));
+    if let Ok(proxy_url) = std::env::var("SCRYER_EXTERNAL_ARR_PROXY_URL")
+        && !proxy_url.trim().is_empty()
+        && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
+    {
+        builder = builder.proxy(proxy);
     }
-    builder.build()
+    builder.build().unwrap_or_else(|_| generic_reqwest_client())
+}
+
+pub fn plugin_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .build()
+            .expect("plugin reqwest client should build")
+    });
+    CLIENT.clone()
+}
+
+pub fn no_redirect_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("no-redirect reqwest client should build")
+    });
+    CLIENT.clone()
+}
+
+pub fn smg_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .build()
+            .expect("SMG reqwest client should build")
+    });
+    CLIENT.clone()
+}
+
+pub fn blocking_plugin_host_client(extra_ca_bundle_pem: &str) -> Result<BlockingClient, String> {
+    let mut builder = blocking_reqwest_client_builder();
+    if !extra_ca_bundle_pem.trim().is_empty() {
+        builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
+    }
+    builder
+        .build()
+        .map_err(|error| format!("failed to build plugin HTTP client: {error}"))
+}
+
+pub fn blocking_reqwest_client() -> Result<BlockingClient, reqwest::Error> {
+    blocking_reqwest_client_builder().build()
+}
+
+pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, reqwest::Error> {
+    request.send().await
+}
+
+pub fn send_blocking_reqwest_request(
+    request: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    request.send()
+}
+
+fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<Certificate>, String> {
+    if bundle_pem.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let certificates = Certificate::from_pem_bundle(bundle_pem.as_bytes())
+        .map_err(|error| format!("failed to parse uploaded trusted certificate bundle: {error}"))?;
+    if certificates.is_empty() {
+        return Err(
+            "uploaded trusted certificate bundle did not contain any X.509 certificates"
+                .to_string(),
+        );
+    }
+    Ok(certificates)
 }
 
 #[derive(Clone)]
@@ -674,7 +704,7 @@ mod tests {
         ])
         .await;
 
-        let client = OutboundHttpClient::new(default_reqwest_client(), RateLimitRegistry::new());
+        let client = OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::new());
         let policy = RequestPolicy::safe_read("test-server", "retry-test")
             .with_max_retries(1)
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
@@ -693,7 +723,7 @@ mod tests {
         let (url, hits) =
             spawn_http_server(vec![http_response(429, &[("Retry-After", "bogus")], "")]).await;
 
-        let client = OutboundHttpClient::new(default_reqwest_client(), RateLimitRegistry::new());
+        let client = OutboundHttpClient::new(generic_reqwest_client(), RateLimitRegistry::new());
         let policy = RequestPolicy::no_retry("test-server", "no-retry")
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
 

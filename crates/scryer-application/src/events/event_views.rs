@@ -202,6 +202,21 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             ActivitySeverity::Info,
             import_requested_message(data.client_type.as_str(), data.source_ref.as_str()),
         ),
+        DomainEventPayload::MediaRequestSubmitted(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Requested '{}' for catalog review.", data.title_name),
+        ),
+        DomainEventPayload::MediaRequestUpdated(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Updated request for '{}'.", data.title_name),
+        ),
+        DomainEventPayload::MediaRequestCanceled(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Canceled request for '{}'.", data.title_name),
+        ),
         DomainEventPayload::ImportRecoveryCompleted(data) => (
             ActivityKind::SystemNotice,
             ActivitySeverity::Warning,
@@ -1214,6 +1229,7 @@ mod tests {
             episode_id: None,
             title_name: "Example".to_string(),
             facet: None,
+            category: None,
             client_id: "client-1".to_string(),
             client_name: "Weaver".to_string(),
             client_type: "weaver".to_string(),
@@ -1226,6 +1242,7 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: id.to_string(),
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,

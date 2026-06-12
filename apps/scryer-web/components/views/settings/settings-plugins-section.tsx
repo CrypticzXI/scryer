@@ -40,12 +40,14 @@ export type RegistryPluginRecord = {
   official: boolean;
   publisher?: string | null;
   supportTier?: string | null;
+  status?: string | null;
   docsUrl?: string | null;
   sourceRepo?: string | null;
   builtin: boolean;
   sourceUrl: string | null;
   sourceKind?: string | null;
   blockedReason?: string | null;
+  bytes?: number | null;
   isInstalled: boolean;
   isEnabled: boolean;
   installedVersion: string | null;
@@ -71,6 +73,7 @@ export type PluginCatalogStatusRecord = {
   lastCheckedAt?: string | null;
   outageMessage?: string | null;
   blockedActions: string[];
+  restoreWarnings: string[];
   lastError?: string | null;
 };
 
@@ -154,7 +157,20 @@ function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string 
   }
 }
 
-function isRunningPluginProgress(
+export function formatPluginBytes(bytes?: number | null): string | null {
+  if (bytes == null) {
+    return null;
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function isRunningPluginProgress(
   progress?: PluginInstallProgressRecord,
 ): progress is PluginInstallProgressRecord {
   return progress !== undefined
@@ -176,6 +192,31 @@ function pluginProgressLabel(progress: PluginInstallProgressRecord, t: Translate
     default:
       return progress.label;
   }
+}
+
+export function PluginInstallProgressBar({
+  progress,
+  id,
+  className = "space-y-1 overflow-hidden",
+}: {
+  progress: PluginInstallProgressRecord;
+  id?: string;
+  className?: string;
+}) {
+  const t = useTranslate();
+
+  return (
+    <div className={className}>
+      <div className="truncate text-right text-xs leading-tight text-primary">
+        {pluginProgressLabel(progress, t)}
+      </div>
+      <Progress
+        id={id}
+        value={(progress.stepIndex / Math.max(progress.stepCount, 1)) * 100}
+        className="h-1.5"
+      />
+    </div>
+  );
 }
 
 function normalizePluginLink(url?: string | null): string | null {
@@ -243,15 +284,18 @@ function applyFilters(
 function PluginFilters({
   filters,
   categories,
+  leadingContent,
   onChange,
 }: {
   filters: FilterState;
   categories: string[];
+  leadingContent?: React.ReactNode;
   onChange: (filters: FilterState) => void;
 }) {
   const t = useTranslate();
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
+      {leadingContent}
       <Select
         value={filters.category}
         onValueChange={(v) => onChange({ ...filters, category: v })}
@@ -308,9 +352,10 @@ function PluginTable({
 }) {
   const t = useTranslate();
   const nameColumnClass = "w-[38%]";
-  const typeColumnClass = "w-[15%]";
-  const versionColumnClass = "w-[13%]";
-  const statusColumnClass = "w-[16%]";
+  const typeColumnClass = "w-[14%]";
+  const versionColumnClass = "w-[11%]";
+  const sizeColumnClass = "w-[10%]";
+  const statusColumnClass = "w-[14%]";
   const actionsColumnClass =
     showActions === "installed" ? "w-32 text-right" : "w-48 text-right";
   if (plugins.length === 0) {
@@ -328,6 +373,7 @@ function PluginTable({
             <TableHead className={nameColumnClass}>{t("label.name")}</TableHead>
             <TableHead className={typeColumnClass}>{t("label.type")}</TableHead>
             <TableHead className={versionColumnClass}>{t("label.version")}</TableHead>
+            <TableHead className={sizeColumnClass}>{t("queue.size")}</TableHead>
             <TableHead className={statusColumnClass}>{t("label.status")}</TableHead>
             {showActions === "installed" && (
               <TableHead className="w-20 text-center">{t("label.enabled")}</TableHead>
@@ -354,10 +400,15 @@ function PluginTable({
                 ? plugin.installedVersion
                 : plugin.version;
             const blockedLabel = blockedReasonLabel(plugin, t);
+            const bytesLabel = formatPluginBytes(plugin.bytes);
             return (
               <TableRow
                 key={plugin.id}
                 id={selectorId("settings-plugin-row", plugin.name)}
+                data-plugin-table={showActions}
+                data-plugin-installed={plugin.isInstalled ? "true" : "false"}
+                data-plugin-enabled={plugin.isEnabled ? "true" : "false"}
+                data-plugin-update-available={plugin.updateAvailable ? "true" : "false"}
               >
                 <TableCell className={nameColumnClass}>
                   <div>
@@ -412,6 +463,12 @@ function PluginTable({
                   </div>
                 )}
                 </TableCell>
+                <TableCell
+                  className={cn(sizeColumnClass, "text-sm text-muted-foreground")}
+                  title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
+                >
+                  {bytesLabel ?? "—"}
+                </TableCell>
                 <TableCell className={statusColumnClass}>
                   <div className="flex items-center gap-2">
                     {plugin.builtin && (
@@ -432,6 +489,11 @@ function PluginTable({
                     {plugin.supportTier === "unverified" && (
                       <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
                         {t("settings.pluginUnverified")}
+                      </span>
+                    )}
+                    {plugin.status === "beta" && (
+                      <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-xs text-yellow-300">
+                        {t("settings.pluginBeta")}
                       </span>
                     )}
                     {isDownloadedBuiltinOverride(plugin) && (
@@ -494,31 +556,18 @@ function PluginTable({
                         )}
                       </div>
                       {runningProgress && (
-                        <div className="w-full space-y-1 overflow-hidden">
-                          <div className="truncate text-right text-xs leading-tight text-primary">
-                            {pluginProgressLabel(runningProgress, t)}
-                          </div>
-                          <Progress
-                            id={selectorId("settings-plugin-progress", plugin.name)}
-                            value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
-                            className="h-1.5"
-                          />
-                        </div>
+                        <PluginInstallProgressBar
+                          progress={runningProgress}
+                          id={selectorId("settings-plugin-progress", plugin.name)}
+                          className="w-full space-y-1 overflow-hidden"
+                        />
                       )}
                     </div>
                   ) : (
                     <div className="ml-auto grid w-44 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                       <div className="min-w-0">
                         {runningProgress ? (
-                          <div className="space-y-1 overflow-hidden">
-                            <div className="truncate text-right text-xs leading-tight text-primary">
-                              {pluginProgressLabel(runningProgress, t)}
-                            </div>
-                            <Progress
-                              value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
-                              className="h-1.5"
-                            />
-                          </div>
+                          <PluginInstallProgressBar progress={runningProgress} />
                         ) : null}
                       </div>
                       <div className="flex justify-end">
@@ -589,6 +638,15 @@ export function SettingsPluginsSection({
 
   const installed = useMemo(() => plugins.filter((p) => p.isInstalled), [plugins]);
   const available = useMemo(() => plugins.filter((p) => !p.isInstalled), [plugins]);
+  const enabledInstalled = useMemo(
+    () => installed.filter((p) => p.isEnabled),
+    [installed],
+  );
+  const runtimeMemoryBytes = useMemo(
+    () => enabledInstalled.reduce((total, plugin) => total + (plugin.bytes ?? 0), 0),
+    [enabledInstalled],
+  );
+  const runtimeMemoryLabel = formatPluginBytes(runtimeMemoryBytes) ?? "—";
   const allCategories = useMemo(
     () => [...new Set(plugins.map((p) => p.pluginType))].sort(),
     [plugins],
@@ -607,7 +665,7 @@ export function SettingsPluginsSection({
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-2">
           <p className="text-sm text-muted-foreground">{t("settings.pluginsSection")}</p>
           {upgradeCount > 0 && (
@@ -651,6 +709,17 @@ export function SettingsPluginsSection({
       {catalogStatus?.outageMessage && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
           {catalogStatus.outageMessage}
+        </div>
+      )}
+
+      {catalogStatus && catalogStatus.restoreWarnings.length > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+          <div className="font-medium">Restore warnings</div>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {catalogStatus.restoreWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -776,10 +845,24 @@ export function SettingsPluginsSection({
         <>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">{t("settings.pluginsInstalled")}</h3>
+              <h3 className="text-lg font-semibold">{t("settings.pluginsInstalled")}</h3>
               <PluginFilters
                 filters={installedFilters}
                 categories={allCategories}
+                leadingContent={(
+                  <div className="flex items-baseline gap-2 rounded-md border border-border/70 bg-card/40 px-3 py-1.5">
+                    <span className="text-xl font-semibold leading-none tracking-normal text-muted-foreground">
+                      {t("settings.pluginRuntimeMemoryEstimate")}
+                    </span>
+                    <span
+                      id="settings-plugins-runtime-memory-estimate"
+                      className="text-xl font-semibold leading-none tracking-normal text-foreground"
+                      title={`${runtimeMemoryBytes} bytes`}
+                    >
+                      {runtimeMemoryLabel}
+                    </span>
+                  </div>
+                )}
                 onChange={setInstalledFilters}
               />
             </div>
@@ -801,7 +884,7 @@ export function SettingsPluginsSection({
 
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">{t("settings.pluginsAvailable")}</h3>
+              <h3 className="text-lg font-semibold">{t("settings.pluginsAvailable")}</h3>
               <PluginFilters
                 filters={availableFilters}
                 categories={allCategories}

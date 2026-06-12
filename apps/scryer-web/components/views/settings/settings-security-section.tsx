@@ -1,3 +1,5 @@
+import type * as React from "react";
+import { Link } from "react-router-dom";
 import { InfoHelp } from "@/components/common/info-help";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -17,6 +19,8 @@ type SettingsSecuritySectionProps = {
   confirmUsername: string;
   confirmPassword: string;
   confirmError: string | null;
+  passwordMinLengthDraft: string;
+  minPasswordLength: number;
   onToggle: (enabled: boolean) => void;
   onConfirmUsernameChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
@@ -24,7 +28,13 @@ type SettingsSecuritySectionProps = {
   onCancelEnable: () => void;
   onConfirmDisable: () => Promise<void> | void;
   onCancelDisable: () => void;
+  onPasswordMinLengthDraftChange: (value: string) => void;
+  onPasswordMinLengthSubmit: () => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
+  onMfaConfigStepUpChange: (enabled: boolean) => void;
+  onMfaPasswordLoginChange: (enabled: boolean) => void;
+  onTotpJellyfinLoginChange: (enabled: boolean) => void;
+  externalAccountInvitesPanel: React.ReactNode;
 };
 
 export function SettingsSecuritySection({
@@ -36,6 +46,8 @@ export function SettingsSecuritySection({
   confirmUsername,
   confirmPassword,
   confirmError,
+  passwordMinLengthDraft,
+  minPasswordLength,
   onToggle,
   onConfirmUsernameChange,
   onConfirmPasswordChange,
@@ -43,7 +55,13 @@ export function SettingsSecuritySection({
   onCancelEnable,
   onConfirmDisable,
   onCancelDisable,
+  onPasswordMinLengthDraftChange,
+  onPasswordMinLengthSubmit,
   onSkipLocalIpsChange,
+  onMfaConfigStepUpChange,
+  onMfaPasswordLoginChange,
+  onTotpJellyfinLoginChange,
+  externalAccountInvitesPanel,
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
   const busy = loading || confirmBusy;
@@ -71,6 +89,33 @@ export function SettingsSecuritySection({
               </div>
               <p className="text-xs text-muted-foreground">
                 {t("settings.securityEnableFormLoginHelp")}
+              </p>
+            </div>
+            <div className="max-w-xs space-y-1.5">
+              <Label className="text-sm font-medium" htmlFor="security-password-min-length">
+                {t("settings.securityPasswordMinLength")}
+              </Label>
+              <Input
+                id="security-password-min-length"
+                type="number"
+                inputMode="numeric"
+                min={minPasswordLength}
+                step={1}
+                value={passwordMinLengthDraft}
+                disabled={busy}
+                onBlur={() => void onPasswordMinLengthSubmit()}
+                onChange={(event) => onPasswordMinLengthDraftChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void onPasswordMinLengthSubmit();
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("settings.securityPasswordMinLengthHelp", {
+                  min: minPasswordLength,
+                })}
               </p>
             </div>
             <div className="space-y-3">
@@ -105,7 +150,93 @@ export function SettingsSecuritySection({
                   />
                 </div>
               </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.mfaRequireConfigStepUp}
+                    disabled={busy}
+                    id="security-mfa-config-step-up"
+                    onCheckedChange={(checked) => onMfaConfigStepUpChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-mfa-config-step-up"
+                      >
+                        {t("settings.securityMfaConfigStepUp")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityMfaConfigStepUp")}
+                        text={t("settings.securityMfaConfigStepUpHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.mfaRequirePasswordLogin}
+                    disabled={busy}
+                    id="security-mfa-password-login"
+                    onCheckedChange={(checked) => onMfaPasswordLoginChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-mfa-password-login"
+                      >
+                        {t("settings.securityMfaPasswordLogin")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityMfaPasswordLogin")}
+                        text={t("settings.securityMfaPasswordLoginHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.totpRequireJellyfinLogin}
+                    disabled={busy}
+                    id="security-totp-jellyfin-login"
+                    onCheckedChange={(checked) => onTotpJellyfinLoginChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-totp-jellyfin-login"
+                      >
+                        {t("settings.securityTotpJellyfinLogin")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityTotpJellyfinLogin")}
+                        text={t("settings.securityTotpJellyfinLoginHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card/50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">
+                {t("settings.manageMediaServerLogins")}
+              </h4>
+              <p className="max-w-2xl text-xs text-muted-foreground">
+                {t("settings.manageMediaServerLoginsDescription")}
+              </p>
+            </div>
+            <Button asChild variant="outline" className="w-fit shrink-0">
+              <Link to="/settings/media-servers">
+                {t("settings.openMediaServers")}
+              </Link>
+            </Button>
           </div>
         </div>
 
@@ -148,7 +279,10 @@ export function SettingsSecuritySection({
             </div>
           </div>
         ) : null}
+
       </div>
+
+      {externalAccountInvitesPanel}
 
       <ConfirmDialog
         open={enableConfirmOpen}
@@ -159,6 +293,8 @@ export function SettingsSecuritySection({
         cancelLabel={t("label.cancel")}
         confirmButtonId="settings-security-enable-confirm"
         cancelButtonId="settings-security-enable-cancel"
+        confirmButtonVariant="default"
+        confirmButtonClassName="bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-600 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
         isBusy={confirmBusy}
         confirmDisabled={confirmDisabled}
         onConfirm={onConfirmEnable}

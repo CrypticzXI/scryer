@@ -3,7 +3,8 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+    AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
+    DownloadSubmissionRepository,
 };
 use scryer_domain::Id;
 
@@ -20,6 +21,44 @@ impl DownloadSubmissionStore {
     }
 }
 
+fn download_identity_state_key(
+    identity: &DownloadSubmissionIdentity,
+    source_identity: Option<&DownloadSourceIdentity>,
+) -> Option<String> {
+    let download_id = identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+
+    if download_identity_state_is_global(&download_id) {
+        return Some(format!("download:{download_id}"));
+    }
+
+    let source_identity = source_identity?;
+    let client_type = source_identity.client_type.trim();
+    if client_type.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "client:{}:{}:download:{}",
+        normalize_download_client_id(source_identity.client_id.as_deref()),
+        client_type.to_ascii_lowercase(),
+        download_id
+    ))
+}
+
+fn download_identity_state_is_global(download_id: &str) -> bool {
+    let value = download_id.trim();
+    value.starts_with("scryer-download:") || looks_like_torrent_info_hash(value)
+}
+
+fn looks_like_torrent_info_hash(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
 #[async_trait]
 impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
@@ -27,6 +66,52 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             let submission = submission.clone();
             Box::pin(async move { record_download_submission_tx(tx, &submission).await })
         })
+        .await
+    }
+
+    async fn record_submission_with_identity(
+        &self,
+        submission: DownloadSubmission,
+        submission_identity: DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_download_submission_with_identity",
+            move |tx| {
+                let submission = submission.clone();
+                let submission_identity = submission_identity.clone();
+                Box::pin(async move {
+                    record_download_submission_with_identity_tx(
+                        tx,
+                        &submission,
+                        &submission_identity,
+                    )
+                    .await
+                })
+            },
+        )
+        .await
+    }
+
+    async fn record_submission_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+        submission_identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        let identity = identity.clone();
+        let submission_identity = submission_identity.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_download_submission_identity",
+            move |tx| {
+                let identity = identity.clone();
+                let submission_identity = submission_identity.clone();
+                Box::pin(async move {
+                    record_download_submission_identity_tx(tx, &identity, &submission_identity)
+                        .await
+                })
+            },
+        )
         .await
     }
 
@@ -50,6 +135,152 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await?;
         row.map(|row| download_submission_from_row(&row))
             .transpose()
+    }
+
+    async fn list_by_download_id(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let sql = download_submission_select_sql(
+            &self.datastore,
+            "WHERE download_client_type = {} AND download_client_id = {} AND download_id = {} ORDER BY submitted_at DESC, id DESC",
+        );
+        fetch_download_submissions(
+            self.datastore.read_exec(),
+            &sql,
+            &[
+                SqlArg::Text(client_type.trim().to_ascii_lowercase()),
+                SqlArg::Text(normalize_download_client_id(client_id)),
+                SqlArg::Text(download_id.trim().to_string()),
+            ],
+        )
+        .await
+    }
+
+    async fn get_submission_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionIdentity>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT download_id
+             FROM download_submissions
+             WHERE download_client_type = {}
+               AND download_client_item_id = {}
+               AND download_client_id = {}
+             LIMIT 1",
+            &[
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+            ],
+        )
+        .await?;
+        row.map(|row| {
+            Ok(DownloadSubmissionIdentity {
+                download_id: row.opt_text("download_id")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn record_identity_tracked_state(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<()> {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(());
+        };
+        let identity = identity.clone();
+        let source_identity = source_identity.cloned();
+        let tracked_state = tracked_state.to_string();
+        let reason = reason.map(str::to_string);
+        let detail = detail.map(str::to_string);
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_download_identity_tracked_state",
+            move |tx| {
+                let identity_key = identity_key.clone();
+                let identity = identity.clone();
+                let source_identity = source_identity.clone();
+                let tracked_state = tracked_state.clone();
+                let reason = reason.clone();
+                let detail = detail.clone();
+                Box::pin(async move {
+                    let now = Utc::now();
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "INSERT INTO download_identity_states
+                         (id, identity_key, download_id,
+                          client_id, client_type, download_client_item_id,
+                          tracked_state, reason, detail, created_at, updated_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         ON CONFLICT(identity_key) DO UPDATE
+                         SET download_id = excluded.download_id,
+                             client_id = excluded.client_id,
+                             client_type = excluded.client_type,
+                             download_client_item_id = excluded.download_client_item_id,
+                             tracked_state = excluded.tracked_state,
+                             reason = excluded.reason,
+                             detail = excluded.detail,
+                             updated_at = excluded.updated_at",
+                        &[
+                            SqlArg::Text(Id::new().0),
+                            SqlArg::Text(identity_key),
+                            SqlArg::OptText(identity.download_id),
+                            SqlArg::OptText(source_identity.as_ref().map(|source| {
+                                normalize_download_client_id(source.client_id.as_deref())
+                            })),
+                            SqlArg::OptText(
+                                source_identity
+                                    .as_ref()
+                                    .map(|source| source.client_type.clone()),
+                            ),
+                            SqlArg::OptText(
+                                source_identity
+                                    .as_ref()
+                                    .map(|source| source.item_id.clone()),
+                            ),
+                            SqlArg::Text(tracked_state),
+                            SqlArg::OptText(reason),
+                            SqlArg::OptText(detail),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Timestamp(now),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
+    async fn get_identity_tracked_state(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT tracked_state
+             FROM download_identity_states
+             WHERE identity_key = {}
+             LIMIT 1",
+            &[SqlArg::Text(identity_key)],
+        )
+        .await?;
+        row.map(|row| row.text("tracked_state")).transpose()
     }
 
     async fn list_for_client_items(

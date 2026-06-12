@@ -1,5 +1,7 @@
 use super::*;
 use crate::ports::IndexerCapsSnapshotRefresher;
+use scryer_runtime_info::{BinaryClass, BinaryLane};
+use std::io::{Read, Write};
 
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
@@ -88,6 +90,30 @@ impl DownloadFailureGuardTable {
             client_item_id.trim()
         );
         Some(self.acquire_key(key).await)
+    }
+
+    pub async fn acquire_release_or_client_item(
+        &self,
+        title_id: Option<&str>,
+        source_title: Option<&str>,
+        client_id: &str,
+        client_type: &str,
+        client_item_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let title_id = title_id.map(str::trim).filter(|value| !value.is_empty())?;
+        if let Some(source_title) = source_title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+        {
+            return Some(
+                self.acquire_key(format!("release:{title_id}:{source_title}"))
+                    .await,
+            );
+        }
+
+        self.acquire(Some(title_id), client_id, client_type, client_item_id)
+            .await
     }
 }
 
@@ -517,6 +543,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     claimed: bool,
     cancel_token: tokio_util::sync::CancellationToken,
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
+    scan_hints: Option<crate::LibraryScanHintSet>,
 }
 
 #[derive(Default)]
@@ -605,6 +632,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 claimed: false,
                 cancel_token: cancel_token.clone(),
                 tx,
+                scan_hints: None,
             },
         );
 
@@ -648,6 +676,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         };
         handle.tx.send_replace(snapshot);
         true
+    }
+
+    pub async fn set_scan_hints(
+        &self,
+        session_id: &str,
+        scan_hints: crate::LibraryScanHintSet,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.scan_hints = (!scan_hints.is_empty()).then_some(scan_hints);
+        true
+    }
+
+    pub async fn scan_hints(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<crate::LibraryScanHintSet> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.scan_hints.clone())
+                .flatten()
+        })
     }
 
     pub async fn cancel(&self, actor_user_id: &str, session_id: &str) -> bool {
@@ -746,8 +800,8 @@ pub struct AppRuntimeCatalogState {
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub title_hydration_wake: Arc<tokio::sync::Notify>,
     pub poster_wake: Arc<tokio::sync::Notify>,
-    pub banner_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub image_processing_limit: Arc<Semaphore>,
     pub title_image_maintenance_lock: Arc<tokio::sync::RwLock<()>>,
     pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -780,6 +834,7 @@ pub struct AppRuntimeLibraryState {
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
     pub backup_execution_guards: BackupExecutionGuardTable,
+    pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -793,6 +848,86 @@ pub struct AppRuntimePluginState {
     pub plugin_install_orchestrator: PluginInstallOrchestrator,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimePerformanceClass {
+    Slow,
+    Fast,
+}
+
+impl std::fmt::Display for RuntimePerformanceClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => f.write_str("slow"),
+            Self::Fast => f.write_str("fast"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimePerformanceSnapshot {
+    pub cpu_class: RuntimePerformanceClass,
+    pub config_io_class: RuntimePerformanceClass,
+    pub cpu_probe_elapsed_ms: Option<u64>,
+    pub config_io_probe_elapsed_ms: Option<u64>,
+}
+
+impl RuntimePerformanceSnapshot {
+    pub fn slow() -> Self {
+        Self {
+            cpu_class: RuntimePerformanceClass::Slow,
+            config_io_class: RuntimePerformanceClass::Slow,
+            cpu_probe_elapsed_ms: None,
+            config_io_probe_elapsed_ms: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeEnvironmentState {
+    pub build_lane: BinaryLane,
+    pub build_class: BinaryClass,
+    pub(crate) supported_plugin_required_features: Arc<HashSet<String>>,
+    pub(crate) config_dir: Arc<PathBuf>,
+    pub(crate) performance_snapshot: Arc<OnceCell<RuntimePerformanceSnapshot>>,
+}
+
+impl AppRuntimeEnvironmentState {
+    pub fn new<I, S>(
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            build_lane,
+            build_class: build_lane.binary_class(),
+            supported_plugin_required_features: normalize_supported_plugin_required_features(
+                supported_plugin_required_features,
+            ),
+            config_dir: Arc::new(config_dir.into()),
+            performance_snapshot: Arc::new(OnceCell::new()),
+        }
+    }
+}
+
+fn normalize_supported_plugin_required_features<I, S>(features: I) -> Arc<HashSet<String>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    Arc::new(
+        features
+            .into_iter()
+            .map(Into::into)
+            .map(|feature| feature.trim().to_ascii_lowercase())
+            .filter(|feature| !feature.is_empty())
+            .collect::<HashSet<_>>(),
+    )
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeIntegrationState {
     pub managed_indexer_sync_lock: Arc<tokio::sync::Mutex<()>>,
@@ -800,6 +935,7 @@ pub struct AppRuntimeIntegrationState {
 
 #[derive(Clone)]
 pub struct AppRuntimeState {
+    pub environment: AppRuntimeEnvironmentState,
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
     pub acquisition: AppRuntimeAcquisitionState,
@@ -811,8 +947,16 @@ pub struct AppRuntimeState {
     pub integrations: AppRuntimeIntegrationState,
 }
 
-impl Default for AppRuntimeState {
-    fn default() -> Self {
+impl AppRuntimeState {
+    pub fn new<I, S>(
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let (domain_event_tx, _domain_event_rx) = broadcast::channel(256);
         // Match the main domain-event buffer so short notification bursts can queue wake hints
         // while the dispatcher catches up from persisted offsets.
@@ -823,6 +967,11 @@ impl Default for AppRuntimeState {
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
+            environment: AppRuntimeEnvironmentState::new(
+                build_lane,
+                config_dir,
+                supported_plugin_required_features,
+            ),
             events: AppRuntimeEventState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
@@ -837,8 +986,8 @@ impl Default for AppRuntimeState {
                 )),
                 title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
-                banner_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                image_processing_limit: Arc::new(Semaphore::new(4)),
                 title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
                 title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
                     false,
@@ -866,6 +1015,7 @@ impl Default for AppRuntimeState {
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
                 backup_execution_guards: BackupExecutionGuardTable::default(),
+                title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -881,6 +1031,16 @@ impl Default for AppRuntimeState {
     }
 }
 
+impl Default for AppRuntimeState {
+    fn default() -> Self {
+        Self::new(
+            BinaryLane::Portable,
+            PathBuf::from("."),
+            Vec::<String>::new(),
+        )
+    }
+}
+
 #[derive(Clone)]
 pub struct AppAssembly {
     pub services: AppServices,
@@ -892,11 +1052,15 @@ pub struct AppCatalogServices {
     pub(crate) titles: Arc<dyn TitleRepository>,
     pub(crate) shows: Arc<dyn ShowRepository>,
     pub(crate) libraries: Arc<dyn LibraryRepository>,
+    pub(crate) media_requests: Arc<dyn MediaRequestRepository>,
 }
 
 #[derive(Clone)]
 pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
+    pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
+    pub(crate) webauthn: Arc<dyn WebauthnRepository>,
+    pub(crate) totp: Arc<dyn TotpRepository>,
 }
 
 #[derive(Clone)]
@@ -948,6 +1112,8 @@ pub struct AppIntegrationServices {
         Arc<dyn BuiltinDownloadClientConnectionTester>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
     pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
+    pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
+    pub(crate) media_server_connections: Arc<dyn MediaServerConnectionRepository>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
@@ -984,7 +1150,6 @@ pub struct AppConfigServices {
     pub(crate) logical_backup_exporter: Arc<dyn LogicalBackupExporter>,
     pub(crate) backup_dir: PathBuf,
     pub(crate) smg_registration_secret: Option<String>,
-    pub(crate) smg_ca_cert: Option<String>,
     pub(crate) smg_gateway_url: Option<String>,
 }
 
@@ -1131,8 +1296,14 @@ impl AppServices {
                 titles,
                 shows,
                 libraries: Arc::new(NullLibraryRepository),
+                media_requests: Arc::new(NullMediaRequestRepository),
             },
-            identity: AppIdentityServices { users },
+            identity: AppIdentityServices {
+                users,
+                external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
+                webauthn: Arc::new(null_repositories::NullWebauthnRepository),
+                totp: Arc::new(null_repositories::NullTotpRepository),
+            },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
                 job_runs: Arc::new(null_repositories::NullJobRunRepository),
@@ -1160,6 +1331,12 @@ impl AppServices {
                 ),
                 download_client_configs,
                 subtitle_provider_configs: RuntimeFeature::Disabled,
+                external_identity_verifier: Arc::new(
+                    null_repositories::NullExternalIdentityVerifier,
+                ),
+                media_server_connections: Arc::new(
+                    null_repositories::NullMediaServerConnectionRepository,
+                ),
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
@@ -1195,7 +1372,6 @@ impl AppServices {
                 logical_backup_exporter: Arc::new(NullLogicalBackupExporter),
                 backup_dir,
                 smg_registration_secret: None,
-                smg_ca_cert: None,
                 smg_gateway_url: None,
             },
             customization: AppCustomizationServices {
@@ -1353,6 +1529,31 @@ impl AppServicesBuilder {
         config.plugin_http_trust_runtime,
         Arc<dyn PluginHttpTrustConfigRuntime>
     );
+
+    pub fn with_runtime_environment<I, S>(
+        mut self,
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.runtime =
+            AppRuntimeState::new(build_lane, config_dir, supported_plugin_required_features);
+        self
+    }
+
+    pub fn with_supported_plugin_required_features<I, S>(mut self, features: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.runtime.environment.supported_plugin_required_features =
+            normalize_supported_plugin_required_features(features);
+        self
+    }
 }
 
 impl AppServicesBuilder {
@@ -1361,6 +1562,22 @@ impl AppServicesBuilder {
         with_libraries,
         catalog.libraries,
         Arc<dyn LibraryRepository>
+    );
+    app_services_builder_setter!(
+        with_media_requests,
+        catalog.media_requests,
+        Arc<dyn MediaRequestRepository>
+    );
+    app_services_builder_setter!(
+        with_webauthn_store,
+        identity.webauthn,
+        Arc<dyn WebauthnRepository>
+    );
+    app_services_builder_setter!(with_totp_store, identity.totp, Arc<dyn TotpRepository>);
+    app_services_builder_setter!(
+        with_external_account_store,
+        identity.external_accounts,
+        Arc<dyn UserExternalAccountRepository>
     );
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
@@ -1451,6 +1668,16 @@ impl AppServicesBuilder {
         with_builtin_download_client_connection_tester,
         integrations.builtin_download_client_connection_tester,
         Arc<dyn BuiltinDownloadClientConnectionTester>
+    );
+    app_services_builder_setter!(
+        with_external_identity_verifier,
+        integrations.external_identity_verifier,
+        Arc<dyn ExternalIdentityVerifier>
+    );
+    app_services_builder_setter!(
+        with_media_server_connection_store,
+        integrations.media_server_connections,
+        Arc<dyn MediaServerConnectionRepository>
     );
     app_services_builder_required_setter!(
         with_metadata_gateway,
@@ -1579,7 +1806,6 @@ impl AppServicesBuilder {
         config.smg_registration_secret,
         Option<String>
     );
-    app_services_builder_setter!(with_smg_ca_cert, config.smg_ca_cert, Option<String>);
     app_services_builder_setter!(with_smg_gateway_url, config.smg_gateway_url, Option<String>);
     app_services_builder_required_setter!(
         with_job_runs,
@@ -1728,6 +1954,7 @@ pub struct AppUseCase {
     pub(crate) jwt_signing_keys: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub(crate) jwt_signing_keys_loaded: Arc<OnceCell<()>>,
     pub(crate) jwt_signing_keys_seed_lock: Arc<Mutex<()>>,
+    pub webauthn: RuntimeFeature<Arc<webauthn_rs::Webauthn>>,
 }
 
 impl AppUseCase {
@@ -1768,6 +1995,38 @@ impl AppUseCase {
         Ok(state.matcher.clone().unwrap_or(matcher))
     }
 
+    pub fn runtime_build_lane(&self) -> BinaryLane {
+        self.runtime.environment.build_lane
+    }
+
+    pub fn runtime_build_class(&self) -> BinaryClass {
+        self.runtime.environment.build_class
+    }
+
+    pub(crate) fn runtime_supported_plugin_required_features(&self) -> Arc<HashSet<String>> {
+        self.runtime
+            .environment
+            .supported_plugin_required_features
+            .clone()
+    }
+
+    pub async fn runtime_performance(&self) -> RuntimePerformanceSnapshot {
+        let environment = self.runtime.environment.clone();
+        initialize_runtime_performance_snapshot(
+            environment.performance_snapshot.as_ref(),
+            environment.config_dir.clone(),
+            Arc::new(probe_runtime_performance_snapshot),
+        )
+        .await
+    }
+
+    pub fn warm_runtime_performance(&self) {
+        let app = self.clone();
+        tokio::spawn(async move {
+            let _ = app.runtime_performance().await;
+        });
+    }
+
     /// Test-only escape hatch for selectively overriding already-assembled services.
     ///
     /// Production assembly should go through `AppServices::builder(...).build()`.
@@ -1790,6 +2049,7 @@ impl AppUseCase {
             jwt_signing_keys: self.jwt_signing_keys.clone(),
             jwt_signing_keys_loaded: self.jwt_signing_keys_loaded.clone(),
             jwt_signing_keys_seed_lock: self.jwt_signing_keys_seed_lock.clone(),
+            webauthn: self.webauthn.clone(),
         }
     }
 
@@ -2418,7 +2678,6 @@ impl AppUseCase {
 
     pub fn wake_title_image_loops(&self) {
         self.runtime.catalog.poster_wake.notify_one();
-        self.runtime.catalog.banner_wake.notify_one();
         self.runtime.catalog.fanart_wake.notify_one();
     }
 
@@ -2463,6 +2722,163 @@ fn should_invalidate_monitored_title_matcher(payload: &scryer_domain::DomainEven
     )
 }
 
+type RuntimePerformanceProbe =
+    Arc<dyn Fn(PathBuf) -> RuntimePerformanceSnapshot + Send + Sync + 'static>;
+
+async fn initialize_runtime_performance_snapshot(
+    cell: &OnceCell<RuntimePerformanceSnapshot>,
+    config_dir: Arc<PathBuf>,
+    probe: RuntimePerformanceProbe,
+) -> RuntimePerformanceSnapshot {
+    cell.get_or_init(|| async move {
+        let config_dir_for_probe = config_dir.as_ref().clone();
+        let config_dir_for_log = config_dir_for_probe.clone();
+        let snapshot =
+            match tokio::task::spawn_blocking(move || (probe)(config_dir_for_probe)).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "runtime performance probe task failed; using conservative slow defaults"
+                    );
+                    RuntimePerformanceSnapshot::slow()
+                }
+            };
+        tracing::info!(
+            cpu_class = %snapshot.cpu_class,
+            config_io_class = %snapshot.config_io_class,
+            cpu_probe_elapsed_ms = snapshot.cpu_probe_elapsed_ms,
+            config_io_probe_elapsed_ms = snapshot.config_io_probe_elapsed_ms,
+            config_dir = %config_dir_for_log.display(),
+            "runtime performance probe settled"
+        );
+        snapshot
+    })
+    .await
+    .clone()
+}
+
+fn probe_runtime_performance_snapshot(config_dir: PathBuf) -> RuntimePerformanceSnapshot {
+    let (cpu_class, cpu_probe_elapsed_ms) = probe_cpu_performance();
+    let (config_io_class, config_io_probe_elapsed_ms) = probe_config_io_performance(&config_dir);
+    RuntimePerformanceSnapshot {
+        cpu_class,
+        config_io_class,
+        cpu_probe_elapsed_ms,
+        config_io_probe_elapsed_ms,
+    }
+}
+
+fn classify_cpu_elapsed(elapsed: std::time::Duration) -> RuntimePerformanceClass {
+    if elapsed <= std::time::Duration::from_millis(125) {
+        RuntimePerformanceClass::Fast
+    } else {
+        RuntimePerformanceClass::Slow
+    }
+}
+
+fn probe_cpu_performance() -> (RuntimePerformanceClass, Option<u64>) {
+    const CPU_PROBE_BYTES: usize = 8 * 1024 * 1024;
+    const CPU_PROBE_PASSES: usize = 32;
+    const SLOW_CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let mut buffer = vec![0_u64; CPU_PROBE_BYTES / std::mem::size_of::<u64>()];
+    let start = std::time::Instant::now();
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+
+    for pass in 0..CPU_PROBE_PASSES {
+        for word in &mut buffer {
+            state = state
+                .wrapping_add(0xA076_1D64_78BD_642F_u64 ^ (pass as u64))
+                .rotate_left(13);
+            let mixed = state ^ word.rotate_left((state & 31) as u32) ^ 0xE703_7ED1_A0B4_28DB_u64;
+            *word = word.wrapping_add(mixed).rotate_left(7) ^ mixed;
+            std::hint::black_box(*word);
+        }
+
+        if start.elapsed() > SLOW_CAP {
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return (RuntimePerformanceClass::Slow, Some(elapsed_ms));
+        }
+    }
+
+    std::hint::black_box(state);
+    let elapsed = start.elapsed();
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    (classify_cpu_elapsed(elapsed), Some(elapsed_ms))
+}
+
+fn classify_config_io_elapsed(elapsed: std::time::Duration) -> RuntimePerformanceClass {
+    if elapsed <= std::time::Duration::from_millis(200) {
+        RuntimePerformanceClass::Fast
+    } else {
+        RuntimePerformanceClass::Slow
+    }
+}
+
+fn probe_config_io_performance(config_dir: &Path) -> (RuntimePerformanceClass, Option<u64>) {
+    const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+    const CHUNK_BYTES: usize = 1024 * 1024;
+    const SLOW_CAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+    if !config_dir.is_dir() && std::fs::create_dir_all(config_dir).is_err() {
+        return (RuntimePerformanceClass::Slow, None);
+    }
+
+    let probe_name = format!(
+        ".scryer-runtime-probe-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let probe_path = config_dir.join(probe_name);
+    let chunk = vec![0x5Au8; CHUNK_BYTES];
+    let start = std::time::Instant::now();
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&probe_path)?;
+        let mut written = 0;
+        while written < PAYLOAD_BYTES {
+            let to_write = std::cmp::min(CHUNK_BYTES, PAYLOAD_BYTES - written);
+            file.write_all(&chunk[..to_write])?;
+            written += to_write;
+            if start.elapsed() > SLOW_CAP {
+                return Ok(());
+            }
+        }
+        file.flush()?;
+        file.sync_all()?;
+
+        let mut file = std::fs::File::open(&probe_path)?;
+        let mut read_buffer = vec![0_u8; CHUNK_BYTES];
+        loop {
+            let bytes_read = file.read(&mut read_buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            std::hint::black_box(&read_buffer[..bytes_read]);
+            if start.elapsed() > SLOW_CAP {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    })();
+
+    let cleanup_result = std::fs::remove_file(&probe_path);
+
+    if result.is_err() || cleanup_result.is_err() {
+        let elapsed_ms = u64::try_from(start.elapsed().as_millis()).ok();
+        return (RuntimePerformanceClass::Slow, elapsed_ms);
+    }
+
+    let elapsed = start.elapsed();
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    (classify_config_io_elapsed(elapsed), Some(elapsed_ms))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2473,6 +2889,8 @@ mod tests {
     };
     use async_trait::async_trait;
     use scryer_domain::IndexerConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
 
     struct TestIndexerConfigRepository;
 
@@ -2528,6 +2946,143 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[test]
+    fn runtime_build_identity_defaults_to_portable() {
+        let runtime = AppRuntimeState::default();
+        assert_eq!(runtime.environment.build_lane, BinaryLane::Portable);
+        assert_eq!(runtime.environment.build_class, BinaryClass::Portable);
+        assert!(
+            runtime
+                .environment
+                .supported_plugin_required_features
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn runtime_environment_builder_sets_build_identity() {
+        let assembly = test_builder()
+            .with_runtime_environment(
+                BinaryLane::Haswell,
+                "/tmp/scryer-config",
+                Vec::<String>::new(),
+            )
+            .build_partial_for_tests();
+        assert_eq!(assembly.runtime.environment.build_lane, BinaryLane::Haswell);
+        assert_eq!(
+            assembly.runtime.environment.build_class,
+            BinaryClass::Optimized
+        );
+        assert_eq!(
+            assembly.runtime.environment.config_dir.as_ref(),
+            &PathBuf::from("/tmp/scryer-config")
+        );
+    }
+
+    #[test]
+    fn runtime_environment_builder_sets_supported_plugin_required_features() {
+        let assembly = test_builder()
+            .with_runtime_environment(
+                BinaryLane::Portable,
+                "/tmp/scryer-config",
+                ["simd128", " relaxed-simd ", ""],
+            )
+            .build_partial_for_tests();
+        assert_eq!(
+            assembly
+                .runtime
+                .environment
+                .supported_plugin_required_features
+                .as_ref(),
+            &HashSet::from(["simd128".to_string(), "relaxed-simd".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_performance_initializer_shares_one_probe_run() {
+        let cell = Arc::new(OnceCell::new());
+        let config_dir = Arc::new(PathBuf::from("."));
+        let probe_runs = Arc::new(AtomicUsize::new(0));
+        let probe: RuntimePerformanceProbe = Arc::new({
+            let probe_runs = probe_runs.clone();
+            move |_path: PathBuf| {
+                probe_runs.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                RuntimePerformanceSnapshot {
+                    cpu_class: RuntimePerformanceClass::Fast,
+                    config_io_class: RuntimePerformanceClass::Slow,
+                    cpu_probe_elapsed_ms: Some(50),
+                    config_io_probe_elapsed_ms: Some(5),
+                }
+            }
+        });
+
+        let left = {
+            let cell = cell.clone();
+            let config_dir = config_dir.clone();
+            let probe = probe.clone();
+            tokio::spawn(async move {
+                initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await
+            })
+        };
+        let right = {
+            let cell = cell.clone();
+            let config_dir = config_dir.clone();
+            let probe = probe.clone();
+            tokio::spawn(async move {
+                initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await
+            })
+        };
+
+        let first = left.await.expect("left probe");
+        let second = right.await.expect("right probe");
+        assert_eq!(probe_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(first, second);
+
+        let start = std::time::Instant::now();
+        let cached =
+            initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await;
+        assert_eq!(cached, first);
+        assert!(start.elapsed() < std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn cpu_elapsed_threshold_classification_is_stable() {
+        assert_eq!(
+            classify_cpu_elapsed(std::time::Duration::from_millis(125)),
+            RuntimePerformanceClass::Fast
+        );
+        assert_eq!(
+            classify_cpu_elapsed(std::time::Duration::from_millis(126)),
+            RuntimePerformanceClass::Slow
+        );
+    }
+
+    #[test]
+    fn config_io_elapsed_threshold_classification_is_stable() {
+        assert_eq!(
+            classify_config_io_elapsed(std::time::Duration::from_millis(200)),
+            RuntimePerformanceClass::Fast
+        );
+        assert_eq!(
+            classify_config_io_elapsed(std::time::Duration::from_millis(201)),
+            RuntimePerformanceClass::Slow
+        );
+    }
+
+    #[test]
+    fn config_io_probe_creates_missing_directory_before_measuring() {
+        let temp = tempdir().expect("tempdir");
+        let missing = temp.path().join("missing");
+        let (class, elapsed_ms) = probe_config_io_performance(&missing);
+        assert!(matches!(
+            class,
+            RuntimePerformanceClass::Slow | RuntimePerformanceClass::Fast
+        ));
+        assert!(missing.is_dir());
+        assert!(elapsed_ms.is_some());
     }
 
     #[tokio::test]

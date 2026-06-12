@@ -11,7 +11,10 @@ use scryer_domain::{
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, SubmissionScope};
+use crate::{
+    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
+    SubmissionScope,
+};
 
 const DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS: i64 = 24;
 const DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES: usize = 5_000;
@@ -51,6 +54,8 @@ pub struct TrackedDownload {
     pub import_attempted: bool,
     /// When a completed download path first became unavailable.
     pub path_missing_since: Option<DateTime<Utc>>,
+    /// Manual failure actions can record the failure without reacquiring.
+    pub skip_reacquire_on_failure: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,11 +121,7 @@ impl TrackedDownloadService {
     /// On first see: resolves title, checks for terminal state in DB.
     /// On update: refreshes client_item but preserves scryer state if past Downloading.
     pub async fn track(&mut self, app: &AppUseCase, client_item: DownloadQueueItem) {
-        let id = tracked_download_id(
-            Some(client_item.client_id.as_str()),
-            &client_item.client_type,
-            &client_item.download_client_item_id,
-        );
+        let id = tracked_download_id_for_item(&client_item);
         self.last_seen_at.insert(id.clone(), Utc::now());
 
         if self.cache.contains_key(&id) {
@@ -176,6 +177,7 @@ impl TrackedDownloadService {
             client_item,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         Self::resolve_title(app, &mut td).await;
@@ -189,6 +191,16 @@ impl TrackedDownloadService {
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut TrackedDownload> {
         self.cache.get_mut(id)
+    }
+
+    pub fn resolve_cached_id(&self, requested_id: &str) -> Option<String> {
+        if self.cache.contains_key(requested_id) {
+            return Some(requested_id.to_string());
+        }
+
+        self.cache.iter().find_map(|(id, tracked)| {
+            tracked_download_matches_source_id(tracked, requested_id).then(|| id.clone())
+        })
     }
 
     pub fn get_all(&self) -> Vec<&TrackedDownload> {
@@ -280,25 +292,58 @@ impl TrackedDownloadService {
         let Some(td) = self.cache.get(id) else {
             return false;
         };
+        let state_identity = match download_id_submission_for_tracked_download(app, td).await {
+            Some(submission) => DownloadSourceIdentity::from_submission(&submission),
+            None => DownloadSourceIdentity::new(
+                Some(td.client_id.as_str()),
+                &td.client_type,
+                &td.client_item.download_client_item_id,
+            ),
+        };
         if let Err(e) = app
             .services
             .workflow
             .download_submissions
-            .update_tracked_state(
-                &DownloadSourceIdentity::new(
-                    Some(td.client_id.as_str()),
-                    &td.client_type,
-                    &td.client_item.download_client_item_id,
-                ),
-                state.as_str(),
-            )
+            .update_tracked_state(&state_identity, state.as_str())
             .await
         {
             tracing::warn!(
                 error = %e,
                 id,
+                tracked_state_client_item_id = state_identity.item_id.as_str(),
                 state = state.as_str(),
                 "failed to persist tracked download terminal state"
+            );
+            return false;
+        }
+
+        let observed_identity = observed_queue_item_identity(&td.client_item);
+        if !download_submission_identity_is_empty(&observed_identity)
+            && let Err(e) = app
+                .services
+                .workflow
+                .download_submissions
+                .record_identity_tracked_state(
+                    &observed_identity,
+                    Some(&DownloadSourceIdentity::new(
+                        Some(td.client_id.as_str()),
+                        &td.client_type,
+                        &td.client_item.download_client_item_id,
+                    )),
+                    state.as_str(),
+                    None,
+                    None,
+                )
+                .await
+        {
+            tracing::warn!(
+                error = %e,
+                id,
+                client_id = td.client_id.as_str(),
+                client_type = td.client_type.as_str(),
+                download_client_item_id = td.client_item.download_client_item_id.as_str(),
+                state = state.as_str(),
+                "failed to persist durable tracked download terminal state"
             );
             return false;
         }
@@ -402,55 +447,116 @@ impl TrackedDownloadService {
 
     /// Reconstruct state from persistent storage after restart.
     async fn reconstruct_state(app: &AppUseCase, td: &mut TrackedDownload) {
-        // Check download_submissions.tracked_state for terminal states.
-        if let Ok(Some(tracked_state)) = app
-            .services
-            .workflow
-            .download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
-                Some(td.client_id.as_str()),
-                &td.client_type,
-                &td.client_item.download_client_item_id,
-            ))
-            .await
+        let observed_identity = observed_queue_item_identity(&td.client_item);
+        let observed_source_identity = queue_item_source_identity(&td.client_item);
+        if !download_submission_identity_is_empty(&observed_identity)
+            && let Ok(Some(tracked_state)) = app
+                .services
+                .workflow
+                .download_submissions
+                .get_identity_tracked_state(&observed_identity, Some(&observed_source_identity))
+                .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
-            && state.is_terminal()
+            && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
         {
             td.state = state;
             return;
         }
 
-        // Fall back to the latest import record for restart recovery if the
-        // tracked state was not persisted before shutdown.
-        if let Ok(true) = app
-            .services
-            .workflow
-            .imports
-            .is_already_imported(&DownloadSourceIdentity::new(
-                Some(td.client_id.as_str()),
-                &td.client_type,
-                &td.client_item.download_client_item_id,
-            ))
-            .await
-        {
-            td.state = TrackedDownloadState::Imported;
-            let _ = app
+        let download_id_submission = download_id_submission_for_tracked_download(app, td).await;
+        // Check tracked state against the matched submission identity first.
+        if let Some(submission) = download_id_submission.as_ref() {
+            let submission_source_identity = DownloadSourceIdentity::from_submission(submission);
+            if let Ok(Some(tracked_state)) = app
                 .services
                 .workflow
                 .download_submissions
-                .update_tracked_state(
-                    &DownloadSourceIdentity::new(
-                        Some(td.client_id.as_str()),
-                        &td.client_type,
-                        &td.client_item.download_client_item_id,
-                    ),
-                    TrackedDownloadState::Imported.as_str(),
-                )
-                .await;
+                .get_tracked_state(&submission_source_identity)
+                .await
+                && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
+                && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+            {
+                td.state = state;
+                return;
+            }
+        }
+
+        // Fall back to the latest import record for restart recovery if the
+        // tracked state was not persisted before shutdown. This is only safe
+        // after the current DownloadId resolves to a Scryer submission.
+        if let Some(submission) = download_id_submission {
+            let submission_identity = DownloadSourceIdentity::from_submission(&submission);
+            let download_identity = app
+                .services
+                .workflow
+                .download_submissions
+                .get_submission_identity(&submission_identity)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let imported = !download_submission_identity_is_empty(&download_identity)
+                && app
+                    .services
+                    .workflow
+                    .imports
+                    .is_already_imported_by_download_id(&submission_identity, &download_identity)
+                    .await
+                    .unwrap_or(false);
+            if imported {
+                td.state = TrackedDownloadState::Imported;
+                let _ = app
+                    .services
+                    .workflow
+                    .download_submissions
+                    .update_tracked_state(
+                        &submission_identity,
+                        TrackedDownloadState::Imported.as_str(),
+                    )
+                    .await;
+            }
         }
 
         // Default: Downloading (will be re-evaluated by check cycle).
     }
+}
+
+async fn download_id_submission_for_tracked_download(
+    app: &AppUseCase,
+    tracked: &TrackedDownload,
+) -> Option<DownloadSubmission> {
+    let observed_identity = observed_queue_item_identity(&tracked.client_item);
+    if let Some(download_id) = observed_identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let matches = app
+            .services
+            .workflow
+            .download_submissions
+            .list_by_download_id(
+                Some(tracked.client_id.as_str()),
+                &tracked.client_type,
+                download_id,
+            )
+            .await
+            .ok()?;
+        return crate::download_identity::coalesce_download_submissions_by_release_attempt(
+            &matches,
+        );
+    }
+
+    None
+}
+
+fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) -> bool {
+    identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
 }
 
 pub(crate) async fn publish_runtime_tracked_download_snapshot(
@@ -606,6 +712,7 @@ pub enum TrackedDownloadCommand {
     },
     MarkFailed {
         id: String,
+        skip_reacquire: bool,
         reply: oneshot::Sender<AppResult<()>>,
     },
     RetryImport {
@@ -666,11 +773,12 @@ impl TrackedDownloadHandle {
         })?
     }
 
-    pub async fn mark_failed(&self, id: String) -> AppResult<()> {
+    pub async fn mark_failed(&self, id: String, skip_reacquire: bool) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::MarkFailed {
                 id,
+                skip_reacquire,
                 reply: reply_tx,
             })
             .await
@@ -754,6 +862,42 @@ fn tracked_download_cache_max_entries() -> usize {
         .unwrap_or(DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES)
 }
 
+fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
+    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
+        download_id: item.download_id.as_deref(),
+        parameters: &[],
+        info_hash_hint: None,
+    })
+}
+
+fn queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(item.client_id.as_str()),
+        item.client_type.as_str(),
+        item.download_client_item_id.as_str(),
+    )
+}
+
+pub(crate) fn tracked_download_id_for_item(item: &DownloadQueueItem) -> String {
+    let observed_identity = observed_queue_item_identity(item);
+    if let Some(download_id) = observed_identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!(
+            "download:{}:{}:{download_id}",
+            item.client_id, item.client_type
+        );
+    }
+    tracked_download_id(
+        Some(item.client_id.as_str()),
+        &item.client_type,
+        &item.download_client_item_id,
+    )
+}
+
 pub fn tracked_download_id(client_id: Option<&str>, client_type: &str, item_id: &str) -> String {
     let normalized_client_id = client_id
         .map(str::trim)
@@ -764,6 +908,31 @@ pub fn tracked_download_id(client_id: Option<&str>, client_type: &str, item_id: 
     }
 
     format!("{normalized_client_id}:{item_id}")
+}
+
+fn tracked_download_matches_source_id(tracked: &TrackedDownload, requested_id: &str) -> bool {
+    let requested_id = requested_id.trim();
+    if requested_id.is_empty() {
+        return false;
+    }
+
+    let item = &tracked.client_item;
+    [
+        tracked_download_id(
+            Some(tracked.client_id.as_str()),
+            &tracked.client_type,
+            &item.download_client_item_id,
+        ),
+        tracked_download_id(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        ),
+        tracked_download_id(None, &tracked.client_type, &item.download_client_item_id),
+        tracked_download_id(None, &item.client_type, &item.download_client_item_id),
+    ]
+    .into_iter()
+    .any(|id| id == requested_id)
 }
 
 #[cfg(test)]
@@ -792,9 +961,45 @@ mod tests {
     #[derive(Default)]
     struct TestDownloadSubmissionRepo {
         submission: Option<crate::DownloadSubmission>,
+        submission_identity: Option<crate::DownloadSubmissionIdentity>,
         tracked_state: Option<String>,
         tracked_state_updates: Arc<Mutex<Vec<String>>>,
         recorded_submissions: Arc<Mutex<Vec<crate::DownloadSubmission>>>,
+        identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    fn test_download_identity_state_key(
+        identity: &crate::DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> Option<String> {
+        let download_id = identity
+            .download_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        if download_id.starts_with("scryer-download:")
+            || (matches!(download_id.len(), 40 | 64)
+                && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
+        {
+            return Some(format!("download:{download_id}"));
+        }
+
+        let source_identity = source_identity?;
+        let client_type = source_identity.client_type.trim();
+        if client_type.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "client:{}:{}:download:{}",
+            source_identity
+                .client_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default(),
+            client_type.to_ascii_lowercase(),
+            download_id
+        ))
     }
 
     #[async_trait]
@@ -809,6 +1014,38 @@ mod tests {
             _: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
             Ok(self.submission.clone())
+        }
+
+        async fn list_by_download_id(
+            &self,
+            client_id: Option<&str>,
+            client_type: &str,
+            download_id: &str,
+        ) -> AppResult<Vec<crate::DownloadSubmission>> {
+            let Some(submission) = self.submission.as_ref() else {
+                return Ok(vec![]);
+            };
+            let matches_submission = submission.download_client_id.as_deref().unwrap_or("")
+                == client_id.unwrap_or("")
+                && submission
+                    .download_client_type
+                    .eq_ignore_ascii_case(client_type);
+            let matches_identity = self
+                .submission_identity
+                .as_ref()
+                .and_then(|identity| identity.download_id.as_deref())
+                == Some(download_id);
+            Ok((matches_submission && matches_identity)
+                .then_some(submission.clone())
+                .into_iter()
+                .collect())
+        }
+
+        async fn get_submission_identity(
+            &self,
+            _: &DownloadSourceIdentity,
+        ) -> AppResult<Option<crate::DownloadSubmissionIdentity>> {
+            Ok(self.submission_identity.clone())
         }
 
         async fn list_for_client_items(
@@ -852,6 +1089,34 @@ mod tests {
 
         async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
             Ok(self.tracked_state.clone())
+        }
+
+        async fn record_identity_tracked_state(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+            tracked_state: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> AppResult<()> {
+            if let Some(key) = test_download_identity_state_key(identity, source_identity) {
+                self.identity_tracked_states
+                    .lock()
+                    .await
+                    .insert(key, tracked_state.to_string());
+            }
+            Ok(())
+        }
+
+        async fn get_identity_tracked_state(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+        ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
+            Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
         }
     }
 
@@ -1029,6 +1294,26 @@ mod tests {
                 record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
                     && record.source_system == identity.client_type
                     && record.source_ref == identity.item_id
+                    && matches!(
+                        record.status,
+                        ImportStatus::Completed | ImportStatus::Skipped
+                    )
+            }))
+        }
+
+        async fn is_already_imported_by_download_id(
+            &self,
+            source_identity: &DownloadSourceIdentity,
+            identity: &crate::DownloadSubmissionIdentity,
+        ) -> AppResult<bool> {
+            let Some(download_id) = identity.download_id.as_deref() else {
+                return Ok(false);
+            };
+            Ok(self.stored_imports().iter().any(|record| {
+                record.source_client_id.as_deref().unwrap_or("")
+                    == source_identity.client_id_or_empty()
+                    && record.source_system == source_identity.client_type
+                    && record.download_id.as_deref() == Some(download_id)
                     && matches!(
                         record.status,
                         ImportStatus::Completed | ImportStatus::Skipped
@@ -1584,6 +1869,15 @@ mod tests {
         .with_domain_events(Arc::new(TestDomainEventRepo::default()))
         .build_partial_for_tests();
 
+        let mut facet_registry = FacetRegistry::new();
+        facet_registry.register(Arc::new(crate::catalog::facets::movie::MovieFacetHandler));
+        facet_registry.register(Arc::new(
+            crate::catalog::facets::series::SeriesFacetHandler::new(MediaFacet::Series),
+        ));
+        facet_registry.register(Arc::new(
+            crate::catalog::facets::series::SeriesFacetHandler::new(MediaFacet::Anime),
+        ));
+
         AppUseCase::new(
             services,
             JwtAuthConfig {
@@ -1591,7 +1885,7 @@ mod tests {
                 access_ttl_seconds: 3600,
                 jwt_signing_salt: "test-salt".to_string(),
             },
-            Arc::new(FacetRegistry::new()),
+            Arc::new(facet_registry),
         )
     }
 
@@ -1613,6 +1907,7 @@ mod tests {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
+            account_kind: Default::default(),
             authorization: scryer_domain::UserAuthorization {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,
@@ -1629,6 +1924,7 @@ mod tests {
             episode_id: None,
             title_name: "Restart Recovery Show".to_string(),
             facet: Some("series".to_string()),
+            category: None,
             client_id: "client-1".to_string(),
             client_name: "NZBGet".to_string(),
             client_type: "nzbget".to_string(),
@@ -1641,6 +1937,7 @@ mod tests {
             attention_required: false,
             attention_reason: None,
             download_client_item_id: "dl-1".to_string(),
+            download_id: None,
             import_status: None,
             import_error_code: None,
             import_error_message: None,
@@ -1655,6 +1952,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tracked_download_id_for_item_prefers_download_id() {
+        let mut item = build_client_item();
+        item.download_client_item_id = "10010".to_string();
+        item.download_id = Some(" scryer-download-10010 ".to_string());
+
+        assert_eq!(
+            tracked_download_id_for_item(&item),
+            "download:client-1:nzbget:scryer-download-10010"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_download_service_resolves_live_source_id_to_durable_cached_entry() {
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app(download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.download_client_item_id = "10010".to_string();
+        item.download_id = Some("scryer-download-10010".to_string());
+
+        let durable_id = tracked_download_id_for_item(&item);
+        let live_id = tracked_download_id(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        );
+
+        tracker.track(&app, item).await;
+
+        assert!(tracker.find(&durable_id).is_some());
+        assert!(tracker.find(&live_id).is_none());
+        assert_eq!(
+            tracker.resolve_cached_id(&live_id).as_deref(),
+            Some(durable_id.as_str())
+        );
+        assert_eq!(
+            tracker.resolve_cached_id(&durable_id).as_deref(),
+            Some(durable_id.as_str())
+        );
+
+        tracker.update_trackable(&HashSet::from([durable_id.clone()]));
+        assert!(tracker.find(&durable_id).is_some_and(|td| td.is_trackable));
+    }
+
     fn build_completed_download(
         client_type: &str,
         item_id: &str,
@@ -1666,6 +2010,7 @@ mod tests {
             client_type: client_type.to_string(),
             client_id: "client-1".to_string(),
             download_client_item_id: item_id.to_string(),
+            download_id: None,
             name: name.to_string(),
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
@@ -1690,8 +2035,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,
@@ -1717,11 +2060,12 @@ mod tests {
 
     #[tokio::test]
     async fn reconstruct_state_recovers_imported_from_completed_import_record() {
+        let download_id = "scryer-download:restart-recovery";
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: Some(crate::DownloadSubmission {
                 title_id: "title-1".to_string(),
                 facet: "series".to_string(),
-                download_client_id: None,
+                download_client_id: Some("client-1".to_string()),
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "dl-1".to_string(),
                 source_hint: None,
@@ -1730,9 +2074,13 @@ mod tests {
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
+            submission_identity: Some(crate::DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            }),
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
@@ -1744,6 +2092,78 @@ mod tests {
                 status: ImportStatus::Completed,
                 payload_json: "{}".to_string(),
                 result_json: None,
+                download_id: Some(download_id.to_string()),
+                started_at: None,
+                finished_at: None,
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+            }),
+            ..Default::default()
+        });
+        let app = build_app(download_submissions.clone(), imports);
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some(download_id.to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Imported);
+        assert_eq!(
+            download_submissions
+                .tracked_state_updates
+                .lock()
+                .await
+                .as_slice(),
+            ["imported"]
+        );
+    }
+
+    #[tokio::test]
+    async fn reconstruct_state_does_not_recover_client_local_state_from_other_client() {
+        let download_id = "10010";
+        let identity = crate::DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        download_submissions
+            .record_identity_tracked_state(
+                &identity,
+                Some(&other_client_source),
+                TrackedDownloadState::Imported.as_str(),
+                None,
+                None,
+            )
+            .await
+            .expect("other client state should record");
+        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some(download_id.to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+    }
+
+    #[tokio::test]
+    async fn reconstruct_state_ignores_item_id_import_record_without_download_id() {
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo {
+            import_record: Some(ImportRecord {
+                id: Id::new().0,
+                source_client_id: Some("client-1".to_string()),
+                source_system: "nzbget".to_string(),
+                source_ref: "dl-1".to_string(),
+                import_type: ImportType::SeriesDownload,
+                status: ImportStatus::Completed,
+                payload_json: "{}".to_string(),
+                result_json: None,
+                download_id: None,
                 started_at: None,
                 finished_at: None,
                 created_at: "now".to_string(),
@@ -1757,14 +2177,13 @@ mod tests {
         tracker.track(&app, build_client_item()).await;
 
         let tracked = tracker.find("client-1:dl-1").expect("tracked download");
-        assert_eq!(tracked.state, TrackedDownloadState::Imported);
-        assert_eq!(
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(
             download_submissions
                 .tracked_state_updates
                 .lock()
                 .await
-                .as_slice(),
-            ["imported"]
+                .is_empty()
         );
     }
 
@@ -1887,9 +2306,11 @@ mod tests {
         });
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: None,
+            submission_identity: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -2292,6 +2713,7 @@ mod tests {
                     is_trackable: true,
                     import_attempted: false,
                     path_missing_since: None,
+                    skip_reacquire_on_failure: false,
                 },
             );
         }
@@ -2338,12 +2760,52 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::failed_download_handler::check(&mut tracked);
 
         assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
         assert_eq!(tracked.status, TrackedDownloadStatus::Error);
+    }
+
+    #[test]
+    fn failed_download_check_skips_parse_matched_foreign_download() {
+        let mut client_item = build_client_item();
+        client_item.state = DownloadQueueState::Failed;
+        client_item.attention_reason = Some("health below critical".to_string());
+        client_item.is_scryer_origin = false;
+        let mut tracked = TrackedDownload {
+            id: "client-1:failed-foreign".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "nzbget".to_string(),
+            client_item,
+            state: TrackedDownloadState::Downloading,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: Some("Foreign.Show.S01E01.1080p.WEB-DL".to_string()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::TitleParse,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+            skip_reacquire_on_failure: false,
+        };
+
+        crate::failed_download_handler::check(&mut tracked);
+
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert!(
+            tracked
+                .status_messages
+                .iter()
+                .any(|message| message.contains("wasn't grabbed by Scryer"))
+        );
     }
 
     #[tokio::test]
@@ -2443,6 +2905,7 @@ mod tests {
                 status: ImportStatus::Pending,
                 payload_json: serde_json::to_string(&payload).expect("serialize payload"),
                 result_json: None,
+                download_id: None,
                 started_at: None,
                 finished_at: None,
                 created_at: Utc::now().to_rfc3339(),
@@ -2475,6 +2938,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;
@@ -2517,6 +2981,7 @@ mod tests {
                     payload_json: serde_json::to_string(&payload_other)
                         .expect("serialize other payload"),
                     result_json: None,
+                    download_id: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -2532,6 +2997,7 @@ mod tests {
                     payload_json: serde_json::to_string(&payload_match)
                         .expect("serialize matching payload"),
                     result_json: None,
+                    download_id: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -2600,6 +3066,7 @@ mod tests {
                     payload_json: serde_json::to_string(&payload_other)
                         .expect("serialize other payload"),
                     result_json: None,
+                    download_id: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -2615,6 +3082,7 @@ mod tests {
                     payload_json: serde_json::to_string(&payload_match)
                         .expect("serialize matching payload"),
                     result_json: None,
+                    download_id: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -2651,6 +3119,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;

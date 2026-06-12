@@ -77,6 +77,32 @@ pub enum SubtitleScoreKind {
     Episode,
 }
 
+impl SubtitleScoreKind {
+    pub fn weights(self) -> ScoreWeights {
+        match self {
+            Self::Movie => MOVIE_WEIGHTS.weights(),
+            Self::Episode => SERIES_WEIGHTS.weights(),
+        }
+    }
+
+    pub fn max_score(self) -> i32 {
+        self.weights().max_score()
+    }
+}
+
+pub fn percent_to_raw_threshold(kind: SubtitleScoreKind, percent: i32) -> i32 {
+    let percent = percent.clamp(0, 100);
+    (kind.max_score() * percent + 99) / 100
+}
+
+pub fn raw_score_to_percent(kind: SubtitleScoreKind, score: i32) -> f64 {
+    let max_score = kind.max_score();
+    if max_score <= 0 {
+        return 0.0;
+    }
+    (score.max(0) as f64 * 100.0) / max_score as f64
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MatchFlag {
     Hash = 0,
@@ -344,6 +370,27 @@ mod tests {
         let w = MOVIE_WEIGHTS.weights();
         let matches = HashMap::new();
         assert_eq!(compute_score(&w, &matches), 0);
+    }
+
+    #[test]
+    fn percent_thresholds_convert_to_bazarr_raw_scores() {
+        assert_eq!(
+            percent_to_raw_threshold(SubtitleScoreKind::Episode, 90),
+            324
+        );
+        assert_eq!(percent_to_raw_threshold(SubtitleScoreKind::Movie, 70), 84);
+    }
+
+    #[test]
+    fn percent_thresholds_clamp_to_valid_range() {
+        assert_eq!(percent_to_raw_threshold(SubtitleScoreKind::Episode, -10), 0);
+        assert_eq!(percent_to_raw_threshold(SubtitleScoreKind::Movie, 150), 120);
+    }
+
+    #[test]
+    fn raw_scores_convert_to_percent_for_display() {
+        let percent = raw_score_to_percent(SubtitleScoreKind::Episode, 242);
+        assert!((percent - 67.222).abs() < 0.01);
     }
 
     // ── Partial match tests ─────────────────────────────────────────

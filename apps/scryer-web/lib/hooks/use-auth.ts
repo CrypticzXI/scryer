@@ -4,6 +4,7 @@ import { decodeJwtPayload, isTokenExpired } from "@/lib/utils/jwt";
 import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
 import { loginMutation } from "@/lib/graphql/mutations";
 import type { AuthRuntimeState } from "@/lib/types/settings";
+import type { UserAccountKind } from "@/lib/types/users";
 import type { AppPermission, LibraryPermissionGrant } from "@/lib/utils/permissions";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
@@ -11,11 +12,15 @@ const SESSION_STORAGE_KEY = "scryer_auth_token";
 export type AuthUser = {
   id: string;
   username: string;
+  hasPassword?: boolean;
+  hasMfa?: boolean;
+  hasPasskey?: boolean;
+  accountKind?: UserAccountKind;
   appPermissions: AppPermission[];
   libraryPermissions: LibraryPermissionGrant[];
 };
-type AuthLoginOptions = { persistSession?: boolean };
-type AuthLoginResult = { token: string; user: AuthUser | null };
+type AuthLoginOptions = { persistSession?: boolean; totpCode?: string | null };
+type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequired: boolean };
 
 // Module-level token ref so getAuthToken() can be called outside React
 let currentToken: string | null = null;
@@ -77,7 +82,7 @@ function applyAuthenticatedSession(
 ) {
   persistAuthToken(token);
   setToken(token);
-  setUser(user);
+  setUser(isMfaEnrollmentToken(token) ? null : user);
 }
 
 export type AuthState = {
@@ -85,6 +90,9 @@ export type AuthState = {
   user: AuthUser | null;
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
+  passkeyEnabled: boolean;
+  mfaRequirePasswordLogin: boolean;
+  totpRequireJellyfinLogin: boolean;
   login: (
     username: string,
     password: string,
@@ -97,7 +105,7 @@ export type AuthState = {
 /** Extract AuthUser from a JWT payload, or null if the token is invalid/expired. */
 function userFromToken(token: string): AuthUser | null {
   const payload = decodeJwtPayload(token);
-  if (!payload || isTokenExpired(payload)) return null;
+  if (!payload || isTokenExpired(payload) || payload.authScope === "mfa_enrollment") return null;
   return {
     id: payload.sub,
     username: payload.username,
@@ -106,11 +114,19 @@ function userFromToken(token: string): AuthUser | null {
   };
 }
 
+function isMfaEnrollmentToken(token: string): boolean {
+  const payload = decodeJwtPayload(token);
+  return payload?.authScope === "mfa_enrollment";
+}
+
 export function useAuth(): AuthState {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [mfaRequirePasswordLogin, setMfaRequirePasswordLogin] = useState(false);
+  const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -161,6 +177,9 @@ export function useAuth(): AuthState {
             ? runtimeState.effectiveFormLoginEnabled
             : null,
         );
+        setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
+        setMfaRequirePasswordLogin(runtimeState?.mfaRequirePasswordLogin === true);
+        setTotpRequireJellyfinLogin(runtimeState?.totpRequireJellyfinLogin === true);
       } catch {
         // Fall back to the existing token/bootstrap path when the public
         // runtime-state probe is temporarily unavailable.
@@ -202,7 +221,7 @@ export function useAuth(): AuthState {
       }
 
       if (
-        runtimeState?.effectiveFormLoginEnabled !== true ||
+        runtimeState == null ||
         runtimeState?.skipLoginForLocalIps === true
       ) {
         let bypassUser = await loadUserFromBypass();
@@ -226,7 +245,7 @@ export function useAuth(): AuthState {
     options?: AuthLoginOptions,
   ) => {
     const { data, error } = await backendClient.mutation(loginMutation, {
-      input: { username, password },
+      input: { username, password, totpCode: options?.totpCode ?? null },
     }).toPromise();
     if (error || !data?.login) {
       throw error ?? new Error("Login failed");
@@ -241,6 +260,7 @@ export function useAuth(): AuthState {
     return {
       token: newToken,
       user: nextUser,
+      mfaEnrollmentRequired: data.login.mfaEnrollmentRequired === true,
     };
   }, []);
 
@@ -259,6 +279,9 @@ export function useAuth(): AuthState {
     user,
     loading,
     effectiveFormLoginEnabled,
+    passkeyEnabled,
+    mfaRequirePasswordLogin,
+    totpRequireJellyfinLogin,
     login,
     adoptSession,
     logout,

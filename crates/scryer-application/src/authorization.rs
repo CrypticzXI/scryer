@@ -7,6 +7,26 @@ use scryer_domain::{
 
 use crate::{AppError, AppResult, AppUseCase};
 
+fn library_permission_matches(
+    permissions: LibraryPermissionMask,
+    permission: LibraryPermission,
+) -> bool {
+    match permission {
+        LibraryPermission::Request => permissions.is_strictly_requestable(),
+        LibraryPermission::AutoApproveRequests => permissions.can_auto_approve_requests(),
+        _ => permissions.contains(LibraryPermissionMask::from_permission(permission)),
+    }
+}
+
+fn permission_allows_app_library_override(permission: LibraryPermission) -> bool {
+    !matches!(
+        permission,
+        LibraryPermission::Request
+            | LibraryPermission::AutoApproveRequests
+            | LibraryPermission::ManageTitles
+    )
+}
+
 impl AppUseCase {
     pub async fn load_user_authorization(&self, actor: &User) -> AppResult<UserAuthorization> {
         let app = self
@@ -96,7 +116,7 @@ impl AppUseCase {
     ) -> AppResult<()> {
         let authorization = self.authorization_for_actor(actor).await?;
         let permissions = authorization.library_permissions(library_id);
-        if permissions.contains(LibraryPermissionMask::from_permission(permission)) {
+        if library_permission_matches(permissions, permission) {
             Ok(())
         } else {
             Err(AppError::Unauthorized(
@@ -130,15 +150,11 @@ impl AppUseCase {
         permission: LibraryPermission,
     ) -> AppResult<bool> {
         let authorization = self.authorization_for_actor(actor).await?;
-        let required = LibraryPermissionMask::from_permission(permission);
-        if authorization
-            .library_permissions(library_id)
-            .contains(required)
-        {
+        if library_permission_matches(authorization.library_permissions(library_id), permission) {
             return Ok(true);
         }
 
-        if !authorization.default_library.contains(required) {
+        if !library_permission_matches(authorization.default_library, permission) {
             return Ok(false);
         }
 
@@ -166,8 +182,9 @@ impl AppUseCase {
     ) -> AppResult<Vec<String>> {
         let libraries = self.services.catalog.libraries.list(facet.clone()).await?;
         let authorization = self.authorization_for_actor(actor).await?;
-        let required = LibraryPermissionMask::from_permission(permission);
-        if libraries.is_empty() && authorization.default_library.contains(required) {
+        if libraries.is_empty()
+            && library_permission_matches(authorization.default_library, permission)
+        {
             return Ok(match facet {
                 Some(facet) => vec![scryer_domain::default_library_id_for_facet(&facet)],
                 None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
@@ -180,9 +197,10 @@ impl AppUseCase {
         Ok(libraries
             .into_iter()
             .filter(|library| {
-                authorization
-                    .library_permissions(&library.id)
-                    .contains(required)
+                library_permission_matches(
+                    authorization.library_permissions(&library.id),
+                    permission,
+                )
             })
             .map(|library| library.id)
             .collect())
@@ -207,8 +225,9 @@ impl AppUseCase {
     ) -> AppResult<Vec<String>> {
         let libraries = self.services.catalog.libraries.list(facet.clone()).await?;
         let authorization = self.authorization_for_actor(actor).await?;
-        let required = LibraryPermissionMask::from_permission(permission);
-        if libraries.is_empty() && authorization.default_library.contains(required) {
+        if libraries.is_empty()
+            && library_permission_matches(authorization.default_library, permission)
+        {
             return Ok(match facet {
                 Some(facet) => vec![scryer_domain::default_library_id_for_facet(&facet)],
                 None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
@@ -220,15 +239,48 @@ impl AppUseCase {
         if authorization
             .app
             .contains(AppPermissionMask::MANAGE_CATALOG_SETTINGS)
+            && permission_allows_app_library_override(permission)
         {
             return Ok(libraries.into_iter().map(|library| library.id).collect());
         }
         Ok(libraries
             .into_iter()
             .filter(|library| {
-                authorization
-                    .library_permissions(&library.id)
-                    .contains(required)
+                library_permission_matches(
+                    authorization.library_permissions(&library.id),
+                    permission,
+                )
+            })
+            .map(|library| library.id)
+            .collect())
+    }
+
+    pub(crate) async fn library_ids_with_library_permission(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        permission: LibraryPermission,
+    ) -> AppResult<Vec<String>> {
+        let libraries = self.services.catalog.libraries.list(facet.clone()).await?;
+        let authorization = self.authorization_for_actor(actor).await?;
+        if libraries.is_empty()
+            && library_permission_matches(authorization.default_library, permission)
+        {
+            return Ok(match facet {
+                Some(facet) => vec![scryer_domain::default_library_id_for_facet(&facet)],
+                None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                    .into_iter()
+                    .map(|facet| scryer_domain::default_library_id_for_facet(&facet))
+                    .collect(),
+            });
+        }
+        Ok(libraries
+            .into_iter()
+            .filter(|library| {
+                library_permission_matches(
+                    authorization.library_permissions(&library.id),
+                    permission,
+                )
             })
             .map(|library| library.id)
             .collect())
@@ -242,22 +294,23 @@ impl AppUseCase {
     ) -> AppResult<Vec<scryer_domain::Library>> {
         let libraries = self.services.catalog.libraries.list(facet).await?;
         let authorization = self.authorization_for_actor(actor).await?;
-        if authorization
-            .app
-            .contains(AppPermissionMask::MANAGE_CATALOG_SETTINGS)
-            || authorization
+        if permission_allows_app_library_override(permission)
+            && (authorization
                 .app
-                .contains(AppPermissionMask::MANAGE_PERMISSIONS)
+                .contains(AppPermissionMask::MANAGE_CATALOG_SETTINGS)
+                || authorization
+                    .app
+                    .contains(AppPermissionMask::MANAGE_PERMISSIONS))
         {
             return Ok(libraries);
         }
-        let required = LibraryPermissionMask::from_permission(permission);
         Ok(libraries
             .into_iter()
             .filter(|library| {
-                authorization
-                    .library_permissions(&library.id)
-                    .contains(required)
+                library_permission_matches(
+                    authorization.library_permissions(&library.id),
+                    permission,
+                )
             })
             .collect())
     }

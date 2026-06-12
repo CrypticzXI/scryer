@@ -14,7 +14,7 @@ use scryer_application::{
 use scryer_domain::{DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    default_reqwest_client,
+    generic_reqwest_client,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -81,7 +81,7 @@ impl NzbgetDownloadClient {
             "ALL" | "FORCE" => dupe_mode.to_uppercase(),
             _ => "SCORE".to_string(),
         };
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             rpc_url: rpc_url.trim_end_matches('/').to_string(),
             username,
@@ -389,7 +389,7 @@ impl NzbgetDownloadClient {
             .map_err(|error| match error {
                 OutboundRequestError::Build(error) => error,
                 OutboundRequestError::Http(error) => {
-                    map_nzbget_outbound_error("nzbget append request", error)
+                    map_nzbget_append_outbound_error(append_request, error)
                 }
             })?;
         let status = response.status();
@@ -525,6 +525,90 @@ impl NzbgetDownloadClient {
         })
     }
 
+    async fn reconcile_append_after_transport_error(
+        &self,
+        append_request: &NzbgetAppendRequest<'_>,
+        title_id: &str,
+        error: &AppError,
+    ) -> Option<i64> {
+        const RECONCILE_DELAYS: [Duration; 5] = [
+            Duration::from_millis(0),
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+            Duration::from_millis(500),
+            Duration::from_millis(1000),
+        ];
+
+        warn!(
+            error = %error,
+            title_id,
+            title = append_request.title_name,
+            nzb_filename = append_request.nzb_filename,
+            "nzbget append response was ambiguous; reconciling queue and history before returning failure"
+        );
+
+        for delay in RECONCILE_DELAYS {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.list_queue_for_client().await {
+                Ok(items) => {
+                    if let Some(job_id) =
+                        find_reconciled_nzbget_append_job(&items, title_id, append_request)
+                    {
+                        info!(
+                            nzb_id = job_id,
+                            title_id,
+                            nzb_filename = append_request.nzb_filename,
+                            "reconciled ambiguous nzbget append from queue"
+                        );
+                        return Some(job_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id,
+                        nzb_filename = append_request.nzb_filename,
+                        "failed to read nzbget queue while reconciling ambiguous append"
+                    );
+                }
+            }
+
+            match self.list_history_for_client().await {
+                Ok(items) => {
+                    if let Some(job_id) =
+                        find_reconciled_nzbget_append_job(&items, title_id, append_request)
+                    {
+                        info!(
+                            nzb_id = job_id,
+                            title_id,
+                            nzb_filename = append_request.nzb_filename,
+                            "reconciled ambiguous nzbget append from history"
+                        );
+                        return Some(job_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id,
+                        nzb_filename = append_request.nzb_filename,
+                        "failed to read nzbget history while reconciling ambiguous append"
+                    );
+                }
+            }
+        }
+
+        warn!(
+            title_id,
+            nzb_filename = append_request.nzb_filename,
+            "ambiguous nzbget append was not found in queue or history"
+        );
+        None
+    }
+
     async fn edit_queue(&self, command: &str, ids: Vec<i64>) -> AppResult<()> {
         let result = self
             .rpc_call_with_policy(
@@ -580,17 +664,19 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(group);
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(group);
+                let scryer_parameters = extract_nzbget_parameters(group);
                 let queue_progress = progress_percent_from_sizes(size_mb, remaining_mb);
                 let remaining_seconds = extract_remaining_seconds_from_entry(group);
 
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -618,13 +704,14 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: nzb_id.to_string(),
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -698,8 +785,9 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(entry);
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(entry);
+                let scryer_parameters = extract_nzbget_parameters(entry);
                 let updated_at = extract_i64_value(
                     entry
                         .get("PostTime")
@@ -717,13 +805,19 @@ impl NzbgetDownloadClient {
                         existing.last_updated_at = updated_at;
                     }
                     if existing.title_id.is_none() {
-                        existing.title_id = param_title_id;
+                        existing.title_id = scryer_parameters.title_id.clone();
                     }
                     if existing.facet.is_none() {
-                        existing.facet = param_facet;
+                        existing.facet = scryer_parameters.facet.clone();
+                    }
+                    if existing.download_id.is_none() {
+                        existing.download_id = scryer_parameters.download_id.clone();
                     }
                     if existing.size_bytes.is_none() || existing.size_bytes == Some(0) {
                         existing.size_bytes = size_to_bytes(size_mb);
+                    }
+                    if existing.category.is_none() {
+                        existing.category = category.clone();
                     }
                     if remaining_seconds.is_some() {
                         existing.remaining_seconds = remaining_seconds;
@@ -741,16 +835,18 @@ impl NzbgetDownloadClient {
                     {
                         existing.attention_reason = None;
                     }
-                    existing.is_scryer_origin = existing.is_scryer_origin || is_scryer;
+                    existing.is_scryer_origin =
+                        existing.is_scryer_origin || scryer_parameters.is_scryer;
                     continue;
                 }
 
                 items.push(DownloadQueueItem {
                     id: id.clone(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -767,13 +863,14 @@ impl NzbgetDownloadClient {
                         None
                     },
                     download_client_item_id: id.clone(),
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -850,18 +947,20 @@ impl NzbgetDownloadClient {
                     .and_then(Value::as_str)
                     .unwrap_or("Unnamed download")
                     .to_string();
+                let category = extract_nzbget_category(entry);
                 let size_mb =
                     extract_f64_value(entry.get("FileSizeMB").or_else(|| entry.get("fileSizeMB")))
                         .unwrap_or(0.0);
 
-                let (param_title_id, param_facet, is_scryer) = extract_nzbget_parameters(entry);
+                let scryer_parameters = extract_nzbget_parameters(entry);
 
                 Some(DownloadQueueItem {
                     id: nzb_id.to_string(),
-                    title_id: param_title_id,
+                    title_id: scryer_parameters.title_id,
                     episode_id: None,
                     title_name,
-                    facet: param_facet.clone(),
+                    facet: scryer_parameters.facet,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "nzbget".to_string(),
@@ -878,13 +977,14 @@ impl NzbgetDownloadClient {
                     attention_required: matches!(state, DownloadQueueState::Failed),
                     attention_reason,
                     download_client_item_id: nzb_id.to_string(),
+                    download_id: scryer_parameters.download_id,
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
                     imported_at: None,
                     delete_status: None,
                     delete_error_message: None,
-                    is_scryer_origin: is_scryer,
+                    is_scryer_origin: scryer_parameters.is_scryer,
                     tracked_state: None,
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
@@ -927,6 +1027,76 @@ fn map_nzbget_outbound_error(operation: &str, error: OutboundHttpError) -> AppEr
             AppError::Repository(format!("{operation} failed: {source}"))
         }
     }
+}
+
+fn map_nzbget_append_outbound_error(
+    append_request: &NzbgetAppendRequest<'_>,
+    error: OutboundHttpError,
+) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                Some(delay) => {
+                    format!(
+                        "nzbget append request was rate limited; retry after {}s",
+                        delay.as_secs()
+                    )
+                }
+                None => "nzbget append request was rate limited".to_string(),
+            },
+        ),
+        OutboundHttpError::Transport {
+            attempts, source, ..
+        } => {
+            warn!(
+                attempts,
+                error = %source,
+                error_debug = ?source,
+                is_timeout = source.is_timeout(),
+                is_connect = source.is_connect(),
+                is_request = source.is_request(),
+                is_body = source.is_body(),
+                is_decode = source.is_decode(),
+                title = append_request.title_name,
+                nzb_filename = append_request.nzb_filename,
+                "nzbget append transport failed after sending mutation request"
+            );
+            AppError::DownloadSubmitAmbiguous(format!(
+                "nzbget append request transport failed after the request may have been accepted: {source}"
+            ))
+        }
+    }
+}
+
+fn find_reconciled_nzbget_append_job(
+    items: &[DownloadQueueItem],
+    title_id: &str,
+    append_request: &NzbgetAppendRequest<'_>,
+) -> Option<i64> {
+    let expected_name = normalize_nzbget_append_match_name(append_request.nzb_filename);
+    items.iter().find_map(|item| {
+        let item_title_id = item.title_id.as_deref()?.trim();
+        if item_title_id != title_id {
+            return None;
+        }
+
+        let item_name = normalize_nzbget_append_match_name(&item.title_name);
+        if item_name != expected_name {
+            return None;
+        }
+
+        item.download_client_item_id.trim().parse::<i64>().ok()
+    })
+}
+
+fn normalize_nzbget_append_match_name(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_ext = if trimmed.to_ascii_lowercase().ends_with(".nzb") {
+        &trimmed[..trimmed.len().saturating_sub(4)]
+    } else {
+        trimmed
+    };
+    without_ext.to_ascii_lowercase()
 }
 
 #[async_trait]
@@ -987,6 +1157,9 @@ impl DownloadClient for NzbgetDownloadClient {
             json!({"*scryer_title_id": title.id.clone()}),
             json!({"*scryer_facet": facet_str}),
         ];
+        if let Some(download_id) = request.download_id.as_deref() {
+            parameters.push(json!({"*scryer_download_id": download_id}));
+        }
 
         if let Some(imdb_id) = title
             .external_ids
@@ -1034,9 +1207,24 @@ impl DownloadClient for NzbgetDownloadClient {
                         ..append_request
                     };
                     self.send_append_request(&retry_request, &staged.staged_nzb)
-                        .await?
+                        .await
+                        .map_err(AppError::into_download_submit_unavailable)?
                 }
-                Err(err) => return Err(err),
+                Err(err @ AppError::DownloadSubmitAmbiguous(_)) => {
+                    if let Some(queue_id) = self
+                        .reconcile_append_after_transport_error(
+                            &append_request,
+                            title.id.as_str(),
+                            &err,
+                        )
+                        .await
+                    {
+                        queue_id
+                    } else {
+                        return Err(err);
+                    }
+                }
+                Err(err) => return Err(err.into_download_submit_unavailable()),
             };
 
             // Use the NZBGet queue ID (integer) as the job_id so it matches
@@ -1046,6 +1234,7 @@ impl DownloadClient for NzbgetDownloadClient {
                 job_id: nzbget_id.to_string(),
                 client_id: None,
                 client_type: "nzbget".to_string(),
+                info_hash: None,
             })
         }
         .await;
@@ -1189,12 +1378,7 @@ impl DownloadClient for NzbgetDownloadClient {
 
                 let name = history_entry_name(entry);
 
-                let category = entry
-                    .get("Category")
-                    .or_else(|| entry.get("category"))
-                    .and_then(Value::as_str)
-                    .map(|v| v.to_string())
-                    .filter(|v| !v.is_empty());
+                let category = extract_nzbget_category(entry);
 
                 let size_mb =
                     extract_f64_value(entry.get("FileSizeMB").or_else(|| entry.get("fileSizeMB")))
@@ -1227,11 +1411,19 @@ impl DownloadClient for NzbgetDownloadClient {
 
                 let completed_at =
                     history_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
+                let observed_identity = scryer_application::observed_download_identity(
+                    scryer_application::ObservedDownloadIdentityInput {
+                        download_id: None,
+                        parameters: &parameters,
+                        info_hash_hint: None,
+                    },
+                );
 
                 Some(scryer_domain::CompletedDownload {
                     client_type: "nzbget".to_string(),
                     client_id: String::new(),
                     download_client_item_id: nzb_id.to_string(),
+                    download_id: observed_identity.download_id,
                     name,
                     dest_dir,
                     category,
@@ -1244,20 +1436,43 @@ impl DownloadClient for NzbgetDownloadClient {
     }
 }
 
-fn extract_nzbget_parameters(
-    entry: &serde_json::Map<String, Value>,
-) -> (Option<String>, Option<String>, bool) {
+struct ExtractedNzbgetParameters {
+    title_id: Option<String>,
+    facet: Option<String>,
+    is_scryer: bool,
+    download_id: Option<String>,
+}
+
+fn extract_nzbget_category(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    entry
+        .get("Category")
+        .or_else(|| entry.get("category"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_nzbget_parameters(entry: &serde_json::Map<String, Value>) -> ExtractedNzbgetParameters {
     let params = entry
         .get("Parameters")
         .or_else(|| entry.get("parameters"))
         .and_then(Value::as_array);
     let params = match params {
         Some(params) => params,
-        None => return (None, None, false),
+        None => {
+            return ExtractedNzbgetParameters {
+                title_id: None,
+                facet: None,
+                is_scryer: false,
+                download_id: None,
+            };
+        }
     };
     let mut title_id: Option<String> = None;
     let mut facet: Option<String> = None;
     let mut is_scryer = false;
+    let mut parameters = Vec::new();
     for p in params {
         let obj = match p.as_object() {
             Some(obj) => obj,
@@ -1273,6 +1488,9 @@ fn extract_nzbget_parameters(
             .or_else(|| obj.get("value"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        if !key.is_empty() {
+            parameters.push((key.to_string(), value.to_string()));
+        }
         match key {
             "*scryer_title_id" => {
                 is_scryer = true;
@@ -1286,7 +1504,19 @@ fn extract_nzbget_parameters(
             _ => {}
         }
     }
-    (title_id, facet, is_scryer)
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: None,
+            parameters: &parameters,
+            info_hash_hint: None,
+        },
+    );
+    ExtractedNzbgetParameters {
+        title_id,
+        facet,
+        is_scryer,
+        download_id: observed_identity.download_id,
+    }
 }
 
 fn extract_result_array(value: Value, preferred_key: &str) -> Option<Vec<Value>> {
@@ -1849,6 +2079,108 @@ mod tests {
         assert!(!supports_nzbget_append_auto_category("25.2"));
         assert!(supports_nzbget_append_auto_category("25.3"));
         assert!(supports_nzbget_append_auto_category("26.0"));
+    }
+
+    #[test]
+    fn reconciled_append_job_requires_matching_title_id_and_release_name() {
+        let parameters = Vec::new();
+        let append_request = NzbgetAppendRequest {
+            request_id: "req-1",
+            title_name: "Bluey",
+            nzb_filename: "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb.nzb",
+            source_for_payload: "",
+            category: "series",
+            queue_priority: 0,
+            parameters: &parameters,
+            use_auto_category: true,
+        };
+
+        let matching = DownloadQueueItem {
+            id: "queue-1".to_string(),
+            title_id: Some("title-1".to_string()),
+            episode_id: None,
+            title_name: "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),
+            facet: None,
+            category: None,
+            client_id: String::new(),
+            client_name: String::new(),
+            client_type: "nzbget".to_string(),
+            state: DownloadQueueState::Queued,
+            progress_percent: 0,
+            size_bytes: None,
+            remaining_seconds: None,
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: "42".to_string(),
+            download_id: None,
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            is_scryer_origin: true,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
+        };
+        let wrong_release = DownloadQueueItem {
+            title_name: "Bluey.S02.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),
+            download_client_item_id: "43".to_string(),
+            ..matching.clone()
+        };
+        let wrong_title = DownloadQueueItem {
+            title_id: Some("title-2".to_string()),
+            download_client_item_id: "44".to_string(),
+            ..matching.clone()
+        };
+
+        assert_eq!(
+            find_reconciled_nzbget_append_job(
+                &[wrong_release, wrong_title, matching],
+                "title-1",
+                &append_request,
+            ),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn extract_nzbget_category_trims_empty_values() {
+        let entry = json!({
+            "Category": " movies "
+        });
+        let entry = entry.as_object().expect("object");
+        assert_eq!(extract_nzbget_category(entry).as_deref(), Some("movies"));
+
+        let entry = json!({
+            "category": " "
+        });
+        let entry = entry.as_object().expect("object");
+        assert_eq!(extract_nzbget_category(entry), None);
+    }
+
+    #[test]
+    fn extract_nzbget_parameters_maps_download_id() {
+        let entry = json!({
+            "Parameters": [
+                { "Name": "*scryer_title_id", "Value": "title-1" },
+                { "Name": "*scryer_facet", "Value": "anime" },
+                { "Name": "*scryer_download_id", "Value": " scryer-download:nzbget-1 " }
+            ]
+        });
+        let params = extract_nzbget_parameters(entry.as_object().expect("object"));
+
+        assert_eq!(params.title_id.as_deref(), Some("title-1"));
+        assert_eq!(params.facet.as_deref(), Some("anime"));
+        assert_eq!(
+            params.download_id.as_deref(),
+            Some("scryer-download:nzbget-1")
+        );
+        assert!(params.is_scryer);
     }
 
     #[test]

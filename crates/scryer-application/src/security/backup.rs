@@ -382,7 +382,6 @@ impl AppUseCase {
             encryption_master_key,
             jwt_signing_secret: self.auth.jwt_signing_salt.clone(),
             smg_registration_secret: self.services.config.smg_registration_secret.clone(),
-            smg_ca_cert: self.services.config.smg_ca_cert.clone(),
             smg_gateway_url: self.services.config.smg_gateway_url.clone(),
         })
     }

@@ -74,7 +74,6 @@ export type TitleDetail = {
   overview: string | null;
   posterUrl: string | null;
   posterSourceUrl: string | null;
-  bannerUrl: string | null;
   backgroundUrl: string | null;
   sortTitle: string | null;
   slug: string | null;

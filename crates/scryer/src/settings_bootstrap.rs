@@ -5,10 +5,11 @@ use scryer_application::{
     AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_ROOT_FOLDERS_KEY,
-    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
-    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    MOVIES_ROOT_FOLDERS_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
+    PASSWORD_MIN_LENGTH_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
     POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
     QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile,
     QualityProfileRepository, RECYCLE_BIN_ENABLED_KEY, RENAME_COLLISION_POLICY_GLOBAL_KEY,
@@ -16,9 +17,10 @@ use scryer_application::{
     RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
     RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
-    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY,
-    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
-    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    REQUEST_QUALITY_PROFILE_IDS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
+    SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
+    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
 pub(crate) use scryer_application::{
@@ -27,7 +29,11 @@ pub(crate) use scryer_application::{
 use scryer_infrastructure::{QualityProfileStore, SettingsStore, SettingsValueRecord};
 use serde_json::{Value, json};
 
-use crate::{normalize_env_option, normalize_env_option_with_legacy};
+use crate::{
+    normalize_env_option, normalize_env_option_with_legacy,
+    startup_migrations::_0002_enhanced_subsync_plugin_016::ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY,
+    startup_migrations::_0003_title_image_artwork_url_refresh::TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY,
+};
 
 pub(crate) const SETTINGS_CATEGORY_SERVICE: &str = "service";
 pub(crate) const SETTINGS_CATEGORY_MEDIA: &str = "media";
@@ -146,6 +152,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             is_sensitive: false,
         },
         ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: IMPORT_MODE_KEY,
+            data_type: "string",
+            default_value_json: "\"hardlink_or_copy\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
             category: SETTINGS_CATEGORY_GENERAL,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: HISTORY_KEEP_FOREVER_KEY,
@@ -204,7 +218,39 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_SECURITY,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: PASSWORD_MIN_LENGTH_KEY,
+            data_type: "integer",
+            default_value_json: "8",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: MFA_REQUIRE_PASSWORD_LOGIN_KEY,
             data_type: "boolean",
             default_value_json: "false",
             is_sensitive: false,
@@ -303,6 +349,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: QUALITY_PROFILE_ID_KEY,
             data_type: "string",
             default_value_json: "\"4k\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: REQUEST_QUALITY_PROFILE_IDS_KEY,
+            data_type: "json",
+            default_value_json: "[]",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -768,7 +822,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "subtitles.minimum_score_series",
             data_type: "number",
-            default_value_json: "240",
+            default_value_json: "90",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -833,6 +887,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: "subtitles.sync_max_offset_seconds",
             data_type: "number",
             default_value_json: "60",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SUBTITLES,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
             is_sensitive: false,
         },
     ]
@@ -946,6 +1016,18 @@ mod tests {
             seed.scope == SETTINGS_SCOPE_SYSTEM
                 && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
                 && seed.data_type == "bool"
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_title_image_artwork_url_refresh_state() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.category == SETTINGS_CATEGORY_MEDIA
+                && seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"none\""
+                && !seed.is_sensitive
         }));
     }
 

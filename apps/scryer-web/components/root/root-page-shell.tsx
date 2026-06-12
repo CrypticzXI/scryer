@@ -23,6 +23,7 @@ import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import type {
   ActivitySection,
   ViewId,
@@ -64,10 +65,58 @@ import {
 import type { PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
 import {
+  dispatchNavigationBadgesRefresh,
   NAVIGATION_BADGES_REFRESH_EVENT,
   type NavigationBadgesRefreshDetail,
 } from "@/lib/events/navigation-badges";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
+
+function scheduleAfterFirstPaint(callback: () => void) {
+  if (typeof window === "undefined") {
+    callback();
+    return () => {};
+  }
+
+  let cancelled = false;
+  let frameId = 0;
+  let idleId: number | null = null;
+  let timeoutId: number | null = null;
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (
+      callback: IdleRequestCallback,
+      options?: IdleRequestOptions,
+    ) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+
+  const run = () => {
+    if (!cancelled) {
+      callback();
+    }
+  };
+
+  frameId = window.requestAnimationFrame(() => {
+    if (idleWindow.requestIdleCallback) {
+      idleId = idleWindow.requestIdleCallback(run, { timeout: 1_500 });
+      return;
+    }
+
+    timeoutId = window.setTimeout(run, 250);
+  });
+
+  return () => {
+    cancelled = true;
+    if (frameId !== 0) {
+      window.cancelAnimationFrame(frameId);
+    }
+    if (idleId != null) {
+      idleWindow.cancelIdleCallback?.(idleId);
+    }
+    if (timeoutId != null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+}
 
 const mediaContainers = () => import("@/components/containers/media-containers");
 
@@ -176,6 +225,7 @@ function defaultSettingsSection(
 
 function defaultAccessibleRoute(
   canViewCatalog: boolean,
+  canRequestMedia: boolean,
   canManageUsers: boolean,
   canManageConfig: boolean,
 ): {
@@ -187,6 +237,13 @@ function defaultAccessibleRoute(
     return {
       view: "movies",
       contentSettingsSection: "overview",
+    };
+  }
+
+  if (canRequestMedia) {
+    return {
+      view: "movies",
+      contentSettingsSection: "requests",
     };
   }
 
@@ -668,10 +725,13 @@ function AuthenticatedHomePage({
   });
   type NavigationBadgeCountsPayload = {
     pendingImportCounts?: PendingImportCounts | null;
+    pendingMediaRequestCounts?: PendingImportCounts | null;
     activityImportCount?: number | null;
     pluginUpdateCount?: number | null;
   };
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
+  const [pendingMediaRequestCounts, setPendingMediaRequestCounts] =
+    useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
   const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
   const [scryerVersion, setScryerVersion] = useState<string | null>(null);
@@ -729,7 +789,9 @@ function AuthenticatedHomePage({
 
   useEffect(() => {
     if (!serviceRestarting) {
-      void refreshScryerVersion();
+      return scheduleAfterFirstPaint(() => {
+        void refreshScryerVersion();
+      });
     }
   }, [refreshScryerVersion, serviceRestarting]);
 
@@ -751,7 +813,9 @@ function AuthenticatedHomePage({
   }, []);
 
   useEffect(() => {
-    void refreshSmgVersionCompatibilityNotice();
+    return scheduleAfterFirstPaint(() => {
+      void refreshSmgVersionCompatibilityNotice();
+    });
   }, [refreshSmgVersionCompatibilityNotice]);
 
   useSettingsSubscription(useCallback((changedKeys) => {
@@ -796,6 +860,9 @@ function AuthenticatedHomePage({
       setPendingImportCounts(
         badgeCounts?.pendingImportCounts ?? { movie: 0, series: 0, anime: 0 },
       );
+      setPendingMediaRequestCounts(
+        badgeCounts?.pendingMediaRequestCounts ?? { movie: 0, series: 0, anime: 0 },
+      );
       setManualImportRequiredCount(Number(badgeCounts?.activityImportCount ?? 0));
       setPluginUpdateCount(Number(badgeCounts?.pluginUpdateCount ?? 0));
     } catch (error) {
@@ -804,10 +871,23 @@ function AuthenticatedHomePage({
   }, []);
 
   useEffect(() => {
-    void refreshNavigationBadges();
+    return scheduleAfterFirstPaint(() => {
+      void refreshNavigationBadges();
+    });
   }, [refreshNavigationBadges]);
 
   useEffect(() => {
+    const refreshFromPulse = () => {
+      dispatchNavigationBadgesRefresh({ source: "poll" });
+    };
+    const refreshFromFocus = () => {
+      dispatchNavigationBadgesRefresh({ source: "focus" });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshFromFocus();
+      }
+    };
     const handleNavigationBadgeRefresh = (event: Event) => {
       const delta =
         event instanceof CustomEvent &&
@@ -827,14 +907,18 @@ function AuthenticatedHomePage({
       NAVIGATION_BADGES_REFRESH_EVENT,
       handleNavigationBadgeRefresh,
     );
+    window.addEventListener("focus", refreshFromFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     const intervalId = window.setInterval(() => {
-      void refreshNavigationBadges();
+      refreshFromPulse();
     }, 30_000);
     return () => {
       window.removeEventListener(
         NAVIGATION_BADGES_REFRESH_EVENT,
         handleNavigationBadgeRefresh,
       );
+      window.removeEventListener("focus", refreshFromFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.clearInterval(intervalId);
     };
   }, [refreshNavigationBadges]);
@@ -1122,6 +1206,7 @@ function AuthenticatedHomePage({
   );
   const canViewCatalog = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.resolveImports);
   const canAccessActivity = canResolveImports || canManageTitle;
   const canManageUserAccounts = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageUsers);
@@ -1131,6 +1216,10 @@ function AuthenticatedHomePage({
   const canManageUsers = canManageUserAccounts || canManagePermissions;
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
+
+  useMediaRequestsSubscription(() => {
+    void refreshNavigationBadges();
+  }, { pause: !canManageTitle && !canRequestMedia });
 
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
@@ -1166,6 +1255,7 @@ function AuthenticatedHomePage({
   const navigateToAccessibleDefault = useCallback(() => {
     const fallback = defaultAccessibleRoute(
       canViewCatalog,
+      canRequestMedia,
       canManageUsers,
       canManageConfig,
     );
@@ -1176,7 +1266,7 @@ function AuthenticatedHomePage({
       undefined,
       undefined,
     );
-  }, [canManageConfig, canManageUsers, canViewCatalog, navigateTo]);
+  }, [canManageConfig, canManageUsers, canRequestMedia, canViewCatalog, navigateTo]);
 
   useEffect(() => {
     if (view !== "activity" || canAccessActivity) {
@@ -1193,6 +1283,30 @@ function AuthenticatedHomePage({
 
     navigateToAccessibleDefault();
   }, [canManageConfig, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
+    if (
+      isMediaView(view) &&
+      contentSettingsSection === "overview" &&
+      !canViewCatalog &&
+      canRequestMedia
+    ) {
+      navigateTo(view, undefined, "requests", undefined, undefined);
+    }
+  }, [canRequestMedia, canViewCatalog, contentSettingsSection, navigateTo, view]);
+
+  useEffect(() => {
+    if (
+      !isMediaView(view) ||
+      contentSettingsSection !== "requests" ||
+      canManageTitle ||
+      canRequestMedia
+    ) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canManageTitle, canRequestMedia, contentSettingsSection, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
     if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {
@@ -1296,6 +1410,7 @@ function AuthenticatedHomePage({
             <ReactiveRefreshProvider>
               <GlobalSearchProvider
                 activeFacet={activeFacet}
+                authenticatedUser={authenticatedUser}
                 queueFacet={queueFacet}
                 uiLanguage={uiLanguage}
               >
@@ -1353,12 +1468,13 @@ function AuthenticatedHomePage({
                     wantedSection={wantedSection}
                     user={authenticatedUser}
                     pendingImportCounts={pendingImportCounts}
+                    pendingMediaRequestCounts={pendingMediaRequestCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
                     pluginUpdateCount={pluginUpdateCount}
                     scryerVersion={scryerVersion}
                     onNavigate={navigateTo}
                   >
-                    <main className={view === "wanted" || view === "calendar" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
+                    <main className={view === "wanted" || view === "calendar" || (isMediaView(view) && contentSettingsSection === "requests") ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
                       <Suspense fallback={<ViewLoadingFallback />}>
                         <MainContent
                           view={view}

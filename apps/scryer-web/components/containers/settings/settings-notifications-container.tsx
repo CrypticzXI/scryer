@@ -13,10 +13,12 @@ import type {
   NotificationSubscription,
   NotificationSubscriptionDraft,
   NotificationSubscriptionRow,
+  NotificationTarget,
   TitleRecord,
 } from "@/lib/types";
 import {
   notificationChannelsQuery,
+  notificationTargetsQuery,
   notificationProviderTypesQuery,
   notificationSubscriptionsQuery,
   notificationsInitQuery,
@@ -35,12 +37,14 @@ import {
 const CHANNEL_INITIAL_DRAFT: NotificationChannelDraft = {
   name: "",
   channelType: "",
+  mediaServerConnectionId: "",
   isEnabled: true,
   configValues: {},
 };
 
 const SUBSCRIPTION_INITIAL_DRAFT: NotificationSubscriptionDraft = {
-  channelId: "",
+  targetKind: "plugin_channel",
+  targetId: "",
   eventTypes: [],
   scope: "global",
   facetScopeIds: [],
@@ -77,20 +81,22 @@ function serializeFacetScopeIds(scopeIds: Iterable<string>): string {
 }
 
 type NotificationSubscriptionSpec = {
-  channelId: string;
+  targetKind: NotificationSubscriptionDraft["targetKind"];
+  targetId: string;
   eventType: string;
   scope: string;
   scopeId?: string;
   isEnabled: boolean;
 };
 
-function subscriptionSpecKey(spec: Pick<NotificationSubscriptionSpec, "channelId" | "eventType" | "scope" | "scopeId">): string {
-  return [spec.channelId, spec.eventType, spec.scope, spec.scopeId ?? ""].join("::");
+function subscriptionSpecKey(spec: Pick<NotificationSubscriptionSpec, "targetKind" | "targetId" | "eventType" | "scope" | "scopeId">): string {
+  return [spec.targetKind, spec.targetId, spec.eventType, spec.scope, spec.scopeId ?? ""].join("::");
 }
 
 function subscriptionRowKey(subscription: NotificationSubscription): string {
   return [
-    subscription.channelId,
+    subscription.targetKind,
+    subscription.targetId,
     subscription.scope,
     subscription.scopeId ?? "",
     subscription.isEnabled ? "1" : "0",
@@ -117,6 +123,8 @@ function buildNotificationSubscriptionRows(
     groups.set(key, {
       id: key,
       channelId: subscription.channelId,
+      targetKind: subscription.targetKind,
+      targetId: subscription.targetId,
       eventTypes: [],
       scope: subscription.scope,
       scopeId: subscription.scopeId,
@@ -159,7 +167,8 @@ function buildNotificationSubscriptionSpecs(
   }
 
   return normalizedEventTypes.map((eventType) => ({
-    channelId: draft.channelId,
+    targetKind: draft.targetKind,
+    targetId: draft.targetId,
     eventType,
     scope: scopeSpec.scope,
     scopeId: scopeSpec.scopeId,
@@ -194,7 +203,7 @@ type PendingNotificationChannelEditorAction =
   | null;
 
 type PendingNotificationSubscriptionEditorAction =
-  | { type: "create" }
+  | { type: "create"; target?: Pick<NotificationTarget, "targetKind" | "id"> }
   | { type: "edit"; subscription: NotificationSubscriptionRow }
   | { type: "close" }
   | null;
@@ -231,6 +240,7 @@ export function SettingsNotificationsContainer({
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<NotificationChannel | null>(null);
   const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
   const [providerTypes, setProviderTypes] = useState<NotificationProviderType[]>([]);
+  const [notificationTargets, setNotificationTargets] = useState<NotificationTarget[]>([]);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
   const [isChannelEditorOpen, setIsChannelEditorOpen] = useState(false);
   const [channelEditorMode, setChannelEditorMode] = useState<"create" | "edit">("create");
@@ -335,6 +345,14 @@ export function SettingsNotificationsContainer({
     setProviderTypes(data?.notificationProviderTypes || []);
   }, [client]);
 
+  const refreshNotificationTargets = useCallback(async () => {
+    const { data, error } = await client
+      .query(notificationTargetsQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setNotificationTargets((data?.notificationTargets ?? []) as NotificationTarget[]);
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -345,6 +363,7 @@ export function SettingsNotificationsContainer({
         if (error && !data?.notificationChannels && !data?.notificationSubscriptions) throw error;
         if (cancelled) return;
         setChannels(data?.notificationChannels || []);
+        setNotificationTargets((data?.notificationTargets ?? []) as NotificationTarget[]);
         setSubscriptions(data?.notificationSubscriptions || []);
         setProviderTypes(data?.notificationProviderTypes || []);
         setEventTypes(data?.notificationEventTypes || []);
@@ -364,10 +383,10 @@ export function SettingsNotificationsContainer({
     }
 
     providerCatalogVersionRef.current = providerCatalogVersion;
-    void refreshProviderTypes().catch((error: unknown) => {
+    void Promise.all([refreshProviderTypes(), refreshNotificationTargets()]).catch((error: unknown) => {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     });
-  }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
+  }, [providerCatalogVersion, refreshNotificationTargets, refreshProviderTypes, setGlobalStatus, t]);
 
   useEffect(() => {
     setSubscriptionTitlesById((current) => {
@@ -432,7 +451,8 @@ export function SettingsNotificationsContainer({
     const payload = {
       name: channelDraft.name.trim(),
       channelType: channelDraft.channelType.trim(),
-      configJson: serializeConfigJson(channelDraft.configValues),
+      mediaServerConnectionId: undefined,
+      configJson: serializeConfigJson(channelDraft.configValues) ?? "{}",
       isEnabled: channelDraft.isEnabled,
     };
 
@@ -448,6 +468,7 @@ export function SettingsNotificationsContainer({
           input: {
             id: editingChannelId,
             name: payload.name,
+            mediaServerConnectionId: payload.mediaServerConnectionId ?? null,
             configJson: payload.configJson,
             isEnabled: payload.isEnabled,
           },
@@ -459,6 +480,7 @@ export function SettingsNotificationsContainer({
           input: {
             name: payload.name,
             channelType: payload.channelType,
+            mediaServerConnectionId: payload.mediaServerConnectionId,
             configJson: payload.configJson,
             isEnabled: payload.isEnabled,
           },
@@ -471,6 +493,7 @@ export function SettingsNotificationsContainer({
       setChannelEditorMode("create");
       setAwaitingChannelBaselineSync(true);
       await refreshChannels();
+      await refreshNotificationTargets();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
@@ -484,6 +507,7 @@ export function SettingsNotificationsContainer({
     setChannelDraft({
       name: provider?.name ?? channel.name,
       channelType: channel.channelType,
+      mediaServerConnectionId: channel.mediaServerConnectionId ?? "",
       isEnabled: channel.isEnabled,
       configValues: parseConfigJson(channel.configJson),
     });
@@ -577,6 +601,7 @@ export function SettingsNotificationsContainer({
       if (error) throw error;
       setGlobalStatus(t("status.notificationChannelDeleted", { name: channel.name }));
       await refreshChannels();
+      await refreshNotificationTargets();
       await refreshSubscriptions();
       if (editingChannelId === channel.id) {
         resetChannelDraft();
@@ -614,6 +639,7 @@ export function SettingsNotificationsContainer({
       if (error) throw error;
       setGlobalStatus(t("status.notificationChannelUpdated"));
       await refreshChannels();
+      await refreshNotificationTargets();
     } catch (error) {
       setChannels((current) => current.map((existing) => (
         existing.id === channel.id ? { ...existing, isEnabled: channel.isEnabled } : existing
@@ -628,7 +654,7 @@ export function SettingsNotificationsContainer({
     } finally {
       setMutatingChannelId(null);
     }
-  }, [client, editingChannelId, refreshChannels, setGlobalStatus, t]);
+  }, [client, editingChannelId, refreshChannels, refreshNotificationTargets, setGlobalStatus, t]);
 
   const testChannel = useCallback(async (channel: NotificationChannel) => {
     setTestingChannelId(channel.id);
@@ -661,7 +687,7 @@ export function SettingsNotificationsContainer({
     event.preventDefault();
     const desiredSpecs = buildNotificationSubscriptionSpecs(subscriptionDraft);
 
-    if (!subscriptionDraft.channelId || desiredSpecs.length === 0) {
+    if (!subscriptionDraft.targetId || desiredSpecs.length === 0) {
       setGlobalStatus(t("status.failedToCreate"));
       return;
     }
@@ -680,7 +706,8 @@ export function SettingsNotificationsContainer({
         const existingByKey = new Map(
           existingSubscriptions.map((subscription) => [
             subscriptionSpecKey({
-              channelId: subscription.channelId,
+              targetKind: subscription.targetKind,
+              targetId: subscription.targetId,
               eventType: subscription.eventType,
               scope: subscription.scope,
               scopeId: subscription.scopeId ?? undefined,
@@ -698,7 +725,9 @@ export function SettingsNotificationsContainer({
           if (!existing) {
             const { error } = await client.mutation(createNotificationSubscriptionMutation, {
               input: {
-                channelId: spec.channelId,
+                channelId: spec.targetKind === "plugin_channel" ? spec.targetId : undefined,
+                targetKind: spec.targetKind,
+                targetId: spec.targetId,
                 eventType: spec.eventType,
                 scope: spec.scope,
                 scopeId: spec.scopeId,
@@ -722,7 +751,8 @@ export function SettingsNotificationsContainer({
 
         for (const subscription of existingSubscriptions) {
           const key = subscriptionSpecKey({
-            channelId: subscription.channelId,
+            targetKind: subscription.targetKind,
+            targetId: subscription.targetId,
             eventType: subscription.eventType,
             scope: subscription.scope,
             scopeId: subscription.scopeId ?? undefined,
@@ -742,7 +772,9 @@ export function SettingsNotificationsContainer({
         for (const spec of desiredSpecs) {
           const { error } = await client.mutation(createNotificationSubscriptionMutation, {
             input: {
-              channelId: spec.channelId,
+              channelId: spec.targetKind === "plugin_channel" ? spec.targetId : undefined,
+              targetKind: spec.targetKind,
+              targetId: spec.targetId,
               eventType: spec.eventType,
               scope: spec.scope,
               scopeId: spec.scopeId,
@@ -769,7 +801,8 @@ export function SettingsNotificationsContainer({
   const editSubscription = useCallback((sub: NotificationSubscriptionRow) => {
     setEditingSubscriptionId(sub.id);
     setSubscriptionDraft({
-      channelId: sub.channelId,
+      targetKind: sub.targetKind,
+      targetId: sub.targetId,
       eventTypes: [...sub.eventTypes],
       scope: sub.scope,
       facetScopeIds: sub.scope === "facet" ? parseFacetScopeIds(sub.scopeId) : [],
@@ -783,12 +816,16 @@ export function SettingsNotificationsContainer({
     setGlobalStatus(t("status.editingNotificationSubscription"));
   }, [setGlobalStatus, subscriptionTitlesById, t]);
 
-  const openCreateSubscriptionEditor = useCallback(() => {
-    resetSubscriptionDraft();
+  const openCreateSubscriptionEditor = useCallback((target?: Pick<NotificationTarget, "targetKind" | "id">) => {
+    setSubscriptionDraft({
+      ...cloneSubscriptionDraft(SUBSCRIPTION_INITIAL_DRAFT),
+      targetKind: target?.targetKind ?? SUBSCRIPTION_INITIAL_DRAFT.targetKind,
+      targetId: target?.id ?? SUBSCRIPTION_INITIAL_DRAFT.targetId,
+    });
     setSubscriptionEditorMode("create");
     setIsSubscriptionEditorOpen(true);
     setAwaitingSubscriptionBaselineSync(true);
-  }, [resetSubscriptionDraft]);
+  }, []);
 
   const openEditSubscriptionEditor = useCallback((sub: NotificationSubscriptionRow) => {
     editSubscription(sub);
@@ -797,13 +834,13 @@ export function SettingsNotificationsContainer({
     setAwaitingSubscriptionBaselineSync(true);
   }, [editSubscription]);
 
-  const requestCreateSubscriptionEditor = useCallback(() => {
+  const requestCreateSubscriptionEditor = useCallback((target?: Pick<NotificationTarget, "targetKind" | "id">) => {
     if (!isSubscriptionEditorOpen || !isSubscriptionDraftDirty) {
-      openCreateSubscriptionEditor();
+      openCreateSubscriptionEditor(target);
       return;
     }
 
-    setPendingSubscriptionEditorAction({ type: "create" });
+    setPendingSubscriptionEditorAction({ type: "create", target });
   }, [
     isSubscriptionDraftDirty,
     isSubscriptionEditorOpen,
@@ -845,7 +882,7 @@ export function SettingsNotificationsContainer({
     }
 
     if (pendingSubscriptionEditorAction.type === "create") {
-      openCreateSubscriptionEditor();
+      openCreateSubscriptionEditor(pendingSubscriptionEditorAction.target);
     } else if (pendingSubscriptionEditorAction.type === "edit") {
       openEditSubscriptionEditor(pendingSubscriptionEditorAction.subscription);
     } else {
@@ -934,6 +971,7 @@ export function SettingsNotificationsContainer({
         channelEditorMode={channelEditorMode}
         startCreateChannel={requestCreateChannelEditor}
         providerTypes={providerTypes}
+        notificationTargets={notificationTargets}
         subscriptions={subscriptionRows}
         subscriptionTitlesById={subscriptionTitlesById}
         editingSubscriptionId={editingSubscriptionId}

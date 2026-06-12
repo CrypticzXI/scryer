@@ -255,7 +255,7 @@ impl MediaFileRepository for MediaFileStore {
                   FROM media_files
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
-                   AND trim(COALESCE(media_files.quality_id, '')) <> ''
+                   AND {normalized_quality} IS NOT NULL
              ) ranked
              WHERE quality_row = 1
                AND quality_tier IS NOT NULL",
@@ -312,7 +312,7 @@ impl MediaFileRepository for MediaFileStore {
                   LEFT JOIN episodes e ON e.id = fem.episode_id
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
-                   AND trim(COALESCE(media_files.quality_id, '')) <> ''
+                   AND {normalized_quality} IS NOT NULL
                    AND (fem.episode_id IS NULL OR {})
              ) ranked
              WHERE quality_row = 1
@@ -624,6 +624,13 @@ fn total_size_bytes_sum_expression(dialect: SqlDialect, expr: &str) -> String {
 fn normalized_quality_expression(alias: &str) -> String {
     format!(
         "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN '4320P'
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN '2160P'
+            WHEN {alias}.video_height >= 1300 THEN '1440P'
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN '1080P'
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN '720P'
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN '480P'
+            WHEN {alias}.video_height >= 300 THEN '360P'
             WHEN trim(COALESCE({alias}.quality_id, '')) = '' THEN NULL
             ELSE upper(trim({alias}.quality_id))
          END"
@@ -632,16 +639,25 @@ fn normalized_quality_expression(alias: &str) -> String {
 
 fn quality_rank_expression(alias: &str) -> String {
     format!(
-        "CASE upper(trim(COALESCE({alias}.quality_id, '')))
-            WHEN '4320P' THEN 0
-            WHEN '2160P' THEN 1
-            WHEN '1440P' THEN 2
-            WHEN '1080P' THEN 3
-            WHEN '1080I' THEN 4
-            WHEN '720P' THEN 5
-            WHEN '480P' THEN 6
-            WHEN '360P' THEN 7
-            ELSE 999
+        "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN 0
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN 1
+            WHEN {alias}.video_height >= 1300 THEN 2
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN 3
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN 5
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN 6
+            WHEN {alias}.video_height >= 300 THEN 7
+            ELSE CASE upper(trim(COALESCE({alias}.quality_id, '')))
+                WHEN '4320P' THEN 0
+                WHEN '2160P' THEN 1
+                WHEN '1440P' THEN 2
+                WHEN '1080P' THEN 3
+                WHEN '1080I' THEN 4
+                WHEN '720P' THEN 5
+                WHEN '480P' THEN 6
+                WHEN '360P' THEN 7
+                ELSE 999
+            END
          END"
     )
 }
@@ -918,8 +934,6 @@ mod tests {
             overview: Some("overview".to_string()),
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,
@@ -1015,6 +1029,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1036,6 +1051,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1229,6 +1245,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1250,6 +1267,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1271,6 +1289,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: false,
             created_at: Utc::now(),
         };
@@ -1305,6 +1324,35 @@ mod tests {
                 .await
                 .expect("season pack should link");
         }
+        media_files
+            .update_media_file_analysis(
+                &pack_file_id,
+                MediaFileAnalysis {
+                    video_codec: None,
+                    video_width: Some(1920),
+                    video_height: Some(800),
+                    video_bitrate_kbps: None,
+                    video_bit_depth: None,
+                    video_hdr_format: None,
+                    video_frame_rate: None,
+                    video_profile: None,
+                    audio_codec: None,
+                    audio_profile: None,
+                    audio_channels: None,
+                    audio_bitrate_kbps: None,
+                    audio_languages: vec![],
+                    audio_streams: vec![],
+                    subtitle_languages: vec![],
+                    subtitle_codecs: vec![],
+                    subtitle_streams: vec![],
+                    has_multiaudio: false,
+                    duration_seconds: None,
+                    num_chapters: None,
+                    container_format: None,
+                },
+            )
+            .await
+            .expect("season pack analysis should update");
 
         let summaries = media_files
             .list_cutoff_unmet_quality_summaries(std::slice::from_ref(&title.id))
@@ -1313,9 +1361,10 @@ mod tests {
 
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].title_id, title.id);
-        assert_eq!(summaries[0].quality_tier, "720P");
+        assert_eq!(summaries[0].quality_tier, "1080P");
         assert_eq!(summaries[0].season_number.as_deref(), Some("1"));
         assert_eq!(summaries[0].episode_number.as_deref(), Some("1"));
+        assert_eq!(summaries[1].quality_tier, "1080P");
         assert_eq!(summaries[1].season_number.as_deref(), Some("1"));
         assert_eq!(summaries[1].episode_number.as_deref(), Some("2"));
 
@@ -1379,6 +1428,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1400,6 +1450,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1421,6 +1472,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1519,6 +1571,9 @@ mod tests {
                 title_id: title.id.clone(),
                 file_path: "/library/Show/Season 01/Show - S01E01.mkv".to_string(),
                 size_bytes: 1_000,
+                quality_label: Some("720p".to_string()),
+                resolution: Some("720p".to_string()),
+                source_type: Some("WEB-DL".to_string()),
                 audio_channels_parsed: Some("7.1".to_string()),
                 ..Default::default()
             })
@@ -1532,8 +1587,8 @@ mod tests {
                     video_codec: Some(
                         scryer_application::VideoCodec::parse("hevc").expect("parse codec"),
                     ),
-                    video_width: Some(3840),
-                    video_height: Some(2160),
+                    video_width: Some(1920),
+                    video_height: Some(800),
                     video_bitrate_kbps: None,
                     video_bit_depth: Some(10),
                     video_hdr_format: Some("HDR10".to_string()),
@@ -1569,6 +1624,9 @@ mod tests {
             .expect("list media files should succeed");
 
         assert_eq!(files.len(), 1);
+        assert_eq!(files[0].quality_label.as_deref(), Some("720p"));
+        assert_eq!(files[0].resolution.as_deref(), Some("720p"));
+        assert_eq!(files[0].source_type.as_deref(), Some("WEB-DL"));
         assert_eq!(
             files[0].audio_profile.as_deref(),
             Some("DTS-HD MA + DTS:X IMAX")
@@ -1578,6 +1636,12 @@ mod tests {
             files[0].audio_streams[0].profile.as_deref(),
             Some("DTS-HD MA + DTS:X IMAX")
         );
+        let quality_summaries = media_files
+            .list_title_quality_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("quality summaries should succeed");
+        assert_eq!(quality_summaries.len(), 1);
+        assert_eq!(quality_summaries[0].quality_tier, "1080P");
 
         let _ = std::fs::remove_file(db);
     }

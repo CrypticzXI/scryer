@@ -1,6 +1,8 @@
 use scryer_mediainfo::{
-    AnalysisProfile, AnalyzeOptions, analyze_file, analyze_file_with_options, is_valid_video,
+    AnalysisProfile, AnalyzeOptions, MediaAnalysis, analyze_file, analyze_file_with_options,
+    is_valid_video,
 };
+use serde::Deserialize;
 use std::path::PathBuf;
 
 fn media(name: &str) -> PathBuf {
@@ -10,153 +12,142 @@ fn media(name: &str) -> PathBuf {
         .join(name)
 }
 
-// ---------------------------------------------------------------------------
-// MKV
-// ---------------------------------------------------------------------------
+#[derive(Debug, Deserialize)]
+struct FixtureManifest {
+    fixtures: Vec<FixtureExpectation>,
+}
 
-#[test]
-fn mkv_h264_aac() {
-    let a = analyze_file(&media("h264_aac.mkv")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("h264"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.video_bit_depth, Some(8));
-    assert_eq!(a.video_hdr_format, None);
-    assert_eq!(a.audio_codec.as_deref(), Some("aac"));
-    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
-    assert_eq!(a.audio_channels, Some(2));
-    assert!(!a.has_multiaudio);
-    assert_eq!(a.num_chapters, Some(0));
-    assert_eq!(a.container_format.as_deref(), Some("matroska"));
-    assert!(a.duration_seconds.unwrap() >= 1);
-    assert!(is_valid_video(&a));
+#[derive(Debug, Deserialize)]
+struct FixtureExpectation {
+    name: String,
+    generated: bool,
+    container: String,
+    video_codec: String,
+    width: i32,
+    height: i32,
+    audio_codecs: Vec<String>,
+    audio_channels: Vec<i32>,
+    audio_languages: Vec<String>,
+    subtitle_stream_count: usize,
+    min_duration_seconds: i32,
+    valid_video: bool,
+}
+
+fn fixture_manifest() -> FixtureManifest {
+    toml::from_str(include_str!("media-fixtures.toml"))
+        .expect("media fixture manifest should parse")
+}
+
+fn analyze_fixture(fixture: &FixtureExpectation) -> MediaAnalysis {
+    analyze_file_with_options(
+        &media(&fixture.name),
+        AnalyzeOptions {
+            profile: AnalysisProfile::DefaultRich,
+        },
+    )
+    .unwrap_or_else(|error| panic!("{} should analyze: {error}", fixture.name))
 }
 
 #[test]
-fn mkv_hevc_hdr10_flac() {
-    let a = analyze_file(&media("hevc_hdr10.mkv")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("hevc"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.video_bit_depth, Some(10));
-    assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10"));
-    assert_eq!(a.audio_codec.as_deref(), Some("flac"));
-    assert_eq!(a.audio_channels, Some(6));
-    assert_eq!(a.container_format.as_deref(), Some("matroska"));
-    assert!(is_valid_video(&a));
-}
+fn fixture_matrix_has_expected_generated_size() {
+    let manifest = fixture_manifest();
+    let generated = manifest
+        .fixtures
+        .iter()
+        .filter(|fixture| fixture.generated)
+        .count();
 
-#[test]
-fn mkv_hevc_hlg() {
-    let a = analyze_file(&media("hevc_hlg.mkv")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("hevc"));
-    assert_eq!(a.video_bit_depth, Some(10));
-    assert_eq!(a.video_hdr_format.as_deref(), Some("HLG"));
-    assert_eq!(a.audio_codec.as_deref(), Some("aac"));
-    assert!(is_valid_video(&a));
-}
-
-#[test]
-fn mkv_av1_flac() {
-    let a = analyze_file(&media("av1_flac.mkv")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("av1"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.audio_codec.as_deref(), Some("flac"));
-    assert_eq!(a.audio_channels, Some(6));
-    assert_eq!(a.container_format.as_deref(), Some("matroska"));
-    assert!(is_valid_video(&a));
-}
-
-#[test]
-fn mkv_dual_audio_subtitles() {
-    let a = analyze_file(&media("dual_audio_subs.mkv")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("h264"));
-    assert_eq!(a.audio_codec.as_deref(), Some("flac"));
-    assert_eq!(a.audio_channels, Some(6));
-    assert!(a.has_multiaudio);
-    assert_eq!(a.audio_languages, vec!["jpn", "eng"]);
-    assert_eq!(a.subtitle_languages, vec!["eng"]);
-    assert_eq!(a.audio_streams.len(), 2);
-    assert_eq!(a.audio_streams[0].codec.as_deref(), Some("flac"));
-    assert_eq!(a.audio_streams[0].channels, Some(6));
-    assert_eq!(a.audio_streams[0].language.as_deref(), Some("jpn"));
-    assert_eq!(a.audio_streams[1].codec.as_deref(), Some("aac"));
-    assert_eq!(a.audio_streams[1].profile.as_deref(), Some("LC"));
-    assert_eq!(a.audio_streams[1].channels, Some(2));
-    assert_eq!(a.audio_streams[1].language.as_deref(), Some("eng"));
-    assert!(is_valid_video(&a));
-}
-
-// ---------------------------------------------------------------------------
-// MP4
-// ---------------------------------------------------------------------------
-
-#[test]
-fn mp4_h264_aac() {
-    let a = analyze_file(&media("h264_aac.mp4")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("h264"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.audio_codec.as_deref(), Some("aac"));
-    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
-    assert_eq!(a.audio_channels, Some(2));
-    assert_eq!(a.num_chapters, None);
-    assert_eq!(a.container_format.as_deref(), Some("mp4"));
-    assert!(a.duration_seconds.unwrap() >= 1);
-    assert!(is_valid_video(&a));
-}
-
-#[test]
-fn mp4_av1_aac() {
-    let a = analyze_file(&media("av1_aac.mp4")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("av1"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.audio_codec.as_deref(), Some("aac"));
-    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
-    assert_eq!(a.audio_channels, Some(2));
-    assert_eq!(a.container_format.as_deref(), Some("mp4"));
-    assert!(is_valid_video(&a));
-}
-
-// ---------------------------------------------------------------------------
-// AVI
-// ---------------------------------------------------------------------------
-
-#[test]
-fn avi_mpeg4_mp3() {
-    let a = analyze_file(&media("mpeg4_mp3.avi")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("mpeg4"));
-    assert_eq!(a.video_width, Some(128));
-    assert_eq!(a.video_height, Some(72));
-    assert_eq!(a.audio_codec.as_deref(), Some("mp3"));
-    assert_eq!(a.audio_channels, Some(2));
-    assert_eq!(a.container_format.as_deref(), Some("avi"));
-    assert!(a.duration_seconds.unwrap() >= 1);
-    assert!(is_valid_video(&a));
-}
-
-// ---------------------------------------------------------------------------
-// MPEG-TS
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ts_h264_aac() {
-    let a = analyze_file(&media("h264_aac.ts")).unwrap();
-    assert_eq!(a.video_codec.as_deref(), Some("h264"));
-    assert_eq!(a.audio_codec.as_deref(), Some("aac"));
-    assert_eq!(a.audio_profile.as_deref(), Some("LC"));
-    assert_eq!(a.container_format.as_deref(), Some("mpegts"));
-    // TS duration is estimated from PTS delta; for a 2-second file it should
-    // be at least 1 second after truncation.
-    assert!(a.duration_seconds.is_some(), "duration should be present");
-    assert!(
-        a.duration_seconds.unwrap() >= 1,
-        "duration {} should be >= 1",
-        a.duration_seconds.unwrap()
+    assert_eq!(
+        generated, 209,
+        "fixture manifest should contain 200 matrix fixtures plus 9 dense SIMD fixtures"
     );
-    assert!(is_valid_video(&a));
+}
+
+#[test]
+fn fixture_matrix_expected_metadata() {
+    let manifest = fixture_manifest();
+
+    for fixture in manifest.fixtures.iter().filter(|fixture| fixture.generated) {
+        let analysis = analyze_fixture(fixture);
+
+        assert_eq!(
+            analysis.container_format.as_deref(),
+            Some(fixture.container.as_str()),
+            "{} container",
+            fixture.name
+        );
+        assert_eq!(
+            analysis.video_codec.as_deref(),
+            Some(fixture.video_codec.as_str()),
+            "{} video codec",
+            fixture.name
+        );
+        assert_eq!(
+            analysis.video_width,
+            Some(fixture.width),
+            "{} video width",
+            fixture.name
+        );
+        assert_eq!(
+            analysis.video_height,
+            Some(fixture.height),
+            "{} video height",
+            fixture.name
+        );
+        assert!(
+            analysis.duration_seconds.unwrap_or_default() >= fixture.min_duration_seconds,
+            "{} duration {:?} should be at least {}",
+            fixture.name,
+            analysis.duration_seconds,
+            fixture.min_duration_seconds
+        );
+        assert_eq!(
+            is_valid_video(&analysis),
+            fixture.valid_video,
+            "{} validity",
+            fixture.name
+        );
+
+        let actual_audio_codecs: Vec<_> = analysis
+            .audio_streams
+            .iter()
+            .filter_map(|stream| stream.codec.clone())
+            .collect();
+        assert_eq!(
+            actual_audio_codecs, fixture.audio_codecs,
+            "{} audio codecs",
+            fixture.name
+        );
+
+        let actual_audio_channels: Vec<_> = analysis
+            .audio_streams
+            .iter()
+            .filter_map(|stream| stream.channels)
+            .collect();
+        assert_eq!(
+            actual_audio_channels, fixture.audio_channels,
+            "{} audio channels",
+            fixture.name
+        );
+
+        assert_eq!(
+            analysis.has_multiaudio,
+            fixture.audio_codecs.len() > 1,
+            "{} multiaudio flag",
+            fixture.name
+        );
+        assert_eq!(
+            analysis.audio_languages, fixture.audio_languages,
+            "{} audio languages",
+            fixture.name
+        );
+        assert_eq!(
+            analysis.subtitle_streams.len(),
+            fixture.subtitle_stream_count,
+            "{} subtitle stream count",
+            fixture.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +212,13 @@ fn mp4_dv_profile8() {
 
 #[test]
 fn mkv_hevc_hdr10plus() {
-    let a = analyze_file(&media("hevc_hdr10plus.mkv")).unwrap();
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mkv"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::DefaultRich,
+        },
+    )
+    .unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("hevc"));
     assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10+"));
     assert_eq!(a.video_bit_depth, Some(10));
@@ -244,7 +241,13 @@ fn mkv_hevc_hdr10plus_ffprobe_parity_profile() {
 
 #[test]
 fn mp4_hevc_hdr10plus() {
-    let a = analyze_file(&media("hevc_hdr10plus.mp4")).unwrap();
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mp4"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::DefaultRich,
+        },
+    )
+    .unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("hevc"));
     assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10+"));
     assert!(is_valid_video(&a));

@@ -12,21 +12,13 @@ pub(crate) struct FileSourceSnapshot {
     pub(crate) signature: Option<FileSourceSignature>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(super) struct TitleEpisodeLookup {
     by_air_date: HashMap<String, Vec<Episode>>,
     by_collection_episode: HashMap<(String, String), Episode>,
     by_absolute_number: HashMap<String, Episode>,
     by_collection_index: HashMap<String, Vec<Episode>>,
-}
-
-impl TitleEpisodeLookup {
-    pub(super) fn key_count(&self) -> usize {
-        self.by_air_date.len()
-            + self.by_collection_episode.len()
-            + self.by_absolute_number.len()
-            + self.by_collection_index.len()
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +115,7 @@ fn title_media_file_has_persisted_analysis(media_file: &TitleMediaFile) -> bool 
         || media_file.has_multiaudio
 }
 
+#[cfg(test)]
 pub(super) fn build_title_episode_lookup(
     collections: &[Collection],
     episodes: &[Episode],
@@ -201,6 +194,7 @@ pub(super) fn build_title_episode_lookup(
     lookup
 }
 
+#[cfg(test)]
 pub(super) fn resolve_target_episodes_from_lookup(
     ep_meta: &crate::ParsedEpisodeMetadata,
     season_str: &str,
@@ -465,6 +459,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         }
@@ -634,6 +629,7 @@ mod tests {
             absolute_number: Some("101".into()),
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -694,6 +690,7 @@ mod tests {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };

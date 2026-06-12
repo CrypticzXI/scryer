@@ -1,6 +1,6 @@
 [package]
 name = "scryer-mediainfo"
-version = "0.15.9"
+version = "0.16.0"
 edition.workspace = true
 
 [dependencies]
@@ -18,3 +18,11 @@ scuffle-h264 = "0.2"
 scuffle-h265 = "0.2"
 bytes = "1"
 isolang = "2.4"
+
+[dev-dependencies]
+criterion.workspace = true
+toml.workspace = true
+
+[[bench]]
+name = "scan_hotpaths"
+harness = false

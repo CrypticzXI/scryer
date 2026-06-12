@@ -15,6 +15,7 @@ import { FACET_REGISTRY, MEDIA_VIEW_IDS, SCOPE_IDS } from "@/lib/facets/registry
 export const TLS_CERT_PATH_KEY = "tls.cert_path";
 export const TLS_KEY_PATH_KEY = "tls.key_path";
 export const QUALITY_PROFILE_ID_KEY = "quality.profile_id";
+export const REQUEST_QUALITY_PROFILE_IDS_KEY = "quality.request_profile_ids";
 export const QUALITY_PROFILE_CATALOG_KEY = "quality.profiles";
 export const SCORING_PERSONA_KEY = "quality.scoring_persona";
 export const RENAME_TEMPLATE_KEY = "rename.template";
@@ -37,6 +38,7 @@ export const NFO_WRITE_ON_IMPORT_ANIME_KEY = "nfo.write_on_import.anime";
 // Plexmatch hint writing on import (series/anime only)
 export const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY = "plexmatch.write_on_import.series";
 export const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY = "plexmatch.write_on_import.anime";
+export const IMPORT_MODE_KEY = "import.mode";
 
 // --- Derived from registry ---
 
@@ -90,6 +92,8 @@ export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
   backups: "backups",
   security: "security",
   users: "users",
+  "media-servers": "mediaServers",
+  mediaServers: "mediaServers",
   indexers: "indexers",
   "download-clients": "downloadClients",
   downloadClients: "downloadClients",
@@ -110,6 +114,7 @@ export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
 export const CONTENT_SECTION_PATH_TO_ID: Record<string, ContentSettingsSection> = {
   overview: "overview",
   import: "import",
+  requests: "requests",
   settings: "library",
   media: "library",
 };

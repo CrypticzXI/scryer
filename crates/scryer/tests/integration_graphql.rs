@@ -3,27 +3,31 @@
 mod common;
 
 use async_trait::async_trait;
+use aws_lc_rs::hmac;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
     BlocklistRepository, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
-    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
-    PendingReleaseRepository, ReleaseDecision, ScopedExternalId, ShowRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
+    JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository,
+    MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
+    ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord,
+    TotpFailedAttemptRecord, TotpRepository, UserRepository, WantedItem, WantedItemRepository,
+    WebauthnCredentialRecord, WebauthnRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
-    Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
-    DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id, ImportCompletedEventData,
-    Library, LibraryPermission, LibraryPermissionMask, MediaFacet, MediaPathUpdate,
-    MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot,
-    User, UserAuthorization,
+    AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
+    DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id,
+    ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask, MediaFacet,
+    MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType, NewDomainEvent,
+    ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User, UserAuthorization,
 };
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
-    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, SettingDefinitionSeed,
+    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
+    SettingDefinitionSeed, TotpStore, WebauthnStore,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -32,6 +36,48 @@ use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
+
+const TEST_BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+fn test_base32_decode_no_pad(input: &str) -> Vec<u8> {
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    let mut decoded = Vec::new();
+
+    for ch in input
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '=')
+    {
+        let upper = ch.to_ascii_uppercase() as u8;
+        let value = TEST_BASE32_ALPHABET
+            .iter()
+            .position(|candidate| *candidate == upper)
+            .expect("valid test base32 secret") as u32;
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            decoded.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    decoded
+}
+
+fn test_totp_code(secret_base32: &str) -> String {
+    let secret = test_base32_decode_no_pad(secret_base32);
+    let step = Utc::now().timestamp() / 30;
+    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, &secret);
+    let tag = hmac::sign(&key, &(step as u64).to_be_bytes());
+    let digest = tag.as_ref();
+    let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+    let value = (u32::from(digest[offset] & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+
+    format!("{:06}", value % 1_000_000)
+}
 
 /// Execute a GraphQL operation directly against the schema, without going
 /// through the HTTP test server.  This gives full control over what data
@@ -58,12 +104,83 @@ async fn gql(ctx: &TestContext, query: &str, variables: Value) -> Value {
     resp.json().await.expect("should be valid JSON")
 }
 
+async fn gql_with_token(ctx: &TestContext, query: &str, variables: Value, token: &str) -> Value {
+    let client = ctx.http_client();
+    let resp = client
+        .post(ctx.graphql_url())
+        .bearer_auth(token)
+        .json(&json!({ "query": query, "variables": variables }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(resp.status(), 200);
+    resp.json().await.expect("should be valid JSON")
+}
+
 /// Assert no GraphQL errors in response body.
 fn assert_no_errors(body: &Value) {
     assert!(
         body.get("errors").is_none(),
         "unexpected GraphQL errors: {body}"
     );
+}
+
+fn first_graphql_error_message_and_code(body: &Value) -> (String, String) {
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let first = errors.first().expect("first graphql error");
+    let message = first["message"]
+        .as_str()
+        .expect("graphql error message")
+        .to_string();
+    let code = first["extensions"]["code"]
+        .as_str()
+        .expect("graphql error code")
+        .to_string();
+    (message, code)
+}
+
+fn manage_users_actor(username: &str) -> User {
+    User {
+        id: Id::new().0,
+        username: username.to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
+            libraries: HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    }
+}
+
+async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
+    let enrollment = ctx
+        .app
+        .totp_enrollment_start(user)
+        .await
+        .expect("start TOTP enrollment");
+    let code = test_totp_code(&enrollment.secret_base32);
+    ctx.app
+        .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
+        .await
+        .expect("complete TOTP enrollment");
+}
+
+async fn seed_test_passkey(ctx: &TestContext, user_id: &str, credential_id: &str) {
+    let now = Utc::now().to_rfc3339();
+    WebauthnStore::new(ctx.db.datastore())
+        .create_credential(WebauthnCredentialRecord {
+            id: Id::new().0,
+            user_id: user_id.to_string(),
+            credential_id: credential_id.to_string(),
+            credential_json: "{}".to_string(),
+            friendly_name: Some("Test passkey".to_string()),
+            created_at: now,
+            last_used_at: None,
+        })
+        .await
+        .expect("seed passkey credential");
 }
 
 fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]) {
@@ -549,7 +666,7 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 scope: "system".into(),
                 key_name: "subtitles.minimum_score_series".into(),
                 data_type: "number".into(),
-                default_value_json: "240".into(),
+                default_value_json: "90".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -745,7 +862,43 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "security".into(),
                 scope: "system".into(),
+                key_name: "auth.password_min_length".into(),
+                data_type: "integer".into(),
+                default_value_json: "8".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
                 key_name: "auth.skip_login_for_local_ips".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.mfa.require_config_step_up".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_jellyfin_login".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.mfa.require_password_login".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,
@@ -766,6 +919,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 key_name: "quality.profile_id".into(),
                 data_type: "string".into(),
                 default_value_json: "\"4k\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "quality.request_profile_ids".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -1121,8 +1283,6 @@ async fn create_series_scan_title(
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -1193,8 +1353,6 @@ async fn create_catalog_title(
         overview: Some("Original overview".to_string()),
         poster_url: Some("https://example.com/old-poster.jpg".to_string()),
         poster_source_url: None,
-        banner_url: Some("https://example.com/old-banner.jpg".to_string()),
-        banner_source_url: None,
         background_url: Some("https://example.com/old-background.jpg".to_string()),
         background_source_url: None,
         sort_title: Some(name.to_string()),
@@ -1271,6 +1429,7 @@ async fn create_series_scan_episode(
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -1340,6 +1499,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             absolute_number: Some("12".to_string()),
             overview: None,
             tvdb_id: Some("9100103".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1502,6 +1662,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             absolute_number: Some("7".to_string()),
             overview: None,
             tvdb_id: Some("9156701".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1807,6 +1968,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("9300101".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2367,6 +2529,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
             absolute_number: Some("12".to_string()),
             overview: None,
             tvdb_id: Some("9500103".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2864,6 +3027,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("9800101".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -3772,7 +3936,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
               { "code": "spa", "hearingImpaired": false, "forced": true }
             ],
             "autoDownloadOnImport": true,
-            "minimumScoreSeries": 255,
+            "minimumScoreSeries": 95,
             "minimumScoreMovie": 85,
             "searchIntervalHours": 12,
             "includeAiTranslated": true,
@@ -3815,7 +3979,7 @@ async fn graphql_typed_subtitle_settings_round_trip() {
     let settings = &read["data"]["subtitleSettings"];
     assert_eq!(settings["enabled"], true);
     assert_eq!(settings["autoDownloadOnImport"], true);
-    assert_eq!(settings["minimumScoreSeries"], 255);
+    assert_eq!(settings["minimumScoreSeries"], 95);
     assert_eq!(settings["minimumScoreMovie"], 85);
     assert_eq!(settings["searchIntervalHours"], 12);
     assert_eq!(settings["includeAiTranslated"], true);
@@ -4144,6 +4308,7 @@ async fn graphql_auth_runtime_state_is_public() {
           authRuntimeState {
             effectiveFormLoginEnabled
             skipLoginForLocalIps
+            passkeyEnabled
           }
         }
         "#,
@@ -4160,6 +4325,168 @@ async fn graphql_auth_runtime_state_is_public() {
         body["data"]["authRuntimeState"]["skipLoginForLocalIps"],
         false
     );
+    assert_eq!(body["data"]["authRuntimeState"]["passkeyEnabled"], false);
+}
+
+#[tokio::test]
+async fn graphql_passkey_register_start_requires_authentication() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyRegisterStart {
+          webauthnRegisterStart {
+            challengeId
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(message, "authentication required");
+}
+
+#[tokio::test]
+async fn graphql_passkey_authenticate_start_is_public() {
+    let ctx = TestContext::new().await;
+
+    let started = std::time::Instant::now();
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyAuthenticateStart {
+          webauthnAuthenticateStart {
+            challengeId
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let (message, code) = first_graphql_error_message_and_code(&body);
+    assert_eq!(
+        message,
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(code, "LOGIN_FAILED");
+    assert!(
+        elapsed < std::time::Duration::from_millis(450),
+        "form-login-disabled passkey auth should not use login timing fuzz"
+    );
+
+    let started = std::time::Instant::now();
+    let complete_body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyAuthenticateComplete {
+          webauthnAuthenticateComplete(input: { challengeId: "missing", responseJson: "{}" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let (message, code) = first_graphql_error_message_and_code(&complete_body);
+    assert_eq!(
+        message,
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(code, "LOGIN_FAILED");
+    assert!(
+        elapsed < std::time::Duration::from_millis(450),
+        "form-login-disabled passkey completion should not use login timing fuzz"
+    );
+}
+
+#[tokio::test]
+async fn graphql_passkey_management_remains_available_when_form_login_is_disabled() {
+    let mut ctx = TestContext::new().await;
+    let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
+    let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
+        .expect("valid WebAuthn builder")
+        .build()
+        .expect("valid WebAuthn runtime");
+    ctx.app.webauthn = scryer_application::RuntimeFeature::enabled(std::sync::Arc::new(webauthn));
+    ctx.schema = scryer_interface::context::build_schema(ctx.app.clone(), ctx.auth_runtime.clone());
+
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+
+    let list_body = schema_exec(
+        &ctx,
+        r#"
+        query MyPasskeys {
+          myPasskeys {
+            id
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&list_body);
+    assert_eq!(list_body["data"]["myPasskeys"], json!([]));
+
+    let start_body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyRegisterStart {
+          webauthnRegisterStart {
+            challengeId
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&start_body);
+    assert!(
+        start_body["data"]["webauthnRegisterStart"]["challengeId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn graphql_my_passkeys_requires_authentication() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        query MyPasskeys {
+          myPasskeys {
+            id
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(message, "authentication required");
 }
 
 #[tokio::test]
@@ -4439,7 +4766,9 @@ async fn graphql_typed_security_settings_defaults() {
         query SecuritySettings {
           securitySettings {
             formLoginEnabled
+            passwordMinLength
             skipLoginForLocalIps
+            mfaRequirePasswordLogin
             effectiveFormLoginEnabled
             envOverrideActive
             envOverrideDescription
@@ -4452,8 +4781,13 @@ async fn graphql_typed_security_settings_defaults() {
 
     assert_no_errors(&body);
     assert_eq!(body["data"]["securitySettings"]["formLoginEnabled"], false);
+    assert_eq!(body["data"]["securitySettings"]["passwordMinLength"], 8);
     assert_eq!(
         body["data"]["securitySettings"]["skipLoginForLocalIps"],
+        false
+    );
+    assert_eq!(
+        body["data"]["securitySettings"]["mfaRequirePasswordLogin"],
         false
     );
     assert_eq!(
@@ -4465,7 +4799,7 @@ async fn graphql_typed_security_settings_defaults() {
 }
 
 #[tokio::test]
-async fn graphql_typed_security_settings_round_trip_updates_runtime() {
+async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
@@ -4474,8 +4808,91 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         &ctx,
         r#"
         mutation UpdateSecuritySettings {
-          updateSecuritySettings(input: { formLoginEnabled: true, skipLoginForLocalIps: true }) {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
+            totpRequireJellyfinLogin: true
+          }) {
             formLoginEnabled
+            mfaRequireConfigStepUp
+            mfaRequirePasswordLogin
+            totpRequireJellyfinLogin
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireJellyfinLogin"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        false
+    );
+
+    let runtime = schema_exec(
+        &ctx,
+        r#"
+        query AuthRuntimeState {
+          authRuntimeState {
+            effectiveFormLoginEnabled
+            mfaRequirePasswordLogin
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    assert_no_errors(&runtime);
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["effectiveFormLoginEnabled"],
+        false
+    );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["totpRequireJellyfinLogin"],
+        false
+    );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["mfaRequirePasswordLogin"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_round_trip_updates_runtime() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 12
+            skipLoginForLocalIps: true
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+            passwordMinLength
             skipLoginForLocalIps
             effectiveFormLoginEnabled
             envOverrideActive
@@ -4490,6 +4907,10 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     assert_eq!(
         update["data"]["updateSecuritySettings"]["formLoginEnabled"],
         true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["passwordMinLength"],
+        12
     );
     assert_eq!(
         update["data"]["updateSecuritySettings"]["skipLoginForLocalIps"],
@@ -4527,9 +4948,12 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         true
     );
 
-    let me_without_auth = gql(&ctx, "{ me { username } }", json!({})).await;
-    assert_no_errors(&me_without_auth);
-    assert!(me_without_auth["data"]["me"].is_null());
+    let me_with_local_bypass = gql(&ctx, "{ me { username } }", json!({})).await;
+    assert_no_errors(&me_with_local_bypass);
+    assert_eq!(
+        me_with_local_bypass["data"]["me"]["username"],
+        admin.username
+    );
 
     let read = schema_exec(
         &ctx,
@@ -4537,6 +4961,7 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         query SecuritySettings {
           securitySettings {
             formLoginEnabled
+            passwordMinLength
             effectiveFormLoginEnabled
           }
         }
@@ -4546,10 +4971,98 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     .await;
     assert_no_errors(&read);
     assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], true);
+    assert_eq!(read["data"]["securitySettings"]["passwordMinLength"], 12);
     assert_eq!(
         read["data"]["securitySettings"]["effectiveFormLoginEnabled"],
         true
     );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_reject_short_password_minimum() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 7
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    let errors = update["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("password minimum length must be at least 8"),
+        "expected minimum-length validation error: {update}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_reject_enable_with_default_admin_password() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    let errors = update["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("change the default admin password before enabling form login"),
+        "expected default admin password validation error: {update}"
+    );
+
+    let read = schema_exec(
+        &ctx,
+        r#"
+        query SecuritySettings {
+          securitySettings {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], false);
 }
 
 #[tokio::test]
@@ -5192,8 +5705,6 @@ async fn graphql_traverses_core_graph_relationships() {
         overview: Some("Traversal coverage".to_string()),
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -5257,6 +5768,7 @@ async fn graphql_traverses_core_graph_relationships() {
         absolute_number: None,
         overview: Some("Episode overview".to_string()),
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -6942,6 +7454,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -6968,6 +7481,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -6994,6 +7508,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7020,6 +7535,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: false,
             created_at: chrono::Utc::now(),
         })
@@ -7875,6 +8391,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7900,6 +8417,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8011,6 +8529,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8092,6 +8611,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -9013,8 +9533,6 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             overview: Some("Pending hydration title".to_string()),
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: Some("Pending Series".to_string()),
@@ -9776,6 +10294,157 @@ async fn graphql_me_query() {
 }
 
 #[tokio::test]
+async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+
+    let token = ctx
+        .app
+        .issue_mfa_enrollment_token(&admin)
+        .await
+        .expect("issue enrollment token");
+
+    let me = gql_with_token(&ctx, "{ me { id username } }", json!({}), &token).await;
+    let errors = me["errors"].as_array().expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected me query to reject enrollment scope: {me}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment-scope me rejection shape: {me}"
+    );
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId otpauthUrl } }"#,
+        json!({}),
+        &token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    assert!(
+        enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "enrollment-scoped token should be allowed to start TOTP enrollment: {enrollment_start}"
+    );
+
+    let create = gql_with_token(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "enrollment_blocked", "password": "testpass123", "appPermissions": [], "libraryPermissions": [] } }),
+        &token,
+    )
+    .await;
+    let errors = create["errors"]
+        .as_array()
+        .expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected normal API access to be rejected: {create}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment-scope rejection shape: {create}"
+    );
+
+    let step_up = gql_with_token(
+        &ctx,
+        r#"mutation { mfaVerifyStepUp(input: { code: "123456" }) { token } }"#,
+        json!({}),
+        &token,
+    )
+    .await;
+    let errors = step_up["errors"]
+        .as_array()
+        .expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected step-up to reject enrollment scope: {step_up}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment step-up rejection shape: {step_up}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    ctx.app.find_or_create_default_user().await.unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.form_login_enabled",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.skip_login_for_local_ips",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.mfa.require_config_step_up",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.auth_runtime.apply_saved_security_settings(true, true);
+
+    set_folder_template(&ctx, "movie", "{title} ({year})").await;
+}
+
+#[tokio::test]
 async fn graphql_users_query() {
     let ctx = TestContext::new().await;
     // Trigger default admin user creation first
@@ -9790,6 +10459,7 @@ async fn graphql_users_query() {
 #[tokio::test]
 async fn graphql_create_user() {
     let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
     let body = gql(
         &ctx,
         r#"mutation($input: CreateUserInput!) {
@@ -9800,6 +10470,400 @@ async fn graphql_create_user() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createUser"]["username"], "testuser");
+}
+
+#[tokio::test]
+async fn graphql_create_user_rejects_short_password() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "shortpass", "password": "1234567", "appPermissions": [], "libraryPermissions": [] } }),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("password must be at least 8 characters"),
+        "expected short-password validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_users_query_exposes_auth_factor_status_with_manage_users() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let with_factors = ctx
+        .app
+        .create_user(
+            &admin,
+            "factor_status".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create factor status user");
+    let without_factors = ctx
+        .app
+        .create_user(
+            &admin,
+            "factor_status_empty".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create user without factors");
+
+    enroll_totp_for_test(&ctx, &with_factors).await;
+    seed_test_passkey(&ctx, &with_factors.id, "factor-status-credential").await;
+
+    let body = schema_exec(
+        &ctx,
+        "{ users { id username hasMfa hasPasskey } }",
+        Some(manage_users_actor("user-manager")),
+    )
+    .await;
+    assert_no_errors(&body);
+    let users = body["data"]["users"].as_array().expect("users");
+    let row_with_factors = users
+        .iter()
+        .find(|row| row["id"].as_str() == Some(with_factors.id.as_str()))
+        .expect("user with factors in users query");
+    assert_eq!(row_with_factors["hasMfa"], true);
+    assert_eq!(row_with_factors["hasPasskey"], true);
+
+    let row_without_factors = users
+        .iter()
+        .find(|row| row["id"].as_str() == Some(without_factors.id.as_str()))
+        .expect("user without factors in users query");
+    assert_eq!(row_without_factors["hasMfa"], false);
+    assert_eq!(row_without_factors["hasPasskey"], false);
+}
+
+#[tokio::test]
+async fn graphql_reset_user_mfa_clears_totp_state_and_preserves_passkeys() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "reset_mfa_target".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create reset target");
+    enroll_totp_for_test(&ctx, &target).await;
+    seed_test_passkey(&ctx, &target.id, "reset-mfa-passkey").await;
+
+    let old_token = ctx
+        .app
+        .issue_access_token(&target)
+        .await
+        .expect("issue token before reset");
+    let now = Utc::now();
+    let now_string = now.to_rfc3339();
+    let pending_challenge = TotpEnrollmentChallengeRecord {
+        id: Id::new().0,
+        user_id: target.id.clone(),
+        secret_base32: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period_seconds: 30,
+        created_at: now_string.clone(),
+        expires_at: (now + Duration::minutes(10)).to_rfc3339(),
+    };
+    let totp_store = TotpStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    totp_store
+        .create_enrollment_challenge(pending_challenge.clone())
+        .await
+        .expect("seed pending TOTP enrollment challenge");
+    totp_store
+        .record_failed_attempt(TotpFailedAttemptRecord {
+            id: Id::new().0,
+            user_id: target.id.clone(),
+            attempted_at: now_string,
+        })
+        .await
+        .expect("seed failed TOTP attempt");
+
+    let reset = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              resetUserMfa(input: {{ userId: "{}" }}) {{
+                id
+                username
+                hasMfa
+                hasPasskey
+              }}
+            }}
+            "#,
+            target.id
+        ),
+        Some(manage_users_actor("mfa-reset-manager")),
+    )
+    .await;
+    assert_no_errors(&reset);
+    let reset_user = &reset["data"]["resetUserMfa"];
+    assert_eq!(reset_user["id"], target.id);
+    assert_eq!(reset_user["hasMfa"], false);
+    assert_eq!(reset_user["hasPasskey"], true);
+
+    assert!(
+        totp_store
+            .get_credential_for_user(&target.id)
+            .await
+            .expect("load TOTP credential")
+            .is_none(),
+        "TOTP credential should be removed"
+    );
+    assert!(
+        totp_store
+            .list_recovery_codes_for_user(&target.id)
+            .await
+            .expect("list recovery codes")
+            .is_empty(),
+        "recovery codes should be removed"
+    );
+    let failed_attempts = totp_store
+        .count_failed_attempts_since(&target.id, &(Utc::now() - Duration::hours(1)).to_rfc3339())
+        .await
+        .expect("count failed attempts");
+    assert_eq!(failed_attempts, 0);
+    assert!(
+        totp_store
+            .get_enrollment_challenge(&pending_challenge.id, &target.id)
+            .await
+            .expect("load pending enrollment challenge")
+            .is_none(),
+        "pending enrollment challenges should be removed"
+    );
+
+    let passkeys = WebauthnStore::new(ctx.db.datastore())
+        .list_credentials_for_user(&target.id)
+        .await
+        .expect("list passkeys");
+    assert_eq!(passkeys.len(), 1, "passkeys should be preserved");
+    assert!(
+        ctx.app.authenticate_token(&old_token).await.is_err(),
+        "tokens issued before MFA reset should be invalidated"
+    );
+    let new_token = ctx
+        .app
+        .issue_access_token(&target)
+        .await
+        .expect("issue token after reset");
+    ctx.app
+        .authenticate_token(&new_token)
+        .await
+        .expect("token issued after MFA reset should authenticate");
+}
+
+#[tokio::test]
+async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "reset_mfa_authz".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create reset authz target");
+    let mutation = format!(
+        r#"
+        mutation {{
+          resetUserMfa(input: {{ userId: "{}" }}) {{
+            id
+          }}
+        }}
+        "#,
+        target.id
+    );
+
+    let denied = schema_exec(
+        &ctx,
+        &mutation,
+        Some(User {
+            id: Id::new().0,
+            username: "not-a-manager".to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: UserAuthorization {
+                app: AppPermissionMask::NONE,
+                libraries: HashMap::new(),
+                default_library: LibraryPermissionMask::NONE,
+                loaded: true,
+            },
+        }),
+    )
+    .await;
+    assert!(
+        denied
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "reset should require Manage Users: {denied}"
+    );
+
+    let mut self_actor = target.clone();
+    self_actor.authorization = UserAuthorization {
+        app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
+        libraries: HashMap::new(),
+        default_library: LibraryPermissionMask::NONE,
+        loaded: true,
+    };
+    let self_reset = schema_exec(&ctx, &mutation, Some(self_actor)).await;
+    let errors = self_reset["errors"]
+        .as_array()
+        .expect("self reset should return errors");
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("cannot reset your own MFA")),
+        "expected self-reset rejection: {self_reset}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_external_account_invites_expose_last_login() {
+    let ctx = TestContext::new().await;
+    let user = gql(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "invitee", "password": "testpass123", "appPermissions": [], "libraryPermissions": [] } }),
+    )
+    .await;
+    assert_no_errors(&user);
+    let user_id = user["data"]["createUser"]["id"]
+        .as_str()
+        .expect("created user id");
+
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Main Jellyfin".to_string(),
+            base_url: "https://jellyfin.example.test".to_string(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: false,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: None,
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Jellyfin media server connection");
+
+    let invite = gql(
+        &ctx,
+        r#"mutation($input: CreateExternalAccountInviteInput!) {
+            createExternalAccountInvite(input: $input) {
+                id
+                userId
+                provider
+                connectionId
+                username
+                status
+                lastLoginAt
+            }
+        }"#,
+        json!({
+            "input": {
+                "userId": user_id,
+                "provider": "jellyfin",
+                "connectionId": "jellyfin-main",
+                "providerUserIdentifier": "jelly-user"
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&invite);
+    assert_eq!(
+        invite["data"]["createExternalAccountInvite"]["lastLoginAt"],
+        Value::Null
+    );
+
+    let invites = gql(
+        &ctx,
+        r#"query {
+            externalAccountInvites {
+                userId
+                provider
+                connectionId
+                username
+                status
+                lastLoginAt
+            }
+        }"#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&invites);
+    let rows = invites["data"]["externalAccountInvites"]
+        .as_array()
+        .expect("invite rows");
+    let row = rows
+        .iter()
+        .find(|row| row["userId"].as_str() == Some(user_id))
+        .expect("created invite row");
+    assert_eq!(row["provider"], "jellyfin");
+    assert_eq!(row["status"], "pending_claim");
+    assert_eq!(row["lastLoginAt"], Value::Null);
+
+    let viewer = User {
+        id: "viewer".to_string(),
+        username: "viewer".to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::NONE,
+            libraries: HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    };
+    let denied = schema_exec(
+        &ctx,
+        "query { externalAccountInvites { id } }",
+        Some(viewer),
+    )
+    .await;
+    assert!(
+        denied
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected authorization error: {denied}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -10916,6 +11980,7 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("download-outcome-episode-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11105,6 +12170,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("episode-history-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11130,6 +12196,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             absolute_number: Some("2".to_string()),
             overview: None,
             tvdb_id: Some("episode-history-2".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11260,6 +12327,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("history-episode-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11285,6 +12353,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
             absolute_number: Some("2".to_string()),
             overview: None,
             tvdb_id: Some("history-episode-2".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11481,7 +12550,7 @@ async fn graphql_metadata_series() {
         &ctx,
         r#"query($id: String!) {
             metadataSeries(id: $id) {
-                name year seasons { number label } episodes { name seasonNumber }
+                name year seasons { number label } episodes { name seasonNumber imageUrl }
             }
         }"#,
         json!({ "id": "345678" }),
@@ -11492,6 +12561,10 @@ async fn graphql_metadata_series() {
     assert_eq!(series["name"], "Test Show Name");
     assert_eq!(series["seasons"].as_array().unwrap().len(), 2);
     assert_eq!(series["episodes"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        series["episodes"][0]["imageUrl"],
+        "https://image.tmdb.org/t/p/original/pilot.jpg"
+    );
 }
 
 const LARGE_GRAPHQL_TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
@@ -11747,6 +12820,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                     absolute_number: None,
                     overview: Some("Legacy episode".to_string()),
                     tvdb_id: Some("9999001".to_string()),
+                    image_url: None,
                     monitored: true,
                     created_at: chrono::Utc::now(),
                 })
@@ -12124,7 +13198,7 @@ async fn login_with_valid_credentials_returns_token() {
         .create_user(
             &admin,
             "logintest".to_string(),
-            "s3cr3t!".to_string(),
+            "s3cr3t!!".to_string(),
             scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageUsers,
             ]),
@@ -12135,7 +13209,7 @@ async fn login_with_valid_credentials_returns_token() {
 
     let body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!" }) { token expiresAt user { username appPermissions } } }"#,
+        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!!" }) { token expiresAt user { username appPermissions } } }"#,
         None,
     )
     .await;
@@ -12151,6 +13225,67 @@ async fn login_with_valid_credentials_returns_token() {
         body["data"]["login"]["user"]["appPermissions"],
         json!(["manageUsers"])
     );
+}
+
+#[tokio::test]
+async fn me_reports_password_status_for_token_authenticated_user() {
+    let ctx = TestContext::new().await;
+
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    ctx.app
+        .create_user(
+            &admin,
+            "metest".to_string(),
+            "s3cr3t!!".to_string(),
+            scryer_domain::AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let login_body = schema_exec(
+        &ctx,
+        r#"mutation { login(input: { username: "metest", password: "s3cr3t!!" }) { token } }"#,
+        None,
+    )
+    .await;
+    assert!(
+        login_body["errors"].is_null(),
+        "login should succeed: {login_body}"
+    );
+    let token = login_body["data"]["login"]["token"]
+        .as_str()
+        .expect("login token should be a string");
+    let (token_user, _) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("token should authenticate");
+    assert!(
+        token_user.password_hash.is_none(),
+        "request context user should not carry password hashes"
+    );
+
+    let me_body = schema_exec(
+        &ctx,
+        r#"{ me { username hasPassword accountKind } }"#,
+        Some(token_user.clone()),
+    )
+    .await;
+    assert!(me_body["errors"].is_null(), "me should succeed: {me_body}");
+    assert_eq!(me_body["data"]["me"]["username"], "metest");
+    assert_eq!(me_body["data"]["me"]["hasPassword"], true);
+    assert_eq!(me_body["data"]["me"]["accountKind"], "local");
+
+    let refreshed_token = ctx
+        .app
+        .issue_access_token(&token_user)
+        .await
+        .expect("redacted context user should be able to refresh a token");
+    ctx.app
+        .authenticate_token(&refreshed_token)
+        .await
+        .expect("refreshed token should authenticate");
 }
 
 /// Providing the wrong password must produce a GraphQL error — never a token.
@@ -12186,12 +13321,11 @@ async fn login_with_wrong_password_returns_error() {
                 .unwrap_or(false),
         "wrong password should return a GraphQL error: {body}"
     );
-    // Verify the error indicates bad credentials, not a server error.
+    // Verify the error is the masked bad-credentials response, not a server error.
     let error_msg = body["errors"][0]["message"].as_str().unwrap_or("");
-    assert!(
-        error_msg.to_ascii_lowercase().contains("credentials")
-            || error_msg.to_ascii_lowercase().contains("invalid"),
-        "error should indicate bad credentials: {error_msg}"
+    assert_eq!(
+        error_msg,
+        "Sign-in failed. Check your sign-in details and try again."
     );
 }
 
@@ -12239,8 +13373,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         overview: Some("delete path coverage".to_string()),
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: Some("Scoped Delete Movie".to_string()),
@@ -12303,6 +13435,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         id: Id::new().0,
         username: "scoped-delete-user".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             app: scryer_domain::AppPermissionMask::NONE,
             libraries: HashMap::from([(
@@ -12401,8 +13534,6 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         overview: Some("interstitial cleanup coverage".to_string()),
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: Some("Interstitial Cleanup Show".to_string()),
@@ -12583,7 +13714,7 @@ async fn authenticated_request_with_valid_token_succeeds() {
         .create_user(
             &admin,
             "authtest".to_string(),
-            "s3cr3t!".to_string(),
+            "s3cr3t!!".to_string(),
             scryer_domain::AppPermissionMask::NONE,
             vec![view_grant],
         )
@@ -12593,7 +13724,7 @@ async fn authenticated_request_with_valid_token_succeeds() {
     // Step 1: log in and capture the token.
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "authtest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "authtest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -12634,7 +13765,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
             createUser(input: {{
                 username: "entrevoketest",
-                password: "s3cr3t!",
+                password: "s3cr3t!!",
                 appPermissions: [],
                 libraryPermissions: [{{ libraryId: "{library_id}", permissions: [view] }}]
             }}) {{
@@ -12657,7 +13788,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
 
     let login_before = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -12676,7 +13807,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
                 setUserLibraryPermissions(input: {{
                     userId: "{user_id}",
-                    grants: [{{ libraryId: "{library_id}", permissions: [view, manageTitles] }}]
+                    grants: [{{ libraryId: "{library_id}", permissions: [view, request, autoApproveRequests, manageTitles] }}]
                 }}) {{
                     id
                     libraryPermissions {{ libraryId permissions }}
@@ -12690,6 +13821,17 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
         update_body["errors"].is_null(),
         "setUserLibraryPermissions should succeed: {update_body}"
     );
+    let permissions =
+        update_body["data"]["setUserLibraryPermissions"]["libraryPermissions"][0]["permissions"]
+            .as_array()
+            .expect("permissions should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("permission string"))
+            .collect::<Vec<_>>();
+    assert!(permissions.contains(&"view"));
+    assert!(permissions.contains(&"manageTitles"));
+    assert!(permissions.contains(&"request"));
+    assert!(permissions.contains(&"autoApproveRequests"));
 
     let old_result = ctx.app.authenticate_token(&old_token).await;
     assert!(
@@ -12699,7 +13841,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
 
     let login_after = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -12725,6 +13867,10 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
     assert!(
         authorization
             .has_library_permission(&library_id, scryer_domain::LibraryPermission::ManageTitles,)
+    );
+    assert!(
+        !authorization
+            .has_library_permission(&library_id, scryer_domain::LibraryPermission::Request)
     );
 }
 
@@ -12759,7 +13905,7 @@ async fn newly_created_user_can_login() {
     // Create a new user as admin.
     let create_body = schema_exec(
         &ctx,
-        r#"mutation { createUser(input: { username: "newuser", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        r#"mutation { createUser(input: { username: "newuser", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
         Some(admin),
     )
     .await;
@@ -12772,7 +13918,7 @@ async fn newly_created_user_can_login() {
     // Log in as the newly created user.
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!" }) { token user { username } } }"#,
+        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!!" }) { token user { username } } }"#,
         None,
     )
     .await;
@@ -12783,4 +13929,369 @@ async fn newly_created_user_can_login() {
     let token = login_body["data"]["login"]["token"].as_str().unwrap();
     assert!(!token.is_empty());
     assert_eq!(login_body["data"]["login"]["user"]["username"], "newuser");
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_masks_account_disclosure() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "maskedlocal", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    ctx.users
+        .create(User {
+            id: "masked-no-password-user".to_string(),
+            username: "maskednopass".to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: Default::default(),
+        })
+        .await
+        .expect("create passwordless user");
+
+    async fn failed_login_shape(
+        ctx: &TestContext,
+        username: &str,
+        password: &str,
+    ) -> (String, String) {
+        let body = schema_exec(
+            ctx,
+            &format!(
+                r#"
+                mutation {{
+                  login(input: {{ username: "{username}", password: "{password}" }}) {{
+                    token
+                  }}
+                }}
+                "#
+            ),
+            None,
+        )
+        .await;
+        let serialized = body.to_string().to_lowercase();
+        for leaked in [
+            "not invited",
+            "not found",
+            "disabled",
+            "credentials unavailable",
+        ] {
+            assert!(
+                !serialized.contains(leaked),
+                "login response leaked {leaked}: {body}"
+            );
+        }
+        first_graphql_error_message_and_code(&body)
+    }
+
+    let unknown = failed_login_shape(&ctx, "maskedmissing", "s3cr3t!!").await;
+    let wrong_password = failed_login_shape(&ctx, "maskedlocal", "wrongpass").await;
+    let no_password = failed_login_shape(&ctx, "maskednopass", "s3cr3t!!").await;
+    let empty_username = failed_login_shape(&ctx, "", "s3cr3t!!").await;
+    let empty_password = failed_login_shape(&ctx, "maskedlocal", "").await;
+
+    assert_eq!(
+        unknown.0,
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(unknown.1, "LOGIN_FAILED");
+    assert_eq!(wrong_password, unknown);
+    assert_eq!(no_password, unknown);
+    assert_eq!(empty_username, unknown);
+    assert_eq!(empty_password, unknown);
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "localmfa", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+            mfaRequirePasswordLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["mfaRequirePasswordLogin"],
+        true
+    );
+
+    let login_body = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa", password: "s3cr3t!!" }) {
+            token
+            mfaEnrollmentRequired
+            mfaVerifiedUntil
+            user { username }
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    assert_no_errors(&login_body);
+    let payload = &login_body["data"]["login"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert!(payload["mfaVerifiedUntil"].is_null());
+    assert_eq!(payload["user"]["username"], "localmfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    let challenge_id = enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+        .as_str()
+        .expect("challenge id");
+    let secret_base32 = enrollment_start["data"]["totpEnrollmentStart"]["secretBase32"]
+        .as_str()
+        .expect("secret");
+    let code = test_totp_code(secret_base32);
+
+    let complete = gql_with_token(
+        &ctx,
+        r#"
+        mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+          completeLoginMfaEnrollment(input: $input) {
+            recoveryCodes
+            login {
+              token
+              mfaEnrollmentRequired
+              mfaVerifiedUntil
+              user { username }
+            }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "challengeId": challenge_id,
+                "code": code
+            }
+        }),
+        token,
+    )
+    .await;
+    assert_no_errors(&complete);
+    let complete_payload = &complete["data"]["completeLoginMfaEnrollment"];
+    assert!(
+        complete_payload["recoveryCodes"]
+            .as_array()
+            .is_some_and(|codes| !codes.is_empty()),
+        "login MFA enrollment should return recovery codes: {complete}"
+    );
+    let login_payload = &complete_payload["login"];
+    assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(login_payload["user"]["username"], "localmfa");
+    let full_token = login_payload["token"].as_str().expect("full token");
+    let (_user, full_claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
+    assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_code() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "localmfa_totp", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    let user = ctx
+        .app
+        .authenticate_credentials("localmfa_totp", "s3cr3t!!")
+        .await
+        .expect("authenticate local user");
+    let enrollment = ctx
+        .app
+        .totp_enrollment_start(&user)
+        .await
+        .expect("start TOTP enrollment");
+    let enrollment_code = test_totp_code(&enrollment.secret_base32);
+    ctx.app
+        .totp_enrollment_complete(&user, &enrollment.challenge_id, &enrollment_code)
+        .await
+        .expect("complete TOTP enrollment");
+
+    let totp_store = TotpStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    let mut credential = totp_store
+        .get_credential_for_user(&user.id)
+        .await
+        .expect("load TOTP credential")
+        .expect("TOTP credential");
+    credential.last_accepted_step = None;
+    totp_store
+        .upsert_credential(credential)
+        .await
+        .expect("reset accepted TOTP step");
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: true
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+            mfaRequirePasswordLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let missing_code = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!!" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let errors = missing_code["errors"]
+        .as_array()
+        .expect("expected missing-code GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected local password login to require TOTP: {missing_code}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_STEP_UP_REQUIRED",
+        "unexpected missing-code rejection shape: {missing_code}"
+    );
+
+    let invalid_code = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!!", totpCode: "abc123" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let errors = invalid_code["errors"]
+        .as_array()
+        .expect("expected invalid-code GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected invalid TOTP code to be rejected: {invalid_code}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "TOTP_INVALID_CODE",
+        "unexpected invalid-code rejection shape: {invalid_code}"
+    );
+
+    let valid_code = test_totp_code(&enrollment.secret_base32);
+    let valid_login = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              login(input: {{ username: "localmfa_totp", password: "s3cr3t!!", totpCode: "{valid_code}" }}) {{
+                token
+                mfaEnrollmentRequired
+                mfaVerifiedUntil
+                user {{ username }}
+              }}
+            }}
+            "#
+        ),
+        None,
+    )
+    .await;
+    assert_no_errors(&valid_login);
+    let payload = &valid_login["data"]["login"];
+    assert_eq!(payload["mfaEnrollmentRequired"], false);
+    assert!(payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(payload["user"]["username"], "localmfa_totp");
+    let token = payload["token"].as_str().expect("full token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(claims.session_scope, JwtSessionScope::Full);
+    assert!(claims.mfa_verified_until.is_some());
 }

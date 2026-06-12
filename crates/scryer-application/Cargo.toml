@@ -1,6 +1,6 @@
 [package]
 name = "scryer-application"
-version = "0.15.9"
+version = "0.16.0"
 edition.workspace = true
 
 [features]
@@ -20,14 +20,13 @@ runtime-archives = [
 ]
 runtime-backups = ["dep:tar", "dep:zstd"]
 runtime-media-analysis = [
-    "dep:alass-core",
     "dep:chardetng",
     "dep:encoding_rs",
     "dep:scryer-mediainfo",
-    "dep:symphonia",
     "dep:whatlang",
 ]
 runtime-plugin-trust = [
+    "dep:brotli",
     "dep:rustls-pki-types",
     "dep:rustls-webpki",
     "dep:sigstore",
@@ -42,10 +41,13 @@ scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo", optional = true }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
+scryer-runtime-info = { path = "../scryer-runtime-info" }
 jsonwebtoken = { workspace = true }
 rand_core = { workspace = true }
 argon2 = { workspace = true }
 aws-lc-rs = { workspace = true }
+uuid = { workspace = true }
+webauthn-rs = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
 quick-xml = { workspace = true }
 serde = { workspace = true }
@@ -59,6 +61,7 @@ chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
 base64 = "0.22"
+brotli = { version = "8", optional = true }
 weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false, optional = true }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
@@ -67,10 +70,8 @@ flate2 = { version = "1", optional = true }
 zstd = { version = "0.13", optional = true }
 lzma-rs = { version = "0.3", optional = true }
 tempfile = "3"
-alass-core = { version = "2.0.0", optional = true }
 chardetng = { version = "1", optional = true }
 encoding_rs = { version = "0.8", optional = true }
-symphonia = { version = "0.6.0", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"], optional = true }
 unicode-normalization = "0.1"
 whatlang = { version = "0.18.0", optional = true }
 regex = "1"

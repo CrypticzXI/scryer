@@ -6,7 +6,7 @@ use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
@@ -15,9 +15,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
-    AppResult, AppServices, AppUseCase, BlocklistRepository, FacetRegistry, HousekeepingRepository,
-    IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler, PendingReleaseRepository,
-    SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
+    AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
+    FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
+    PendingReleaseRepository, SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -25,15 +25,21 @@ use scryer_infrastructure::sqlite::{
 };
 use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
-    DownloadSubmissionStore, ExternalImportMonitorStore, FileSystemLibraryScanner,
+    DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
-    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore, ReleaseStore,
-    SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore, WantedStore,
-    WorkflowOperationStore,
+    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
+    MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore,
+    ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore,
+    TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
 };
-use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
+use scryer_interface::context::{
+    AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
+};
 use scryer_interface::{ApiSchema, build_schema};
+
+pub fn disable_platform_keystore_for_tests() {
+    scryer_infrastructure::keystore::disable_platform_keystore_for_tests();
+}
 
 /// Shared integration-test context.
 ///
@@ -557,6 +563,8 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
         form_login_enabled: false,
         skip_login_for_local_ips: false,
         effective_form_login_enabled: false,
+        webauthn_configured: false,
+        passkey_enabled: false,
         env_override_active: false,
         env_override_description: None,
         epoch: 0,
@@ -565,6 +573,8 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 
 impl TestContext {
     pub async fn new() -> Self {
+        disable_platform_keystore_for_tests();
+
         // Start wiremock mock servers for each external API
         let nzbget_server = MockServer::start().await;
         let nzbgeek_server = MockServer::start().await;
@@ -575,6 +585,9 @@ impl TestContext {
         let db = SqliteServices::new(":memory:")
             .await
             .expect("failed to create in-memory SQLite");
+        db.set_encryption_key(EncryptionKey::generate())
+            .await
+            .expect("failed to configure test encryption key");
         let app_data_dir = tempfile::Builder::new()
             .prefix("scryer-test-data-")
             .tempdir_in("/tmp")
@@ -617,9 +630,7 @@ impl TestContext {
         // so reload_plugins works in integration tests)
         let plugin_provider: Arc<dyn IndexerPluginProvider> =
             Arc::new(scryer_plugins::DynamicPluginProvider::new(
-                scryer_plugins::WasmIndexerPluginProvider::empty()
-                    .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
-                    .with_builtin_asset(scryer_plugins::builtins::NEWZNAB),
+                scryer_plugins::build_indexer_plugin_provider(&[], &[]),
             ));
         let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> = Arc::new(
             scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),
@@ -632,11 +643,9 @@ impl TestContext {
 
         let metadata_gateway = MetadataGatewayClient::new(
             format!("{}/graphql", smg_server.uri()),
-            true, // accept invalid certs (wiremock is plain HTTP)
             db.clone(),
             SmgEnrollmentConfig {
                 registration_secret: None,
-                ca_cert: None,
             },
         );
 
@@ -645,6 +654,7 @@ impl TestContext {
         let show_store = ShowStore::new(datastore.clone());
         let library_store = LibraryStore::new(datastore.clone());
         let user_store = UserStore::new(datastore.clone());
+        let totp_store = TotpStore::new(datastore.clone(), db.encryption_key_state());
         let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
@@ -708,6 +718,13 @@ impl TestContext {
         .with_housekeeping(Arc::new(housekeeping_store))
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
+        .with_external_account_store(Arc::new(user_store.clone()))
+        .with_media_server_connection_store(Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        )))
+        .with_webauthn_store(Arc::new(WebauthnStore::new(datastore.clone())))
+        .with_totp_store(Arc::new(totp_store))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))
         .with_plugin_installation_store(Arc::new(plugin_store.clone()))
@@ -800,10 +817,7 @@ impl TestContext {
 
     /// Build a reqwest client suitable for hitting the test server.
     pub fn http_client(&self) -> reqwest::Client {
-        scryer_outbound_http::install_default_rustls_provider();
-        reqwest::Client::builder()
-            .build()
-            .expect("failed to build reqwest client")
+        scryer_outbound_http::generic_reqwest_client()
     }
 }
 
@@ -1062,25 +1076,61 @@ fn build_test_router(
     )
 }
 
-/// Minimal GraphQL handler that replicates auth-disabled default-user injection.
+/// Minimal GraphQL handler that replicates default-user auth injection.
 async fn test_graphql_handler(
     State((app, schema, auth_runtime)): State<(AppUseCase, ApiSchema, AuthRuntimeStateHandle)>,
+    headers: HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let user = if auth_runtime.snapshot().effective_form_login_enabled {
-        None
+    let snapshot = auth_runtime.snapshot();
+    let actor = if snapshot.effective_form_login_enabled {
+        if let Some(token) = authorization_token_from_headers(&headers) {
+            app.authenticate_token_with_claims(token).await.ok()
+        } else if snapshot.skip_login_for_local_ips {
+            app.find_or_create_default_user().await.ok().map(|user| {
+                (
+                    user,
+                    AuthenticatedTokenClaims {
+                        mfa_verified_until: Some(i64::MAX),
+                        mfa_step_up_verified_until: Some(i64::MAX),
+                        ..AuthenticatedTokenClaims::default()
+                    },
+                )
+            })
+        } else {
+            None
+        }
     } else {
-        app.find_or_create_default_user().await.ok()
+        app.find_or_create_default_user()
+            .await
+            .ok()
+            .map(|user| (user, AuthenticatedTokenClaims::default()))
     };
     let mut request = req.into_inner();
     let response_status = graphql_response_status(&mut request);
-    if let Some(u) = user {
-        request = request.data(u);
+    if let Some((user, claims)) = actor {
+        request = request.data(MfaVerification {
+            verified_until: claims.mfa_verified_until,
+            step_up_verified_until: claims.mfa_step_up_verified_until,
+            session_scope: claims.session_scope,
+        });
+        request = request.data(user);
     }
     let mut response =
         async_graphql_axum::GraphQLResponse::from(schema.execute(request).await).into_response();
     *response.status_mut() = response_status;
     response
+}
+
+fn authorization_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let mut parts = raw.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    Some(token)
 }
 
 fn graphql_response_status(request: &mut async_graphql::Request) -> StatusCode {

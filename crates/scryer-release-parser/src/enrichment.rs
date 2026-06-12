@@ -1,7 +1,9 @@
 use crate::lex::Token;
 use crate::model::{
-    MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata, ReleaseParseCandidate, VideoCodec,
+    AudioCodec, ExternalIdSource, MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata,
+    ReleaseParseCandidate, ReleaseSource, VideoCodec,
 };
+use crate::trash_guides;
 
 #[derive(Clone, Copy)]
 enum LanguageScope {
@@ -59,7 +61,7 @@ pub(crate) fn enrich_candidate(
     if let Some(tmdb_id) = parse_tmdb_id_from_tokens(&normalized_tokens) {
         enrichment.tmdb_id = Some(tmdb_id.to_string());
         enrichment.external_ids.push(ParsedExternalId {
-            source: "tmdb".to_string(),
+            source: ExternalIdSource::Tmdb,
             value: tmdb_id.to_string(),
         });
     }
@@ -279,17 +281,33 @@ pub(crate) fn enrich_candidate(
         enrichment.is_ai_enhanced = true;
     }
 
+    let trash_guide_signals = trash_guides::detect_token_signals(&normalized_tokens);
+    enrichment.is_ai_enhanced |= trash_guide_signals.ai_enhanced;
+    enrichment.is_proper_upload |= trash_guide_signals.proper;
+    enrichment.is_repack |= trash_guide_signals.repack;
+    enrichment.is_hardcoded_subs |= trash_guide_signals.hardcoded_subs;
+
     enrichment.languages_audio = dedupe_keep_order(enrichment.languages_audio);
     enrichment.languages_subtitles = dedupe_keep_order(enrichment.languages_subtitles);
     enrichment.audio_codecs = dedupe_keep_order(enrichment.audio_codecs);
 
     if enrichment.is_dual_audio || enrichment.languages_audio.len() > 1 {
         enrichment.is_dubs_only = false;
+    } else if trash_guide_signals.dubs_only {
+        enrichment.is_dubs_only = true;
     }
 
     enrichment.normalized_source = normalize_source_for_service(
-        candidate.projected.source.as_deref(),
-        candidate.projected.streaming_service.as_deref(),
+        candidate
+            .projected
+            .source
+            .as_ref()
+            .map(ReleaseSource::as_str),
+        candidate
+            .projected
+            .streaming_service
+            .as_ref()
+            .map(crate::model::StreamingService::as_str),
     );
     if enrichment.normalized_source.is_some() {
         enrichment
@@ -309,7 +327,7 @@ pub(crate) fn project_final_metadata(
 
     for external_id in &enrichment.external_ids {
         if !projected.external_ids.iter().any(|existing| {
-            existing.source.eq_ignore_ascii_case(&external_id.source)
+            existing.source == external_id.source
                 && existing.value.eq_ignore_ascii_case(&external_id.value)
         }) {
             projected.external_ids.push(external_id.clone());
@@ -330,11 +348,15 @@ pub(crate) fn project_final_metadata(
             .and_then(VideoCodec::parse);
     }
     if enrichment.audio.is_some() {
-        projected.audio = enrichment.audio.clone();
+        projected.audio = enrichment.audio.as_deref().and_then(AudioCodec::parse);
     }
     if !enrichment.audio_codecs.is_empty() {
-        projected.audio_codecs = enrichment.audio_codecs.clone();
-    } else if let Some(audio) = projected.audio.clone() {
+        projected.audio_codecs = enrichment
+            .audio_codecs
+            .iter()
+            .filter_map(|codec| AudioCodec::parse(codec))
+            .collect();
+    } else if let Some(audio) = projected.audio {
         projected.audio_codecs = vec![audio];
     }
     if enrichment.audio_channels.is_some() {
@@ -390,7 +412,7 @@ pub(crate) fn project_final_metadata(
     }
 
     if let Some(normalized_source) = enrichment.normalized_source.clone() {
-        projected.source = Some(normalized_source);
+        projected.source = ReleaseSource::parse(&normalized_source);
     }
 
     for hint in &enrichment.parse_hints {

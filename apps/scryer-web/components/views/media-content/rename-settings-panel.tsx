@@ -62,6 +62,11 @@ const ANIME_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "episode_title", labelKey: "settings.renameTokenEpisodeTitle" },
 ];
 
+type TokenDescription = {
+  token: string;
+  labelKey: string;
+};
+
 function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; labelKey: string }[] {
   const scopeSpecific = scopeId === "movie"
     ? MOVIE_RENAME_TOKEN_DESCRIPTIONS
@@ -280,6 +285,112 @@ type HighlightedTemplateInputProps = React.ComponentProps<typeof Input> & {
   value: string;
 };
 
+type TemplateTokenContext = {
+  key: string;
+  query: string;
+  replaceStart: number;
+  replaceEnd: number;
+  shouldCloseBrace: boolean;
+};
+
+function updateInputValue(
+  input: HTMLInputElement,
+  nextValue: string,
+  selectionStart: number,
+  selectionEnd = selectionStart,
+) {
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  if (!nativeInputValueSetter) {
+    return;
+  }
+  nativeInputValueSetter.call(input, nextValue);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  requestAnimationFrame(() => {
+    input.setSelectionRange(selectionStart, selectionEnd);
+    input.focus();
+  });
+}
+
+function insertTemplateToken(
+  input: HTMLInputElement,
+  currentValue: string,
+  token: string,
+) {
+  const insertion = `{${token}}`;
+  const start = input.selectionStart ?? currentValue.length;
+  const end = input.selectionEnd ?? start;
+  const nextValue = currentValue.slice(0, start) + insertion + currentValue.slice(end);
+  updateInputValue(input, nextValue, start + insertion.length);
+}
+
+function resolveTemplateTokenContext(
+  value: string,
+  cursor: number,
+  tokenDescriptions: TokenDescription[],
+): TemplateTokenContext | null {
+  const lastOpen = value.lastIndexOf("{", cursor - 1);
+  const lastClose = value.lastIndexOf("}", cursor - 1);
+  if (lastOpen === -1 || lastOpen < lastClose) {
+    return null;
+  }
+
+  const tokenBody = value.slice(lastOpen + 1, cursor);
+  if (!tokenBody || tokenBody.includes("{") || tokenBody.includes("}")) {
+    return null;
+  }
+
+  const colonIndex = tokenBody.indexOf(":");
+  if (colonIndex !== -1) {
+    return null;
+  }
+
+  const nextOpen = value.indexOf("{", lastOpen + 1);
+  const nextClose = value.indexOf("}", lastOpen + 1);
+  const shouldCloseBrace =
+    nextClose === -1 || (nextOpen !== -1 && nextOpen < nextClose);
+  const query = tokenBody.trim().toLowerCase();
+
+  const matches = tokenDescriptions
+    .filter(({ token }) => token.toLowerCase().includes(query))
+    .sort((left, right) => {
+      const leftToken = left.token.toLowerCase();
+      const rightToken = right.token.toLowerCase();
+      const leftStarts = leftToken.startsWith(query) ? 0 : 1;
+      const rightStarts = rightToken.startsWith(query) ? 0 : 1;
+      return leftStarts - rightStarts || leftToken.localeCompare(rightToken);
+    });
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return {
+    key: `${lastOpen}:${query}`,
+    query,
+    replaceStart: lastOpen + 1,
+    replaceEnd: lastOpen + 1 + tokenBody.length,
+    shouldCloseBrace,
+  };
+}
+
+function applyAutocompleteToken(
+  input: HTMLInputElement,
+  currentValue: string,
+  context: TemplateTokenContext,
+  token: string,
+) {
+  const suffix = context.shouldCloseBrace ? "}" : "";
+  const nextValue =
+    currentValue.slice(0, context.replaceStart) +
+    token +
+    suffix +
+    currentValue.slice(context.replaceEnd);
+  const cursor = context.replaceStart + token.length + suffix.length;
+  updateInputValue(input, nextValue, cursor);
+}
+
 const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedTemplateInputProps>(
   ({ className, value, onScroll, ...props }, ref) => {
     const [scrollLeft, setScrollLeft] = React.useState(0);
@@ -327,6 +438,164 @@ const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedT
 );
 
 HighlightedTemplateInput.displayName = "HighlightedTemplateInput";
+
+type TokenAutocompleteInputProps = Omit<HighlightedTemplateInputProps, "ref"> & {
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  tokenDescriptions: TokenDescription[];
+  onAutocompleteToken: (token: string) => void;
+  translateLabel: Translate;
+};
+
+function TokenAutocompleteInput({
+  inputRef,
+  value,
+  tokenDescriptions,
+  onAutocompleteToken,
+  translateLabel,
+  onBlur,
+  onChange,
+  onClick,
+  onFocus,
+  onKeyDown,
+  onSelect,
+  ...props
+}: TokenAutocompleteInputProps) {
+  const [isFocused, setIsFocused] = React.useState(false);
+  const [cursor, setCursor] = React.useState(0);
+  const [highlightedIndex, setHighlightedIndex] = React.useState(0);
+  const [dismissedKey, setDismissedKey] = React.useState<string | null>(null);
+
+  const syncCursor = React.useCallback(() => {
+    const input = inputRef.current;
+    if (!input) {
+      return;
+    }
+    setCursor(input.selectionStart ?? value.length);
+  }, [inputRef, value.length]);
+
+  const tokenContext = React.useMemo(
+    () =>
+      isFocused
+        ? resolveTemplateTokenContext(value, cursor, tokenDescriptions)
+        : null,
+    [cursor, isFocused, tokenDescriptions, value],
+  );
+
+  const suggestions = React.useMemo(() => {
+    if (!tokenContext || tokenContext.key === dismissedKey) {
+      return [];
+    }
+    return tokenDescriptions
+      .filter(({ token }) => token.toLowerCase().includes(tokenContext.query))
+      .sort((left, right) => {
+        const leftToken = left.token.toLowerCase();
+        const rightToken = right.token.toLowerCase();
+        const leftStarts = leftToken.startsWith(tokenContext.query) ? 0 : 1;
+        const rightStarts = rightToken.startsWith(tokenContext.query) ? 0 : 1;
+        return leftStarts - rightStarts || leftToken.localeCompare(rightToken);
+      });
+  }, [dismissedKey, tokenContext, tokenDescriptions]);
+
+  React.useEffect(() => {
+    setHighlightedIndex(0);
+  }, [tokenContext?.key]);
+
+  React.useEffect(() => {
+    if (tokenContext && tokenContext.key !== dismissedKey) {
+      return;
+    }
+    setDismissedKey(null);
+  }, [dismissedKey, tokenContext]);
+
+  return (
+    <div className="relative">
+      <HighlightedTemplateInput
+        {...props}
+        ref={inputRef}
+        value={value}
+        onChange={(event) => {
+          onChange?.(event);
+          requestAnimationFrame(syncCursor);
+        }}
+        onFocus={(event) => {
+          setIsFocused(true);
+          syncCursor();
+          onFocus?.(event);
+        }}
+        onBlur={(event) => {
+          setIsFocused(false);
+          setDismissedKey(null);
+          onBlur?.(event);
+        }}
+        onClick={(event) => {
+          syncCursor();
+          onClick?.(event);
+        }}
+        onSelect={(event) => {
+          syncCursor();
+          onSelect?.(event);
+        }}
+        onKeyDown={(event) => {
+          if (suggestions.length > 0) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setHighlightedIndex((current) => (current + 1) % suggestions.length);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightedIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
+              return;
+            }
+            if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              onAutocompleteToken(suggestions[highlightedIndex]?.token ?? suggestions[0].token);
+              setDismissedKey(null);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              if (tokenContext) {
+                setDismissedKey(tokenContext.key);
+              }
+              return;
+            }
+          }
+          onKeyDown?.(event);
+        }}
+      />
+      {isFocused && suggestions.length > 0 ? (
+        <div className="absolute left-0 right-0 top-[calc(100%+0.375rem)] z-20 rounded-md border border-border/80 bg-popover shadow-lg">
+          <div className="max-h-56 overflow-auto p-1">
+            {suggestions.map((item, index) => {
+              const isActive = index === highlightedIndex;
+              return (
+                <button
+                  key={item.token}
+                  type="button"
+                  className={cn(
+                    "flex w-full items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-left text-sm transition-colors",
+                    isActive ? "bg-accent text-accent-foreground" : "text-popover-foreground hover:bg-accent/70",
+                  )}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    onAutocompleteToken(item.token);
+                    setDismissedKey(null);
+                  }}
+                >
+                  <code className="font-mono text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {translateLabel(item.labelKey)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function RenameSettingsPanel({
   activeQualityScopeId,
@@ -379,30 +648,16 @@ export function RenameSettingsPanel({
 
   const folderInputRef = React.useRef<HTMLInputElement>(null);
   const templateInputRef = React.useRef<HTMLInputElement>(null);
+  const renameTokenDescriptions = React.useMemo(
+    () => getRenameTokenDescriptions(activeQualityScopeId),
+    [activeQualityScopeId],
+  );
 
   const insertFolderToken = React.useCallback(
     (token: string) => {
       const input = folderInputRef.current;
       if (!input) return;
-      const insertion = `{${token}}`;
-      const start = input.selectionStart ?? folderTemplateValue.length;
-      const end = input.selectionEnd ?? start;
-      const next = folderTemplateValue.slice(0, start) + insertion + folderTemplateValue.slice(end);
-
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value",
-      )?.set;
-      if (nativeInputValueSetter) {
-        nativeInputValueSetter.call(input, next);
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-
-      requestAnimationFrame(() => {
-        const cursorPos = start + insertion.length;
-        input.setSelectionRange(cursorPos, cursorPos);
-        input.focus();
-      });
+      insertTemplateToken(input, folderTemplateValue, token);
     },
     [folderTemplateValue],
   );
@@ -411,27 +666,43 @@ export function RenameSettingsPanel({
     (token: string) => {
       const input = templateInputRef.current;
       if (!input) return;
-      const insertion = `{${token}}`;
-      const start = input.selectionStart ?? templateValue.length;
-      const end = input.selectionEnd ?? start;
-      const next = templateValue.slice(0, start) + insertion + templateValue.slice(end);
-
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value",
-      )?.set;
-      if (nativeInputValueSetter) {
-        nativeInputValueSetter.call(input, next);
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-
-      requestAnimationFrame(() => {
-        const cursorPos = start + insertion.length;
-        input.setSelectionRange(cursorPos, cursorPos);
-        input.focus();
-      });
+      insertTemplateToken(input, templateValue, token);
     },
     [templateValue],
+  );
+
+  const autocompleteFolderToken = React.useCallback(
+    (token: string) => {
+      const input = folderInputRef.current;
+      if (!input) {
+        return;
+      }
+      const cursor = input.selectionStart ?? folderTemplateValue.length;
+      const context = resolveTemplateTokenContext(folderTemplateValue, cursor, FOLDER_TOKEN_DESCRIPTIONS);
+      if (!context) {
+        insertTemplateToken(input, folderTemplateValue, token);
+        return;
+      }
+      applyAutocompleteToken(input, folderTemplateValue, context, token);
+    },
+    [folderTemplateValue],
+  );
+
+  const autocompleteRenameToken = React.useCallback(
+    (token: string) => {
+      const input = templateInputRef.current;
+      if (!input) {
+        return;
+      }
+      const cursor = input.selectionStart ?? templateValue.length;
+      const context = resolveTemplateTokenContext(templateValue, cursor, renameTokenDescriptions);
+      if (!context) {
+        insertTemplateToken(input, templateValue, token);
+        return;
+      }
+      applyAutocompleteToken(input, templateValue, context, token);
+    },
+    [renameTokenDescriptions, templateValue],
   );
 
   return (
@@ -453,10 +724,13 @@ export function RenameSettingsPanel({
                 <Label className="text-sm text-card-foreground">
                   {t("settings.folderTemplateLabel")}
                 </Label>
-                <HighlightedTemplateInput
-                  ref={folderInputRef}
+                <TokenAutocompleteInput
+                  inputRef={folderInputRef}
                   value={folderTemplateValue}
                   onChange={handleFolderTemplateChange}
+                  tokenDescriptions={FOLDER_TOKEN_DESCRIPTIONS}
+                  onAutocompleteToken={autocompleteFolderToken}
+                  translateLabel={t}
                   placeholder={t("settings.folderTemplatePlaceholder")}
                   disabled={mediaSettingsLoading}
                   className={
@@ -521,10 +795,13 @@ export function RenameSettingsPanel({
                 <Label className="text-sm text-card-foreground">
                   {t("settings.renameTemplateLabel")}
                 </Label>
-                <HighlightedTemplateInput
-                  ref={templateInputRef}
+                <TokenAutocompleteInput
+                  inputRef={templateInputRef}
                   value={templateValue}
                   onChange={handleRenameTemplateChange}
+                  tokenDescriptions={renameTokenDescriptions}
+                  onAutocompleteToken={autocompleteRenameToken}
+                  translateLabel={t}
                   placeholder={t("settings.renameTemplatePlaceholder")}
                   disabled={mediaSettingsLoading}
                   className={
@@ -561,7 +838,7 @@ export function RenameSettingsPanel({
                 {t("settings.renameAvailableTokens")}
               </p>
               <div className="flex flex-wrap gap-1.5">
-                {getRenameTokenDescriptions(activeQualityScopeId).map((item) => (
+                {renameTokenDescriptions.map((item) => (
                   <button
                     key={item.token}
                     type="button"

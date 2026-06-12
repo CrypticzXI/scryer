@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { ChevronDown, Loader2, LogOut, Plus, Search, User, UserRound, X } from "lucide-react";
+import { ChevronDown, Loader2, LogOut, Plus, Search, Send, User, UserRound, X } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useNavigate } from "react-router-dom";
 import ScryerLogo from "@/components/scryer-logo";
@@ -12,7 +12,10 @@ import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
-import type { MetadataCatalogAddOptions } from "@/lib/hooks/use-global-search";
+import type {
+  MetadataCatalogAddOptions,
+  MetadataCatalogRequestOptions,
+} from "@/lib/hooks/use-global-search";
 import type { RouteCommandPaletteConfig } from "@/components/common/route-command-palette";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
@@ -31,9 +34,11 @@ import { buildViewPath } from "@/lib/utils/routing";
 import {
   globalSearchConfigureAddId,
   globalSearchMetadataResultId,
+  globalSearchRequestId,
   selectorId,
 } from "@/lib/utils/dom-ids";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
+import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 
 
 type RootHeaderProps = {
@@ -62,6 +67,7 @@ export const RootHeader = React.memo(function RootHeader({
   const {
     resolveDefaultQualityProfileIdForFacet,
     addMetadataSearchResultToCatalog,
+    requestMetadataSearchResult,
     closeGlobalSearchPanel,
     resetGlobalSearch,
     openGlobalSearchPanel,
@@ -75,6 +81,7 @@ export const RootHeader = React.memo(function RootHeader({
     isCatalogConfigReady,
     rootFoldersByFacet,
     librariesByFacet,
+    requestableLibrariesByFacet,
     catalogSearchResults,
     catalogSearchLoading,
     metadataSearchResults,
@@ -126,6 +133,10 @@ export const RootHeader = React.memo(function RootHeader({
     result: MetadataTvdbSearchItem;
     facet: Facet;
   } | null>(null);
+  const [requestDialogTarget, setRequestDialogTarget] = React.useState<{
+    result: MetadataTvdbSearchItem;
+    facet: Facet;
+  } | null>(null);
   const isAddDialogConfigReady = addDialogTarget
     ? isCatalogConfigReady(addDialogTarget.facet)
     : true;
@@ -161,6 +172,18 @@ export const RootHeader = React.memo(function RootHeader({
       onOpenOverview,
       resetGlobalSearch,
     ],
+  );
+
+  const handleRequestDialogSubmit = React.useCallback(
+    async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogRequestOptions) => {
+      const accepted = await requestMetadataSearchResult(result, facet, options);
+      if (accepted) {
+        resetGlobalSearch();
+        globalSearchInputRef.current?.blur();
+      }
+      return accepted;
+    },
+    [globalSearchInputRef, requestMetadataSearchResult, resetGlobalSearch],
   );
 
   const handleSearchSubmit = React.useCallback(
@@ -406,7 +429,7 @@ export const RootHeader = React.memo(function RootHeader({
       if (event.key !== "Escape") {
         return;
       }
-      if (addDialogTarget !== null) {
+      if (addDialogTarget !== null || requestDialogTarget !== null) {
         return;
       }
       closeGlobalSearchPanel();
@@ -421,12 +444,22 @@ export const RootHeader = React.memo(function RootHeader({
     globalSearchInputRef,
     isMobile,
     isGlobalSearchPanelOpen,
+    requestDialogTarget,
   ]);
 
   const renderMetadataSection = React.useCallback(
     (items: MetadataTvdbSearchItem[], facet: Facet, _section: string) => {
       return items.map((result) => {
         const isInCatalog = isMetadataSearchResultInCatalog(facet, result);
+        const canAdd = librariesByFacet[facet].length > 0;
+        const canRequest = requestableLibrariesByFacet[facet].length > 0;
+        const opensRequestDialog = !canAdd && canRequest;
+        const disabled = isInCatalog || (!canAdd && !canRequest);
+        const actionLabel = isInCatalog
+          ? t("search.alreadyCataloged")
+          : opensRequestDialog
+            ? t("search.request")
+            : t("search.configureAdd");
         const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
         return (
           <div
@@ -464,20 +497,32 @@ export const RootHeader = React.memo(function RootHeader({
               </div>
               <div className="flex items-center self-center">
                 <Button
-                  id={globalSearchConfigureAddId(facet, result)}
+                  id={
+                    opensRequestDialog
+                      ? globalSearchRequestId(facet, result)
+                      : globalSearchConfigureAddId(facet, result)
+                  }
                   type="button"
-                  variant={isInCatalog ? "secondary" : "default"}
+                  variant={disabled ? "secondary" : "default"}
                   className={
-                    isInCatalog
+                    disabled
                       ? "h-10 w-10 bg-accent text-card-foreground px-0"
                       : "h-10 w-10 bg-emerald-500 text-foreground hover:bg-emerald-600 px-0"
                   }
-                  onClick={() => handleOpenAddDialog(result, facet)}
-                  disabled={isInCatalog}
-                  aria-label={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
-                  title={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
+                  onClick={() =>
+                    opensRequestDialog
+                      ? setRequestDialogTarget({ result, facet })
+                      : handleOpenAddDialog(result, facet)
+                  }
+                  disabled={disabled}
+                  aria-label={actionLabel}
+                  title={actionLabel}
                 >
-                  <Plus className="h-4 w-4" />
+                  {opensRequestDialog ? (
+                    <Send className="h-4 w-4" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
                 </Button>
               </div>
             </div>
@@ -485,7 +530,13 @@ export const RootHeader = React.memo(function RootHeader({
         );
       });
     },
-    [handleOpenAddDialog, isMetadataSearchResultInCatalog, t],
+    [
+      handleOpenAddDialog,
+      isMetadataSearchResultInCatalog,
+      librariesByFacet,
+      requestableLibrariesByFacet,
+      t,
+    ],
   );
 
   return (
@@ -708,8 +759,17 @@ export const RootHeader = React.memo(function RootHeader({
         catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
         rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
-        libraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
-        onSubmit={handleAddDialogSubmit}
+        manageableLibraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
+        onAdd={handleAddDialogSubmit}
+      />
+      <RequestMediaDialog
+        open={requestDialogTarget !== null}
+        onOpenChange={(open) => { if (!open) setRequestDialogTarget(null); }}
+        result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
+        facet={requestDialogTarget?.facet ?? "series"}
+        requestableLibraries={requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]}
+        qualityProfileOptions={catalogQualityProfileOptions}
+        onRequest={handleRequestDialogSubmit}
       />
     </>
   );

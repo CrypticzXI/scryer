@@ -12,7 +12,7 @@ use scryer_domain::{
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    default_reqwest_client,
+    generic_reqwest_client,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -276,7 +276,7 @@ impl WeaverDownloadClient {
     ) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         let graphql_url = format!("{base}/graphql");
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             graphql_url,
             api_key,
@@ -667,12 +667,29 @@ fn parse_scryer_client_request_id(client_request_id: Option<&str>) -> Option<Str
     }
 }
 
+fn durable_scryer_download_id(client_request_id: Option<&str>) -> Option<&str> {
+    client_request_id
+        .map(str::trim)
+        .filter(|value| value.starts_with("scryer-download:"))
+}
+
+struct ExtractedScryerMetadata {
+    title_id: Option<String>,
+    facet: Option<String>,
+    is_scryer: bool,
+    download_id: Option<String>,
+}
+
 fn extract_scryer_metadata(
     attributes: &[WeaverAttribute],
     client_request_id: Option<&str>,
-) -> (Option<String>, Option<String>, bool) {
+) -> ExtractedScryerMetadata {
     let mut title_id = None;
     let mut facet = None;
+    let parameters = attributes
+        .iter()
+        .map(|entry| (entry.key.clone(), entry.value.clone()))
+        .collect::<Vec<_>>();
     for entry in attributes {
         let value = entry.value.clone();
         match entry.key.as_str() {
@@ -690,7 +707,19 @@ fn extract_scryer_metadata(
         || client_request_id
             .map(|value| value.trim_start().starts_with("scryer:"))
             .unwrap_or(false);
-    (title_id, facet, is_scryer)
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: durable_scryer_download_id(client_request_id),
+            parameters: &parameters,
+            info_hash_hint: None,
+        },
+    );
+    ExtractedScryerMetadata {
+        title_id,
+        facet,
+        is_scryer,
+        download_id: observed_identity.download_id,
+    }
 }
 
 /// Map a weaver job status string to scryer's DownloadQueueState.
@@ -725,17 +754,23 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         job.attention.as_ref().map(|value| value.message.clone())
     };
 
-    let (title_id, facet, is_scryer) =
+    let scryer_metadata =
         extract_scryer_metadata(&job.attributes, job.client_request_id.as_deref());
 
     // Calculate remaining seconds from progress and download speed.
     // We don't have per-job speed, so leave it as None.
     DownloadQueueItem {
         id: job.id.to_string(),
-        title_id,
+        title_id: scryer_metadata.title_id,
         episode_id: None,
         title_name: job.name.clone(),
-        facet,
+        facet: scryer_metadata.facet,
+        category: job
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         client_id: String::new(),
         client_name: String::new(),
         client_type: "weaver".to_string(),
@@ -752,13 +787,14 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         attention_required: job.attention.is_some() || matches!(state, DownloadQueueState::Failed),
         attention_reason,
         download_client_item_id: job.id.to_string(),
+        download_id: scryer_metadata.download_id,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
-        is_scryer_origin: is_scryer,
+        is_scryer_origin: scryer_metadata.is_scryer,
         tracked_state: None,
         tracked_status: None,
         tracked_status_messages: Vec::new(),
@@ -794,16 +830,35 @@ fn weaver_item_to_completed_download(job: &WeaverQueueItem) -> Option<CompletedD
         .as_ref()
         .filter(|value| !value.is_empty())?
         .to_string();
-    let parameters = job
+    let mut parameters = job
         .attributes
         .iter()
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect::<Vec<_>>();
+    if let Some(client_request_id) = job
+        .client_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parameters.push((
+            scryer_application::DOWNLOAD_ID_PARAMETER.to_string(),
+            client_request_id.to_string(),
+        ));
+    }
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: durable_scryer_download_id(job.client_request_id.as_deref()),
+            parameters: &parameters,
+            info_hash_hint: None,
+        },
+    );
 
     Some(CompletedDownload {
         client_type: "weaver".to_string(),
         client_id: String::new(),
         download_client_item_id: job.id.to_string(),
+        download_id: observed_identity.download_id,
         name: job.name.clone(),
         dest_dir: output_dir,
         category: job.category.clone(),
@@ -946,6 +1001,9 @@ impl DownloadClient for WeaverDownloadClient {
             json!({"key": "*scryer_title_id", "value": title.id.clone()}),
             json!({"key": "*scryer_facet", "value": facet_str}),
         ];
+        if let Some(download_id) = request.download_id.as_deref() {
+            attributes.push(json!({"key": "*scryer_download_id", "value": download_id}));
+        }
 
         if let Some(imdb_id) = title
             .external_ids
@@ -957,15 +1015,17 @@ impl DownloadClient for WeaverDownloadClient {
             attributes.push(json!({"key": "*scryer_imdb_id", "value": imdb_id}));
         }
 
-        let client_request_id = format!(
-            "scryer:{}:{}",
-            title.id,
-            request
-                .release_title
-                .clone()
-                .or_else(|| normalized_source_title.clone())
-                .unwrap_or_else(|| title.name.clone())
-        );
+        let client_request_id = request.download_id.clone().unwrap_or_else(|| {
+            format!(
+                "scryer:{}:{}",
+                title.id,
+                request
+                    .release_title
+                    .clone()
+                    .or_else(|| normalized_source_title.clone())
+                    .unwrap_or_else(|| title.name.clone())
+            )
+        });
 
         let result: AppResult<DownloadGrabResult> = async {
             let variables = json!({
@@ -1009,8 +1069,8 @@ impl DownloadClient for WeaverDownloadClient {
             {
                 Ok(data) => {
                     if !data.submit_nzb.accepted {
-                        return Err(AppError::Repository(
-                            "weaver submitNzb did not accept the submission".into(),
+                        return Err(AppError::download_submit_unavailable(
+                            "weaver submitNzb did not accept the submission",
                         ));
                     }
                     let job_id = data.submit_nzb.item.id;
@@ -1026,6 +1086,7 @@ impl DownloadClient for WeaverDownloadClient {
                         job_id: job_id.to_string(),
                         client_id: None,
                         client_type: "weaver".to_string(),
+                        info_hash: None,
                     })
                 }
                 Err(error)
@@ -1062,14 +1123,16 @@ impl DownloadClient for WeaverDownloadClient {
                                 "metadata": attributes,
                             }),
                         )
-                        .await?;
+                        .await
+                        .map_err(AppError::into_download_submit_unavailable)?;
                     Ok(DownloadGrabResult {
                         job_id: compat_data.submit_nzb.id.to_string(),
                         client_id: None,
                         client_type: "weaver".to_string(),
+                        info_hash: None,
                     })
                 }
-                Err(error) => Err(error),
+                Err(error) => Err(error.into_download_submit_unavailable()),
             }
         }
         .await;
@@ -1475,6 +1538,40 @@ mod tests {
 
         assert_eq!(item.title_id.as_deref(), Some("title-77"));
         assert!(item.is_scryer_origin);
+        assert_eq!(item.download_id, None);
+    }
+
+    #[test]
+    fn weaver_item_to_queue_item_maps_download_id() {
+        let job = json!({
+            "id": 78,
+            "name": "DownloadId",
+            "state": "DOWNLOADING",
+            "error": null,
+            "progressPercent": 10.0,
+            "totalBytes": 1000,
+            "downloadedBytes": 100,
+            "failedBytes": 0,
+            "health": 1000,
+            "category": "movies",
+            "outputDir": null,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "completedAt": null,
+            "clientRequestId": "scryer-download:abc123",
+            "attributes": [
+                { "key": "*scryer_title_id", "value": "title-1" },
+                { "key": "*scryer_facet", "value": "anime" },
+                { "key": "*scryer_download_id", "value": "scryer-download:abc123" }
+            ],
+            "attention": null
+        });
+
+        let job: WeaverQueueItem = serde_json::from_value(job).expect("job should deserialize");
+        let item = weaver_item_to_queue_item(&job);
+
+        assert_eq!(item.download_id.as_deref(), Some("scryer-download:abc123"));
+        assert!(item.is_scryer_origin);
+        assert_eq!(item.category.as_deref(), Some("movies"));
     }
 
     #[tokio::test]

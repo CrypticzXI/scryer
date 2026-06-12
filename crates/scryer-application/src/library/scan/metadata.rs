@@ -8,17 +8,19 @@ use unicode_normalization::UnicodeNormalization;
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
     LibraryTitleWalk, MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver,
-    extract_library_query_evidence, library_title_walk, matching_movie_nfo_path_async,
-    normalize_folder_name, strip_year_suffix,
+    extract_library_query_evidence, matching_movie_nfo_path_async, normalize_folder_name,
+    strip_year_suffix,
 };
+use crate::library_filename_parser::{LibraryFilenameParseInput, parse_library_filename};
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{NfoMetadata, NfoRootKind, detect_nfo_root_kind, parse_nfo, parse_plexmatch};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::title_matching::TitleMatchProfile;
 use crate::{
-    AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
+    AppError, AppResult, ExternalIdProvider, LibraryFile, LibraryScanHint, LibraryScanHintFacet,
+    LibraryScanHintSet, LibraryScanHintSource, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
     MetadataGateway, MetadataSearchItem, MetadataSearchQuery, await_cancellable,
-    await_cancellable_app_result, parse_release_metadata,
+    await_cancellable_app_result,
 };
 
 pub(crate) const METADATA_TYPE_MOVIE: &str = "movie";
@@ -33,6 +35,8 @@ const PLEXMATCH_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MetadataIdentitySource {
+    ExternalImportRadarr,
+    ExternalImportSonarr,
     Nfo,
     Plexmatch,
     Filename,
@@ -53,101 +57,12 @@ impl MetadataIdentityHint {
         self.imdb_id.is_some() || self.tmdb_id.is_some() || self.tvdb_id.is_some()
     }
 
-    fn accepts_safe_match(&self, item: &MetadataSearchItem) -> bool {
-        !self.has_external_ids()
-            || (self.has_matching_external_id_signal(item)
-                && self.external_id_match_is_evidence_compatible(item))
-            || self.allows_sidecar_exact_title_year_fallback(item)
-    }
-
-    fn has_matching_external_id_signal(&self, item: &MetadataSearchItem) -> bool {
-        (self.imdb_id.is_some() && item.has_auto_match_signal("external_id:imdb"))
-            || (self.tmdb_id.is_some() && item.has_auto_match_signal("external_id:tmdb"))
-            || (self.tvdb_id.is_some() && item.has_auto_match_signal("external_id:tvdb"))
-    }
-
-    fn external_id_match_is_evidence_compatible(&self, item: &MetadataSearchItem) -> bool {
-        if let Some(hint_year) = self.year
-            && let Some(item_year) = item.year
-        {
-            let Ok(hint_year) = i32::try_from(hint_year) else {
-                return false;
-            };
-            if (hint_year - item_year).abs() > 1 {
-                return false;
-            }
-        }
-
-        self.title
-            .as_deref()
-            .is_none_or(|hint_title| title_evidence_is_compatible(hint_title, &item.name))
-    }
-
-    fn allows_sidecar_exact_title_year_fallback(&self, item: &MetadataSearchItem) -> bool {
+    pub(crate) fn is_external_import_hint(&self) -> bool {
         matches!(
             self.source,
-            MetadataIdentitySource::Nfo | MetadataIdentitySource::Plexmatch
-        ) && self.title.is_some()
-            && self.year.is_some()
-            && self.year.and_then(|year| i32::try_from(year).ok()) == item.year
-            && !item.has_any_external_id_signal()
-            && item.has_auto_match_signal("exact_title")
-            && item.has_auto_match_signal("exact_year")
-    }
-}
-
-fn title_evidence_is_compatible(expected: &str, actual: &str) -> bool {
-    let expected = crate::title_matching::canonical_lookup_key(expected);
-    let actual = crate::title_matching::canonical_lookup_key(actual);
-    if expected.is_empty() || actual.is_empty() {
-        return true;
-    }
-    if expected == actual {
-        return true;
-    }
-
-    let distance = levenshtein_distance(&expected, &actual);
-    let max_len = expected.chars().count().max(actual.chars().count());
-    if max_len <= 4 {
-        return false;
-    }
-
-    distance <= 2 || (max_len >= 16 && distance.saturating_mul(100) <= max_len.saturating_mul(18))
-}
-
-fn levenshtein_distance(left: &str, right: &str) -> usize {
-    let right_chars = right.chars().collect::<Vec<_>>();
-    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
-    let mut current = vec![0; right_chars.len() + 1];
-
-    for (left_index, left_char) in left.chars().enumerate() {
-        current[0] = left_index + 1;
-        for (right_index, right_char) in right_chars.iter().enumerate() {
-            let substitution_cost = usize::from(left_char != *right_char);
-            current[right_index + 1] = (previous[right_index + 1] + 1)
-                .min(current[right_index] + 1)
-                .min(previous[right_index] + substitution_cost);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[right_chars.len()]
-}
-
-trait MetadataSearchItemSignals {
-    fn has_auto_match_signal(&self, signal: &str) -> bool;
-    fn has_any_external_id_signal(&self) -> bool;
-}
-
-impl MetadataSearchItemSignals for MetadataSearchItem {
-    fn has_auto_match_signal(&self, signal: &str) -> bool {
-        self.auto_match_signals.iter().any(|value| value == signal)
-    }
-
-    fn has_any_external_id_signal(&self) -> bool {
-        self.auto_match_signals
-            .iter()
-            .any(|value| value.starts_with("external_id:"))
+            MetadataIdentitySource::ExternalImportRadarr
+                | MetadataIdentitySource::ExternalImportSonarr
+        )
     }
 }
 
@@ -194,7 +109,8 @@ impl BatchMetadataSearchKey {
         identity_hint: Option<&MetadataIdentityHint>,
     ) -> Option<Self> {
         let trimmed = query.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && !identity_hint.is_some_and(MetadataIdentityHint::has_external_ids)
+        {
             return None;
         }
 
@@ -412,18 +328,76 @@ fn metadata_identity_hint_from_title_walk(
     (hint.has_external_ids() || hint.title.is_some()).then_some(hint)
 }
 
-fn select_metadata_identity_hint(
-    nfo_meta: Option<&NfoMetadata>,
-    plexmatch_meta: Option<&NfoMetadata>,
-    file_walk: Option<&LibraryTitleWalk>,
-    folder_walk: Option<&LibraryTitleWalk>,
-    parsed: &crate::ParsedReleaseMetadata,
-    fallback_query: &str,
-    fallback_year: Option<u32>,
+fn metadata_identity_hint_from_library_scan_hint(
+    hint: Option<&LibraryScanHint>,
 ) -> Option<MetadataIdentityHint> {
-    nfo_meta
-        .and_then(|meta| {
-            metadata_identity_hint_from_nfo(MetadataIdentitySource::Nfo, meta, fallback_year)
+    let hint = hint?;
+    let mut identity_hint = MetadataIdentityHint {
+        source: match hint.source {
+            LibraryScanHintSource::ExternalImportRadarr => {
+                MetadataIdentitySource::ExternalImportRadarr
+            }
+            LibraryScanHintSource::ExternalImportSonarr => {
+                MetadataIdentitySource::ExternalImportSonarr
+            }
+        },
+        imdb_id: None,
+        tmdb_id: None,
+        tvdb_id: None,
+        title: None,
+        year: None,
+    };
+
+    for id in &hint.ids {
+        match id.provider {
+            ExternalIdProvider::Imdb => identity_hint.imdb_id = Some(id.value.clone()),
+            ExternalIdProvider::Tmdb => identity_hint.tmdb_id = Some(id.value.clone()),
+            ExternalIdProvider::Tvdb => identity_hint.tvdb_id = Some(id.value.clone()),
+        }
+    }
+
+    identity_hint.has_external_ids().then_some(identity_hint)
+}
+
+fn external_import_identity_hint_for_leaf_key(
+    scan_hints: Option<&LibraryScanHintSet>,
+    facet: LibraryScanHintFacet,
+    leaf_key: Option<&str>,
+) -> Option<MetadataIdentityHint> {
+    let scan_hint = scan_hints?.hint_for_stored_path(facet, leaf_key?)?;
+    metadata_identity_hint_from_library_scan_hint(Some(scan_hint))
+}
+
+struct MetadataIdentityHintSelection<'a> {
+    library_scan_hint: Option<&'a LibraryScanHint>,
+    nfo_meta: Option<&'a NfoMetadata>,
+    plexmatch_meta: Option<&'a NfoMetadata>,
+    file_walk: Option<&'a LibraryTitleWalk>,
+    folder_walk: Option<&'a LibraryTitleWalk>,
+    parsed: &'a crate::ParsedReleaseMetadata,
+    fallback_query: &'a str,
+    fallback_year: Option<u32>,
+}
+
+fn select_metadata_identity_hint(
+    selection: MetadataIdentityHintSelection<'_>,
+) -> Option<MetadataIdentityHint> {
+    let MetadataIdentityHintSelection {
+        library_scan_hint,
+        nfo_meta,
+        plexmatch_meta,
+        file_walk,
+        folder_walk,
+        parsed,
+        fallback_query,
+        fallback_year,
+    } = selection;
+
+    metadata_identity_hint_from_library_scan_hint(library_scan_hint)
+        .or_else(|| {
+            nfo_meta.and_then(|meta| {
+                metadata_identity_hint_from_nfo(MetadataIdentitySource::Nfo, meta, fallback_year)
+            })
         })
         .or_else(|| {
             plexmatch_meta.and_then(|meta| {
@@ -1087,12 +1061,17 @@ pub(crate) async fn prepare_movie_library_scan_candidates(
 
 pub(crate) async fn prepare_series_library_scan_candidates(
     folders: &[PathBuf],
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<Vec<PreparedSeriesLibraryScanCandidate>> {
     let mut prepare_set = tokio::task::JoinSet::new();
 
     for (index, folder) in folders.iter().cloned().enumerate() {
+        let scan_hints = scan_hints.cloned();
         prepare_set.spawn(async move {
-            Ok::<_, AppError>((index, prepare_series_library_scan_candidate(folder).await?))
+            Ok::<_, AppError>((
+                index,
+                prepare_series_library_scan_candidate(folder, scan_hints.as_ref()).await?,
+            ))
         });
     }
 
@@ -1109,15 +1088,22 @@ pub(crate) async fn prepare_series_library_scan_candidates(
 pub(crate) async fn prepare_series_library_scan_candidates_from_files(
     files: &[LibraryFile],
     library_path: &str,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<Vec<PreparedSeriesLibraryScanCandidate>> {
     let mut prepare_set = tokio::task::JoinSet::new();
 
     for (index, file) in files.iter().cloned().enumerate() {
         let library_path = library_path.to_string();
+        let scan_hints = scan_hints.cloned();
         prepare_set.spawn(async move {
             Ok::<_, AppError>((
                 index,
-                prepare_series_library_scan_candidate_from_file(file, &library_path).await?,
+                prepare_series_library_scan_candidate_from_file(
+                    file,
+                    &library_path,
+                    scan_hints.as_ref(),
+                )
+                .await?,
             ))
         });
     }
@@ -1157,9 +1143,7 @@ pub(crate) fn select_movie_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) =
-            select_safe_batch_match(results_for_query.as_ref(), candidate.identity_hint.as_ref())
-        {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
@@ -1192,9 +1176,7 @@ pub(crate) fn select_series_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) =
-            select_safe_batch_match(results_for_query.as_ref(), candidate.identity_hint.as_ref())
-        {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
@@ -1202,15 +1184,8 @@ pub(crate) fn select_series_metadata_from_batch_results(
     Ok(None)
 }
 
-fn select_safe_batch_match(
-    results: &[MetadataSearchItem],
-    identity_hint: Option<&MetadataIdentityHint>,
-) -> Option<MetadataSearchItem> {
-    results
-        .first()
-        .filter(|item| item.auto_match_safe)
-        .filter(|item| identity_hint.is_none_or(|hint| hint.accepts_safe_match(item)))
-        .cloned()
+fn select_safe_batch_match(results: &[MetadataSearchItem]) -> Option<MetadataSearchItem> {
+    results.first().filter(|item| item.auto_match_safe).cloned()
 }
 
 #[cfg(test)]
@@ -1218,13 +1193,14 @@ async fn prepare_movie_library_scan_candidate(
     file: LibraryFile,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    build_prepared_movie_library_scan_candidate(file.clone(), vec![file], library_path).await
+    build_prepared_movie_library_scan_candidate(file.clone(), vec![file], library_path, None).await
 }
 
 pub(crate) async fn prepare_movie_library_scan_entries(
     library_scanner: Arc<dyn LibraryScanner>,
     entries: &[MovieTopLevelEntry],
     library_path: &str,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<Vec<PreparedMovieLibraryScanEntry>> {
     let mut prepared_results = vec![None; entries.len()];
 
@@ -1236,10 +1212,17 @@ pub(crate) async fn prepare_movie_library_scan_entries(
             let index = chunk_start + offset;
             let library_path = library_path.to_string();
             let library_scanner = library_scanner.clone();
+            let scan_hints = scan_hints.cloned();
             prepare_set.spawn(async move {
                 Ok::<_, AppError>((
                     index,
-                    prepare_movie_library_scan_entry(library_scanner, entry, library_path).await?,
+                    prepare_movie_library_scan_entry(
+                        library_scanner,
+                        entry,
+                        library_path,
+                        scan_hints.as_ref(),
+                    )
+                    .await?,
                 ))
             });
         }
@@ -1260,6 +1243,7 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
     library_path: String,
     batch_size: usize,
     cancel_token: Option<CancellationToken>,
+    scan_hints: Option<LibraryScanHintSet>,
 ) -> AppResult<PreparedMovieLibraryScanEntryBatchReceiver> {
     if batch_size == 0 {
         return Err(AppError::Validation(
@@ -1290,8 +1274,15 @@ pub(crate) fn stream_prepared_movie_library_scan_entries(
                 };
                 let library_scanner = library_scanner.clone();
                 let library_path = library_path.clone();
+                let scan_hints = scan_hints.clone();
                 prepare_set.spawn(async move {
-                    prepare_movie_library_scan_entry(library_scanner, entry, library_path).await
+                    prepare_movie_library_scan_entry(
+                        library_scanner,
+                        entry,
+                        library_path,
+                        scan_hints.as_ref(),
+                    )
+                    .await
                 });
             }
 
@@ -1410,6 +1401,7 @@ async fn prepare_movie_library_scan_entry(
     library_scanner: Arc<dyn LibraryScanner>,
     entry: MovieTopLevelEntry,
     library_path: String,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedMovieLibraryScanEntry> {
     let entry_path = path_to_stored_string(&entry.path);
     let mut discovered_files = if entry.is_dir {
@@ -1443,7 +1435,13 @@ async fn prepare_movie_library_scan_entry(
     let file = build_movie_entry_representative_file(&entry, &discovered_files).await?;
 
     Ok(PreparedMovieLibraryScanEntry::Candidate(Box::new(
-        build_prepared_movie_library_scan_candidate(file, discovered_files, library_path).await?,
+        build_prepared_movie_library_scan_candidate(
+            file,
+            discovered_files,
+            library_path,
+            scan_hints,
+        )
+        .await?,
     )))
 }
 
@@ -1556,52 +1554,93 @@ async fn build_prepared_movie_library_scan_candidate(
     file: LibraryFile,
     discovered_files: Vec<LibraryFile>,
     library_path: String,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    let parsed_release_name = stored_path_to_path_buf(&file.path)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.trim().is_empty())
-        .unwrap_or_else(|| file.display_name.clone());
-    let parsed_release = parse_release_metadata(&parsed_release_name);
-
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
-    let query_evidence = extract_library_query_evidence(&file.path, &library_path);
+    let file_path = stored_path_to_path_buf(&file.path);
+    let library_root = stored_path_to_path_buf(&library_path);
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        file_path.as_path(),
+        Some(library_root.as_path()),
+    ));
+    let parsed_release = filename_parse.parsed_release.clone();
+    let query_evidence = filename_parse.query_evidence;
     let query_variants = query_evidence.queries.clone();
     let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
-    let identity_hint = select_metadata_identity_hint(
-        nfo_meta.as_ref(),
-        None,
-        query_evidence.file_walk.as_ref(),
-        query_evidence.folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        extracted_year_hint,
-    );
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: nfo_meta.as_ref(),
+        plexmatch_meta: None,
+        file_walk: query_evidence.file_walk.as_ref(),
+        folder_walk: query_evidence.folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: extracted_year_hint,
+    });
+    let leaf_key = crate::library_scan_file_leaf_key(&file.path);
+    let identity_hint = if local_identity_hint
+        .as_ref()
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+    {
+        local_identity_hint
+    } else {
+        external_import_identity_hint_for_leaf_key(
+            scan_hints,
+            LibraryScanHintFacet::Movie,
+            leaf_key.as_deref(),
+        )
+        .or(local_identity_hint)
+    };
 
-    let query = identity_hint
+    let external_import_identity_only = identity_hint
         .as_ref()
-        .and_then(|hint| hint.title.clone())
-        .unwrap_or_else(|| fallback_query.clone())
-        .trim()
-        .to_string();
-    let year_hint = identity_hint
-        .as_ref()
-        .and_then(|hint| hint.year)
-        .or(extracted_year_hint);
+        .is_some_and(|hint| hint.is_external_import_hint() && hint.has_external_ids());
+    let query = if external_import_identity_only {
+        String::new()
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.title.clone())
+            .unwrap_or_else(|| fallback_query.clone())
+            .trim()
+            .to_string()
+    };
+    let year_hint = if external_import_identity_only {
+        None
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.year)
+            .or(extracted_year_hint)
+    };
 
     let mut search_candidates = Vec::new();
     let mut title_match_candidates = Vec::new();
     let mut reduced_title_candidates = Vec::new();
-    let metadata_lookup_attempted = !query.trim().is_empty();
+    let metadata_lookup_attempted = identity_hint
+        .as_ref()
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+        || !query.trim().is_empty();
 
     if metadata_lookup_attempted {
-        let raw_queries = query_variants
-            .iter()
-            .cloned()
-            .chain(std::iter::once(query.clone()))
-            .collect::<Vec<_>>();
+        let raw_queries = if external_import_identity_only {
+            vec![String::new()]
+        } else {
+            query_variants
+                .iter()
+                .cloned()
+                .chain(std::iter::once(query.clone()))
+                .collect::<Vec<_>>()
+        };
         search_candidates = expand_search_candidates(&raw_queries);
+        if search_candidates.is_empty()
+            && identity_hint
+                .as_ref()
+                .is_some_and(MetadataIdentityHint::has_external_ids)
+        {
+            search_candidates.push(String::new());
+        }
         (title_match_candidates, reduced_title_candidates) =
             build_title_match_candidates(&raw_queries, TitleMatchProfile::Movie);
     }
@@ -1624,6 +1663,7 @@ async fn build_prepared_movie_library_scan_candidate(
 
 async fn prepare_series_library_scan_candidate(
     folder: PathBuf,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
     let folder_name = folder
         .file_name()
@@ -1649,7 +1689,11 @@ async fn prepare_series_library_scan_candidate(
     let plexmatch_meta = read_plexmatch_metadata(Some(folder.clone())).await;
     let clean_name = normalize_folder_name(&folder_name_value);
     let (fallback_query, extracted_year_hint) = strip_year_suffix(&clean_name);
-    let folder_walk = library_title_walk(folder_name_value.as_str());
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        folder.as_path(),
+        folder.parent(),
+    ));
+    let folder_walk = filename_parse.query_evidence.file_walk.clone();
     let fallback_query = folder_walk
         .as_ref()
         .and_then(|walk| walk.title.clone())
@@ -1660,32 +1704,72 @@ async fn prepare_series_library_scan_candidate(
         .as_ref()
         .and_then(|walk| walk.year)
         .or(extracted_year_hint);
-    let parsed_release = parse_release_metadata(&folder_name_value);
-    let identity_hint = select_metadata_identity_hint(
-        nfo_meta.as_ref(),
-        plexmatch_meta.as_ref(),
-        None,
-        folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        extracted_year_hint,
-    );
-    let query = identity_hint
+    let parsed_release = filename_parse.parsed_release;
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: nfo_meta.as_ref(),
+        plexmatch_meta: plexmatch_meta.as_ref(),
+        file_walk: None,
+        folder_walk: folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: extracted_year_hint,
+    });
+    let folder_key = crate::library_scan_folder_leaf_key(folder.to_string_lossy().as_ref());
+    let identity_hint = if local_identity_hint
         .as_ref()
-        .and_then(|hint| hint.title.clone())
-        .unwrap_or_else(|| fallback_query.clone())
-        .trim()
-        .to_string();
-    let year_hint = identity_hint
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+    {
+        local_identity_hint
+    } else {
+        external_import_identity_hint_for_leaf_key(
+            scan_hints,
+            LibraryScanHintFacet::Series,
+            folder_key.as_deref(),
+        )
+        .or(local_identity_hint)
+    };
+    let external_import_identity_only = identity_hint
         .as_ref()
-        .and_then(|hint| hint.year)
-        .or(extracted_year_hint);
+        .is_some_and(|hint| hint.is_external_import_hint() && hint.has_external_ids());
+    let query = if external_import_identity_only {
+        String::new()
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.title.clone())
+            .unwrap_or_else(|| fallback_query.clone())
+            .trim()
+            .to_string()
+    };
+    let year_hint = if external_import_identity_only {
+        None
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.year)
+            .or(extracted_year_hint)
+    };
 
-    let metadata_lookup_attempted = !query.is_empty();
+    let metadata_lookup_attempted = identity_hint
+        .as_ref()
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+        || !query.is_empty();
     let (search_candidates, title_match_candidates, reduced_title_candidates) =
         if metadata_lookup_attempted {
-            let raw_queries = vec![query.clone()];
-            let search_candidates = expand_search_candidates(&raw_queries);
+            let raw_queries = if external_import_identity_only {
+                vec![String::new()]
+            } else {
+                vec![query.clone()]
+            };
+            let mut search_candidates = expand_search_candidates(&raw_queries);
+            if search_candidates.is_empty()
+                && identity_hint
+                    .as_ref()
+                    .is_some_and(MetadataIdentityHint::has_external_ids)
+            {
+                search_candidates.push(String::new());
+            }
             let (title_match_candidates, reduced_title_candidates) =
                 build_title_match_candidates(&raw_queries, TitleMatchProfile::Series);
             (
@@ -1715,6 +1799,7 @@ async fn prepare_series_library_scan_candidate(
 pub(crate) async fn prepare_series_library_scan_candidate_from_file(
     file: LibraryFile,
     library_path: &str,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
     let query_evidence = extract_library_query_evidence(&file.path, library_path);
     let raw_queries = query_evidence.queries.clone();
@@ -1723,35 +1808,81 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         .first()
         .cloned()
         .unwrap_or_else(|| file.display_name.clone());
-    let parsed_release = parse_release_metadata(&fallback_query);
+    let file_path = stored_path_to_path_buf(&file.path);
+    let library_root = stored_path_to_path_buf(library_path);
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        file_path.as_path(),
+        Some(library_root.as_path()),
+    ));
+    let parsed_release = filename_parse.parsed_release;
     let plexmatch_meta =
         read_plexmatch_metadata(candidate_sidecar_folder(&file.path, library_path)).await;
-    let identity_hint = select_metadata_identity_hint(
-        None,
-        plexmatch_meta.as_ref(),
-        query_evidence.file_walk.as_ref(),
-        query_evidence.folder_walk.as_ref(),
-        &parsed_release,
-        &fallback_query,
-        year_hint,
-    );
-    let query = identity_hint
+    let local_identity_hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+        library_scan_hint: None,
+        nfo_meta: None,
+        plexmatch_meta: plexmatch_meta.as_ref(),
+        file_walk: query_evidence.file_walk.as_ref(),
+        folder_walk: query_evidence.folder_walk.as_ref(),
+        parsed: &parsed_release,
+        fallback_query: &fallback_query,
+        fallback_year: year_hint,
+    });
+    let leaf_key = crate::library_scan_file_leaf_key(&file.path);
+    let identity_hint = if local_identity_hint
         .as_ref()
-        .and_then(|hint| hint.title.clone())
-        .unwrap_or(fallback_query);
-    let year_hint = identity_hint
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+    {
+        local_identity_hint
+    } else {
+        external_import_identity_hint_for_leaf_key(
+            scan_hints,
+            LibraryScanHintFacet::Series,
+            leaf_key.as_deref(),
+        )
+        .or(local_identity_hint)
+    };
+    let external_import_identity_only = identity_hint
         .as_ref()
-        .and_then(|hint| hint.year)
-        .or(year_hint);
-    let metadata_lookup_attempted = !query.trim().is_empty();
+        .is_some_and(|hint| hint.is_external_import_hint() && hint.has_external_ids());
+    let query = if external_import_identity_only {
+        String::new()
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.title.clone())
+            .unwrap_or(fallback_query)
+    };
+    let year_hint = if external_import_identity_only {
+        None
+    } else {
+        identity_hint
+            .as_ref()
+            .and_then(|hint| hint.year)
+            .or(year_hint)
+    };
+    let metadata_lookup_attempted = identity_hint
+        .as_ref()
+        .is_some_and(MetadataIdentityHint::has_external_ids)
+        || !query.trim().is_empty();
     let (search_candidates, title_match_candidates, reduced_title_candidates) =
         if metadata_lookup_attempted {
-            let raw_queries = raw_queries
-                .iter()
-                .cloned()
-                .chain(std::iter::once(query.clone()))
-                .collect::<Vec<_>>();
-            let search_candidates = expand_search_candidates(&raw_queries);
+            let raw_queries = if external_import_identity_only {
+                vec![String::new()]
+            } else {
+                raw_queries
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(query.clone()))
+                    .collect::<Vec<_>>()
+            };
+            let mut search_candidates = expand_search_candidates(&raw_queries);
+            if search_candidates.is_empty()
+                && identity_hint
+                    .as_ref()
+                    .is_some_and(MetadataIdentityHint::has_external_ids)
+            {
+                search_candidates.push(String::new());
+            }
             let (title_match_candidates, reduced_title_candidates) =
                 build_title_match_candidates(&raw_queries, TitleMatchProfile::Series);
             (
@@ -1813,7 +1944,7 @@ pub(crate) async fn preload_series_library_scan_candidates(
     metadata_gateway: Arc<dyn MetadataGateway>,
     folders: &[PathBuf],
 ) -> AppResult<(Vec<SeriesLibraryScanCandidate>, MetadataLookupBatchStats)> {
-    let prepared_candidates = prepare_series_library_scan_candidates(folders).await?;
+    let prepared_candidates = prepare_series_library_scan_candidates(folders, None).await?;
     let (batch_searches, stats) = build_series_metadata_batch_stats(&prepared_candidates);
     let batch_search_results =
         execute_batch_metadata_searches(metadata_gateway, batch_searches, "eng", None).await;
@@ -1930,8 +2061,8 @@ mod tests {
     use super::*;
     use crate::library_discovery::extract_library_queries;
     use crate::{
-        BulkMetadataResult, LibraryFileBatchReceiver, MovieMetadata, MultiMetadataSearchResult,
-        RichMetadataSearchItem, SeriesMetadata,
+        BulkMetadataResult, ExternalIdHint, LibraryFileBatchReceiver, MovieMetadata,
+        MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata,
     };
     use async_trait::async_trait;
     use std::path::{Path, PathBuf};
@@ -2257,15 +2388,16 @@ mod tests {
             ..Default::default()
         };
 
-        let hint = select_metadata_identity_hint(
-            Some(&nfo),
-            Some(&plexmatch),
-            None,
-            None,
-            &parsed,
-            "Filename Title",
-            Some(2020),
-        )
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: None,
+            nfo_meta: Some(&nfo),
+            plexmatch_meta: Some(&plexmatch),
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Filename Title",
+            fallback_year: Some(2020),
+        })
         .expect("identity hint");
 
         assert_eq!(hint.source, MetadataIdentitySource::Nfo);
@@ -2287,20 +2419,227 @@ mod tests {
             ..Default::default()
         };
 
-        let hint = select_metadata_identity_hint(
-            Some(&empty_nfo),
-            Some(&plexmatch),
-            None,
-            None,
-            &parsed,
-            "Filename Title",
-            None,
-        )
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: None,
+            nfo_meta: Some(&empty_nfo),
+            plexmatch_meta: Some(&plexmatch),
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Filename Title",
+            fallback_year: None,
+        })
         .expect("identity hint");
 
         assert_eq!(hint.source, MetadataIdentitySource::Plexmatch);
         assert_eq!(hint.tmdb_id.as_deref(), Some("438631"));
         assert_eq!(hint.title.as_deref(), Some("Plexmatch Title"));
+    }
+
+    #[test]
+    fn select_metadata_identity_hint_prefers_arr_hint_over_nfo_and_filename() {
+        let scan_hint = LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportRadarr,
+            facet: LibraryScanHintFacet::Movie,
+            path_key: path_to_stored_string(Path::new("/movies/The Bourne Supremacy (2004)")),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tmdb,
+                value: "2502".to_string(),
+            }],
+        };
+        let nfo = NfoMetadata {
+            tvdb_id: Some("2502".into()),
+            title: Some("Patton".into()),
+            ..Default::default()
+        };
+        let parsed = crate::ParsedReleaseMetadata {
+            normalized_title: "Patton".into(),
+            year: Some(1970),
+            ..Default::default()
+        };
+
+        let hint = select_metadata_identity_hint(MetadataIdentityHintSelection {
+            library_scan_hint: Some(&scan_hint),
+            nfo_meta: Some(&nfo),
+            plexmatch_meta: None,
+            file_walk: None,
+            folder_walk: None,
+            parsed: &parsed,
+            fallback_query: "Patton",
+            fallback_year: Some(1970),
+        })
+        .expect("identity hint");
+
+        assert_eq!(hint.source, MetadataIdentitySource::ExternalImportRadarr);
+        assert_eq!(hint.tmdb_id.as_deref(), Some("2502"));
+        assert_eq!(hint.tvdb_id, None);
+        assert_eq!(hint.title, None);
+    }
+
+    #[test]
+    fn select_safe_batch_match_trusts_smg_auto_match_safe() {
+        let patton_tvdb_signal = MetadataSearchItem {
+            tvdb_id: "2502".to_string(),
+            name: "Patton".to_string(),
+            year: Some(1970),
+            auto_match_safe: true,
+            auto_match_signals: vec!["external_id:tvdb".to_string()],
+        };
+
+        assert_eq!(
+            select_safe_batch_match(&[patton_tvdb_signal]).map(|item| item.name),
+            Some("Patton".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn arr_hint_only_movie_candidate_uses_id_only_batch_search() {
+        let file_path = path_to_stored_string(Path::new("/scryer/Patton (1970)/Patton.1970.mkv"));
+        let arr_file_path = r"D:\Movies\Patton (1970)\Patton.1970.mkv";
+        let file = LibraryFile {
+            path: file_path.clone(),
+            display_name: "Patton.1970".to_string(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        };
+        let mut scan_hints = LibraryScanHintSet::new();
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportRadarr,
+            facet: LibraryScanHintFacet::Movie,
+            path_key: crate::library_scan_file_leaf_key(arr_file_path).expect("leaf key"),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tmdb,
+                value: "2502".to_string(),
+            }],
+        });
+
+        let candidate = build_prepared_movie_library_scan_candidate(
+            file.clone(),
+            vec![file],
+            path_to_stored_string(Path::new("/movies")),
+            Some(&scan_hints),
+        )
+        .await
+        .expect("candidate");
+
+        assert!(candidate.metadata_lookup_attempted);
+        assert_eq!(candidate.query, "");
+        assert_eq!(candidate.year_hint, None);
+        assert_eq!(candidate.search_candidates, vec![String::new()]);
+        assert_eq!(
+            candidate
+                .identity_hint
+                .as_ref()
+                .and_then(|hint| hint.tmdb_id.as_deref()),
+            Some("2502")
+        );
+
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_MOVIE,
+            "",
+            None,
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("id-only key");
+        let mut results = MetadataSearchResults::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "2502".to_string(),
+                name: "The Bourne Supremacy".to_string(),
+                year: Some(2004),
+                auto_match_safe: true,
+                auto_match_signals: vec!["external_id:tmdb".to_string()],
+            }]),
+        );
+
+        assert_eq!(
+            select_movie_metadata_from_batch_results(&candidate, &results)
+                .expect("metadata selection")
+                .map(|item| item.name),
+            Some("The Bourne Supremacy".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn arr_series_folder_hint_matches_leaf_folder_across_roots() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let folder = tempdir.path().join("Foundation (2021)");
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let mut scan_hints = LibraryScanHintSet::new();
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: crate::library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
+                .expect("leaf key"),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "366972".to_string(),
+            }],
+        });
+
+        let candidate = prepare_series_library_scan_candidate(folder, Some(&scan_hints))
+            .await
+            .expect("candidate");
+
+        assert_eq!(candidate.query, "");
+        assert_eq!(candidate.year_hint, None);
+        assert_eq!(
+            candidate
+                .identity_hint
+                .as_ref()
+                .and_then(|hint| hint.tvdb_id.as_deref()),
+            Some("366972")
+        );
+    }
+
+    #[tokio::test]
+    async fn arr_series_episode_file_hint_matches_leaf_file_across_roots() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let season_dir = tempdir.path().join("Foundation (2021)").join("Season 01");
+        std::fs::create_dir_all(&season_dir).expect("create season folder");
+        let file_path = season_dir.join("Foundation.S01E01.mkv");
+        let stored_file_path = path_to_stored_string(&file_path);
+        let mut scan_hints = LibraryScanHintSet::new();
+        scan_hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: crate::library_scan_file_leaf_key(
+                r"D:\Series\Foundation (2021)\Season 01\Foundation.S01E01.mkv",
+            )
+            .expect("leaf key"),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "366972".to_string(),
+            }],
+        });
+
+        let candidate = prepare_series_library_scan_candidate_from_file(
+            LibraryFile {
+                path: stored_file_path,
+                display_name: "Foundation.S01E01".to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            tempdir.path().to_string_lossy().as_ref(),
+            Some(&scan_hints),
+        )
+        .await
+        .expect("candidate");
+
+        assert_eq!(candidate.query, "");
+        assert_eq!(candidate.year_hint, None);
+        assert_eq!(
+            candidate
+                .identity_hint
+                .as_ref()
+                .and_then(|hint| hint.tvdb_id.as_deref()),
+            Some("366972")
+        );
     }
 
     #[tokio::test]
@@ -2461,11 +2800,13 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_series_folder_candidate_uses_simple_title_walk() {
-        let candidate = prepare_series_library_scan_candidate(PathBuf::from(
-            "/Volumes/Media/TV/Foundation (2021)",
-        ))
-        .await
-        .expect("prepared candidate");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("Foundation (2021)");
+        std::fs::create_dir_all(&folder).expect("create series folder");
+
+        let candidate = prepare_series_library_scan_candidate(folder, None)
+            .await
+            .expect("prepared candidate");
 
         assert_eq!(candidate.query, "Foundation");
         assert_eq!(candidate.year_hint, Some(2021));
@@ -2482,6 +2823,7 @@ mod tests {
                 "/Volumes/Media/TV/Folder Name (2020)/Some Show (2024) [tvdbid=12345].mkv",
             ),
             "/Volumes/Media/TV",
+            None,
         )
         .await
         .expect("prepared candidate");
@@ -2491,6 +2833,58 @@ mod tests {
         assert_eq!(hint.title.as_deref(), Some("Some Show"));
         assert_eq!(hint.year, Some(2024));
         assert_eq!(hint.tvdb_id.as_deref(), Some("12345"));
+    }
+
+    #[tokio::test]
+    async fn prepare_series_folder_candidate_uses_title_and_year_hint_shape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("Bastard!! (2022)");
+        std::fs::create_dir_all(&folder).expect("create series folder");
+
+        let candidate = prepare_series_library_scan_candidate(folder, None)
+            .await
+            .expect("prepared candidate");
+
+        assert_eq!(candidate.query, "Bastard!!");
+        assert_eq!(candidate.year_hint, Some(2022));
+        assert_eq!(
+            candidate.search_candidates.first().map(String::as_str),
+            Some("Bastard!!")
+        );
+        assert!(
+            !candidate
+                .search_candidates
+                .iter()
+                .any(|query| query == "Bastard!! (2022)")
+        );
+
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_SERIES,
+            "Bastard!!",
+            Some(2022),
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("series key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "415677".into(),
+                name: "Bastard!! (2022)".into(),
+                year: Some(2022),
+                auto_match_safe: true,
+                auto_match_signals: vec![
+                    "exact_title_year_hint".into(),
+                    "exact_year".into(),
+                    "score_gap_clear".into(),
+                ],
+            }]),
+        );
+
+        let selected = select_series_metadata_from_batch_results(&candidate, &results)
+            .expect("series batch selection")
+            .expect("safe year-hint match");
+        assert_eq!(selected.tvdb_id, "415677");
     }
 
     #[test]
@@ -2678,7 +3072,7 @@ mod tests {
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_allows_sidecar_exact_title_year_fallback() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_with_identity_hint() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -2709,13 +3103,13 @@ mod tests {
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
             .expect("movie batch selection")
-            .expect("sidecar exact title/year fallback");
+            .expect("SMG-safe auto-match");
 
         assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_provider_mismatch_for_id_hint() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_provider_signal() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -2749,13 +3143,14 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_filename_id_without_external_signal() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_without_external_signal() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Filename,
@@ -2785,9 +3180,10 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
@@ -2828,7 +3224,7 @@ mod tests {
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_external_id_with_conflicting_evidence() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_with_conflicting_local_evidence() {
         let mut candidate = build_prepared_movie_candidate(&["The Bourne Supremacy"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -2858,9 +3254,10 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "2502");
     }
 
     #[test]
@@ -2895,7 +3292,7 @@ mod tests {
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
             .expect("movie batch selection")
-            .expect("compatible ID-backed match");
+            .expect("SMG-safe auto-match");
 
         assert_eq!(selected.tvdb_id, "157390");
     }
@@ -3240,6 +3637,7 @@ mod tests {
                 source_signature_value: None,
             },
             &path_to_stored_string(tempdir.path()),
+            None,
         )
         .await
         .expect("prepare series file candidate");
@@ -3277,9 +3675,10 @@ mod tests {
         std::fs::write(folder.join("tvshow.nfo"), nightfall_tvshow_nfo_fixture())
             .expect("write tvshow.nfo");
 
-        let candidates = prepare_series_library_scan_candidates(std::slice::from_ref(&folder))
-            .await
-            .expect("prepare series candidates");
+        let candidates =
+            prepare_series_library_scan_candidates(std::slice::from_ref(&folder), None)
+                .await
+                .expect("prepare series candidates");
 
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
@@ -3402,6 +3801,7 @@ mod tests {
             "/library".to_string(),
             1,
             None,
+            None,
         )
         .expect("prepared entry stream");
 
@@ -3462,6 +3862,7 @@ mod tests {
             "/library".to_string(),
             128,
             None,
+            None,
         )
         .expect("prepared entry stream");
 
@@ -3520,6 +3921,7 @@ mod tests {
             "/library".to_string(),
             1,
             Some(cancel_token.clone()),
+            None,
         )
         .expect("prepared entry stream");
 

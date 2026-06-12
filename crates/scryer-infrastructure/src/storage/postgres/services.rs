@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use scryer_application::{AppError, AppResult};
@@ -5,7 +6,8 @@ use sqlx::ConnectOptions;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing::log::LevelFilter;
 
-use crate::encryption::EncryptionKey;
+use crate::encryption::{EncryptionKey, load_existing_encryption_key_without_generation};
+use crate::migrations::MigrationHookContext;
 use crate::types::MigrationMode;
 
 const DEFAULT_POSTGRES_MAX_CONNECTIONS: u32 = 16;
@@ -32,6 +34,14 @@ impl PostgresServices {
         database_url: impl AsRef<str>,
         migration_mode: MigrationMode,
     ) -> Result<Self, AppError> {
+        Self::new_with_mode_and_data_dir(database_url, migration_mode, None).await
+    }
+
+    pub async fn new_with_mode_and_data_dir(
+        database_url: impl AsRef<str>,
+        migration_mode: MigrationMode,
+        data_dir: Option<PathBuf>,
+    ) -> Result<Self, AppError> {
         let mut connect_options: PgConnectOptions =
             database_url
                 .as_ref()
@@ -52,7 +62,16 @@ impl PostgresServices {
                 AppError::Repository(format!("cannot open PostgreSQL database: {error}"))
             })?;
 
-        super::migrations::run_migrations(&pool, migration_mode).await?;
+        let migration_encryption_key = load_existing_encryption_key_without_generation(data_dir)
+            .map_err(AppError::Repository)?;
+        super::migrations::run_migrations_with_hook_context(
+            &pool,
+            migration_mode,
+            MigrationHookContext {
+                encryption_key: migration_encryption_key,
+            },
+        )
+        .await?;
 
         Ok(Self {
             pool,
@@ -94,9 +113,9 @@ mod tests {
         InsertMediaFileInput, LibraryRepository, LibraryScanUnmatchedItem,
         LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileAnalysis,
         MediaFileRepository, PendingImportStatus, QualityProfileRepository, SettingsRepository,
-        ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageReplacement,
-        TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-        TitleRepository, UserRepository, default_quality_profile_for_search,
+        ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+        TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
+        UserRepository, default_quality_profile_for_search,
     };
     use scryer_domain::{
         Collection, CollectionType, ExternalId, Id, InterstitialMovieMetadata, LibraryGrant,
@@ -226,7 +245,6 @@ mod tests {
                         year: Some(2024),
                         overview: Some("postgres blank install smoke".to_string()),
                         poster_url: Some("https://example.com/poster.jpg".to_string()),
-                        banner_url: Some("https://example.com/banner.jpg".to_string()),
                         background_url: Some("https://example.com/fanart.jpg".to_string()),
                         sort_title: Some("Postgres Blank Install Smoke".to_string()),
                         slug: Some("postgres-blank-install-smoke".to_string()),
@@ -254,7 +272,7 @@ mod tests {
                 .await?;
 
             let poster_tasks = images
-                .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+                .list_title_image_refresh_work(10, &[])
                 .await?;
             assert_eq!(
                 poster_tasks.len(),
@@ -268,9 +286,9 @@ mod tests {
             );
 
             images
-                .replace_title_image(
+                .upsert_title_image_source_result(
                     &title.id,
-                    TitleImageReplacement {
+                    TitleImageSourceResult {
                         kind: TitleImageKind::Poster,
                         source_url: "https://example.com/poster.jpg".to_string(),
                         source_etag: Some("source-etag".to_string()),
@@ -278,39 +296,26 @@ mod tests {
                         source_format: "jpeg".to_string(),
                         source_width: 1200,
                         source_height: 1800,
-                        storage_mode: TitleImageStorageMode::Original,
-                        master_format: "jpeg".to_string(),
-                        master_sha256: "poster-master-sha256".to_string(),
-                        master_width: 1200,
-                        master_height: 1800,
-                        master_bytes: vec![1, 2, 3, 4],
                         variants: vec![TitleImageVariantRecord {
-                            variant_key: "thumb".to_string(),
+                            variant_key: "w250".to_string(),
                             format: "avif".to_string(),
-                            width: 240,
-                            height: 360,
+                            width: 250,
+                            height: 375,
                             bytes: vec![5, 6, 7, 8],
-                            sha256: "poster-thumb-sha256".to_string(),
+                            digest: "blake3:poster-thumb".to_string(),
                         }],
                     },
+                    None,
                 )
                 .await?;
 
             let original_blob = images
                 .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
-                .await?
-                .ok_or_else(|| {
-                    AppError::Repository(
-                        "expected PostgreSQL blank install to persist title image master blob"
-                            .to_string(),
-                    )
-                })?;
-            assert_eq!(original_blob.content_type, "image/jpeg");
-            assert_eq!(original_blob.etag, "poster-master-sha256");
-            assert_eq!(original_blob.bytes, vec![1, 2, 3, 4]);
+                .await?;
+            assert!(original_blob.is_none());
 
             let thumb_blob = images
-                .get_title_image_blob(&title.id, TitleImageKind::Poster, "thumb")
+                .get_title_image_blob(&title.id, TitleImageKind::Poster, "w250")
                 .await?
                 .ok_or_else(|| {
                     AppError::Repository(
@@ -319,7 +324,7 @@ mod tests {
                     )
                 })?;
             assert_eq!(thumb_blob.content_type, "image/avif");
-            assert_eq!(thumb_blob.etag, "poster-thumb-sha256");
+            assert_eq!(thumb_blob.etag, "blake3:poster-thumb");
             assert_eq!(thumb_blob.bytes, vec![5, 6, 7, 8]);
 
             services.pool().close().await;
@@ -1507,8 +1512,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,

@@ -6,9 +6,10 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_config, from_download_client_routing_entry,
-    from_indexer_config_with_fields, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_settings, from_quality_profile_settings, from_service_settings,
-    from_subtitle_provider_config, from_user,
+    from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
+    from_library_paths_settings, from_media_server_connection, from_media_settings,
+    from_quality_profile_settings, from_service_settings, from_subtitle_provider_config,
+    from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -49,6 +50,54 @@ fn from_recycle_bin_settings(
 ) -> RecycleBinSettingsPayload {
     RecycleBinSettingsPayload {
         enabled: settings.enabled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_auth_runtime_settings_maps_clean_connections() {
+        let payload =
+            from_external_auth_runtime_settings(scryer_application::ExternalAuthRuntimeSettings {
+                login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
+                connections: vec![
+                    scryer_application::ExternalAuthRuntimeConnection {
+                        id: "jellyfin-main".to_string(),
+                        provider: scryer_domain::ExternalAccountProvider::Jellyfin,
+                        display_name: "Main Jellyfin".to_string(),
+                        login_enabled: true,
+                        linking_enabled: false,
+                    },
+                    scryer_application::ExternalAuthRuntimeConnection {
+                        id: "plex-main".to_string(),
+                        provider: scryer_domain::ExternalAccountProvider::Plex,
+                        display_name: "Main Plex".to_string(),
+                        login_enabled: false,
+                        linking_enabled: true,
+                    },
+                ],
+            });
+
+        assert!(matches!(
+            payload.login_providers.as_slice(),
+            [ExternalAccountProviderValue::Jellyfin]
+        ));
+        assert!(matches!(
+            payload.linking_providers.as_slice(),
+            [ExternalAccountProviderValue::Plex]
+        ));
+        assert_eq!(payload.connections.len(), 2);
+        assert_eq!(payload.connections[0].id, "jellyfin-main");
+        assert!(matches!(
+            payload.connections[0].provider,
+            ExternalAccountProviderValue::Jellyfin
+        ));
+        assert_eq!(payload.connections[0].display_name, "Main Jellyfin");
+        assert!(payload.connections[0].login_enabled);
+        assert!(!payload.connections[0].linking_enabled);
     }
 }
 
@@ -100,17 +149,76 @@ fn from_security_settings(
 ) -> SecuritySettingsPayload {
     SecuritySettingsPayload {
         form_login_enabled: settings.form_login_enabled,
+        password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        mfa_require_config_step_up: settings.mfa_require_config_step_up,
+        mfa_require_password_login: settings.mfa_require_password_login,
+        totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
     }
 }
 
-fn from_auth_runtime_state(auth_runtime: &AuthRuntimeStateSnapshot) -> AuthRuntimeStatePayload {
+fn from_external_auth_runtime_settings(
+    settings: scryer_application::ExternalAuthRuntimeSettings,
+) -> ExternalAuthRuntimeSettingsPayload {
+    ExternalAuthRuntimeSettingsPayload {
+        login_providers: settings
+            .login_providers
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        linking_providers: settings
+            .linking_providers
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        connections: settings
+            .connections
+            .into_iter()
+            .map(|connection| ExternalAuthRuntimeConnectionPayload {
+                id: connection.id,
+                provider: ExternalAccountProviderValue::from_domain(connection.provider),
+                display_name: connection.display_name,
+                login_enabled: connection.login_enabled,
+                linking_enabled: connection.linking_enabled,
+            })
+            .collect(),
+    }
+}
+
+fn from_auth_runtime_state(
+    auth_runtime: &AuthRuntimeStateSnapshot,
+    security_settings: scryer_application::SecuritySettings,
+) -> AuthRuntimeStatePayload {
     AuthRuntimeStatePayload {
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
+        passkey_enabled: auth_runtime.passkey_enabled,
+        env_override_active: auth_runtime.env_override_active,
+        mfa_require_password_login: auth_runtime.effective_form_login_enabled
+            && security_settings.mfa_require_password_login,
+        totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_jellyfin_login,
+    }
+}
+
+fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
+    PasskeySummaryPayload {
+        id: summary.id,
+        friendly_name: summary.friendly_name,
+        created_at: summary.created_at,
+        last_used_at: summary.last_used_at,
+    }
+}
+
+fn from_totp_status(status: scryer_application::TotpStatus) -> TotpStatusPayload {
+    TotpStatusPayload {
+        enabled: status.enabled,
+        created_at: status.created_at,
+        last_used_at: status.last_used_at,
+        recovery_codes_remaining: status.recovery_codes_remaining,
     }
 }
 
@@ -210,9 +318,92 @@ impl SettingsQueries {
         Ok(from_security_settings(settings, &auth_runtime.snapshot()))
     }
 
+    async fn external_auth_runtime_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ExternalAuthRuntimeSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        app.get_external_auth_runtime_settings()
+            .await
+            .map(from_external_auth_runtime_settings)
+            .map_err(to_gql_error)
+    }
+
+    async fn media_server_connections(
+        &self,
+        ctx: &Context<'_>,
+        provider: Option<MediaServerProviderValue>,
+    ) -> GqlResult<Vec<MediaServerConnectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_media_server_connections(
+            &actor,
+            provider.map(MediaServerProviderValue::into_domain),
+        )
+        .await
+        .map(|connections| {
+            connections
+                .into_iter()
+                .map(from_media_server_connection)
+                .collect()
+        })
+        .map_err(to_gql_error)
+    }
+
+    async fn media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<Option<MediaServerConnectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.get_media_server_connection(&actor, &id)
+            .await
+            .map(|connection| connection.map(from_media_server_connection))
+            .map_err(to_gql_error)
+    }
+
+    async fn jellyfin_server_users(
+        &self,
+        ctx: &Context<'_>,
+        connection_id: String,
+        search: Option<String>,
+    ) -> GqlResult<Vec<JellyfinServerUserPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_jellyfin_server_users(&actor, &connection_id, search.as_deref())
+            .await
+            .map(|users| users.into_iter().map(from_jellyfin_server_user).collect())
+            .map_err(to_gql_error)
+    }
+
     async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
+        let app = app_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
-        Ok(from_auth_runtime_state(&auth_runtime.snapshot()))
+        let security_settings = app.security_settings().await.map_err(to_gql_error)?;
+        Ok(from_auth_runtime_state(
+            &auth_runtime.snapshot(),
+            security_settings,
+        ))
+    }
+
+    async fn my_passkeys(&self, ctx: &Context<'_>) -> GqlResult<Vec<PasskeySummaryPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.list_my_passkeys(&actor, auth_runtime.snapshot().effective_form_login_enabled)
+            .await
+            .map(|passkeys| passkeys.into_iter().map(from_passkey_summary).collect())
+            .map_err(to_gql_error)
+    }
+
+    async fn my_totp(&self, ctx: &Context<'_>) -> GqlResult<TotpStatusPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.totp_status(&actor)
+            .await
+            .map(from_totp_status)
+            .map_err(to_gql_error)
     }
 
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {
@@ -403,7 +594,11 @@ impl SettingsQueries {
                 .attach_user_authorization(user)
                 .await
                 .map_err(to_gql_error)?;
-            payloads.push(from_user(user));
+            let auth_factor_status = app
+                .user_auth_factor_status(&user.id)
+                .await
+                .map_err(to_gql_error)?;
+            payloads.push(from_user_with_auth_factor_status(user, auth_factor_status));
         }
         Ok(payloads)
     }

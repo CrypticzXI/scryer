@@ -114,6 +114,7 @@ export type DownloadQueueItem = {
   attentionRequired: boolean;
   attentionReason: string | null;
   downloadClientItemId: string;
+  downloadId: string | null;
   importStatus: ImportStatus | null;
   importErrorCode: ImportErrorCode | null;
   importErrorMessage: string | null;

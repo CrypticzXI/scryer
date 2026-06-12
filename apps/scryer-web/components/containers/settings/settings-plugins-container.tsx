@@ -30,6 +30,7 @@ type PluginCatalogStatusRecord = {
   lastCheckedAt?: string | null;
   outageMessage?: string | null;
   blockedActions: string[];
+  restoreWarnings: string[];
   lastError?: string | null;
 };
 

@@ -1,4 +1,5 @@
 import type { DownloadClientRoutingEntry } from "./download-clients";
+import type { ImportMode } from "./settings";
 
 export type Facet = "movie" | "series" | "anime";
 
@@ -32,8 +33,6 @@ export type TitleRecord = {
   contentStatus?: string | null;
   posterUrl?: string | null;
   posterSourceUrl?: string | null;
-  bannerUrl?: string | null;
-  bannerSourceUrl?: string | null;
   backgroundUrl?: string | null;
   backgroundSourceUrl?: string | null;
   runtimeMinutes?: number | null;
@@ -75,6 +74,46 @@ export type LibraryRecord = {
   slug: string;
   isDefault: boolean;
   roots: LibraryRootRecord[];
+  qualityProfileId?: string | null;
+  requestQualityProfileIds?: string[];
+  requestQualityProfileDefaultId?: string | null;
+};
+
+export type MediaRequestRequesterRecord = {
+  userId: string;
+  username: string;
+  avatarUrl?: string | null;
+  requestedAt: string;
+};
+
+export type MediaRequestRecord = {
+  id: string;
+  libraryId: string;
+  facet: Facet;
+  status: "pending" | "approved" | "rejected" | "canceled";
+  identityFingerprint: string;
+  title: string;
+  sortTitle?: string | null;
+  slug?: string | null;
+  posterUrl?: string | null;
+  year?: number | null;
+  overview?: string | null;
+  runtimeMinutes?: number | null;
+  language?: string | null;
+  contentStatus?: string | null;
+  requestedQualityProfileId?: string | null;
+  requestedQualityProfileName?: string | null;
+  requestedMonitorType?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedAt?: string | null;
+  createdTitleId?: string | null;
+  approvedQualityProfileId?: string | null;
+  approvedQualityProfileName?: string | null;
+  externalIds: ExternalId[];
+  requesters: MediaRequestRequesterRecord[];
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type LibrarySettingsRecord = {
@@ -82,6 +121,9 @@ export type LibrarySettingsRecord = {
   requiredAudioLanguages: string[];
   qualityProfileIdOverride: string | null;
   qualityProfileId: string;
+  requestQualityProfileIdsOverride: string[] | null;
+  requestQualityProfileIds: string[];
+  requestQualityProfileDefaultId: string;
   scoringPersonaOverride: string | null;
   scoringPersona: string;
   fillerPolicyOverride: string | null;
@@ -98,6 +140,8 @@ export type LibrarySettingsRecord = {
   nfoWriteOnImport: boolean;
   plexmatchWriteOnImportOverride: boolean | null;
   plexmatchWriteOnImport: boolean | null;
+  importModeOverride: ImportMode | null;
+  importMode: ImportMode;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: DownloadClientRoutingEntry[] | null;
 };
@@ -105,6 +149,7 @@ export type LibrarySettingsRecord = {
 export type LibrarySettingsDraft = {
   requiredAudioLanguages: string[] | null;
   qualityProfileId: string | null;
+  requestQualityProfileIds: string[] | null;
   scoringPersona: string | null;
   fillerPolicy: string | null;
   recapPolicy: string | null;
@@ -113,6 +158,7 @@ export type LibrarySettingsDraft = {
   monitorFillerMovies: boolean | null;
   nfoWriteOnImport: boolean | null;
   plexmatchWriteOnImport: boolean | null;
+  importMode: ImportMode | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: DownloadClientRoutingEntry[] | null;
 };

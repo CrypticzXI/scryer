@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -11,6 +11,7 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::subtitles::provider::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery,
 };
+use crate::subtitles::scoring::{SubtitleScoreKind, percent_to_raw_threshold};
 use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
@@ -587,6 +588,7 @@ impl AppUseCase {
             read_subtitle_sync_settings(&settings),
             subtitle_media_kind(&title),
             file_path.as_path(),
+            &media_file.id,
             &dest_path,
             Some(&record.id),
             score,
@@ -750,11 +752,28 @@ struct SubtitleSyncSettings {
 
 impl SubtitleSyncSettings {
     fn threshold_for(self, media_kind: SubtitleMediaKind) -> i32 {
-        match media_kind {
+        let kind = subtitle_score_kind(media_kind);
+        let percent = match media_kind {
             SubtitleMediaKind::Episode => self.threshold_series,
             SubtitleMediaKind::Movie => self.threshold_movie,
-        }
+        };
+        percent_to_raw_threshold(kind, percent)
     }
+}
+
+fn subtitle_score_kind(media_kind: SubtitleMediaKind) -> SubtitleScoreKind {
+    match media_kind {
+        SubtitleMediaKind::Episode => SubtitleScoreKind::Episode,
+        SubtitleMediaKind::Movie => SubtitleScoreKind::Movie,
+    }
+}
+
+fn subtitle_minimum_raw_score(media_kind: SubtitleMediaKind, series: i32, movie: i32) -> i32 {
+    let percent = match media_kind {
+        SubtitleMediaKind::Episode => series,
+        SubtitleMediaKind::Movie => movie,
+    };
+    percent_to_raw_threshold(subtitle_score_kind(media_kind), percent)
 }
 
 fn read_subtitle_sync_settings(settings: &AppSubtitleSettings) -> SubtitleSyncSettings {
@@ -763,6 +782,72 @@ fn read_subtitle_sync_settings(settings: &AppSubtitleSettings) -> SubtitleSyncSe
         threshold_series: settings.sync_threshold_series,
         threshold_movie: settings.sync_threshold_movie,
         max_offset_seconds: settings.sync_max_offset_seconds as i64,
+    }
+}
+
+async fn reference_subtitle_path_for_sync(
+    app: &AppUseCase,
+    media_file_id: &str,
+    subtitle_path: &Path,
+    download_id: Option<&str>,
+) -> Option<PathBuf> {
+    let mut candidates = app
+        .services
+        .workflow
+        .subtitle_downloads
+        .list_for_media_file(media_file_id)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|record| download_id != Some(record.id.as_str()))
+        .filter(|record| !record.forced)
+        .filter_map(|record| {
+            let path = stored_path_to_path_buf(&record.file_path);
+            if same_filesystem_path(&path, subtitle_path)
+                || !path.exists()
+                || !is_supported_reference_subtitle_path(&path)
+            {
+                return None;
+            }
+            Some((record, path))
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|(left, _), (right, _)| {
+        right
+            .synced
+            .cmp(&left.synced)
+            .then_with(|| {
+                right
+                    .score
+                    .unwrap_or(i32::MIN)
+                    .cmp(&left.score.unwrap_or(i32::MIN))
+            })
+            .then_with(|| right.downloaded_at.cmp(&left.downloaded_at))
+    });
+
+    candidates.into_iter().map(|(_, path)| path).next()
+}
+
+fn is_supported_reference_subtitle_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "srt" | "vtt" | "ass" | "ssa"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn same_filesystem_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -821,6 +906,7 @@ async fn maybe_sync_downloaded_subtitle(
     sync_settings: SubtitleSyncSettings,
     media_kind: SubtitleMediaKind,
     video_path: &Path,
+    media_file_id: &str,
     subtitle_path: &Path,
     download_id: Option<&str>,
     score: Option<i32>,
@@ -834,7 +920,32 @@ async fn maybe_sync_downloaded_subtitle(
         max_offset_seconds: sync_settings.max_offset_seconds,
     };
 
-    match sync::sync_subtitle_with_policy(video_path, subtitle_path, policy).await {
+    let subtitle_plugin_provider = app
+        .services
+        .integrations
+        .subtitle_plugin_provider
+        .available();
+    let subtitle_sync_client =
+        subtitle_plugin_provider.and_then(|provider| provider.subtitle_sync_client());
+    let plugin_installed = subtitle_plugin_provider.is_some_and(|provider| {
+        provider
+            .available_provider_types()
+            .iter()
+            .any(|provider_type| provider_type == "enhanced-subtitle-sync")
+    });
+    let reference_subtitle_path =
+        reference_subtitle_path_for_sync(app, media_file_id, subtitle_path, download_id).await;
+
+    match sync::sync_subtitle_with_policy_and_plugin_sync(
+        video_path,
+        subtitle_path,
+        policy,
+        subtitle_sync_client,
+        plugin_installed,
+        reference_subtitle_path.as_deref(),
+    )
+    .await
+    {
         Ok(result) => {
             if result.applied
                 && let Some(id) = download_id
@@ -910,8 +1021,9 @@ fn release_title_candidates(parsed: &ParsedReleaseMetadata) -> Vec<String> {
 fn release_audio_codec(parsed: &ParsedReleaseMetadata) -> Option<String> {
     parsed
         .audio
-        .clone()
-        .or_else(|| parsed.audio_codecs.first().cloned())
+        .as_ref()
+        .or_else(|| parsed.audio_codecs.first())
+        .map(ToString::to_string)
 }
 
 fn parsed_episode_context(parsed: &ParsedReleaseMetadata) -> SubtitleEpisodeContext {
@@ -1139,6 +1251,7 @@ fn build_subtitle_query(
 
     let (imdb_id, series_imdb_id) = title_imdb_ids(title, preferred_release);
     let analysis_labels = resolve_release_labels_from_analysis(
+        media_file.video_width,
         media_file.video_height,
         media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),
@@ -1168,16 +1281,11 @@ fn build_subtitle_query(
             .and_then(|release| release.release_group.clone())
             .or_else(|| media_file.release_group.clone()),
         source: preferred_release
-            .and_then(|release| release.source.clone())
+            .and_then(|release| release.source.as_ref().map(ToString::to_string))
             .or_else(|| media_file.source_type.clone()),
         video_codec: preferred_release
             .and_then(|release| release.video_codec.as_ref().map(ToString::to_string))
-            .or_else(|| {
-                media_file
-                    .video_codec_parsed
-                    .clone()
-                    .map(|codec| codec.to_string())
-            })
+            .or_else(|| media_file.video_codec_parsed.map(|codec| codec.to_string()))
             .or(analysis_labels.video_codec),
         audio_codec: preferred_release
             .and_then(release_audio_codec)
@@ -1250,11 +1358,16 @@ async fn run_subtitle_search_for_file(
         .ok_or_else(|| crate::AppError::NotFound("media file not found".into()))?;
 
     let is_series = is_series_title(&title);
-    let min_score: i32 = if is_series {
-        settings.minimum_score_series
+    let media_kind = if is_series {
+        SubtitleMediaKind::Episode
     } else {
-        settings.minimum_score_movie
+        SubtitleMediaKind::Movie
     };
+    let min_score = subtitle_minimum_raw_score(
+        media_kind,
+        settings.minimum_score_series,
+        settings.minimum_score_movie,
+    );
     let sync_settings = read_subtitle_sync_settings(&settings);
 
     let providers = match configured_runtime_subtitle_providers(app, &settings).await {
@@ -1398,6 +1511,7 @@ async fn run_subtitle_search_for_file(
                     sync_settings,
                     query.media_kind,
                     file_path.as_path(),
+                    &mf.id,
                     &dest_path,
                     record_inserted.then_some(record_id.as_str()),
                     Some(best.score),
@@ -1491,12 +1605,9 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 continue;
             }
 
-            let is_series = is_series_title(title);
-            let min_score = if is_series {
-                min_score_series
-            } else {
-                min_score_movie
-            };
+            let media_kind = subtitle_media_kind(title);
+            let min_score =
+                subtitle_minimum_raw_score(media_kind, min_score_series, min_score_movie);
 
             let file_path = stored_path_to_path_buf(&mf.file_path);
             let episode_context = media_file_episode_context(app, mf).await;
@@ -1644,6 +1755,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             sync_settings,
                             query.media_kind,
                             file_path.as_path(),
+                            &mf.id,
                             &dest_path,
                             record_inserted.then_some(record.id.as_str()),
                             Some(best.score),
@@ -1715,6 +1827,31 @@ mod tests {
     use chrono::Utc;
     use scryer_domain::{ExternalId, MediaFacet, Title};
 
+    #[test]
+    fn subtitle_minimum_settings_are_percentages_converted_to_raw_scores() {
+        assert_eq!(
+            subtitle_minimum_raw_score(SubtitleMediaKind::Episode, 90, 70),
+            324
+        );
+        assert_eq!(
+            subtitle_minimum_raw_score(SubtitleMediaKind::Movie, 90, 70),
+            84
+        );
+    }
+
+    #[test]
+    fn subtitle_sync_threshold_settings_are_percentages_converted_to_raw_scores() {
+        let settings = SubtitleSyncSettings {
+            enabled: true,
+            threshold_series: 90,
+            threshold_movie: 70,
+            max_offset_seconds: 60,
+        };
+
+        assert_eq!(settings.threshold_for(SubtitleMediaKind::Episode), 324);
+        assert_eq!(settings.threshold_for(SubtitleMediaKind::Movie), 84);
+    }
+
     fn sample_title(facet: MediaFacet, year: Option<i32>) -> Title {
         Title {
             id: "title-1".into(),
@@ -1733,8 +1870,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,
@@ -1884,7 +2019,10 @@ mod tests {
         assert_eq!(query.media_kind, SubtitleMediaKind::Episode);
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
-        assert_eq!(query.source, parsed.source);
+        assert_eq!(
+            query.source,
+            parsed.source.as_ref().map(ToString::to_string)
+        );
         assert_eq!(
             query.video_codec,
             parsed.video_codec.as_ref().map(ToString::to_string)
@@ -1916,7 +2054,10 @@ mod tests {
 
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
-        assert_eq!(query.source, parsed.source);
+        assert_eq!(
+            query.source,
+            parsed.source.as_ref().map(ToString::to_string)
+        );
         assert_eq!(
             query.video_codec,
             parsed.video_codec.as_ref().map(ToString::to_string)

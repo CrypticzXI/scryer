@@ -46,6 +46,10 @@ pub mod encryption {
     pub use crate::security::encryption::*;
 }
 
+pub mod external_identity {
+    pub use crate::security::external_identity::*;
+}
+
 pub mod external_import {
     pub use scryer_application::external_import::*;
 }
@@ -97,6 +101,14 @@ pub(crate) mod library_store {
 
 pub(crate) mod media_file_store {
     pub(crate) use crate::media::search::media_file_store::*;
+}
+
+pub(crate) mod media_request_store {
+    pub(crate) use crate::media::requests::*;
+}
+
+pub(crate) mod media_server_connection_store {
+    pub(crate) use crate::media::servers::*;
 }
 
 pub(crate) mod metadata_gateway {
@@ -196,10 +208,7 @@ pub(crate) mod title_image_store {
 pub(crate) mod title_images {
     #[cfg(feature = "image-processing")]
     pub(crate) use crate::media::images::processor::*;
-    pub(crate) use crate::media::images::{
-        content_type_for_format, materialize_local_title_image_path, normalized_base_path_from_env,
-        required_persisted_variant_for_kind,
-    };
+    pub(crate) use crate::media::images::{content_type_for_format, normalized_base_path_from_env};
 }
 
 pub(crate) mod title_store {
@@ -212,6 +221,10 @@ pub(crate) mod types {
 
 pub(crate) mod user_store {
     pub(crate) use crate::users::store::*;
+}
+
+pub(crate) mod webauthn_store {
+    pub(crate) use crate::users::webauthn_store::*;
 }
 
 pub(crate) mod workflow_store {
@@ -233,7 +246,9 @@ pub mod sqlite {
         SubtitleDownloadStore, WantedStore,
     };
     pub use crate::media::libraries::store::LibraryStore;
+    pub use crate::media::requests::MediaRequestStore;
     pub use crate::media::search::media_file_store::MediaFileStore;
+    pub use crate::media::servers::MediaServerConnectionStore;
     pub use crate::media::shows::store::ShowStore;
     pub use crate::media::titles::store::TitleStore;
     pub use crate::notifications::store::NotificationStore;
@@ -275,7 +290,9 @@ pub use media::libraries::state_store::{
     SubtitleDownloadStore, WantedStore,
 };
 pub use media::libraries::store::LibraryStore;
+pub use media::requests::MediaRequestStore;
 pub use media::search::media_file_store::MediaFileStore;
+pub use media::servers::MediaServerConnectionStore;
 pub use media::shows::store::ShowStore;
 pub use media::titles::store::TitleStore;
 pub use metadata::gateway::client::{MetadataGatewayClient, SmgEnrollmentConfig};
@@ -302,6 +319,8 @@ pub use storage::types::{
     SettingsValueRecord, WorkflowOperationRecord,
 };
 pub use users::store::UserStore;
+pub use users::totp_store::TotpStore;
+pub use users::webauthn_store::WebauthnStore;
 pub use workflow::file_importer::FsFileImporter;
 pub use workflow::release_store::ReleaseStore;
 pub use workflow::stores::{

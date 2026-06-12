@@ -165,6 +165,35 @@ impl JobRunRepository for WorkflowOperationStore {
             .collect()
     }
 
+    async fn list_job_runs_for_actor(
+        &self,
+        job_key: Option<JobKey>,
+        actor_user_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        let limit = limit as i64;
+        let (sql, args) = if let Some(job_key) = job_key {
+            (
+                "SELECT * FROM workflow_operations WHERE job_key = {} AND actor_user_id = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                vec![
+                    SqlArg::Text(job_key.as_str().to_string()),
+                    SqlArg::Text(actor_user_id.to_string()),
+                    SqlArg::I64(limit),
+                ],
+            )
+        } else {
+            (
+                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL AND actor_user_id = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                vec![SqlArg::Text(actor_user_id.to_string()), SqlArg::I64(limit)],
+            )
+        };
+        SqlRuntime::fetch_all(self.datastore.read_exec(), sql, &args)
+            .await?
+            .into_iter()
+            .map(|row| workflow_operation_from_row(&row).and_then(job_run_record_from_workflow))
+            .collect()
+    }
+
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         SqlRuntime::fetch_all(
             self.datastore.read_exec(),

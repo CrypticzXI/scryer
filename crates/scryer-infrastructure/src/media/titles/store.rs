@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, TitleMetadataUpdate,
-    TitleRepository,
+    AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, TitleArtworkUrlUpdate,
+    TitleDeletePreviewInfo, TitleMetadataUpdate, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -26,14 +26,14 @@ use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
-    year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id,
+    year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
@@ -41,14 +41,14 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
 
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
-    year, overview, poster_url, banner_url, background_url, sort_title, slug, imdb_id,
+    year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}
@@ -64,8 +64,15 @@ ON CONFLICT (id) DO UPDATE SET
     created_at = excluded.created_at,
     year = excluded.year,
     overview = excluded.overview,
+    poster_local_path = CASE
+        WHEN COALESCE(titles.poster_url, '') <> COALESCE(excluded.poster_url, '') THEN NULL
+        ELSE titles.poster_local_path
+    END,
     poster_url = excluded.poster_url,
-    banner_url = excluded.banner_url,
+    background_local_path = CASE
+        WHEN COALESCE(titles.background_url, '') <> COALESCE(excluded.background_url, '') THEN NULL
+        ELSE titles.background_local_path
+    END,
     background_url = excluded.background_url,
     sort_title = excluded.sort_title,
     slug = excluded.slug,
@@ -237,6 +244,90 @@ impl TitleRepository for TitleStore {
             PersistedTitleReadMode::Presentation,
             false,
         )
+        .await
+    }
+
+    async fn list_delete_preview_info(&self) -> AppResult<Vec<TitleDeletePreviewInfo>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, library_id, name, facet, folder_path FROM titles ORDER BY id",
+            &[],
+        )
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let facet = parse_facet(&row.text("facet")?);
+                Ok(TitleDeletePreviewInfo {
+                    title_id: row.text("id")?,
+                    library_id: row
+                        .opt_text("library_id")?
+                        .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet)),
+                    title_name: row.text("name")?,
+                    facet,
+                    folder_path: row.opt_text("folder_path")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_page_after_id(
+        &self,
+        after_id: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<Title>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (sql, args) = build_title_page_after_id_sql(after_id.as_deref(), limit);
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        decode_runtime_title_rows(&rows, PersistedTitleReadMode::Canonical, true)
+    }
+
+    async fn update_title_artwork_urls(&self, updates: &[TitleArtworkUrlUpdate]) -> AppResult<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let updates = updates.to_vec();
+        SqlRuntime::run_in_transaction(&self.datastore, "update_title_artwork_urls", move |tx| {
+            let updates = updates.clone();
+            Box::pin(async move {
+                let mut changed = 0_u64;
+                for update in updates {
+                    let rows = tx
+                        .execute(
+                            "UPDATE titles
+                                SET poster_local_path = CASE
+                                        WHEN COALESCE(poster_url, '') <> COALESCE({}, '') THEN NULL
+                                        ELSE poster_local_path
+                                    END,
+                                    poster_url = {},
+                                    background_local_path = CASE
+                                        WHEN COALESCE(background_url, '') <> COALESCE({}, '') THEN NULL
+                                        ELSE background_local_path
+                                    END,
+                                    background_url = {}
+                              WHERE id = {}
+                                AND (
+                                    COALESCE(poster_url, '') <> COALESCE({}, '')
+                                    OR COALESCE(background_url, '') <> COALESCE({}, '')
+                                )",
+                            &[
+                                SqlArg::OptText(update.poster_url.clone()),
+                                SqlArg::OptText(update.poster_url.clone()),
+                                SqlArg::OptText(update.background_url.clone()),
+                                SqlArg::OptText(update.background_url.clone()),
+                                SqlArg::Text(update.title_id.clone()),
+                                SqlArg::OptText(update.poster_url),
+                                SqlArg::OptText(update.background_url),
+                            ],
+                        )
+                        .await?;
+                    changed += rows;
+                }
+                Ok(changed)
+            })
+        })
         .await
     }
 
@@ -821,8 +912,6 @@ impl TitleRepository for TitleStore {
                 title.overview = None;
                 title.poster_url = None;
                 title.poster_source_url = None;
-                title.banner_url = None;
-                title.banner_source_url = None;
                 title.background_url = None;
                 title.background_source_url = None;
                 title.sort_title = None;
@@ -1191,8 +1280,6 @@ where
         overview: row.opt_text("overview")?,
         poster_url: row.opt_text("poster_url")?,
         poster_source_url: None,
-        banner_url: row.opt_text("banner_url")?,
-        banner_source_url: None,
         background_url: row.opt_text("background_url")?,
         background_source_url: None,
         sort_title: row.opt_text("sort_title")?,
@@ -1216,7 +1303,6 @@ where
     };
 
     let poster_local_path = row.opt_text("poster_local_path")?;
-    let banner_local_path = row.opt_text("banner_local_path")?;
     let background_local_path = row.opt_text("background_local_path")?;
 
     Ok(finalize_persisted_title(
@@ -1226,7 +1312,6 @@ where
             include_external_ids,
             base_path,
             poster_local_path: poster_local_path.as_deref(),
-            banner_local_path: banner_local_path.as_deref(),
             background_local_path: background_local_path.as_deref(),
         },
     ))
@@ -1245,7 +1330,6 @@ fn apply_title_metadata_update(title: &mut Title, metadata: TitleMetadataUpdate)
     }
     merge_optional_title_text(&mut title.overview, metadata.overview);
     merge_optional_title_text(&mut title.poster_url, metadata.poster_url);
-    merge_optional_title_text(&mut title.banner_url, metadata.banner_url);
     merge_optional_title_text(&mut title.background_url, metadata.background_url);
     merge_optional_title_text(&mut title.sort_title, metadata.sort_title);
     merge_optional_title_text(&mut title.slug, metadata.slug);
@@ -1380,6 +1464,18 @@ fn build_plain_title_list_sql(
         sql.push_str(&where_clauses.join(" AND "));
     }
     sql.push_str(" ORDER BY LOWER(name), id");
+    (sql, args)
+}
+
+fn build_title_page_after_id_sql(after_id: Option<&str>, limit: usize) -> (String, Vec<SqlArg>) {
+    let mut sql = format!("SELECT {TITLE_COLUMNS} FROM titles");
+    let mut args = Vec::new();
+    if let Some(after_id) = after_id {
+        sql.push_str(" WHERE id > {}");
+        args.push(SqlArg::Text(after_id.to_string()));
+    }
+    sql.push_str(" ORDER BY id LIMIT {}");
+    args.push(SqlArg::I64(limit as i64));
     (sql, args)
 }
 
@@ -1613,7 +1709,6 @@ fn title_write_args(
         SqlArg::OptI64(title.year.map(i64::from)),
         SqlArg::OptText(title.overview.clone()),
         SqlArg::OptText(title.poster_url.clone()),
-        SqlArg::OptText(title.banner_url.clone()),
         SqlArg::OptText(title.background_url.clone()),
         SqlArg::OptText(title.sort_title.clone()),
         SqlArg::OptText(title.slug.clone()),

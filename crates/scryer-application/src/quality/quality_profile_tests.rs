@@ -52,19 +52,19 @@ fn normalize_source_webdl_variants() {
 
 #[test]
 fn normalize_source_bluray_variants() {
-    assert_eq!(normalize_source(Some("BluRay")), Some("BLURAY".to_string()));
-    assert_eq!(normalize_source(Some("BD")), Some("BLURAY".to_string()));
-    assert_eq!(normalize_source(Some("UHD")), Some("BLURAY".to_string()));
+    assert_eq!(normalize_source(Some("BluRay")), Some("BluRay".to_string()));
+    assert_eq!(normalize_source(Some("BD")), Some("BluRay".to_string()));
+    assert_eq!(normalize_source(Some("UHD")), Some("BluRay".to_string()));
 }
 
 #[test]
 fn normalize_source_webrip() {
-    assert_eq!(normalize_source(Some("WEBRip")), Some("WEBRIP".to_string()));
+    assert_eq!(normalize_source(Some("WEBRip")), Some("WEBRip".to_string()));
 }
 
 #[test]
 fn normalize_source_brdisk_maps_to_bluray() {
-    assert_eq!(normalize_source(Some("BRDISK")), Some("BLURAY".to_string()));
+    assert_eq!(normalize_source(Some("BRDISK")), Some("BRDISK".to_string()));
 }
 
 #[test]
@@ -1401,6 +1401,20 @@ fn ai_enhanced_gets_block_score() {
         d.scoring_log
             .iter()
             .any(|e| e.code == "ai_enhanced_upscaled" && e.delta == BLOCK_SCORE)
+    );
+    assert!(!d.allowed);
+}
+
+#[test]
+fn trash_guides_blocked_title_gets_block_score() {
+    let profile = QualityProfile::default();
+    let w = balanced_weights();
+    let release = parse_release_metadata("Series.Name.2160p.BiTOR.WEB-DL");
+    let d = evaluate_against_profile_for_category(&profile, &release, false, &w, Some("series"));
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "trash_guides_lq_release_title" && e.delta == BLOCK_SCORE)
     );
     assert!(!d.allowed);
 }

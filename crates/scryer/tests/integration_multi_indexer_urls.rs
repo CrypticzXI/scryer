@@ -8,7 +8,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::load_fixture;
+use common::{disable_platform_keystore_for_tests, load_fixture};
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
@@ -28,31 +28,26 @@ use scryer_infrastructure::{
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const TOSHO_EMPTY: &str = "[]";
 const NEWZNAB_EMPTY: &str = r#"{"channel":{"item":[]}}"#;
 
-/// Build a full AppUseCase with AnimeTosho, NZBGeek, and Torznab plugins,
+/// Build a full AppUseCase with NZBGeek and Torznab plugins,
 /// each backed by its own wiremock server. Creates indexer configs in SQLite
 /// so the multi-indexer discovers them at search time.
 async fn setup() -> (
     AppUseCase,
     User,
-    MockServer, // tosho
-    MockServer, // nzbgeek
+    MockServer, // newznab
     MockServer, // torznab
 ) {
-    let tosho_server = MockServer::start().await;
-    let nzbgeek_server = MockServer::start().await;
+    disable_platform_keystore_for_tests();
+
+    let newznab_server = MockServer::start().await;
     let torznab_server = MockServer::start().await;
 
     // Mount catch-all empty responses
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(TOSHO_EMPTY))
-        .mount(&tosho_server)
-        .await;
-    Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string(NEWZNAB_EMPTY))
-        .mount(&nzbgeek_server)
+        .mount(&newznab_server)
         .await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string(NEWZNAB_EMPTY))
@@ -87,9 +82,7 @@ async fn setup() -> (
     // Load the remaining bundled indexer plugins.
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
         Arc::new(scryer_plugins::DynamicPluginProvider::new(
-            scryer_plugins::WasmIndexerPluginProvider::empty()
-                .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
-                .with_builtin_asset(scryer_plugins::builtins::TORZNAB),
+            scryer_plugins::build_indexer_plugin_provider(&[], &[]),
         ));
 
     let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> =
@@ -106,10 +99,10 @@ async fn setup() -> (
     let now = chrono::Utc::now();
     for config in [
         scryer_domain::IndexerConfig {
-            id: "nzbgeek-1".into(),
-            name: "NZBGeek".into(),
-            provider_type: "nzbgeek".into(),
-            base_url: format!("{}/api", nzbgeek_server.uri()),
+            id: "newznab-1".into(),
+            name: "Newznab".into(),
+            provider_type: "newznab".into(),
+            base_url: format!("{}/api", newznab_server.uri()),
             api_key_encrypted: Some("test-api-key".into()),
             is_enabled: true,
             enable_interactive_search: true,
@@ -125,7 +118,7 @@ async fn setup() -> (
             last_error_at: None,
             config_json: Some(
                 serde_json::json!({
-                    "base_url": format!("{}/api", nzbgeek_server.uri()),
+                    "base_url": format!("{}/api", newznab_server.uri()),
                     "api_key": "test-api-key",
                 })
                 .to_string(),
@@ -208,11 +201,9 @@ async fn setup() -> (
 
     let smg = scryer_infrastructure::MetadataGatewayClient::new(
         "http://localhost:2/graphql".to_string(),
-        true,
         db.clone(),
         scryer_infrastructure::SmgEnrollmentConfig {
             registration_secret: None,
-            ca_cert: None,
         },
     );
 
@@ -309,6 +300,7 @@ async fn setup() -> (
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
 
@@ -321,7 +313,7 @@ async fn setup() -> (
         ..Default::default()
     };
 
-    (app, user, tosho_server, nzbgeek_server, torznab_server)
+    (app, user, newznab_server, torznab_server)
 }
 
 async fn add_search_title(
@@ -376,14 +368,10 @@ fn print_urls(label: &str, urls: &[String]) {
     }
 }
 
-fn print_summary(tosho: &[String], nzbgeek: &[String], torznab: &[String]) {
-    print_urls("AnimeTosho", tosho);
-    print_urls("NZBGeek", nzbgeek);
+fn print_summary(newznab: &[String], torznab: &[String]) {
+    print_urls("Newznab", newznab);
     print_urls("Torznab", torznab);
-    println!(
-        "  Total HTTP calls: {}",
-        tosho.len() + nzbgeek.len() + torznab.len()
-    );
+    println!("  Total HTTP calls: {}", newznab.len() + torznab.len());
 }
 
 fn assert_id_only_then_fallback(urls: &[String], id_fragment: &str, fallback_query_fragment: &str) {
@@ -416,7 +404,7 @@ fn assert_id_only_then_fallback(urls: &[String], id_fragment: &str, fallback_que
 
 #[tokio::test]
 async fn multi_indexer_url_trace_anime_episode() {
-    let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let (app, user, newznab, torznab) = setup().await;
     let title_id = add_search_title(
         &app,
         &user,
@@ -433,8 +421,7 @@ async fn multi_indexer_url_trace_anime_episode() {
 
     println!("\n=== Blade Summit S02E03 (anime, anidb=1535, tvdb=348545) ===");
     print_summary(
-        &captured_urls(&tosho).await,
-        &captured_urls(&nzbgeek).await,
+        &captured_urls(&newznab).await,
         &captured_urls(&torznab).await,
     );
 }
@@ -445,7 +432,7 @@ async fn multi_indexer_url_trace_anime_episode() {
 
 #[tokio::test]
 async fn multi_indexer_url_trace_series_episode() {
-    let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let (app, user, newznab, torznab) = setup().await;
     let title_id = add_search_title(
         &app,
         &user,
@@ -460,18 +447,13 @@ async fn multi_indexer_url_trace_series_episode() {
         .await
         .expect("search should succeed");
 
-    let tosho_urls = captured_urls(&tosho).await;
-    let nzbgeek_urls = captured_urls(&nzbgeek).await;
+    let newznab_urls = captured_urls(&newznab).await;
     let torznab_urls = captured_urls(&torznab).await;
 
     println!("\n=== Cinder Line S05E01 (series, tvdb=81189) ===");
-    print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
+    print_summary(&newznab_urls, &torznab_urls);
 
-    assert!(
-        tosho_urls.is_empty(),
-        "AnimeTosho should not handle series searches"
-    );
-    assert_id_only_then_fallback(&nzbgeek_urls, "tvdbid=81189", "q=Cinder+Line");
+    assert_id_only_then_fallback(&newznab_urls, "tvdbid=81189", "q=Cinder+Line");
     assert_id_only_then_fallback(&torznab_urls, "tvdbid=81189", "q=Cinder+Line");
 }
 
@@ -481,7 +463,7 @@ async fn multi_indexer_url_trace_series_episode() {
 
 #[tokio::test]
 async fn multi_indexer_url_trace_movie() {
-    let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let (app, user, newznab, torznab) = setup().await;
     let title_id = add_search_title(
         &app,
         &user,
@@ -496,18 +478,13 @@ async fn multi_indexer_url_trace_movie() {
         .await
         .expect("search should succeed");
 
-    let tosho_urls = captured_urls(&tosho).await;
-    let nzbgeek_urls = captured_urls(&nzbgeek).await;
+    let newznab_urls = captured_urls(&newznab).await;
     let torznab_urls = captured_urls(&torznab).await;
 
     println!("\n=== Lattice Zero (movie, imdb=tt0133093) ===");
-    print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
+    print_summary(&newznab_urls, &torznab_urls);
 
-    assert!(
-        tosho_urls.is_empty(),
-        "AnimeTosho should not handle non-anime movie searches"
-    );
-    assert_id_only_then_fallback(&nzbgeek_urls, "imdbid=000133093", "q=Lattice+Zero");
+    assert_id_only_then_fallback(&newznab_urls, "imdbid=000133093", "q=Lattice+Zero");
     assert_id_only_then_fallback(&torznab_urls, "imdbid=000133093", "q=Lattice+Zero");
 }
 
@@ -517,7 +494,7 @@ async fn multi_indexer_url_trace_movie() {
 
 #[tokio::test]
 async fn multi_indexer_url_trace_movie_lantern_tide() {
-    let (app, user, tosho, nzbgeek, torznab) = setup().await;
+    let (app, user, newznab, torznab) = setup().await;
     let title_id = add_search_title(
         &app,
         &user,
@@ -530,16 +507,16 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
     )
     .await;
 
-    let nzbgeek_fixture = load_fixture("nzbgeek/search_movie.json").replace(
+    let newznab_fixture = load_fixture("nzbgeek/search_movie.json").replace(
         "Movie.Title.2024.2160p.UHD.BluRay.REMUX.DV.HDR.DTS-HD.MA.7.1.HEVC-GROUP",
         "Lantern.Tide.Hidden.Current.2001.1080p.BluRay",
     );
     Mock::given(method("GET"))
         .and(path("/api/api"))
         .and(query_param("imdbid", "000245429"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(nzbgeek_fixture))
+        .respond_with(ResponseTemplate::new(200).set_body_string(newznab_fixture))
         .with_priority(1)
-        .mount(&nzbgeek)
+        .mount(&newznab)
         .await;
 
     let _results = app
@@ -547,14 +524,13 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
         .await
         .expect("search should succeed");
 
-    let tosho_urls = captured_urls(&tosho).await;
-    let nzbgeek_urls = captured_urls(&nzbgeek).await;
+    let newznab_urls = captured_urls(&newznab).await;
     let torznab_urls = captured_urls(&torznab).await;
 
     println!("\n=== Lantern Tide (movie, imdb=tt0245429, anidb=112) ===");
-    print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
+    print_summary(&newznab_urls, &torznab_urls);
     assert_id_only_then_fallback(
-        &nzbgeek_urls,
+        &newznab_urls,
         "imdbid=000245429",
         "q=Lantern+Tide%3A+Hidden+Current",
     );

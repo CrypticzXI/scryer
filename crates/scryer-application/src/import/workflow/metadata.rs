@@ -1,0 +1,16 @@
+fn parsed_with_quality_override(
+    parsed: &crate::ParsedReleaseMetadata,
+    quality_label: Option<&str>,
+) -> crate::ParsedReleaseMetadata {
+    let mut effective = parsed.clone();
+    if let Some(quality_label) = quality_label {
+        effective.quality = Some(quality_label.to_string());
+    }
+    effective
+}
+fn clear_unusable_release_title_signal(parsed: &mut ParsedReleaseMetadata) {
+    if !has_usable_release_title_signal(parsed) {
+        parsed.normalized_title.clear();
+        parsed.normalized_title_variants.clear();
+    }
+}

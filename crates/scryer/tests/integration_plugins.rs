@@ -13,6 +13,7 @@ fn admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageSystemSettings,
@@ -76,7 +77,30 @@ fn catalog_plugin_entry(
     builtin: bool,
     wasm_url: Option<String>,
 ) -> serde_json::Value {
-    const TEST_SDK_CONSTRAINT: &str = ">=1.6.0, <1.7.0";
+    let test_sdk_constraint =
+        scryer_plugins::sdk_constraint_or_legacy(scryer_plugins::SDK_VERSION, "");
+    let releases = if builtin || wasm_url.is_none() {
+        serde_json::json!([])
+    } else {
+        let wasm_url = wasm_url
+            .as_deref()
+            .expect("downloadable test catalog plugin should have an artifact URL");
+        serde_json::json!([{
+            "version": version,
+            "sdk_constraint": test_sdk_constraint,
+            "artifacts": [{
+                "runtime": "wasm32-wasip1",
+                "required_features": [],
+                "url": wasm_url,
+                "mirror_urls": [],
+                "signature_url": format!("{wasm_url}.bundle.json"),
+                "signature_mirror_urls": [],
+                "digests": ["sha256:0000000000000000000000000000000000000000000000000000000000000000"],
+                "wasm_digests": ["sha256:1111111111111111111111111111111111111111111111111111111111111111"],
+                "bytes": 1024,
+            }],
+        }])
+    };
 
     serde_json::json!({
         "id": plugin_id,
@@ -87,21 +111,13 @@ fn catalog_plugin_entry(
         "official": true,
         "publisher": "scryer",
         "support_tier": "official",
+        "status": "active",
         "docs_url": format!("https://example.com/{plugin_id}/docs"),
         "source_repo": format!("https://github.com/scryer-media/test-plugin-{}", plugin_id.replace('_', "-")),
-        "releases": if builtin || wasm_url.is_none() {
-            serde_json::json!([])
-        } else {
-            serde_json::json!([{
-                "version": version,
-                "sdk_constraint": TEST_SDK_CONSTRAINT,
-                "artifact_manifest_url": format!(
-                    "https://github.com/scryer-media/test-plugin-{}/releases/download/v{}/plugin.manifest.json",
-                    plugin_id.replace('_', "-"),
-                    version
-                ),
-            }])
+        "required_signer": {
+            "github_repository": format!("scryer-media/test-plugin-{}", plugin_id.replace('_', "-"))
         },
+        "releases": releases,
     })
 }
 
@@ -122,21 +138,18 @@ async fn seed_official_catalog(
                 "provider_type": entry["provider_type"].as_str().expect("provider_type"),
                 "publisher": "scryer",
                 "support_tier": "official",
+                "status": entry["status"].as_str().expect("status"),
                 "docs_url": entry["docs_url"].as_str().expect("docs_url"),
                 "source_repo": source_repo,
-                "child_catalog_url": format!(
-                    "https://github.com/scryer-media/test-plugin-{}/releases/download/v0.1.0/catalog-v2.min.json.zst",
-                    id.replace('_', "-")
-                ),
-                "required_signer": {
-                    "github_repository": format!("scryer-media/test-plugin-{}", id.replace('_', "-"))
-                }
+                "required_signer": entry["required_signer"].clone(),
+                "releases": entry["releases"].clone(),
             })
         })
         .collect::<Vec<_>>();
 
     let central_catalog = serde_json::json!({
-        "schema_version": "scryer.plugin.catalog.v2",
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
         "plugins": central_plugins,
         "rule_packs": [],
     })
@@ -144,9 +157,9 @@ async fn seed_official_catalog(
 
     ctx.customization
         .upsert_plugin_catalog_source(&scryer_domain::PluginCatalogSource {
-            source_key: "__central_catalog_v2".to_string(),
+            source_key: "__central_catalog".to_string(),
             source_kind: "central".to_string(),
-            source_url: "https://example.com/catalog-v2.min.json.zst".to_string(),
+            source_url: "https://example.com/catalog-v3.min.json.zst".to_string(),
             github_repo: Some("scryer-media/scryer-plugins".to_string()),
             support_tier: scryer_domain::PluginSupportTier::Official,
             catalog_json: Some(central_catalog),
@@ -155,38 +168,6 @@ async fn seed_official_catalog(
             updated_at: chrono::Utc::now(),
         })
         .await?;
-
-    for entry in entries {
-        let id = entry["id"].as_str().expect("id");
-        let child_catalog = serde_json::json!({
-            "schema_version": "scryer.plugin.child_catalog.v2",
-            "id": id,
-            "name": entry["name"].as_str().expect("name"),
-            "description": entry["description"].as_str().expect("description"),
-            "plugin_type": entry["plugin_type"].as_str().expect("plugin_type"),
-            "provider_type": entry["provider_type"].as_str().expect("provider_type"),
-            "publisher": "scryer",
-            "support_tier": "official",
-            "docs_url": entry["docs_url"].as_str().expect("docs_url"),
-            "source_repo": entry["source_repo"].as_str().expect("source_repo"),
-            "releases": entry["releases"].clone(),
-        })
-        .to_string();
-
-        ctx.customization
-            .upsert_plugin_catalog_source(&scryer_domain::PluginCatalogSource {
-                source_key: format!("child:{id}"),
-                source_kind: "child".to_string(),
-                source_url: format!("https://example.com/{id}/catalog-v2.min.json.zst"),
-                github_repo: Some(format!("scryer-media/test-plugin-{}", id.replace('_', "-"))),
-                support_tier: scryer_domain::PluginSupportTier::Official,
-                catalog_json: Some(child_catalog),
-                last_success_at: Some(chrono::Utc::now()),
-                last_error: None,
-                updated_at: chrono::Utc::now(),
-            })
-            .await?;
-    }
 
     Ok(())
 }
@@ -283,11 +264,11 @@ async fn seed_builtins_creates_installations() {
     ctx.app.seed_builtin_plugins().await.unwrap();
 
     let installations = ctx.customization.list_plugin_installations().await.unwrap();
-    assert_eq!(installations.len(), 2, "should have nzbgeek + newznab");
+    assert_eq!(installations.len(), 2, "should have newznab + torznab");
 
     let ids: Vec<&str> = installations.iter().map(|i| i.plugin_id.as_str()).collect();
-    assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"newznab"));
+    assert!(ids.contains(&"torznab"));
 
     for inst in &installations {
         assert!(inst.is_builtin);
@@ -350,9 +331,8 @@ async fn seed_builtins_prunes_removed_builtin_installations() {
     );
     assert!(!ids.contains(&"opensubtitles"));
     assert!(!ids.contains(&"whisper"));
-    assert!(!ids.contains(&"dognzb"));
-    assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"newznab"));
+    assert!(ids.contains(&"torznab"));
 }
 
 // ── list_available_plugins ───────────────────────────────────────────────────
@@ -366,24 +346,24 @@ async fn list_available_with_builtins_and_catalog_v2() {
         &ctx,
         &[
             catalog_plugin_entry(
-                "nzbgeek",
-                "NZBGeek",
-                "NZBGeek indexer",
+                "torznab",
+                "Torznab",
+                "Torznab indexer",
                 "indexer",
-                "nzbgeek",
-                "0.2.0",
+                "torznab",
+                "0.1.0",
                 true,
                 None,
             ),
             catalog_plugin_entry(
-                "animetosho",
-                "AnimeTosho",
-                "AnimeTosho indexer",
+                "example-indexer",
+                "Example Indexer",
+                "Example indexer",
                 "indexer",
-                "animetosho",
+                "example_indexer",
                 "0.1.0",
                 false,
-                Some("https://example.com/animetosho.wasm".to_string()),
+                Some("https://example.com/example-indexer.wasm.zst".to_string()),
             ),
         ],
     )
@@ -392,18 +372,18 @@ async fn list_available_with_builtins_and_catalog_v2() {
 
     let result = ctx.app.list_available_plugins(&admin()).await.unwrap();
 
-    // Should have nzbgeek (installed+builtin), newznab (installed+builtin),
-    // and animetosho (not installed, catalog-available)
+    // Should have newznab and torznab (installed+builtin),
+    // and example-indexer (not installed, catalog-available)
     assert!(result.len() >= 3, "got {} plugins", result.len());
 
-    let nzbgeek = result.iter().find(|p| p.id == "nzbgeek").unwrap();
-    assert!(nzbgeek.is_installed);
-    assert!(nzbgeek.builtin);
+    let torznab = result.iter().find(|p| p.id == "torznab").unwrap();
+    assert!(torznab.is_installed);
+    assert!(torznab.builtin);
 
-    let animetosho = result.iter().find(|p| p.id == "animetosho").unwrap();
-    assert!(!animetosho.is_installed);
-    assert!(!animetosho.builtin);
-    assert!(animetosho.wasm_url.is_some());
+    let example = result.iter().find(|p| p.id == "example-indexer").unwrap();
+    assert!(!example.is_installed);
+    assert!(!example.builtin);
+    assert!(example.wasm_url.is_some());
 }
 
 #[tokio::test]
@@ -444,21 +424,21 @@ async fn toggle_builtin_disables_and_rebuilds() {
 
     // Initially both builtins should be available as provider types
     let types_before = available_provider_types(&ctx.app, "indexer");
-    assert!(types_before.contains(&"nzbgeek".to_string()));
+    assert!(types_before.contains(&"torznab".to_string()));
 
-    // Disable nzbgeek
+    // Disable torznab
     let toggled = ctx
         .app
-        .toggle_plugin(&admin(), "nzbgeek", false)
+        .toggle_plugin(&admin(), "torznab", false)
         .await
         .unwrap();
     assert!(!toggled.is_enabled);
 
-    // After toggle, reload_plugins is called → nzbgeek should be gone from provider types
+    // After toggle, reload_plugins is called, so torznab should be gone from provider types.
     let types_after = available_provider_types(&ctx.app, "indexer");
     assert!(
-        !types_after.contains(&"nzbgeek".to_string()),
-        "nzbgeek should be disabled in provider"
+        !types_after.contains(&"torznab".to_string()),
+        "torznab should be disabled in provider"
     );
     assert!(
         types_after.contains(&"newznab".to_string()),
@@ -468,15 +448,15 @@ async fn toggle_builtin_disables_and_rebuilds() {
     // Re-enable
     let re_enabled = ctx
         .app
-        .toggle_plugin(&admin(), "nzbgeek", true)
+        .toggle_plugin(&admin(), "torznab", true)
         .await
         .unwrap();
     assert!(re_enabled.is_enabled);
 
     let types_final = available_provider_types(&ctx.app, "indexer");
     assert!(
-        types_final.contains(&"nzbgeek".to_string()),
-        "nzbgeek should be back"
+        types_final.contains(&"torznab".to_string()),
+        "torznab should be back"
     );
 }
 
@@ -487,7 +467,7 @@ async fn toggle_updates_timestamp() {
 
     let before = ctx
         .customization
-        .get_plugin_installation("nzbgeek")
+        .get_plugin_installation("torznab")
         .await
         .unwrap()
         .unwrap();
@@ -496,13 +476,13 @@ async fn toggle_updates_timestamp() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     ctx.app
-        .toggle_plugin(&admin(), "nzbgeek", false)
+        .toggle_plugin(&admin(), "torznab", false)
         .await
         .unwrap();
 
     let after = ctx
         .customization
-        .get_plugin_installation("nzbgeek")
+        .get_plugin_installation("torznab")
         .await
         .unwrap()
         .unwrap();
@@ -520,8 +500,7 @@ async fn reconcile_noop_for_builtins_without_default_url() {
     let ctx = TestContext::new().await;
     ctx.app.seed_builtin_plugins().await.unwrap();
 
-    // newznab has no default URL, and nzbgeek is intentionally skipped from
-    // auto-creation because it still needs a manual API key.
+    // Built-in indexers have no default URL and still need manual connection settings.
     ctx.app.reconcile_indexer_configs().await.unwrap();
 
     let configs = ctx.app.list_indexer_configs(&admin(), None).await.unwrap();
@@ -540,7 +519,7 @@ async fn uninstall_builtin_rejected() {
 
     let err = ctx
         .app
-        .uninstall_plugin(&admin(), "nzbgeek")
+        .uninstall_plugin(&admin(), "torznab")
         .await
         .unwrap_err();
     assert!(
@@ -558,8 +537,8 @@ async fn available_provider_types_includes_builtins() {
     let types = available_provider_types(&ctx.app, "indexer");
 
     assert!(
-        types.contains(&"nzbgeek".to_string()),
-        "nzbgeek should be a built-in provider type"
+        types.contains(&"torznab".to_string()),
+        "torznab should be a built-in provider type"
     );
     assert!(
         types.contains(&"newznab".to_string()),

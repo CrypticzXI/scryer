@@ -46,14 +46,83 @@ export function hasLibraryPermission(
   if (!user || !libraryId) {
     return false;
   }
-  return user.libraryPermissions.some(
-    (grant) => grant.libraryId === libraryId && grant.permissions.includes(permission),
-  );
+  return user.libraryPermissions.some((grant) => {
+    if (grant.libraryId !== libraryId) {
+      return false;
+    }
+    return libraryPermissionMatches(grant.permissions, permission);
+  });
 }
 
 export function hasAnyLibraryPermission(
   user: PermissionUser | null | undefined,
   permission: LibraryPermission,
 ): boolean {
-  return user?.libraryPermissions.some((grant) => grant.permissions.includes(permission)) === true;
+  return user?.libraryPermissions.some((grant) =>
+    libraryPermissionMatches(grant.permissions, permission),
+  ) === true;
+}
+
+export function libraryPermissionsWithRequestShadowing(values: string[]): string[] {
+  const next = new Set(values);
+  if (next.has(LIBRARY_PERMISSIONS.manageTitles)) {
+    next.add(LIBRARY_PERMISSIONS.autoApproveRequests);
+    next.add(LIBRARY_PERMISSIONS.request);
+  } else if (next.has(LIBRARY_PERMISSIONS.autoApproveRequests)) {
+    next.add(LIBRARY_PERMISSIONS.request);
+  }
+  return Array.from(next);
+}
+
+export function normalizeLibraryPermissionsForStorage(values: string[]): string[] {
+  const next = new Set(values);
+  if (next.has(LIBRARY_PERMISSIONS.manageTitles)) {
+    next.delete(LIBRARY_PERMISSIONS.autoApproveRequests);
+    next.delete(LIBRARY_PERMISSIONS.request);
+  } else if (next.has(LIBRARY_PERMISSIONS.autoApproveRequests)) {
+    next.delete(LIBRARY_PERMISSIONS.request);
+  }
+  return Array.from(next);
+}
+
+export function libraryPermissionShadowSource(
+  explicitValues: string[],
+  permission: string,
+): string | null {
+  const explicit = new Set(explicitValues);
+  if (
+    (permission === LIBRARY_PERMISSIONS.request ||
+      permission === LIBRARY_PERMISSIONS.autoApproveRequests) &&
+    explicit.has(LIBRARY_PERMISSIONS.manageTitles)
+  ) {
+    return "Manage Titles";
+  }
+  if (
+    permission === LIBRARY_PERMISSIONS.request &&
+    explicit.has(LIBRARY_PERMISSIONS.autoApproveRequests)
+  ) {
+    return "Auto-Approve Requests";
+  }
+  return null;
+}
+
+function libraryPermissionMatches(
+  values: LibraryPermission[],
+  permission: LibraryPermission,
+): boolean {
+  const explicit = new Set<string>(values);
+  switch (permission) {
+    case LIBRARY_PERMISSIONS.request:
+      return (
+        !explicit.has(LIBRARY_PERMISSIONS.manageTitles) &&
+        libraryPermissionsWithRequestShadowing(values).includes(permission)
+      );
+    case LIBRARY_PERMISSIONS.autoApproveRequests:
+      return (
+        !explicit.has(LIBRARY_PERMISSIONS.manageTitles) &&
+        libraryPermissionsWithRequestShadowing(values).includes(permission)
+      );
+    default:
+      return explicit.has(permission);
+  }
 }

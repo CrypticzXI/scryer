@@ -3,16 +3,17 @@ use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, EpisodeUpdate, HousekeepingRepository, ImportRepository,
-    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
-    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
-    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
+    HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
+    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
+    SubmissionScope, SubtitleDownloadRepository, SubtitleProviderConfigRepository,
+    SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
+    WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -341,7 +342,7 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
         .expect("seed builtin install");
 
     let removed = customization
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(false)
         .await
         .expect("cleanup incompatible external installs");
 
@@ -443,7 +444,7 @@ async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
         source_repo: Some("https://github.com/example/email".to_string()),
         manifest_url: Some("https://example.com/email.manifest.json".to_string()),
         wasm_digest: Some("abcdef0123456789".to_string()),
-        artifact_digest: Some("sha256:artifact".to_string()),
+        artifact_digest: Some("digest:artifact".to_string()),
         descriptor_json: Some(test_descriptor_json(
             "email",
             "1.0.0",
@@ -509,7 +510,7 @@ async fn plugin_catalog_source_rows_survive_cleanup() {
     );
 
     let removed = customization
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(false)
         .await
         .expect("cleanup incompatible external installs");
     assert!(removed.is_empty());
@@ -643,10 +644,9 @@ async fn list_imports_for_identities_handles_multiple_pairs() {
     let _ = std::fs::remove_file(db);
 }
 
-#[tokio::test]
-async fn queue_import_request_reuses_existing_row_for_same_identity() {
+async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, ImportStore) {
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(max_connections)
         .connect("sqlite::memory:")
         .await
         .expect("pool should initialize");
@@ -661,6 +661,7 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
             payload_json TEXT NOT NULL,
             result_json TEXT,
             rename_plan_json TEXT,
+            download_id TEXT,
             started_at TEXT,
             finished_at TEXT,
             created_at TEXT NOT NULL,
@@ -672,16 +673,33 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
     .expect("imports table should create");
     sqlx::query(
         "CREATE UNIQUE INDEX idx_imports_source_ref
-         ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type)",
+         ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type)
+         WHERE download_id IS NULL",
     )
     .execute(&pool)
     .await
     .expect("imports identity index should create");
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_imports_active_download_id
+         ON imports (COALESCE(source_client_id, ''), source_system, download_id)
+         WHERE download_id IS NOT NULL
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .execute(&pool)
+    .await
+    .expect("active download identity index should create");
 
     let workflow = ImportStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
         pool: pool.clone(),
         writer_gate: Arc::new(tokio::sync::Mutex::new(())),
     });
+
+    (pool, workflow)
+}
+
+#[tokio::test]
+async fn queue_import_request_reuses_existing_row_for_same_identity() {
+    let (pool, workflow) = import_store_test_harness(1).await;
     let identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000");
 
     let first_id = workflow
@@ -736,6 +754,208 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
     .await
     .expect("import count should load");
     assert_eq!(row_count, 1);
+
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:store-test".to_string()),
+    };
+    let durable_source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10001");
+    let durable_import_id = workflow
+        .queue_import_request_with_identity(
+            durable_source_identity.clone(),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":1}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("durable import should queue");
+    workflow
+        .update_import_status(&durable_import_id, ImportStatus::Completed, None)
+        .await
+        .expect("durable import should complete");
+
+    assert!(
+        workflow
+            .is_already_imported_by_download_id(&durable_source_identity, &download_identity)
+            .await
+            .expect("identity import lookup should succeed")
+    );
+}
+
+#[tokio::test]
+async fn queue_import_request_with_download_id_reuses_active_row_only() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:active-dedupe".to_string()),
+    };
+
+    let first_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-a"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":1}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("first durable import should queue");
+    let second_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-b"),
+            ImportType::SeriesDownload.as_str().to_string(),
+            "{\"attempt\":2}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("active duplicate durable import should reuse existing row");
+
+    assert_eq!(second_id, first_id);
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE COALESCE(source_client_id, '') = 'client-a'
+           AND source_system = 'weaver'
+           AND download_id = 'scryer-download:active-dedupe'
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("active import count should load");
+    assert_eq!(active_count, 1);
+
+    workflow
+        .update_import_status(&first_id, ImportStatus::Completed, None)
+        .await
+        .expect("first durable import should complete");
+    let third_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-c"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{\"attempt\":3}".to_string(),
+            Some(download_identity),
+        )
+        .await
+        .expect("completed durable import should not block a new active row");
+
+    assert_ne!(third_id, first_id);
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE COALESCE(source_client_id, '') = 'client-a'
+           AND source_system = 'weaver'
+           AND download_id = 'scryer-download:active-dedupe'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("total import count should load");
+    assert_eq!(total_count, 2);
+}
+
+#[tokio::test]
+async fn queue_import_request_with_download_id_scopes_active_rows_by_client_and_source() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:scoped-active".to_string()),
+    };
+
+    let client_a_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-a"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("client-a import should queue");
+    let client_b_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "job-b"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity.clone()),
+        )
+        .await
+        .expect("client-b import should queue");
+    let other_source_id = workflow
+        .queue_import_request_with_identity(
+            DownloadSourceIdentity::new(Some("client-a"), "sabnzbd", "job-c"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(download_identity),
+        )
+        .await
+        .expect("other source import should queue");
+
+    assert_ne!(client_a_id, client_b_id);
+    assert_ne!(client_a_id, other_source_id);
+    assert_ne!(client_b_id, other_source_id);
+
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE download_id = 'scryer-download:scoped-active'
+           AND status IN ('pending', 'running', 'processing')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("active import count should load");
+    assert_eq!(active_count, 3);
+}
+
+#[tokio::test]
+async fn active_download_identity_unique_index_blocks_duplicate_active_rows() {
+    let (pool, _) = import_store_test_harness(1).await;
+    let now = Utc::now().to_rfc3339();
+    let insert_sql = "INSERT INTO imports
+        (id, source_client_id, source_system, source_ref, import_type, status, payload_json, download_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    sqlx::query(insert_sql)
+        .bind("active-index-first")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-a")
+        .bind(ImportType::MovieDownload.as_str())
+        .bind(ImportStatus::Pending.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("first active import should insert");
+
+    let duplicate = sqlx::query(insert_sql)
+        .bind("active-index-second")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-b")
+        .bind(ImportType::SeriesDownload.as_str())
+        .bind(ImportStatus::Running.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await;
+    assert!(duplicate.is_err());
+
+    sqlx::query("UPDATE imports SET status = ? WHERE id = ?")
+        .bind(ImportStatus::Completed.as_str())
+        .bind("active-index-first")
+        .execute(&pool)
+        .await
+        .expect("first active import should complete");
+
+    sqlx::query(insert_sql)
+        .bind("active-index-second")
+        .bind("client-a")
+        .bind("weaver")
+        .bind("job-b")
+        .bind(ImportType::SeriesDownload.as_str())
+        .bind(ImportStatus::Pending.as_str())
+        .bind("{}")
+        .bind("scryer-download:index-guard")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("completed import should not block a new active row");
 }
 
 #[test]
@@ -857,6 +1077,79 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
         .expect("legacy lookup should succeed")
         .expect("legacy row should still be discoverable by a legacy identity");
     assert_eq!(legacy_lookup.title_id, "legacy-title");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_item_id() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_reused_item_identity_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSourceIdentity::new(None, "weaver", "10010");
+
+    workflow
+        .record_submission(DownloadSubmission {
+            title_id: "title-1".to_string(),
+            facet: "series".to_string(),
+            download_client_id: None,
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "10010".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Old.Release.S01E05".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Episode {
+                episode_id: "episode-5".to_string(),
+            },
+        })
+        .await
+        .expect("old submission should persist");
+    workflow
+        .update_tracked_state(&identity, "imported")
+        .await
+        .expect("old terminal state should persist");
+
+    workflow
+        .record_submission_with_identity(
+            DownloadSubmission {
+                title_id: "title-1".to_string(),
+                facet: "series".to_string(),
+                download_client_id: None,
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: "10010".to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Fresh.Release.S01E07".to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: "episode-7".to_string(),
+                },
+            },
+            DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:fresh".to_string()),
+            },
+        )
+        .await
+        .expect("fresh submission identity should persist");
+
+    let tracked_state = workflow
+        .get_tracked_state(&identity)
+        .await
+        .expect("tracked state lookup should succeed");
+    assert_eq!(tracked_state, None);
+
+    let fresh = workflow
+        .find_by_download_id(None, "weaver", "scryer-download:fresh")
+        .await
+        .expect("download id lookup should succeed")
+        .expect("fresh download id should be indexed");
+    assert_eq!(fresh.source_title.as_deref(), Some("Fresh.Release.S01E07"));
 
     let _ = std::fs::remove_file(db);
 }
@@ -1229,6 +1522,7 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         name: "Discord".to_string(),
         channel_type: ChannelType::parse("discord").expect("channel type"),
         config_json: r#"{"url":"https://example.com/webhook"}"#.to_string(),
+        media_server_connection_id: None,
         is_enabled: true,
         created_at: now,
         updated_at: now,
@@ -1258,7 +1552,9 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
 
     let subscription = NotificationSubscription {
         id: "subscription-1".to_string(),
-        channel_id: updated.id.clone(),
+        channel_id: Some(updated.id.clone()),
+        target_kind: scryer_domain::NotificationTargetKind::PluginChannel,
+        target_id: updated.id.clone(),
         event_type: NotificationEventType::ImportComplete,
         scope: "global".to_string(),
         scope_id: None,
@@ -1496,6 +1792,67 @@ async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_t
     let _ = std::fs::remove_file(db);
 }
 
+#[tokio::test]
+async fn release_attempt_queries_exclude_pending_attempts_from_failed_signatures() {
+    let (services, db) = temp_services("scryer_release_pending_excluded").await;
+    let release_store = ReleaseStore::new(services.datastore());
+    let catalog = title_store(&services);
+
+    catalog
+        .create_or_get_existing(make_test_title("title-pending", None))
+        .await
+        .expect("title should insert");
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-pending".to_string()),
+        Some("client-unavailable".to_string()),
+        Some("Deferred.Movie.2024.1080p.WEB-DL-GRP".to_string()),
+        ReleaseDownloadAttemptOutcome::Pending,
+        Some("download client unavailable".to_string()),
+        None,
+    )
+    .await
+    .expect("pending release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert!(failures.is_empty());
+
+    let title_failures = ReleaseAttemptRepository::list_failed_release_signatures_for_title(
+        &release_store,
+        "title-pending",
+        10,
+    )
+    .await
+    .expect("title failed signatures should list");
+    assert!(title_failures.is_empty());
+
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        Some("title-pending".to_string()),
+        Some("release-rejected".to_string()),
+        Some("Rejected.Movie.2024.1080p.WEB-DL-GRP".to_string()),
+        ReleaseDownloadAttemptOutcome::Failed,
+        Some("release rejected".to_string()),
+        None,
+    )
+    .await
+    .expect("failed release attempt should record");
+
+    let failures = ReleaseAttemptRepository::list_failed_release_signatures(&release_store, 10)
+        .await
+        .expect("failed signatures should list");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].source_title.as_deref(),
+        Some("Rejected.Movie.2024.1080p.WEB-DL-GRP")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
 fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     Title {
         id: id.to_string(),
@@ -1511,8 +1868,6 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         overview: Some("overview".to_string()),
         poster_url: poster_url.map(str::to_string),
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -1730,6 +2085,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         absolute_number: Some("47".to_string()),
         overview: None,
         tvdb_id: Some("1234567".to_string()),
+        image_url: None,
         monitored: true,
         created_at: Utc::now(),
     };
@@ -1824,6 +2180,211 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
             .await
             .expect("migration statement should succeed");
     }
+}
+
+fn rolled_up_migration_section<'a>(rollup: &'a str, original_file: &str) -> &'a str {
+    let marker = format!("-- Rolled up from {original_file}\n");
+    let start = rollup
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing rollup section for {original_file}"))
+        + marker.len();
+    let rest = &rollup[start..];
+    let end = rest.find("\n-- Rolled up from ").unwrap_or(rest.len());
+    &rest[..end]
+}
+
+#[tokio::test]
+async fn release_metadata_enum_canonicalization_migration_normalizes_legacy_values() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE media_files (
+            id TEXT PRIMARY KEY,
+            source_type TEXT,
+            video_codec TEXT,
+            video_codec_parsed TEXT,
+            audio_codec_parsed TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("media_files fixture table should be created");
+
+    for statement in [
+        "CREATE TABLE quality_profile_source_allowlist (
+            profile_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, source)
+        )",
+        "CREATE TABLE quality_profile_source_blocklist (
+            profile_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, source)
+        )",
+        "CREATE TABLE quality_profile_audio_codec_allowlist (
+            profile_id TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, codec)
+        )",
+        "CREATE TABLE quality_profile_audio_codec_blocklist (
+            profile_id TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, codec)
+        )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("quality profile fixture table should be created");
+    }
+
+    sqlx::query(
+        "INSERT INTO media_files
+            (id, source_type, video_codec, video_codec_parsed, audio_codec_parsed)
+         VALUES
+            ('known', 'webdl', 'x264', 'HEVC', 'DTS-HD MA'),
+            ('unknown', 'mystery-source', 'mystery-video', 'mystery-parsed', 'mystery-audio')",
+    )
+    .execute(&pool)
+    .await
+    .expect("media file fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_source_allowlist(profile_id, source, created_at)
+         VALUES
+            ('p1', 'webdl', '2026-01-01T00:00:00Z'),
+            ('p1', 'WEB-DL', '2026-01-02T00:00:00Z'),
+            ('p1', 'not-a-source', '2026-01-03T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("source allowlist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_source_blocklist(profile_id, source, created_at)
+         VALUES
+            ('p1', 'bdmv', '2026-01-01T00:00:00Z'),
+            ('p1', 'BRDISK', '2026-01-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("source blocklist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_audio_codec_allowlist(profile_id, codec, created_at)
+         VALUES
+            ('p1', 'DTS-HD MA', '2026-01-01T00:00:00Z'),
+            ('p1', 'DTSMA', '2026-01-02T00:00:00Z'),
+            ('p1', 'not-a-codec', '2026-01-03T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("audio allowlist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_audio_codec_blocklist(profile_id, codec, created_at)
+         VALUES
+            ('p1', 'DD+', '2026-01-01T00:00:00Z'),
+            ('p1', 'DDP', '2026-01-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("audio blocklist fixture rows should be inserted");
+
+    run_embedded_migration(
+        &pool,
+        rolled_up_migration_section(
+            include_str!(
+                "../../scryer/src/db/migrations/0125_0_16_release_rollup_pre_notification_target_hook.sql"
+            ),
+            "migrations/0125_release_metadata_enum_canonicalization.sql",
+        ),
+    )
+    .await;
+
+    let known_media: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT source_type, video_codec, video_codec_parsed, audio_codec_parsed
+               FROM media_files
+              WHERE id = 'known'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("known media row should remain");
+    assert_eq!(
+        known_media,
+        (
+            Some("WEB-DL".to_string()),
+            Some("H.264".to_string()),
+            Some("H.265".to_string()),
+            Some("DTSMA".to_string())
+        )
+    );
+
+    let unknown_media: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT source_type, video_codec, video_codec_parsed, audio_codec_parsed
+               FROM media_files
+              WHERE id = 'unknown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("unknown media row should remain");
+    assert_eq!(
+        unknown_media,
+        (
+            Some("mystery-source".to_string()),
+            Some("mystery-video".to_string()),
+            Some("mystery-parsed".to_string()),
+            Some("mystery-audio".to_string())
+        )
+    );
+
+    let source_allowlist: Vec<String> =
+        sqlx::query_scalar("SELECT source FROM quality_profile_source_allowlist ORDER BY source")
+            .fetch_all(&pool)
+            .await
+            .expect("source allowlist should query");
+    assert_eq!(source_allowlist, vec!["WEB-DL".to_string()]);
+
+    let source_blocklist: Vec<String> =
+        sqlx::query_scalar("SELECT source FROM quality_profile_source_blocklist ORDER BY source")
+            .fetch_all(&pool)
+            .await
+            .expect("source blocklist should query");
+    assert_eq!(source_blocklist, vec!["BRDISK".to_string()]);
+
+    let audio_allowlist: Vec<String> = sqlx::query_scalar(
+        "SELECT codec FROM quality_profile_audio_codec_allowlist ORDER BY codec",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("audio allowlist should query");
+    assert_eq!(audio_allowlist, vec!["DTSMA".to_string()]);
+
+    let audio_blocklist: Vec<String> = sqlx::query_scalar(
+        "SELECT codec FROM quality_profile_audio_codec_blocklist ORDER BY codec",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("audio blocklist should query");
+    assert_eq!(audio_blocklist, vec!["DDP".to_string()]);
 }
 
 #[test]
@@ -2363,9 +2924,9 @@ async fn title_queries_prefer_local_cached_poster_url() {
     );
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
+            TitleImageSourceResult {
                 kind: TitleImageKind::Poster,
                 source_url: "https://tvdb.example/poster.jpg".to_string(),
                 source_etag: Some("\"etag-1\"".to_string()),
@@ -2373,21 +2934,16 @@ async fn title_queries_prefer_local_cached_poster_url() {
                 source_format: "jpeg".to_string(),
                 source_width: 1000,
                 source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
                 variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
+                    variant_key: "w250".to_string(),
                     format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
+                    width: 250,
+                    height: 375,
                     bytes: vec![7, 8, 9],
-                    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                    digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
                 }],
             },
+            None,
         )
         .await
         .expect("title image should insert");
@@ -2398,7 +2954,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
         .expect("title should exist");
     assert_eq!(
         after_cache.poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
     );
     assert_eq!(
         after_cache.poster_source_url.as_deref(),
@@ -2411,7 +2967,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
     assert_eq!(listed.len(), 1);
     assert_eq!(
         listed[0].poster_url.as_deref(),
-        Some("/images/titles/title-1/poster/w500?v=bbbbbbbbbbbbbbbb")
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
     );
 
     let _ = std::fs::remove_file(db);
@@ -2703,41 +3259,23 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
         ),
     ] {
         title_images
-            .replace_title_image(
+            .upsert_title_image_source_result(
                 &title.id,
-                TitleImageReplacement {
-                    kind: TitleImageKind::Poster,
-                    source_url: source_url.to_string(),
-                    source_etag: None,
-                    source_last_modified: None,
-                    source_format: "jpeg".to_string(),
-                    source_width: 1000,
-                    source_height: 1500,
-                    storage_mode: TitleImageStorageMode::AvifMaster,
-                    master_format: "avif".to_string(),
-                    master_sha256: sha.to_string(),
-                    master_width: 1000,
-                    master_height: 1500,
-                    master_bytes: vec![1, 2, 3],
-                    variants: vec![TitleImageVariantRecord {
-                        variant_key: "w500".to_string(),
-                        format: "avif".to_string(),
-                        width: 500,
-                        height: 750,
-                        bytes: vec![7, 8, 9],
-                        sha256: sha.to_string(),
-                    }],
-                },
+                test_title_image_source_result_with_variants(
+                    TitleImageKind::Poster,
+                    source_url,
+                    vec![test_title_image_variant_record("w250", 250, 375, sha)],
+                ),
+                None,
             )
             .await
             .expect("title image should upsert");
-
         sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
             .bind(source_url)
             .bind(&title.id)
             .execute(&services.pool)
             .await
-            .expect("source url should update");
+            .expect("source urls should update");
     }
 
     let updated = TitleRepository::get_by_id(&catalog, &title.id)
@@ -2746,11 +3284,61 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-2/poster/w500?v=2222222222222222")
+        Some("/images/titles/title-2/poster/w250?v=2222222222222222")
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_lookup_by_external_id_preserves_source_image_url() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let mut title = make_test_title(
+        "title-external-id",
+        Some("https://tvdb.example/poster-external.jpg"),
+    );
+    title.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let found = catalog
+        .find_by_external_id("tvdb", "123456")
+        .await
+        .expect("lookup should succeed")
+        .expect("title should exist");
     assert_eq!(
-        updated.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-b.jpg")
+        found.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-external.jpg")
     );
 
     let _ = std::fs::remove_file(db);
@@ -2902,31 +3490,19 @@ async fn title_queries_find_by_external_id() {
         .await
         .expect("title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-external.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 1, 1],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![2, 2, 2],
-                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -2940,7 +3516,7 @@ async fn title_queries_find_by_external_id() {
     assert_eq!(found.id, title.id);
     assert_eq!(
         found.poster_url.as_deref(),
-        Some("/images/titles/title-external-id/poster/w500?v=ffffffffffffffff")
+        Some("/images/titles/title-external-id/poster/w250?v=ffffffffffffffff")
     );
     assert_eq!(
         found.poster_source_url.as_deref(),
@@ -3296,31 +3872,19 @@ async fn title_list_for_matching_keeps_source_image_urls() {
         .await
         .expect("title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "abababababababababababababababab".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3402,7 +3966,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
 }
 
 #[tokio::test]
-async fn title_queries_use_local_original_url_for_original_storage_mode() {
+async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_original_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -3419,24 +3983,14 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-original.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 400,
-                source_height: 600,
-                storage_mode: TitleImageStorageMode::Original,
-                master_format: "jpeg".to_string(),
-                master_sha256: "cccccccccccccccccccccccccccccccc".to_string(),
-                master_width: 400,
-                master_height: 600,
-                master_bytes: vec![3, 2, 1],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-original.jpg",
+                Vec::new(),
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3447,21 +4001,14 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-3/poster/original?v=cccccccccccccccc")
+        Some("https://tvdb.example/poster-original.jpg")
     );
 
     let original = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
         .await
         .expect("original blob lookup should succeed");
-    assert_eq!(
-        original,
-        Some(TitleImageBlob {
-            content_type: "image/jpeg".to_string(),
-            etag: "cccccccccccccccccccccccccccccccc".to_string(),
-            bytes: vec![3, 2, 1],
-        })
-    );
+    assert_eq!(original, None);
 
     let _ = std::fs::remove_file(db);
 }
@@ -3508,32 +4055,29 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
     };
 
     let stored = title_images
-        .replace_title_image_and_append_event(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 400,
-                source_height: 600,
-                storage_mode: TitleImageStorageMode::Original,
-                master_format: "jpeg".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 400,
-                master_height: 600,
-                master_bytes: vec![4, 5, 6],
-                variants: Vec::new(),
-            },
-            event.clone(),
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                )],
+            ),
+            Some(event.clone()),
         )
         .await
         .expect("title image and event should commit");
 
-    assert_eq!(stored.event_id, event.event_id);
+    assert_eq!(
+        stored.expect("event should be stored").event_id,
+        event.event_id
+    );
     let blob = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "w250")
         .await
         .expect("blob lookup should succeed")
         .expect("blob should exist");
@@ -3578,24 +4122,14 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: "https://tvdb.example/poster-incomplete.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "dddddddddddddddddddddddddddddddd".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![9, 8, 7],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-incomplete.jpg",
+                Vec::new(),
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3606,11 +4140,11 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("/images/titles/title-4/poster/original?v=dddddddddddddddd")
+        Some("https://tvdb.example/poster-incomplete.jpg")
     );
 
     let pending = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending poster refresh should succeed");
     assert!(
@@ -3622,9 +4156,9 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
 }
 
 #[tokio::test]
-async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
+async fn fanart_queries_use_w1280_variant_when_present() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_banner_fanart_alias_{}.db",
+        "scryer_title_fanart_w1280_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -3633,13 +4167,12 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-banner-fanart", None);
+    let title = make_test_title("title-fanart-w1280", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/banner.jpg")
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
         .bind("https://tvdb.example/fanart.jpg")
         .bind(&title.id)
         .execute(&services.pool)
@@ -3647,46 +4180,21 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         .expect("source urls should update");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Banner,
-                source_url: "https://tvdb.example/banner.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1920,
-                source_height: 1080,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "11111111111111111111111111111111".to_string(),
-                master_width: 1920,
-                master_height: 1080,
-                master_bytes: vec![1, 2, 3, 4],
-                variants: Vec::new(),
-            },
-        )
-        .await
-        .expect("banner image should insert");
-    title_images
-        .replace_title_image(
-            &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Fanart,
-                source_url: "https://tvdb.example/fanart.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 2560,
-                source_height: 1440,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "22222222222222222222222222222222".to_string(),
-                master_width: 2560,
-                master_height: 1440,
-                master_bytes: vec![5, 6, 7, 8],
-                variants: Vec::new(),
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart.jpg",
+                vec![TitleImageVariantRecord {
+                    variant_key: "w1280".to_string(),
+                    format: "avif".to_string(),
+                    width: 1280,
+                    height: 720,
+                    bytes: vec![9, 10, 11],
+                    digest: "33333333333333333333333333333333".to_string(),
+                }],
+            ),
+            None,
         )
         .await
         .expect("fanart image should insert");
@@ -3696,32 +4204,24 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         .expect("title lookup should succeed")
         .expect("title should exist");
     assert_eq!(
-        updated.banner_url.as_deref(),
-        Some("/images/titles/title-banner-fanart/banner/master?v=1111111111111111")
-    );
-    assert_eq!(
-        updated.banner_source_url.as_deref(),
-        Some("https://tvdb.example/banner.jpg")
-    );
-    assert_eq!(
         updated.background_url.as_deref(),
-        Some("/images/titles/title-banner-fanart/fanart/master?v=2222222222222222")
+        Some("/images/titles/title-fanart-w1280/fanart/w1280?v=3333333333333333")
     );
     assert_eq!(
         updated.background_source_url.as_deref(),
         Some("https://tvdb.example/fanart.jpg")
     );
 
-    let banner = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
+    let fanart_variant = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "w1280")
         .await
-        .expect("banner blob lookup should succeed");
+        .expect("fanart variant blob lookup should succeed");
     assert_eq!(
-        banner,
+        fanart_variant,
         Some(TitleImageBlob {
             content_type: "image/avif".to_string(),
-            etag: "11111111111111111111111111111111".to_string(),
-            bytes: vec![1, 2, 3, 4],
+            etag: "33333333333333333333333333333333".to_string(),
+            bytes: vec![9, 10, 11],
         })
     );
 
@@ -3729,23 +4229,15 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
         .await
         .expect("fanart blob lookup should succeed");
-    assert_eq!(
-        fanart,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "22222222222222222222222222222222".to_string(),
-            bytes: vec![5, 6, 7, 8],
-        })
-    );
+    assert_eq!(fanart, None);
 
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
-async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_master_variant_rows()
-{
+async fn title_image_refresh_work_requires_fanart_w1280_variant() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_banner_fanart_refresh_{}.db",
+        "scryer_title_fanart_refresh_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -3754,66 +4246,323 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-banner-fanart-refresh", None);
+    let title = make_test_title("title-fanart-refresh", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/banner-refresh.jpg")
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
         .bind("https://tvdb.example/fanart-refresh.jpg")
         .bind(&title.id)
         .execute(&services.pool)
         .await
         .expect("source urls should update");
 
-    for (kind, source_url, sha) in [
-        (
-            TitleImageKind::Banner,
-            "https://tvdb.example/banner-refresh.jpg",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ),
-        (
-            TitleImageKind::Fanart,
-            "https://tvdb.example/fanart-refresh.jpg",
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        ),
-    ] {
-        title_images
-            .replace_title_image(
-                &title.id,
-                TitleImageReplacement {
-                    kind,
-                    source_url: source_url.to_string(),
-                    source_etag: None,
-                    source_last_modified: None,
-                    source_format: "jpeg".to_string(),
-                    source_width: 1920,
-                    source_height: 1080,
-                    storage_mode: TitleImageStorageMode::AvifMaster,
-                    master_format: "avif".to_string(),
-                    master_sha256: sha.to_string(),
-                    master_width: 1920,
-                    master_height: 1080,
-                    master_bytes: vec![1, 2, 3],
-                    variants: Vec::new(),
-                },
-            )
-            .await
-            .expect("title image should insert");
-    }
-
-    let pending_banner = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Banner, 10)
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                Vec::new(),
+            ),
+            None,
+        )
         .await
-        .expect("list pending banner refresh should succeed");
-    assert!(pending_banner.is_empty());
+        .expect("fanart image should insert");
 
     let pending_fanart = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("list pending fanart refresh should succeed");
+    assert!(
+        pending_fanart.iter().any(|task| task.title_id == title.id),
+        "fanart without w1280 should be re-queued for processing"
+    );
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                vec![test_title_image_variant_record(
+                    "w1280",
+                    1280,
+                    720,
+                    "cccccccccccccccccccccccccccccccc",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image with w1280 should insert");
+
+    let pending_fanart = title_images
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending fanart refresh should succeed");
     assert!(pending_fanart.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+fn test_title_image_source_result(
+    kind: TitleImageKind,
+    source_url: &str,
+    variant_key: &str,
+    width: i32,
+    height: i32,
+    digest: &str,
+) -> TitleImageSourceResult {
+    test_title_image_source_result_with_variants(
+        kind,
+        source_url,
+        vec![test_title_image_variant_record(
+            variant_key,
+            width,
+            height,
+            digest,
+        )],
+    )
+}
+
+fn test_title_image_source_result_with_variants(
+    kind: TitleImageKind,
+    source_url: &str,
+    variants: Vec<TitleImageVariantRecord>,
+) -> TitleImageSourceResult {
+    TitleImageSourceResult {
+        kind,
+        source_url: source_url.to_string(),
+        source_etag: None,
+        source_last_modified: None,
+        source_format: "jpeg".to_string(),
+        source_width: 1000,
+        source_height: 1500,
+        variants,
+    }
+}
+
+fn test_title_image_variant_record(
+    variant_key: &str,
+    width: i32,
+    height: i32,
+    digest: &str,
+) -> TitleImageVariantRecord {
+    TitleImageVariantRecord {
+        variant_key: variant_key.to_string(),
+        format: "avif".to_string(),
+        width,
+        height,
+        bytes: vec![4, 5, 6],
+        digest: digest.to_string(),
+    }
+}
+
+fn assert_variant_target(
+    task: &scryer_application::TitleImageSyncTask,
+    kind: TitleImageKind,
+    variant_key: &str,
+) {
+    assert_eq!(task.kind, kind);
+    assert!(
+        task.variants
+            .iter()
+            .any(|variant| variant.variant_key == variant_key)
+    );
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_uses_global_variant_priorities() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_priority_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let poster_source = "https://tmdb.example/poster.jpg";
+    let poster = make_test_title("title-priority-poster", Some(poster_source));
+    TitleRepository::create(&catalog, poster.clone())
+        .await
+        .expect("poster title should insert");
+
+    let fanart = make_test_title("title-priority-fanart", None);
+    TitleRepository::create(&catalog, fanart.clone())
+        .await
+        .expect("fanart title should insert");
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
+        .bind("https://tmdb.example/fanart.jpg")
+        .bind(&fanart.id)
+        .execute(&services.pool)
+        .await
+        .expect("fanart source should update");
+
+    let first = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(first[0].title_id, poster.id);
+    assert_variant_target(&first[0], TitleImageKind::Poster, "w250");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w250",
+                250,
+                375,
+                "11111111111111111111111111111111",
+            ),
+            None,
+        )
+        .await
+        .expect("w250 should upsert");
+    let updated_poster = TitleRepository::get_by_id(&catalog, &poster.id)
+        .await
+        .expect("poster title should load")
+        .expect("poster title should exist");
+    assert_eq!(
+        updated_poster.poster_url.as_deref(),
+        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+    );
+
+    let second = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(second[0].title_id, poster.id);
+    assert_variant_target(&second[0], TitleImageKind::Poster, "w70");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w70",
+                70,
+                105,
+                "22222222222222222222222222222222",
+            ),
+            None,
+        )
+        .await
+        .expect("w70 should upsert");
+
+    let third = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(third[0].title_id, fanart.id);
+    assert_variant_target(&third[0], TitleImageKind::Fanart, "w1280");
+
+    title_images
+        .upsert_title_image_source_result(
+            &fanart.id,
+            test_title_image_source_result(
+                TitleImageKind::Fanart,
+                "https://tmdb.example/fanart.jpg",
+                "w1280",
+                1280,
+                720,
+                "33333333333333333333333333333333",
+            ),
+            None,
+        )
+        .await
+        .expect("w1280 should upsert");
+
+    let fourth = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("priority work should list");
+    assert_eq!(fourth[0].title_id, poster.id);
+    assert_variant_target(&fourth[0], TitleImageKind::Poster, "w500");
+
+    title_images
+        .upsert_title_image_source_result(
+            &poster.id,
+            test_title_image_source_result(
+                TitleImageKind::Poster,
+                poster_source,
+                "w500",
+                500,
+                750,
+                "44444444444444444444444444444444",
+            ),
+            None,
+        )
+        .await
+        .expect("w500 should upsert");
+    let updated_poster = TitleRepository::get_by_id(&catalog, &poster.id)
+        .await
+        .expect("poster title should load")
+        .expect("poster title should exist");
+    assert_eq!(
+        updated_poster.poster_url.as_deref(),
+        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_skips_failed_image_sets_for_current_pass() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_skip_current_pass_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let first = make_test_title(
+        "title-skip-current-pass-1",
+        Some("https://tmdb.example/poster-1.jpg"),
+    );
+    let second = make_test_title(
+        "title-skip-current-pass-2",
+        Some("https://tmdb.example/poster-2.jpg"),
+    );
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let initial = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("initial work should list");
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].title_id, first.id);
+    assert_variant_target(&initial[0], TitleImageKind::Poster, "w250");
+
+    let skipped = initial.clone();
+    let next = title_images
+        .list_title_image_refresh_work(1, &skipped)
+        .await
+        .expect("next work should list");
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].title_id, second.id);
+    assert_variant_target(&next[0], TitleImageKind::Poster, "w250");
+
+    let retry_on_next_pass = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("retry work should list");
+    assert_eq!(retry_on_next_pass.len(), 1);
+    assert_eq!(retry_on_next_pass[0].title_id, first.id);
 
     let _ = std::fs::remove_file(db);
 }
@@ -3837,31 +4586,19 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
         .expect("title should insert");
 
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: source_url.to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "abababababababababababababababab".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                source_url,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
@@ -3901,7 +4638,127 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
 }
 
 #[tokio::test]
-async fn list_titles_requiring_image_refresh_ignores_local_title_image_routes() {
+async fn title_artwork_url_update_clears_stale_local_paths_for_changed_sources() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_source_invalidation_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let poster_source = "https://tvdb.example/poster-old.jpg";
+    let background_source = "https://tvdb.example/background-old.jpg";
+    let mut title = make_test_title("title-source-invalidation", Some(poster_source));
+    title.background_url = Some(background_source.to_string());
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                poster_source,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("poster image should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                background_source,
+                vec![test_title_image_variant_record(
+                    "w1280",
+                    1280,
+                    720,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image should insert");
+
+    let new_poster_source = "https://image.tmdb.org/t/p/w500/poster-new.jpg";
+    let changed = catalog
+        .update_title_artwork_urls(&[TitleArtworkUrlUpdate {
+            title_id: title.id.clone(),
+            poster_url: Some(new_poster_source.to_string()),
+            background_url: Some(background_source.to_string()),
+        }])
+        .await
+        .expect("poster source update should apply");
+    assert_eq!(changed, 1);
+
+    let row = sqlx::query(
+        "SELECT poster_url, poster_local_path, background_url, background_local_path
+           FROM titles
+          WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("title row should load after poster source update");
+    let stored_poster: Option<String> = row.get("poster_url");
+    let stored_poster_local: Option<String> = row.get("poster_local_path");
+    let stored_background: Option<String> = row.get("background_url");
+    let stored_background_local: Option<String> = row.get("background_local_path");
+    assert_eq!(stored_poster.as_deref(), Some(new_poster_source));
+    assert_eq!(stored_poster_local, None);
+    assert_eq!(stored_background.as_deref(), Some(background_source));
+    assert!(
+        stored_background_local
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/images/titles/"))
+    );
+
+    let new_background_source = "https://image.tmdb.org/t/p/w1280/background-new.jpg";
+    let changed = catalog
+        .update_title_artwork_urls(&[TitleArtworkUrlUpdate {
+            title_id: title.id.clone(),
+            poster_url: Some(new_poster_source.to_string()),
+            background_url: Some(new_background_source.to_string()),
+        }])
+        .await
+        .expect("background source update should apply");
+    assert_eq!(changed, 1);
+
+    let row = sqlx::query(
+        "SELECT poster_url, poster_local_path, background_url, background_local_path
+           FROM titles
+          WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("title row should load after background source update");
+    let stored_poster: Option<String> = row.get("poster_url");
+    let stored_poster_local: Option<String> = row.get("poster_local_path");
+    let stored_background: Option<String> = row.get("background_url");
+    let stored_background_local: Option<String> = row.get("background_local_path");
+    assert_eq!(stored_poster.as_deref(), Some(new_poster_source));
+    assert_eq!(stored_poster_local, None);
+    assert_eq!(stored_background.as_deref(), Some(new_background_source));
+    assert_eq!(stored_background_local, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_ignores_local_title_image_routes() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_image_local_route_refresh_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -3929,7 +4786,7 @@ async fn list_titles_requiring_image_refresh_ignores_local_title_image_routes() 
         .expect("upstream title should insert");
 
     let pending = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .list_title_image_refresh_work(10, &[])
         .await
         .expect("list pending poster refresh should succeed");
     assert_eq!(pending.len(), 1);
@@ -3956,36 +4813,24 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .await
         .expect("repair title should insert");
     title_images
-        .replace_title_image(
+        .upsert_title_image_source_result(
             &repaired.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Poster,
-                source_url: source_url.to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1000,
-                source_height: 1500,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-                master_width: 1000,
-                master_height: 1500,
-                master_bytes: vec![1, 2, 3],
-                variants: vec![TitleImageVariantRecord {
-                    variant_key: "w500".to_string(),
-                    format: "avif".to_string(),
-                    width: 500,
-                    height: 750,
-                    bytes: vec![4, 5, 6],
-                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
-                }],
-            },
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                source_url,
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
         )
         .await
         .expect("title image should insert");
     sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
-        .bind("/images/titles/title-cache-clear-repair/poster/w500?v=ffffffffffffffff")
+        .bind("/images/titles/title-cache-clear-repair/poster/w250?v=ffffffffffffffff")
         .bind(&repaired.id)
         .execute(&services.pool)
         .await
@@ -4036,330 +4881,6 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .expect("variant count should load");
     assert_eq!(image_count, 0);
     assert_eq!(variant_count, 0);
-
-    let _ = std::fs::remove_file(db);
-}
-
-#[tokio::test]
-async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fanart_variants() {
-    let db = std::env::temp_dir().join(format!(
-        "scryer_title_image_master_dedup_{}.db",
-        chrono::Utc::now().timestamp_micros()
-    ));
-    let services = SqliteServices::new(db.to_string_lossy())
-        .await
-        .expect("db should initialize");
-    let catalog = title_store(&services);
-    let title_images = title_image_store(&services);
-
-    let title = make_test_title("title-master-dedup", None);
-    TitleRepository::create(&catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    sqlx::query(
-        "UPDATE titles SET
-            banner_url = ?,
-            background_url = ?,
-            banner_local_path = ?,
-            background_local_path = ?
-         WHERE id = ?",
-    )
-    .bind("https://tvdb.example/banner-master.jpg")
-    .bind("https://tvdb.example/fanart-master.jpg")
-    .bind("/images/titles/title-master-dedup/banner/master?v=bbbbbbbbbbbbbbbb")
-    .bind("/images/titles/title-master-dedup/fanart/master?v=dddddddddddddddd")
-    .bind(&title.id)
-    .execute(&services.pool)
-    .await
-    .expect("title source and legacy local paths should update");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-banner-master")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("banner")
-    .bind("https://tvdb.example/banner-master.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind(vec![1_u8, 2, 3, 4])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("banner image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-fanart-master")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("fanart")
-    .bind("https://tvdb.example/fanart-master.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("cccccccccccccccccccccccccccccccc")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind(vec![5_u8, 6, 7, 8])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("fanart image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-banner-master")
-    .bind("img-banner-master")
-    .bind("master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind(vec![9_u8, 9, 9])
-    .bind("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("banner master variant row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-fanart-master")
-    .bind("img-fanart-master")
-    .bind("master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind(vec![8_u8, 8, 8])
-    .bind("dddddddddddddddddddddddddddddddd")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("fanart master variant row should insert");
-
-    run_embedded_migration(
-        &services.pool,
-        include_str!("../../scryer/src/db/migrations/0081_title_image_master_dedup.sql"),
-    )
-    .await;
-
-    let paths =
-        sqlx::query("SELECT banner_local_path, background_local_path FROM titles WHERE id = ?")
-            .bind(&title.id)
-            .fetch_one(&services.pool)
-            .await
-            .expect("load migrated local paths");
-    let banner_local_path: Option<String> = paths.try_get("banner_local_path").unwrap_or(None);
-    let background_local_path: Option<String> =
-        paths.try_get("background_local_path").unwrap_or(None);
-    assert_eq!(
-        banner_local_path.as_deref(),
-        Some("/images/titles/title-master-dedup/banner/master?v=aaaaaaaaaaaaaaaa")
-    );
-    assert_eq!(
-        background_local_path.as_deref(),
-        Some("/images/titles/title-master-dedup/fanart/master?v=cccccccccccccccc")
-    );
-
-    let remaining_master_variants: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)
-         FROM title_image_variants tiv
-         INNER JOIN title_images ti ON ti.id = tiv.title_image_id
-         WHERE tiv.variant_key = 'master'
-           AND ti.kind IN ('banner', 'fanart')",
-    )
-    .fetch_one(&services.pool)
-    .await
-    .expect("count remaining master variants");
-    assert_eq!(remaining_master_variants, 0);
-
-    let banner = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
-        .await
-        .expect("banner blob lookup should succeed after migration");
-    assert_eq!(
-        banner,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            bytes: vec![1, 2, 3, 4],
-        })
-    );
-
-    let fanart = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
-        .await
-        .expect("fanart blob lookup should succeed after migration");
-    assert_eq!(
-        fanart,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "cccccccccccccccccccccccccccccccc".to_string(),
-            bytes: vec![5, 6, 7, 8],
-        })
-    );
-
-    let _ = std::fs::remove_file(db);
-}
-
-#[tokio::test]
-async fn title_image_local_path_backfill_matches_legacy_served_path() {
-    let db = std::env::temp_dir().join(format!(
-        "scryer_title_image_backfill_{}.db",
-        chrono::Utc::now().timestamp_micros()
-    ));
-    let services = SqliteServices::new(db.to_string_lossy())
-        .await
-        .expect("db should initialize");
-    let catalog = title_store(&services);
-
-    let title = make_test_title(
-        "title-backfill",
-        Some("https://tvdb.example/poster-backfill.jpg"),
-    );
-    TitleRepository::create(&catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-backfill")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("poster")
-    .bind("https://tvdb.example/poster-backfill.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(1000i32)
-    .bind(1500i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("12121212121212121212121212121212")
-    .bind(1000i32)
-    .bind(1500i32)
-    .bind(vec![1_u8, 2, 3])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("legacy title image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-backfill")
-    .bind("img-backfill")
-    .bind("w500")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(500i32)
-    .bind(750i32)
-    .bind(vec![4_u8, 5, 6])
-    .bind("34343434343434343434343434343434")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("legacy title image variant row should insert");
-
-    sqlx::query("UPDATE titles SET poster_local_path = NULL WHERE id = ?")
-        .bind(&title.id)
-        .execute(&services.pool)
-        .await
-        .expect("local path should be cleared to simulate legacy state");
-
-    for statement in
-        include_str!("../../scryer/src/db/migrations/0075_title_image_local_paths.sql").split(";\n")
-    {
-        let statement = statement.trim();
-        if statement.is_empty() {
-            continue;
-        }
-        if statement.starts_with("ALTER TABLE titles ADD COLUMN") {
-            let _ = sqlx::query(statement).execute(&services.pool).await;
-            continue;
-        }
-        sqlx::query(statement)
-            .execute(&services.pool)
-            .await
-            .expect("backfill statement should succeed");
-    }
-
-    let materialized_path: Option<String> =
-        sqlx::query_scalar("SELECT poster_local_path FROM titles WHERE id = ?")
-            .bind(&title.id)
-            .fetch_one(&services.pool)
-            .await
-            .expect("materialized local path should exist");
-    assert_eq!(
-        materialized_path.as_deref(),
-        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
-    );
-
-    let hydrated = TitleRepository::get_by_id(&catalog, &title.id)
-        .await
-        .expect("title lookup should succeed")
-        .expect("title should exist");
-    assert_eq!(
-        hydrated.poster_url.as_deref(),
-        Some("/images/titles/title-backfill/poster/w500?v=3434343434343434")
-    );
-    assert_eq!(
-        hydrated.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-backfill.jpg")
-    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -4926,6 +5447,37 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         Some("Existing Release".to_string())
     );
 
+    sqlx::query("UPDATE wanted_items SET status = ?, grabbed_release = ? WHERE id = ?")
+        .bind("wanted")
+        .bind("Stale Grabbed Release")
+        .bind("wanted-episode")
+        .execute(services.pool())
+        .await
+        .expect("wanted item should reset for scored completion");
+
+    workflow
+        .complete_wanted_item_for_title(
+            "title-series",
+            None,
+            Some("2026-04-20T01:00:00Z"),
+            Some(720),
+        )
+        .await
+        .expect("scored completion should succeed");
+
+    let row = sqlx::query(
+        "SELECT current_score, grabbed_release
+         FROM wanted_items
+         WHERE id = ?",
+    )
+    .bind("wanted-episode")
+    .fetch_one(services.pool())
+    .await
+    .expect("wanted item should load after scored completion");
+
+    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(720));
+    assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
+
     let _ = std::fs::remove_file(db);
 }
 
@@ -5006,6 +5558,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         },
@@ -5161,6 +5714,205 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     assert_eq!(rows[0].id, "wanted-series-episode");
 
     let _ = std::fs::remove_file(db);
+}
+
+async fn seed_due_wanted_episode_order_fixture(
+    catalog: &TitleStore,
+    shows: &ShowStore,
+    workflow: &WantedStore,
+    prefix: &str,
+) -> Vec<String> {
+    let now = "2024-01-01T00:00:00Z".to_string();
+    let mut title = make_test_title(&format!("{prefix}-title"), None);
+    title.name = "Bluey".to_string();
+    title.sort_title = Some("Bluey".to_string());
+    title.facet = MediaFacet::Series;
+    TitleRepository::create(catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let collection = ShowRepository::create_collection(
+        shows,
+        Collection {
+            id: format!("{prefix}-season-1"),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("10".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("collection should insert");
+
+    let episodes = [
+        ("e10", Some("1"), Some("10")),
+        ("e2", Some("1"), Some("2")),
+        ("e1", Some("1"), Some("1")),
+        ("ealpha", Some("1"), Some("OVA")),
+        ("emissing", Some("1"), None),
+        ("s2e1", Some("2"), Some("1")),
+    ];
+
+    for (suffix, season_number, episode_number) in episodes {
+        let episode_id = format!("{prefix}-{suffix}");
+        ShowRepository::create_episode(
+            shows,
+            Episode {
+                id: episode_id.clone(),
+                title_id: title.id.clone(),
+                collection_id: Some(collection.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: episode_number.map(str::to_string),
+                season_number: season_number.map(str::to_string),
+                episode_label: None,
+                title: None,
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_800),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("episode should insert");
+
+        workflow
+            .upsert_wanted_item(&WantedItem {
+                id: format!("wanted-{episode_id}"),
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
+                episode_id: Some(episode_id.clone()),
+                collection_id: None,
+                season_number: season_number.map(str::to_string),
+                episode_number: None,
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(now.clone()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .await
+            .expect("wanted item should insert");
+    }
+
+    vec![
+        format!("wanted-{prefix}-e1"),
+        format!("wanted-{prefix}-e2"),
+        format!("wanted-{prefix}-e10"),
+        format!("wanted-{prefix}-ealpha"),
+        format!("wanted-{prefix}-emissing"),
+        format!("wanted-{prefix}-s2e1"),
+    ]
+}
+
+#[tokio::test]
+async fn sqlite_list_due_wanted_items_orders_episodes_by_season_and_episode() {
+    let (services, db) = temp_services("scryer_due_wanted_episode_order").await;
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
+    let expected =
+        seed_due_wanted_episode_order_fixture(&catalog, &shows, &workflow, "sqlite-order").await;
+
+    let rows = workflow
+        .list_due_wanted_items("2024-01-02T00:00:00Z", 20, &[])
+        .await
+        .expect("due wanted items query should succeed");
+    let ids = rows.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+
+    assert_eq!(ids, expected);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn postgres_list_due_wanted_items_orders_episodes_by_season_and_episode() {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "skipping PostgreSQL due wanted item ordering test; SCRYER_TEST_POSTGRES_URL is not set"
+        );
+        return;
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .expect("postgres test database should connect");
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .expect("test schema should create");
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url).expect("postgres test URL should parse");
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await
+                .expect("postgres services should initialize");
+        let workflow = WantedStore::new(services.datastore());
+        let catalog = TitleStore::new(services.datastore());
+        let shows = ShowStore::new(services.datastore());
+        let expected =
+            seed_due_wanted_episode_order_fixture(&catalog, &shows, &workflow, "postgres-order")
+                .await;
+
+        let rows = workflow
+            .list_due_wanted_items("2024-01-02T00:00:00Z", 20, &[])
+            .await
+            .expect("due wanted items query should succeed");
+        let ids = rows.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+
+        assert_eq!(ids, expected);
+        services.pool().close().await;
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.expect("test schema should drop");
+    result
 }
 
 #[tokio::test]
@@ -6066,6 +6818,198 @@ async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
 }
 
 #[tokio::test]
+async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:blocked".to_string()),
+    };
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(
+            &identity,
+            Some(&source_identity),
+            "import_blocked",
+            Some("unresolved_download_id"),
+            Some("download id observed without a matching submission"),
+        )
+        .await
+        .expect("identity tracked state should persist");
+
+    let tracked_state = workflow_store
+        .get_identity_tracked_state(&identity, None)
+        .await
+        .expect("identity tracked state lookup should succeed");
+    assert_eq!(tracked_state.as_deref(), Some("import_blocked"));
+
+    let submission_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_submissions WHERE download_client_type = ? AND download_client_item_id = ?",
+    )
+    .bind("weaver")
+    .bind("10010")
+    .fetch_one(services.pool())
+    .await
+    .expect("submission count should load");
+    assert_eq!(submission_count, 0);
+
+    let row = sqlx::query(
+        "SELECT client_id, client_type, download_client_item_id, reason \
+         FROM download_identity_states WHERE download_id = ?",
+    )
+    .bind("scryer-download:blocked")
+    .fetch_one(services.pool())
+    .await
+    .expect("identity state row should exist");
+    let client_id: String = row.get("client_id");
+    let client_type: String = row.get("client_type");
+    let item_id: String = row.get("download_client_item_id");
+    let reason: String = row.get("reason");
+    assert_eq!(client_id, "client-a");
+    assert_eq!(client_type, "weaver");
+    assert_eq!(item_id, "10010");
+    assert_eq!(reason, "unresolved_download_id");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_scopes_client_local_download_ids_by_source_client() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_scoped_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("10010".to_string()),
+    };
+    let client_a = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+    let client_b = DownloadSourceIdentity::new(Some("client-b"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_a), "import_blocked", None, None)
+        .await
+        .expect("client a state should persist");
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_b), "failed", None, None)
+        .await
+        .expect("client b state should persist");
+
+    let client_a_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_a))
+        .await
+        .expect("client a state lookup should succeed");
+    let client_b_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_b))
+        .await
+        .expect("client b state lookup should succeed");
+    let unscoped_state = workflow_store
+        .get_identity_tracked_state(&identity, None)
+        .await
+        .expect("unscoped state lookup should succeed");
+
+    assert_eq!(client_a_state.as_deref(), Some("import_blocked"));
+    assert_eq!(client_b_state.as_deref(), Some("failed"));
+    assert_eq!(unscoped_state, None);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_identity_states WHERE download_id = ?")
+            .bind("10010")
+            .fetch_one(services.pool())
+            .await
+            .expect("identity state count should load");
+    assert_eq!(row_count, 2);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_keeps_torrent_hash_download_ids_global() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_hash_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+    };
+    let client_a = DownloadSourceIdentity::new(Some("client-a"), "weaver", "hash-item-a");
+    let client_b = DownloadSourceIdentity::new(Some("client-b"), "weaver", "hash-item-b");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, Some(&client_a), "import_blocked", None, None)
+        .await
+        .expect("hash state should persist");
+
+    let unscoped_state = workflow_store
+        .get_identity_tracked_state(&identity, None)
+        .await
+        .expect("unscoped hash lookup should succeed");
+    let other_client_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&client_b))
+        .await
+        .expect("other client hash lookup should succeed");
+
+    assert_eq!(unscoped_state.as_deref(), Some("import_blocked"));
+    assert_eq!(other_client_state.as_deref(), Some("import_blocked"));
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn identity_tracked_state_ignores_client_local_download_id_without_source_client() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_tracked_state_unscoped_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some("10010".to_string()),
+    };
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10010");
+
+    workflow_store
+        .record_identity_tracked_state(&identity, None, "import_blocked", None, None)
+        .await
+        .expect("unscoped client-local state should be ignored");
+
+    let scoped_state = workflow_store
+        .get_identity_tracked_state(&identity, Some(&source_identity))
+        .await
+        .expect("scoped state lookup should succeed");
+    assert_eq!(scoped_state, None);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_identity_states WHERE download_id = ?")
+            .bind("10010")
+            .fetch_one(services.pool())
+            .await
+            .expect("identity state count should load");
+    assert_eq!(row_count, 0);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let db = std::env::temp_dir().join(format!(
         "scryer_tracked_state_upsert_{}.db",
@@ -6422,6 +7366,7 @@ async fn user_crud_queries_work() {
             id: "u-1".to_string(),
             username: "editor".to_string(),
             password_hash: None,
+            account_kind: Default::default(),
             authorization: Default::default(),
         },
     )
@@ -6475,8 +7420,6 @@ async fn sqlite_show_queries_roundtrip() {
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -6588,6 +7531,7 @@ async fn sqlite_show_queries_roundtrip() {
         absolute_number: None,
         overview: Some("The pilot episode.".into()),
         tvdb_id: None,
+        image_url: Some("https://cdn.example.test/episode-created.jpg".into()),
         monitored: true,
         created_at: Utc::now(),
     };
@@ -6635,6 +7579,10 @@ async fn sqlite_show_queries_roundtrip() {
         .expect("get episode by id")
         .expect("episode should exist");
     assert_eq!(loaded_episode.id, episode.id);
+    assert_eq!(
+        loaded_episode.image_url,
+        Some("https://cdn.example.test/episode-created.jpg".into())
+    );
 
     let updated_collection = ShowRepository::update_collection(
         &shows,
@@ -6672,6 +7620,7 @@ async fn sqlite_show_queries_roundtrip() {
             collection_id: Some(collection.id.clone()),
             overview: Some("Updated overview".into()),
             tvdb_id: Some("349232".into()),
+            image_url: Some("https://cdn.example.test/episode-updated.jpg".into()),
             ..Default::default()
         },
     )
@@ -6689,6 +7638,22 @@ async fn sqlite_show_queries_roundtrip() {
     assert_eq!(updated_episode.duration_seconds, Some(2_400));
     assert!(updated_episode.has_multi_audio);
     assert!(!updated_episode.has_subtitle);
+    assert_eq!(
+        updated_episode.image_url,
+        Some("https://cdn.example.test/episode-updated.jpg".into())
+    );
+
+    let cleared_episode = ShowRepository::update_episode(
+        &shows,
+        &episode.id,
+        EpisodeUpdate {
+            clear_image_url: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("clear episode image url");
+    assert_eq!(cleared_episode.image_url, None);
 
     ShowRepository::delete_episode(&shows, &episode.id)
         .await

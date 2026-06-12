@@ -294,14 +294,7 @@ fn format_preflight_transport_error(url: &url::Url, origin: &str, error: &str) -
 #[cfg(not(test))]
 async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
     let origin = url.origin().ascii_serialization();
-    let client = scryer_outbound_http::no_redirect_timeout_reqwest_client(Some(
-        std::time::Duration::from_secs(10),
-    ))
-    .map_err(|error| {
-        AppError::Repository(format!(
-            "failed to build unauthenticated test-flight client: {error}"
-        ))
-    })?;
+    let client = scryer_outbound_http::no_redirect_reqwest_client();
     let outbound_http = scryer_outbound_http::OutboundHttpClient::new(
         client,
         scryer_outbound_http::RateLimitRegistry::new(),
@@ -1380,10 +1373,20 @@ mod tests {
             .expect("managed parent should save before background sync failure");
 
         wait_for_plan_sync_calls(&provider, 1).await;
-        let configs = indexer_repo.list(None).await.unwrap();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].id, created.id);
-        assert!(configs[0].is_enabled);
+        let stored = indexer_repo
+            .get_by_id(&created.id)
+            .await
+            .unwrap()
+            .expect("saved managed parent");
+        assert_eq!(stored.name, "Manager");
+        assert!(
+            indexer_repo
+                .list(None)
+                .await
+                .unwrap()
+                .iter()
+                .all(|config| config.managed_parent_config_id.is_none())
+        );
         assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
@@ -1444,8 +1447,8 @@ mod tests {
             .await
             .expect("managed parent should enable before background sync failure");
 
-        wait_for_plan_sync_calls(&provider, 1).await;
         assert!(updated.is_enabled);
+        wait_for_plan_sync_calls(&provider, 1).await;
         let stored = indexer_repo
             .get_by_id("cfg-1")
             .await
@@ -2533,6 +2536,66 @@ mod tests {
                 && entry.enabled
                 && entry.categories == vec!["5070"]
         }));
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_publishes_indexers_changed() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent".to_string(),
+                name: "Parent Manager".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some("{}".to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(
+            crate::IndexerSyncPlan {
+                children: vec![crate::ManagedIndexerChildPlan {
+                    child_key: "new".to_string(),
+                    name: "Managed New".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: false,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
+                    routing_scopes: Vec::new(),
+                }],
+            },
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
+
+        app.sync_indexer_config(&test_admin(), "parent")
+            .await
+            .unwrap();
+
+        expect_indexers_changed(&mut receiver, "sync_indexer_config").await;
     }
 
     #[tokio::test]

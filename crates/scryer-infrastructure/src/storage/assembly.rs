@@ -5,14 +5,16 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserRepository,
+    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
+    MediaServerConnectionRepository, PluginInstallationRepository, PostProcessingScriptRepository,
+    QualityProfileRepository, RuleSetRepository, SettingsRepository, ShowRepository,
+    SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
+    TotpRepository, UserExternalAccountRepository, UserRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
 use crate::HttpTitleImageProcessor;
+use crate::external_identity::HttpExternalIdentityVerifier;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -23,11 +25,12 @@ use crate::{
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
     IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MetadataGatewayClient, MigrationMode, NotificationStore, PendingReleaseStore, PluginStore,
-    PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore,
-    ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
-    SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, WantedStore,
-    WorkflowOperationStore,
+    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
+    NotificationStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
+    QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
+    WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -342,9 +345,10 @@ impl DatastoreCustomizationStore {
 
     pub async fn delete_incompatible_external_plugin_installations(
         &self,
+        preserve_restored_recovery_targets: bool,
     ) -> AppResult<Vec<String>> {
         self.plugins
-            .delete_incompatible_external_plugin_installations()
+            .delete_incompatible_external_plugin_installations(preserve_restored_recovery_targets)
             .await
     }
 }
@@ -559,6 +563,10 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         self.plugins.upsert_plugin_catalog_source(source).await
     }
 
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()> {
+        self.plugins.delete_plugin_catalog_source(source_key).await
+    }
+
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
@@ -600,7 +608,11 @@ enum DatastoreStores {
         title_store: Arc<TitleStore>,
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
+        media_request_store: Arc<MediaRequestStore>,
+        media_server_connection_store: Arc<MediaServerConnectionStore>,
         user_store: Arc<UserStore>,
+        webauthn_store: Arc<WebauthnStore>,
+        totp_store: Arc<TotpStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -634,7 +646,11 @@ enum DatastoreStores {
         title_store: Arc<TitleStore>,
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
+        media_request_store: Arc<MediaRequestStore>,
+        media_server_connection_store: Arc<MediaServerConnectionStore>,
         user_store: Arc<UserStore>,
+        webauthn_store: Arc<WebauthnStore>,
+        totp_store: Arc<TotpStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -674,13 +690,24 @@ impl DatastoreAssembly {
     }
 
     async fn connect_sqlite(config: DatastoreConfig) -> Result<Self, AppError> {
-        let db = SqliteServices::new_with_mode(config.database_url.clone(), config.migration_mode)
-            .await?;
+        let db = SqliteServices::new_with_mode_and_data_dir(
+            config.database_url.clone(),
+            config.migration_mode,
+            Some(config.data_dir.clone()),
+        )
+        .await?;
         let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
+        let media_server_connection_store = Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
+        let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
+        let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -735,7 +762,11 @@ impl DatastoreAssembly {
             title_store,
             show_store,
             library_store,
+            media_request_store,
+            media_server_connection_store,
             user_store,
+            webauthn_store,
+            totp_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -769,14 +800,24 @@ impl DatastoreAssembly {
     }
 
     async fn connect_postgres(config: DatastoreConfig) -> Result<Self, AppError> {
-        let db =
-            PostgresServices::new_with_mode(config.database_url.clone(), config.migration_mode)
-                .await?;
+        let db = PostgresServices::new_with_mode_and_data_dir(
+            config.database_url.clone(),
+            config.migration_mode,
+            Some(config.data_dir.clone()),
+        )
+        .await?;
         let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
+        let media_server_connection_store = Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
+        let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
+        let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -829,7 +870,11 @@ impl DatastoreAssembly {
             title_store,
             show_store,
             library_store,
+            media_request_store,
+            media_server_connection_store,
             user_store,
+            webauthn_store,
+            totp_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -983,6 +1028,19 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn media_server_connections(&self) -> Arc<dyn MediaServerConnectionRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                media_server_connection_store,
+                ..
+            } => media_server_connection_store.clone(),
+            DatastoreStores::Postgres {
+                media_server_connection_store,
+                ..
+            } => media_server_connection_store.clone(),
+        }
+    }
+
     pub fn subtitle_provider_configs(&self) -> Arc<dyn SubtitleProviderConfigRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1050,14 +1108,12 @@ impl DatastoreAssembly {
     pub fn metadata_gateway_client(
         &self,
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_config: SmgEnrollmentConfig,
     ) -> MetadataGatewayClient {
         match &self.stores {
             DatastoreStores::Sqlite { settings_store, .. } => {
                 MetadataGatewayClient::new_with_enrollment_store(
                     endpoint,
-                    accept_invalid_certs,
                     settings_store.clone(),
                     enrollment_config,
                 )
@@ -1065,7 +1121,6 @@ impl DatastoreAssembly {
             DatastoreStores::Postgres { settings_store, .. } => {
                 MetadataGatewayClient::new_with_enrollment_store(
                     endpoint,
-                    accept_invalid_certs,
                     settings_store.clone(),
                     enrollment_config,
                 )
@@ -1083,7 +1138,11 @@ impl DatastoreAssembly {
                 title_store,
                 show_store,
                 library_store,
+                media_request_store,
+                media_server_connection_store,
                 user_store,
+                webauthn_store,
+                totp_store,
                 release_store,
                 library_probe_store,
                 library_scan_unmatched_store,
@@ -1111,7 +1170,11 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
+                let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
+                let totp: Arc<dyn TotpRepository> = totp_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
+                let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1127,6 +1190,12 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
+                .with_media_requests(media_requests)
+                .with_external_account_store(external_accounts)
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
+                .with_media_server_connection_store(media_server_connection_store.clone())
+                .with_webauthn_store(webauthn)
+                .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())
                 .with_pending_releases(pending_release_store.clone())
@@ -1157,7 +1226,11 @@ impl DatastoreAssembly {
                 title_store,
                 show_store,
                 library_store,
+                media_request_store,
+                media_server_connection_store,
                 user_store,
+                webauthn_store,
+                totp_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
@@ -1185,7 +1258,11 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
+                let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
+                let totp: Arc<dyn TotpRepository> = totp_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
+                let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1201,6 +1278,12 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
+                .with_media_requests(media_requests)
+                .with_external_account_store(external_accounts)
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
+                .with_media_server_connection_store(media_server_connection_store.clone())
+                .with_webauthn_store(webauthn)
+                .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())
                 .with_pending_releases(pending_release_store.clone())
@@ -1835,7 +1918,6 @@ mod tests {
                     encryption_master_key: "test-master-key".to_string(),
                     jwt_signing_secret: "test-jwt-secret".to_string(),
                     smg_registration_secret: Some("test-smg-secret".to_string()),
-                    smg_ca_cert: Some("test-smg-ca".to_string()),
                     smg_gateway_url: Some("https://smg.example.invalid/graphql".to_string()),
                 },
             };
@@ -2082,8 +2164,6 @@ mod tests {
             overview: Some("Logical backup lattice fixture".to_string()),
             poster_url: Some("https://example.invalid/poster.jpg".to_string()),
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: Some("Backup Lattice Movie".to_string()),

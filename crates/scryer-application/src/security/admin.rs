@@ -198,10 +198,11 @@ impl AppUseCase {
     }
 
     pub async fn ensure_default_admin(&self, username: &str, password: &str) -> AppResult<User> {
-        if username.trim().is_empty() {
+        let username = Self::normalize_local_username(username);
+        if username.is_empty() {
             return Err(AppError::Validation("admin username is required".into()));
         }
-        if password.trim().is_empty() {
+        if password.is_empty() {
             return Err(AppError::Validation("admin password is required".into()));
         }
         if let Some(mut found) = self
@@ -229,6 +230,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.to_string(),
             password_hash: Some(self.hash_password(password)?),
+            account_kind: Default::default(),
             authorization: Default::default(),
         };
 
@@ -256,9 +258,28 @@ impl AppUseCase {
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
-            .await?;
         self.services.identity.users.list_all().await
+    }
+
+    pub async fn user_auth_factor_status(&self, user_id: &str) -> AppResult<UserAuthFactorStatus> {
+        let has_mfa = self
+            .services
+            .identity
+            .totp
+            .get_credential_for_user(user_id)
+            .await?
+            .is_some();
+        let has_passkey = !self
+            .services
+            .identity
+            .webauthn
+            .list_credentials_for_user(user_id)
+            .await?
+            .is_empty();
+        Ok(UserAuthFactorStatus {
+            has_mfa,
+            has_passkey,
+        })
     }
 
     pub async fn get_user(&self, actor: &User, user_id: &str) -> AppResult<Option<User>> {
@@ -286,10 +307,11 @@ impl AppUseCase {
                 .await?;
         }
 
-        let username = username.trim().to_string();
+        let username = Self::normalize_local_username(&username).to_string();
         if username.is_empty() {
             return Err(AppError::Validation("username is required".to_string()));
         }
+        self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;
 
         if self
@@ -310,6 +332,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.clone(),
             password_hash: Some(password_hash),
+            account_kind: scryer_domain::UserAccountKind::Local,
             authorization: Default::default(),
         };
 
@@ -323,6 +346,7 @@ impl AppUseCase {
             .into_iter()
             .map(|mut grant| {
                 grant.user_id = user.id.clone();
+                grant.permissions = grant.permissions.normalized_for_storage();
                 grant
             })
             .collect();
@@ -361,7 +385,7 @@ impl AppUseCase {
         password: String,
         current_password: String,
     ) -> AppResult<User> {
-        if password.trim().is_empty() {
+        if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
 
@@ -373,6 +397,12 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
 
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
         let hash = existing
             .password_hash
             .as_deref()
@@ -381,6 +411,33 @@ impl AppUseCase {
             return Err(AppError::Unauthorized(
                 "current password is incorrect".into(),
             ));
+        }
+
+        self.update_user_password_hash(actor, &actor.id, password)
+            .await
+    }
+
+    pub async fn set_initial_own_password(
+        &self,
+        actor: &User,
+        password: String,
+    ) -> AppResult<User> {
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(&actor.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
+
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
+        if existing.password_hash.is_some() {
+            return Err(AppError::Validation("current password is required".into()));
         }
 
         self.update_user_password_hash(actor, &actor.id, password)
@@ -412,10 +469,24 @@ impl AppUseCase {
         user_id: &str,
         password: String,
     ) -> AppResult<User> {
-        if password.trim().is_empty() {
+        if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
 
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
+        self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;
         let user = self
             .services
@@ -434,7 +505,6 @@ impl AppUseCase {
 
         Ok(user)
     }
-
     pub async fn set_user_app_permissions(
         &self,
         actor: &User,
@@ -493,6 +563,13 @@ impl AppUseCase {
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
+        let grants = grants
+            .into_iter()
+            .map(|mut grant| {
+                grant.permissions = grant.permissions.normalized_for_storage();
+                grant
+            })
+            .collect();
         self.services
             .catalog
             .libraries
@@ -536,5 +613,40 @@ impl AppUseCase {
         )
         .await;
         Ok(())
+    }
+
+    pub async fn reset_user_mfa(&self, actor: &User, user_id: &str) -> AppResult<User> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+
+        let user = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
+
+        if user.id == actor.id {
+            return Err(AppError::Validation("cannot reset your own MFA".into()));
+        }
+
+        let auth_session_version = Id::new().0;
+        self.services
+            .identity
+            .totp
+            .reset_user_mfa_and_invalidate_sessions(user_id, &auth_session_version)
+            .await?;
+        self.evict_cached_jwt_signing_key(user_id).await;
+        self.refresh_cached_jwt_signing_key(&user).await?;
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "user_mfa",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+
+        Ok(user)
     }
 }

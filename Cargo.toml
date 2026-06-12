@@ -4,8 +4,10 @@ members = [
     "xtask-release",
     "xtask-migrations",
     "xtask-support",
+    "xtask-trash-guides",
     "crates/scryer-domain",
     "crates/scryer-application",
+    "crates/scryer-webauthn",
     "crates/scryer-outbound-http",
     "crates/scryer-release-parser",
     "crates/scryer-infrastructure",
@@ -18,6 +20,7 @@ members = [
     "crates/scryer-rules",
     "crates/scryer-plugin-sdk",
     "crates/scryer-plugins",
+    "crates/scryer-runtime-info",
     "crates/scryer-launcher",
     "crates/scryer",
     "crates/scryer-mock-apis",
@@ -43,6 +46,7 @@ uuid = { version = "1.3", features = ["v4", "serde"] }
 async-graphql = { version = "7.2", default-features = false, features = ["chrono"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rand_core = "0.10"
+webauthn-rs = { package = "scryer-webauthn", path = "crates/scryer-webauthn" }
 # SQLite is compiled in via sqlx-sqlite -> libsqlite3-sys bundled mode for single-executable
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "sqlite", "postgres", "json", "chrono", "macros", "migrate"] }
 argon2 = "0.5"
@@ -72,10 +76,11 @@ panic = "abort"
 [profile.e2e]
 inherits = "release"
 opt-level = 1
-lto = "thin"
-codegen-units = 32
-strip = true
-panic = "abort"
+lto = false
+codegen-units = 256
+debug = 1
+strip = false
+incremental = true
 
 [profile.release-launcher]
 inherits = "release"
@@ -112,9 +117,6 @@ opt-level = 2
 
 [profile.release-lean.package.scryer-interface-settings]
 opt-level = 2
-
-[profile.release-lean.package.alass-core]
-opt-level = 3
 
 [profile.release-lean.package.argon2]
 opt-level = 3
@@ -176,9 +178,6 @@ opt-level = 3
 [profile.release-lean.package.sha2]
 opt-level = 3
 
-[profile.release-lean.package.symphonia]
-opt-level = 3
-
 [profile.release-lean.package.weaver-rar]
 opt-level = 3
 
@@ -221,9 +220,6 @@ opt-level = 2
 
 [profile.rc.package.scryer-interface-settings]
 opt-level = 2
-
-[profile.rc.package.alass-core]
-opt-level = 3
 
 [profile.rc.package.argon2]
 opt-level = 3
@@ -283,9 +279,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.rc.package.sha2]
-opt-level = 3
-
-[profile.rc.package.symphonia]
 opt-level = 3
 
 [profile.rc.package.weaver-rar]

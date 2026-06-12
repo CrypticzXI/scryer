@@ -10,6 +10,7 @@ type UseTitleListReactiveRefreshOptions = {
   onTitleRefreshed: (
     titleId: string,
     title: TitleRecord | null,
+    requestEpoch: number,
   ) => void;
 };
 
@@ -48,8 +49,8 @@ export function useTitleListReactiveRefresh({
 
       queueCatalogTitleRefresh({
         titleId,
-        apply(title) {
-          onTitleRefreshedRef.current(titleId, title);
+        apply(title, requestEpoch) {
+          onTitleRefreshedRef.current(titleId, title, requestEpoch);
         },
         onError(error) {
           console.error("[title-list-reactive-refresh] refresh failed:", error);

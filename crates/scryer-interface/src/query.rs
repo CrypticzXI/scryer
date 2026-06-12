@@ -2,8 +2,9 @@ use async_graphql::{Context, Error, MergedObject, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    DownloadImportFilter, PendingImportCounts, SCRYER_VERSION, TitleHistoryFilter,
-    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
+    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, PendingImportCounts,
+    SCRYER_VERSION, TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -11,17 +12,18 @@ use scryer_interface_settings::SettingsQueries;
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    current_user_from_ctx, require_app_permission, to_gql_error,
+    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_delete_preview, from_domain_event,
-    from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
-    from_job_definition, from_job_run, from_library, from_library_scan_session,
-    from_library_settings, from_media_rename_plan, from_pending_import_connection,
+    from_activity_event, from_backup_info, from_delete_preview, from_delete_titles_preview,
+    from_domain_event, from_download_queue_item, from_episode,
+    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
+    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
+    from_media_request, from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type,
     from_smg_version_compatibility_notice, from_system_health, from_title,
     from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -250,6 +252,9 @@ struct AcquisitionQueries;
 #[derive(Default)]
 struct UtilityQueries;
 
+#[derive(Default)]
+struct AccountQueries;
+
 #[derive(MergedObject, Default)]
 pub struct QueryRoot(
     CatalogQueries,
@@ -260,7 +265,36 @@ pub struct QueryRoot(
     AcquisitionQueries,
     MetadataQueries,
     UtilityQueries,
+    AccountQueries,
 );
+
+#[Object]
+impl AccountQueries {
+    async fn linked_accounts(
+        &self,
+        ctx: &Context<'_>,
+        user_id: Option<String>,
+    ) -> GqlResult<Vec<LinkedAccountPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_linked_accounts(&actor, user_id.as_deref())
+            .await
+            .map(|accounts| accounts.into_iter().map(from_linked_account).collect())
+            .map_err(to_gql_error)
+    }
+
+    async fn external_account_invites(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<LinkedAccountPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_external_account_invites(&actor)
+            .await
+            .map(|accounts| accounts.into_iter().map(from_linked_account).collect())
+            .map_err(to_gql_error)
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 #[Object]
@@ -307,6 +341,52 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(libraries.into_iter().map(from_library).collect())
+    }
+
+    async fn media_requests(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<String>>,
+        status: Option<MediaRequestStatusValue>,
+    ) -> GqlResult<Vec<MediaRequestPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let requests = app
+            .list_media_requests(
+                &actor,
+                scryer_application::ListMediaRequestsInput {
+                    facet: facet.map(MediaFacetValue::into_domain),
+                    library_ids,
+                    status: status.map(MediaRequestStatusValue::into_domain),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(requests.into_iter().map(from_media_request).collect())
+    }
+
+    async fn my_media_requests(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<String>>,
+        status: Option<MediaRequestStatusValue>,
+    ) -> GqlResult<Vec<MediaRequestPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let requests = app
+            .list_my_media_requests(
+                &actor,
+                scryer_application::ListMediaRequestsInput {
+                    facet: facet.map(MediaFacetValue::into_domain),
+                    library_ids,
+                    status: status.map(MediaRequestStatusValue::into_domain),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(requests.into_iter().map(from_media_request).collect())
     }
 
     async fn library_settings(
@@ -413,6 +493,20 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_delete_preview(preview))
+    }
+
+    async fn delete_titles_preview(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteTitlesPreviewInput,
+    ) -> GqlResult<DeleteTitlesPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let preview = app
+            .preview_delete_titles_files(&actor, &input.title_ids)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_delete_titles_preview(preview))
     }
 
     async fn delete_media_file_preview(
@@ -732,6 +826,8 @@ impl ActivityQueries {
 
         let can_resolve_imports =
             actor_has_any_library_permission(ctx, LibraryPermission::ResolveImports).await?;
+        let can_manage_titles =
+            actor_has_any_library_permission(ctx, LibraryPermission::ManageTitles).await?;
         let can_manage_system_settings =
             actor_has_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
 
@@ -740,6 +836,13 @@ impl ActivityQueries {
                 app.pending_import_counts(&actor).await
             } else {
                 Ok(PendingImportCounts::default())
+            }
+        };
+        let pending_media_request_counts = async {
+            if can_manage_titles {
+                app.pending_media_request_counts(&actor).await
+            } else {
+                Ok(MediaRequestCounts::default())
             }
         };
         let activity_import_count = async {
@@ -758,8 +861,14 @@ impl ActivityQueries {
             }
         };
 
-        let (pending_import_counts, activity_import_count, plugin_update_count) = tokio::try_join!(
+        let (
             pending_import_counts,
+            pending_media_request_counts,
+            activity_import_count,
+            plugin_update_count,
+        ) = tokio::try_join!(
+            pending_import_counts,
+            pending_media_request_counts,
             activity_import_count,
             plugin_update_count,
         )
@@ -767,6 +876,7 @@ impl ActivityQueries {
 
         Ok(NavigationBadgeCountsPayload {
             pending_import_counts: from_pending_import_counts(pending_import_counts),
+            pending_media_request_counts: from_media_request_counts(pending_media_request_counts),
             activity_import_count: activity_import_count as i32,
             plugin_update_count: plugin_update_count as i32,
         })
@@ -1140,9 +1250,69 @@ impl SystemQueries {
         })
     }
 
+    async fn preview_manual_import_path(
+        &self,
+        ctx: &Context<'_>,
+        input: PreviewManualImportPathInput,
+    ) -> GqlResult<ManualImportPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let preview = scryer_application::preview_manual_import_path(
+            &app,
+            &actor,
+            &input.path,
+            &input.title_id,
+        )
+        .await
+        .map_err(to_gql_error)?;
+
+        Ok(ManualImportPreviewPayload {
+            files: preview
+                .files
+                .into_iter()
+                .map(|f| ManualImportFilePreviewPayload {
+                    file_path: f.file_path,
+                    file_name: f.file_name,
+                    size_bytes: f.size_bytes.to_string(),
+                    quality: f.quality,
+                    parsed_season: f.parsed_season.map(|v| v as i32),
+                    parsed_episodes: f.parsed_episodes.into_iter().map(|v| v as i32).collect(),
+                    suggested_episode_id: f.suggested_episode_id,
+                    suggested_episode_label: f.suggested_episode_label,
+                })
+                .collect(),
+            available_episodes: preview
+                .available_episodes
+                .into_iter()
+                .map(from_episode)
+                .collect(),
+        })
+    }
+
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
+        if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+            return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+                "MFA enrollment must be completed before accessing Scryer".into(),
+            )));
+        }
+
         match current_user_from_ctx(ctx) {
-            Some(user) => Ok(Some(from_user(user))),
+            Some(user) => {
+                let app = app_from_ctx(ctx)?;
+                let user = app
+                    .load_user_for_auth_payload(&user)
+                    .await
+                    .map_err(to_gql_error)?;
+                let auth_factor_status = app
+                    .user_auth_factor_status(&user.id)
+                    .await
+                    .map_err(to_gql_error)?;
+                Ok(Some(from_user_with_auth_factor_status(
+                    user,
+                    auth_factor_status,
+                )))
+            }
             None => Ok(None),
         }
     }
@@ -1457,6 +1627,22 @@ impl UtilityQueries {
         Ok(channels
             .into_iter()
             .map(crate::mappers::from_notification_channel)
+            .collect())
+    }
+
+    async fn notification_targets(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<NotificationTargetPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let targets = app
+            .list_notification_targets(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(targets
+            .into_iter()
+            .map(crate::mappers::from_notification_target)
             .collect())
     }
 

@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use aho_corasick::{AhoCorasickBuilder, MatchKind};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use chrono::NaiveDate;
 use fixedbitset::FixedBitSet;
 use smallvec::SmallVec;
@@ -14,9 +15,10 @@ use crate::lex::{
     normalize_token,
 };
 use crate::model::{
-    CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
-    ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
-    ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, TitleSegment, TitleSegmentKind,
+    AudioCodec, CandidateZones, ExternalIdSource, MetadataAst, ParseDisposition, ParseFamily,
+    ParseReason, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId,
+    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis,
+    ReleaseParseCandidate, ReleaseSource, StreamingService, TitleSegment, TitleSegmentKind,
     TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
@@ -27,6 +29,7 @@ const ALT_ROLE_FIRST_DEBT: i32 = -3;
 const ALT_ROLE_SECOND_DEBT: i32 = -6;
 const TITLE_WORD_AMBIGUITY_DEBT: i32 = -8;
 const MAX_ALIAS_BRANCH_FANOUT: usize = 3;
+const ALIAS_AUTOMATON_CACHE_CAPACITY: usize = 64;
 const SCORING_MODEL_VERSION: u16 = 1;
 
 pub(crate) struct AnalysisInputs<'a> {
@@ -94,10 +97,18 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
             }
             ParseDisposition::Unparseable => {
                 if let Some(normalized_source) = normalize_source_for_service(
-                    best_candidate.projected.source.as_deref(),
-                    best_candidate.projected.streaming_service.as_deref(),
+                    best_candidate
+                        .projected
+                        .source
+                        .as_ref()
+                        .map(ReleaseSource::as_str),
+                    best_candidate
+                        .projected
+                        .streaming_service
+                        .as_ref()
+                        .map(StreamingService::as_str),
                 ) {
-                    best_candidate.projected.source = Some(normalized_source);
+                    best_candidate.projected.source = ReleaseSource::parse(&normalized_source);
                     best_candidate
                         .projected
                         .parse_hints
@@ -184,8 +195,7 @@ struct AliasPattern {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AliasHit {
-    token_start: usize,
-    token_end: usize,
+    token_range: TokenRange,
     pattern_id: usize,
     evidence: AliasEvidenceKind,
     score_weight: i32,
@@ -198,6 +208,11 @@ struct AliasOracle {
     patterns: Vec<AliasPattern>,
     hits_at: Vec<AliasHitList>,
     parse_hints: Vec<String>,
+}
+
+struct AliasAutomatonCacheEntry {
+    key: Vec<String>,
+    automaton: Arc<AhoCorasick>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -242,8 +257,7 @@ enum UnitKind {
 
 #[derive(Clone, Debug)]
 struct ParseUnit {
-    start_token: usize,
-    end_token: usize,
+    token_range: TokenRange,
     kind: UnitKind,
     raw: String,
     normalized_tokens: Vec<String>,
@@ -933,7 +947,12 @@ fn build_parse_unit_index(
     for index in 0..tokens.len() {
         push_unit(
             &mut units_by_start,
-            build_unit(tokens, annotations, index, index + 1, UnitKind::Token),
+            build_unit(
+                tokens,
+                annotations,
+                TokenRange::new(index, index + 1),
+                UnitKind::Token,
+            ),
         );
     }
 
@@ -944,48 +963,35 @@ fn build_parse_unit_index(
                 token_indices,
                 ..
             } => {
-                if let Some((start_token, end_token)) = node_span(token_indices) {
+                if let Some(token_range) = node_span(token_indices) {
                     push_unit(
                         &mut units_by_start,
                         build_unit(
                             tokens,
                             annotations,
-                            start_token,
-                            end_token,
+                            token_range,
                             UnitKind::BracketGroup(*bracket_kind),
                         ),
                     );
                 }
             }
             CstNode::HyphenGroup { token_indices } => {
-                if let Some((start_token, end_token)) = node_span(token_indices)
+                if let Some(token_range) = node_span(token_indices)
                     && token_indices.len() <= 4
                 {
                     push_unit(
                         &mut units_by_start,
-                        build_unit(
-                            tokens,
-                            annotations,
-                            start_token,
-                            end_token,
-                            UnitKind::HyphenGroup,
-                        ),
+                        build_unit(tokens, annotations, token_range, UnitKind::HyphenGroup),
                     );
                 }
             }
             CstNode::SlashGroup { token_indices } => {
-                if let Some((start_token, end_token)) = node_span(token_indices)
+                if let Some(token_range) = node_span(token_indices)
                     && token_indices.len() <= 4
                 {
                     push_unit(
                         &mut units_by_start,
-                        build_unit(
-                            tokens,
-                            annotations,
-                            start_token,
-                            end_token,
-                            UnitKind::SlashGroup,
-                        ),
+                        build_unit(tokens, annotations, token_range, UnitKind::SlashGroup),
                     );
                 }
             }
@@ -993,7 +999,7 @@ fn build_parse_unit_index(
                 separator,
                 token_indices,
             } => {
-                if let Some((start_token, end_token)) = node_span(token_indices)
+                if let Some(token_range) = node_span(token_indices)
                     && token_indices.len() <= 5
                     && matches!(
                         separator,
@@ -1009,8 +1015,7 @@ fn build_parse_unit_index(
                         build_unit(
                             tokens,
                             annotations,
-                            start_token,
-                            end_token,
+                            token_range,
                             UnitKind::DelimitedRun(*separator),
                         ),
                     );
@@ -1022,16 +1027,14 @@ fn build_parse_unit_index(
 
     for units in &mut units_by_start {
         units.sort_by(|left, right| {
-            let left_len = left.end_token.saturating_sub(left.start_token);
-            let right_len = right.end_token.saturating_sub(right.start_token);
+            let left_len = left.token_range.len();
+            let right_len = right.token_range.len();
             right_len
                 .cmp(&left_len)
                 .then(unit_priority(left.kind).cmp(&unit_priority(right.kind)))
         });
         units.dedup_by(|left, right| {
-            left.start_token == right.start_token
-                && left.end_token == right.end_token
-                && left.kind == right.kind
+            left.token_range == right.token_range && left.kind == right.kind
         });
     }
 
@@ -1039,15 +1042,15 @@ fn build_parse_unit_index(
 }
 
 fn push_unit(units_by_start: &mut ParseUnitIndex, unit: ParseUnit) {
-    if let Some(units) = units_by_start.get_mut(unit.start_token) {
+    if let Some(units) = units_by_start.get_mut(unit.token_range.start_token) {
         units.push(unit);
     }
 }
 
-fn node_span(token_indices: &[usize]) -> Option<(usize, usize)> {
+fn node_span(token_indices: &[usize]) -> Option<TokenRange> {
     let start_token = token_indices.iter().min().copied()?;
     let end_token = token_indices.iter().max().map(|value| value + 1)?;
-    Some((start_token, end_token))
+    Some(TokenRange::new(start_token, end_token))
 }
 
 fn unit_priority(kind: UnitKind) -> u8 {
@@ -1063,25 +1066,28 @@ fn unit_priority(kind: UnitKind) -> u8 {
 fn build_unit(
     tokens: &[Token],
     annotations: &[TokenAnnotations],
-    start_token: usize,
-    end_token: usize,
+    token_range: TokenRange,
     kind: UnitKind,
 ) -> ParseUnit {
-    let raw = (start_token..end_token)
+    let raw = token_range
+        .indices()
+        .into_iter()
         .filter_map(|index| tokens.get(index))
         .map(|token| token.raw.clone())
         .collect::<Vec<_>>()
         .join(" ");
-    let normalized_tokens = (start_token..end_token)
+    let normalized_tokens = token_range
+        .indices()
+        .into_iter()
         .filter_map(|index| tokens.get(index))
         .map(|token| token.normalized.clone())
         .collect::<Vec<_>>();
-    let has_strong_anchor = (start_token..end_token).any(|index| {
+    let has_strong_anchor = token_range.indices().into_iter().any(|index| {
         annotations
             .get(index)
             .is_some_and(|annotation| is_strong_anchor(annotation.primary_role))
     });
-    let has_metadata_role = (start_token..end_token).any(|index| {
+    let has_metadata_role = token_range.indices().into_iter().any(|index| {
         annotations.get(index).is_some_and(|annotation| {
             matches!(
                 annotation.primary_role,
@@ -1099,11 +1105,12 @@ fn build_unit(
             )
         })
     });
-    let has_title_like_token =
-        (start_token..end_token).any(|index| tokens.get(index).is_some_and(is_title_like_token));
+    let has_title_like_token = token_range
+        .indices()
+        .into_iter()
+        .any(|index| tokens.get(index).is_some_and(is_title_like_token));
     ParseUnit {
-        start_token,
-        end_token,
+        token_range,
         kind,
         raw,
         normalized_tokens,
@@ -1280,7 +1287,7 @@ fn alias_hit_allowed(state: &ParseState, hit: &AliasHit, annotations: &[TokenAnn
     if state.phase == ParsePhase::Metadata {
         return false;
     }
-    !(hit.token_start..hit.token_end).any(|index| {
+    !(hit.token_range.start_token..hit.token_range.end_token).any(|index| {
         annotations.get(index).is_some_and(|annotation| {
             matches!(
                 annotation.primary_role,
@@ -1303,10 +1310,10 @@ fn branch_alias_hit(
 ) -> ParseState {
     let mut next = state.clone();
     next.phase = ParsePhase::Title;
-    next.cursor = hit.token_end;
+    next.cursor = hit.token_range.end_token;
     next.title_token_indices
-        .extend(hit.token_start..hit.token_end);
-    for token_index in hit.token_start..hit.token_end {
+        .extend(hit.token_range.start_token..hit.token_range.end_token);
+    for token_index in hit.token_range.start_token..hit.token_range.end_token {
         next.title_token_mask.insert(token_index);
         next.consumed_tokens.insert(token_index);
     }
@@ -1318,7 +1325,7 @@ fn branch_alias_hit(
         .unwrap_or_else(|| {
             render_token_indices(
                 tokens,
-                &(hit.token_start..hit.token_end).collect::<Vec<_>>(),
+                &(hit.token_range.start_token..hit.token_range.end_token).collect::<Vec<_>>(),
             )
         });
     let delta = 10 + hit.score_weight;
@@ -1341,7 +1348,7 @@ fn unit_is_prefix_release_group_candidate(
     match unit.kind {
         UnitKind::BracketGroup(_) => unit_can_be_release_group(unit, tokens),
         UnitKind::Token => tokens
-            .get(unit.start_token)
+            .get(unit.token_range.start_token)
             .is_some_and(|token| token.group_id.is_some() && token.bracket_depth > 0),
         _ => false,
     }
@@ -1362,10 +1369,10 @@ fn parse_identity_for_unit(
     tokens: &[Token],
     context: &ContextIndex,
 ) -> Option<(usize, ReleaseIdentity, usize, i32, &'static str)> {
-    parse_identity_at(family, tokens, unit.start_token, context)
+    parse_identity_at(family, tokens, unit.token_range.start_token, context)
         .map(|(identity, last_token, family_bonus, evidence)| {
             (
-                unit.start_token,
+                unit.token_range.start_token,
                 identity,
                 last_token,
                 family_bonus,
@@ -1373,17 +1380,19 @@ fn parse_identity_for_unit(
             )
         })
         .or_else(|| {
-            (family == ParseFamily::DailyEpisode && unit.end_token > unit.start_token + 1).then(
-                || {
-                    ((unit.start_token + 1)..unit.end_token).find_map(|index| {
-                        parse_identity_at(family, tokens, index, context).map(
-                            |(identity, last_token, family_bonus, evidence)| {
-                                (index, identity, last_token, family_bonus, evidence)
-                            },
-                        )
-                    })
-                },
-            )?
+            (family == ParseFamily::DailyEpisode
+                && unit.token_range.end_token > unit.token_range.start_token + 1)
+                .then(|| {
+                    ((unit.token_range.start_token + 1)..unit.token_range.end_token).find_map(
+                        |index| {
+                            parse_identity_at(family, tokens, index, context).map(
+                                |(identity, last_token, family_bonus, evidence)| {
+                                    (index, identity, last_token, family_bonus, evidence)
+                                },
+                            )
+                        },
+                    )
+                })?
         })
 }
 
@@ -1414,7 +1423,7 @@ fn branch_identity(
                 }
                 ParseFamily::Special => TokenRole::SpecialMarker,
                 ParseFamily::StandardEpisode => {
-                    if token_index == unit.start_token {
+                    if token_index == unit.token_range.start_token {
                         TokenRole::EpisodeMarker
                     } else {
                         TokenRole::SeasonMarker
@@ -1445,8 +1454,8 @@ fn branch_identity(
 fn branch_title(state: &ParseState, unit: &ParseUnit, context: &ContextIndex) -> ParseState {
     let mut next = state.clone();
     next.phase = ParsePhase::Title;
-    next.cursor = unit.end_token;
-    for token_index in unit.start_token..unit.end_token {
+    next.cursor = unit.token_range.end_token;
+    for token_index in unit.token_range.start_token..unit.token_range.end_token {
         next.title_token_indices.push(token_index);
         next.title_token_mask.insert(token_index);
     }
@@ -1465,7 +1474,7 @@ fn branch_metadata(
 ) -> ParseState {
     let mut next = state.clone();
     next.phase = ParsePhase::Metadata;
-    next.cursor = unit.end_token;
+    next.cursor = unit.token_range.end_token;
     consume_unit_metadata(&mut next, unit, tokens, annotations);
     next
 }
@@ -1620,7 +1629,7 @@ fn unit_is_explicit_identity_unit(
     if unit_alias_bonus(unit, context) > 0 {
         return false;
     }
-    (unit.start_token..unit.end_token).any(|index| {
+    (unit.token_range.start_token..unit.token_range.end_token).any(|index| {
         let Some(annotation) = annotations.get(index) else {
             return false;
         };
@@ -1657,30 +1666,38 @@ fn is_compound_metadata_like_token(token: &str) -> bool {
 
 fn unit_can_be_release_group(unit: &ParseUnit, tokens: &[Token]) -> bool {
     match unit.kind {
-        UnitKind::Token => tokens.get(unit.start_token).is_some_and(|token| {
-            token.separator_before == SeparatorKind::Hyphen
-                && token.raw.len() <= 24
-                && release_group_part_is_valid(token, false)
-                && !is_compound_metadata_suffix(tokens, unit.start_token)
-        }),
+        UnitKind::Token => tokens
+            .get(unit.token_range.start_token)
+            .is_some_and(|token| {
+                token.separator_before == SeparatorKind::Hyphen
+                    && token.raw.len() <= 24
+                    && release_group_part_is_valid(token, false)
+                    && !is_compound_metadata_suffix(tokens, unit.token_range.start_token)
+            }),
         UnitKind::HyphenGroup => {
-            let span_len = unit.end_token.saturating_sub(unit.start_token);
+            let span_len = unit
+                .token_range
+                .end_token
+                .saturating_sub(unit.token_range.start_token);
             span_len > 0
                 && span_len <= 3
                 && tokens
-                    .get(unit.start_token)
+                    .get(unit.token_range.start_token)
                     .is_some_and(|token| token.separator_before == SeparatorKind::Hyphen)
-                && (unit.start_token..unit.end_token).all(|index| {
+                && (unit.token_range.start_token..unit.token_range.end_token).all(|index| {
                     tokens.get(index).is_some_and(|token| {
-                        release_group_part_is_valid(token, index > unit.start_token)
+                        release_group_part_is_valid(token, index > unit.token_range.start_token)
                     })
                 })
         }
         UnitKind::BracketGroup(_) => {
-            let span_len = unit.end_token.saturating_sub(unit.start_token);
+            let span_len = unit
+                .token_range
+                .end_token
+                .saturating_sub(unit.token_range.start_token);
             span_len > 0
                 && span_len <= 3
-                && (unit.start_token..unit.end_token).all(|index| {
+                && (unit.token_range.start_token..unit.token_range.end_token).all(|index| {
                     tokens.get(index).is_some_and(|token| {
                         !token.normalized.is_empty()
                             && parse_year(token.normalized.as_str()).is_none()
@@ -1716,10 +1733,7 @@ fn unit_can_be_release_group(unit: &ParseUnit, tokens: &[Token]) -> bool {
 }
 
 fn release_group_token_range(unit: &ParseUnit, tokens: &[Token]) -> TokenRange {
-    let mut range = TokenRange {
-        start_token: unit.start_token,
-        end_token: unit.end_token,
-    };
+    let mut range = unit.token_range;
 
     if unit.kind != UnitKind::Token {
         return range;
@@ -2021,13 +2035,14 @@ fn range_is_embedded_in_larger_group(tokens: &[Token], range: TokenRange) -> boo
 }
 
 fn range_is_metadata_marker(tokens: &[Token], range: TokenRange) -> bool {
+    let range_len = range.end_token.saturating_sub(range.start_token);
     (range.start_token..range.end_token).any(|index| {
         tokens.get(index).is_some_and(|token| {
             let normalized = token.normalized.as_str();
             !release_group_part_is_valid(token, index > range.start_token)
                 || is_explicit_language_metadata_token(normalized)
                 || is_release_flag_metadata_token(normalized)
-                || normalize_streaming_service(normalized).is_some()
+                || (range_len == 1 && normalize_streaming_service(normalized).is_some())
                 || parse_special_kind(normalized).is_some()
         })
     })
@@ -2071,8 +2086,7 @@ fn release_group_suffix_range(tokens: &[Token], index: usize) -> TokenRange {
     }
 
     let unit = ParseUnit {
-        start_token,
-        end_token: index + 1,
+        token_range: TokenRange::new(start_token, index + 1),
         kind: UnitKind::Token,
         raw: tokens
             .get(start_token)
@@ -2466,7 +2480,7 @@ fn consume_unit_metadata(
     tokens: &[Token],
     annotations: &[TokenAnnotations],
 ) {
-    for index in unit.start_token..unit.end_token {
+    for index in unit.token_range.start_token..unit.token_range.end_token {
         let Some(token) = tokens.get(index) else {
             continue;
         };
@@ -2820,15 +2834,15 @@ fn build_candidate(
     let external_ids = state.metadata.external_ids.clone();
     let imdb_id = external_ids
         .iter()
-        .find(|value| value.source == "imdb")
+        .find(|value| value.source == ExternalIdSource::Imdb)
         .map(|value| value.value.clone());
     let tmdb_id = external_ids
         .iter()
-        .find(|value| value.source == "tmdb")
+        .find(|value| value.source == ExternalIdSource::Tmdb)
         .map(|value| value.value.clone());
     let tvdb_id = external_ids
         .iter()
-        .find(|value| value.source == "tvdb")
+        .find(|value| value.source == ExternalIdSource::Tvdb)
         .map(|value| value.value.clone());
     let unconsumed_tokens = tokens
         .iter()
@@ -2857,18 +2871,27 @@ fn build_candidate(
         tvdb_id,
         year: state.metadata.year,
         quality: state.metadata.quality.clone(),
-        source: state.metadata.source.clone(),
+        source: state
+            .metadata
+            .source
+            .as_deref()
+            .and_then(ReleaseSource::parse),
         video_codec: state
             .metadata
             .video_codec
             .as_deref()
             .and_then(VideoCodec::parse),
         video_encoding: None,
-        audio: state.metadata.audio_codec.clone(),
+        audio: state
+            .metadata
+            .audio_codec
+            .as_deref()
+            .and_then(AudioCodec::parse),
         audio_codecs: state
             .metadata
             .audio_codec
-            .clone()
+            .as_deref()
+            .and_then(AudioCodec::parse)
             .into_iter()
             .collect::<Vec<_>>(),
         audio_channels: state.metadata.audio_channels.clone(),
@@ -2889,7 +2912,11 @@ fn build_candidate(
         is_hardcoded_subs: false,
         is_uncensored: false,
         is_dubs_only: false,
-        streaming_service: state.metadata.streaming_service.clone(),
+        streaming_service: state
+            .metadata
+            .streaming_service
+            .as_deref()
+            .and_then(StreamingService::parse),
         edition: (!is_remux)
             .then(|| state.metadata.edition.clone())
             .flatten(),
@@ -3156,11 +3183,11 @@ fn title_segments_for_state(
             let pattern = alias_oracle.patterns.get(hit.pattern_id)?;
             Some(TitleSegment {
                 kind: TitleSegmentKind::ContextMatchedAlias,
-                token_start: hit.token_start,
-                token_end: hit.token_end,
+                token_start: hit.token_range.start_token,
+                token_end: hit.token_range.end_token,
                 raw: render_token_indices(
                     tokens,
-                    &(hit.token_start..hit.token_end).collect::<Vec<_>>(),
+                    &(hit.token_range.start_token..hit.token_range.end_token).collect::<Vec<_>>(),
                 ),
                 normalized: pattern.text.clone(),
             })
@@ -3382,32 +3409,29 @@ fn contextual_hits_within_title_zone(
         .filter_map(|token_start| alias_oracle.hits_at.get(*token_start))
         .flat_map(|hits| hits.iter())
         .filter(|hit| {
-            (hit.token_start..hit.token_end)
+            (hit.token_range.start_token..hit.token_range.end_token)
                 .all(|index| title_indices_sorted.binary_search(&index).is_ok())
                 && !accepted_alias_hits.iter().any(|accepted| {
-                    accepted.token_start == hit.token_start
-                        && accepted.token_end == hit.token_end
+                    accepted.token_range.start_token == hit.token_range.start_token
+                        && accepted.token_range.end_token == hit.token_range.end_token
                         && accepted.pattern_id == hit.pattern_id
                 })
         })
         .cloned()
         .collect::<Vec<_>>();
     ordered_hits.sort_by(|left, right| {
-        left.token_start
-            .cmp(&right.token_start)
+        left.token_range
+            .start_token
+            .cmp(&right.token_range.start_token)
             .then(left.evidence.precedence().cmp(&right.evidence.precedence()))
-            .then(
-                right
-                    .token_end
-                    .saturating_sub(right.token_start)
-                    .cmp(&left.token_end.saturating_sub(left.token_start)),
-            )
+            .then(right.token_range.len().cmp(&left.token_range.len()))
             .then(left.pattern_id.cmp(&right.pattern_id))
     });
     let mut selected = Vec::new();
     for hit in ordered_hits {
         if selected.iter().any(|accepted_hit: &AliasHit| {
-            accepted_hit.token_start <= hit.token_start && accepted_hit.token_end >= hit.token_end
+            accepted_hit.token_range.start_token <= hit.token_range.start_token
+                && accepted_hit.token_range.end_token >= hit.token_range.end_token
         }) {
             continue;
         }
@@ -3943,6 +3967,57 @@ fn context_episode_for_season(context: &ContextIndex, season: u32) -> Option<u32
     matched
 }
 
+fn alias_automaton_for_patterns(
+    patterns: &[AliasPattern],
+) -> Result<Arc<AhoCorasick>, aho_corasick::BuildError> {
+    let key = patterns
+        .iter()
+        .map(|pattern| pattern.text.clone())
+        .collect::<Vec<_>>();
+    if let Some(automaton) = cached_alias_automaton(key.as_slice()) {
+        return Ok(automaton);
+    }
+
+    let automaton = Arc::new(
+        AhoCorasickBuilder::new()
+            .ascii_case_insensitive(true)
+            .match_kind(MatchKind::Standard)
+            .build(key.iter().map(String::as_str))?,
+    );
+    remember_alias_automaton(key, Arc::clone(&automaton));
+    Ok(automaton)
+}
+
+fn alias_automaton_cache() -> &'static Mutex<VecDeque<AliasAutomatonCacheEntry>> {
+    static CACHE: OnceLock<Mutex<VecDeque<AliasAutomatonCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn cached_alias_automaton(key: &[String]) -> Option<Arc<AhoCorasick>> {
+    let mut cache = alias_automaton_cache().lock().ok()?;
+    let position = cache.iter().position(|entry| entry.key == key)?;
+    let entry = cache.remove(position)?;
+    let automaton = Arc::clone(&entry.automaton);
+    cache.push_front(entry);
+    Some(automaton)
+}
+
+fn remember_alias_automaton(key: Vec<String>, automaton: Arc<AhoCorasick>) {
+    let Ok(mut cache) = alias_automaton_cache().lock() else {
+        return;
+    };
+    if let Some(position) = cache.iter().position(|entry| entry.key == key) {
+        if let Some(entry) = cache.remove(position) {
+            cache.push_front(entry);
+        }
+        return;
+    }
+    while cache.len() >= ALIAS_AUTOMATON_CACHE_CAPACITY {
+        cache.pop_back();
+    }
+    cache.push_front(AliasAutomatonCacheEntry { key, automaton });
+}
+
 fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
     let mut patterns = Vec::<AliasPattern>::new();
     for alias in &context.aliases {
@@ -3976,11 +4051,7 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
 
     // Standard + overlapping is intentional here: the beam wants every viable
     // alias span and applies its own precedence and nesting filters afterward.
-    let automaton = match AhoCorasickBuilder::new()
-        .ascii_case_insensitive(true)
-        .match_kind(MatchKind::Standard)
-        .build(patterns.iter().map(|pattern| pattern.text.as_str()))
-    {
+    let automaton = match alias_automaton_for_patterns(&patterns) {
         Ok(automaton) => automaton,
         Err(_) => {
             return AliasOracle {
@@ -3994,17 +4065,15 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
     let mut hits_at = vec![AliasHitList::new(); tokens.len()];
 
     for mat in automaton.find_overlapping_iter(&haystack) {
-        let Some((token_start, token_end)) =
-            byte_range_to_token_range(mat.start(), mat.end(), &token_byte_map)
+        let Some(token_range) = byte_range_to_token_range(mat.start(), mat.end(), &token_byte_map)
         else {
             continue;
         };
         let pattern_id = mat.pattern().as_usize();
         let pattern = &patterns[pattern_id];
-        if let Some(bucket) = hits_at.get_mut(token_start) {
+        if let Some(bucket) = hits_at.get_mut(token_range.start_token) {
             bucket.push(AliasHit {
-                token_start,
-                token_end,
+                token_range,
                 pattern_id,
                 evidence: pattern.kind,
                 score_weight: pattern.kind.score_weight(),
@@ -4017,18 +4086,14 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
             left.evidence
                 .precedence()
                 .cmp(&right.evidence.precedence())
-                .then(
-                    right
-                        .token_end
-                        .saturating_sub(right.token_start)
-                        .cmp(&left.token_end.saturating_sub(left.token_start)),
-                )
+                .then(right.token_range.len().cmp(&left.token_range.len()))
                 .then(left.pattern_id.cmp(&right.pattern_id))
         });
         let mut filtered = AliasHitList::new();
         for hit in hits.iter() {
             if filtered.iter().any(|accepted| {
-                accepted.token_start <= hit.token_start && accepted.token_end >= hit.token_end
+                accepted.token_range.start_token <= hit.token_range.start_token
+                    && accepted.token_range.end_token >= hit.token_range.end_token
             }) {
                 continue;
             }
@@ -4069,7 +4134,7 @@ fn byte_range_to_token_range(
     start: usize,
     end: usize,
     token_byte_map: &TokenByteMap,
-) -> Option<(usize, usize)> {
+) -> Option<TokenRange> {
     let token_start = token_byte_map
         .start_to_token
         .binary_search_by_key(&start, |(offset, _)| *offset)
@@ -4082,7 +4147,7 @@ fn byte_range_to_token_range(
         .ok()
         .and_then(|index| token_byte_map.end_to_token.get(index))
         .map(|(_, token_index)| *token_index + 1)?;
-    Some((token_start, token_end))
+    Some(TokenRange::new(token_start, token_end))
 }
 
 fn normalized_phrase(raw: &str) -> Option<Vec<String>> {
@@ -5028,10 +5093,7 @@ fn parse_external_id_at(tokens: &[Token], index: usize) -> Option<(ParsedExterna
     let next = tokens.get(index + 1)?;
     let value = external_id_value_for_source(source, next.normalized.as_str())?;
     Some((
-        ParsedExternalId {
-            source: source.to_string(),
-            value,
-        },
+        ParsedExternalId { source, value },
         TokenRange {
             start_token: index,
             end_token: index + 2,
@@ -5042,21 +5104,19 @@ fn parse_external_id_at(tokens: &[Token], index: usize) -> Option<(ParsedExterna
 fn parse_external_id_token(token: &str) -> Option<ParsedExternalId> {
     if let Some(value) = parse_imdb_id(token) {
         return Some(ParsedExternalId {
-            source: "imdb".to_string(),
+            source: ExternalIdSource::Imdb,
             value,
         });
     }
-    for source in ["tmdb", "tvdb"] {
-        for prefix in [
-            source.to_ascii_uppercase(),
-            format!("{}ID", source.to_ascii_uppercase()),
-        ] {
+    for source in [ExternalIdSource::Tmdb, ExternalIdSource::Tvdb] {
+        let source_label = source.as_str().to_ascii_uppercase();
+        for prefix in [source_label.clone(), format!("{source_label}ID")] {
             let Some(value) = token.strip_prefix(prefix.as_str()) else {
                 continue;
             };
             if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()) {
                 return Some(ParsedExternalId {
-                    source: source.to_string(),
+                    source,
                     value: value.to_string(),
                 });
             }
@@ -5069,33 +5129,36 @@ fn is_external_id_label(token: &str) -> bool {
     external_id_source_from_label(token).is_some()
 }
 
-fn external_id_source_from_label(token: &str) -> Option<&'static str> {
+fn external_id_source_from_label(token: &str) -> Option<ExternalIdSource> {
     match token {
-        "IMDB" | "IMDBID" => Some("imdb"),
-        "TMDB" | "TMDBID" => Some("tmdb"),
-        "TVDB" | "TVDBID" => Some("tvdb"),
+        "IMDB" | "IMDBID" => Some(ExternalIdSource::Imdb),
+        "TMDB" | "TMDBID" => Some(ExternalIdSource::Tmdb),
+        "TVDB" | "TVDBID" => Some(ExternalIdSource::Tvdb),
         _ => None,
     }
 }
 
-fn external_id_value_for_source(source: &str, token: &str) -> Option<String> {
+fn external_id_value_for_source(source: ExternalIdSource, token: &str) -> Option<String> {
     match source {
-        "imdb" => parse_imdb_id(token).or_else(|| {
+        ExternalIdSource::Imdb => parse_imdb_id(token).or_else(|| {
             token
                 .chars()
                 .all(|ch| ch.is_ascii_digit())
                 .then(|| format!("tt{token}"))
         }),
-        "tmdb" | "tvdb" => (!token.is_empty() && token.chars().all(|ch| ch.is_ascii_digit()))
-            .then(|| token.to_string()),
-        _ => None,
+        ExternalIdSource::Tmdb | ExternalIdSource::Tvdb => (!token.is_empty()
+            && token.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| token.to_string()),
+        ExternalIdSource::AniDb
+        | ExternalIdSource::AniDbEpisode
+        | ExternalIdSource::AniList
+        | ExternalIdSource::Mal => None,
     }
 }
 
 fn push_unique_external_id(ids: &mut Vec<ParsedExternalId>, id: ParsedExternalId) {
     if !ids.iter().any(|existing| {
-        existing.source.eq_ignore_ascii_case(&id.source)
-            && existing.value.eq_ignore_ascii_case(&id.value)
+        existing.source == id.source && existing.value.eq_ignore_ascii_case(&id.value)
     }) {
         ids.push(id);
     }
@@ -5173,18 +5236,10 @@ fn coalesce_source(tokens: &[Token], index: usize) -> String {
 }
 
 fn normalize_streaming_service(token: &str) -> Option<&'static str> {
+    if let Some(service) = crate::trash_guides::normalize_streaming_service_alias(token) {
+        return Some(service);
+    }
     match token {
-        "AMZN" | "AMAZON" => Some("Amazon"),
-        "NF" | "NETFLIX" => Some("Netflix"),
-        "ATVP" | "APTV" => Some("Apple TV+"),
-        "DSNP" | "DNSP" => Some("Disney+"),
-        "MAX" | "HMAX" | "HBO" => Some("HBO Max"),
-        "PMTP" | "PARAMOUNT" => Some("Paramount+"),
-        "PCOK" | "PEACOCK" => Some("Peacock"),
-        "HULU" => Some("Hulu"),
-        "CR" | "CRUNCHYROLL" => Some("Crunchyroll"),
-        "FUNI" | "FUNIMATION" => Some("Funimation"),
-        "HIDIVE" => Some("HIDIVE"),
         "STAN" => Some("Stan"),
         "ITUNES" => Some("iTunes"),
         "BILI" => Some("Bilibili"),

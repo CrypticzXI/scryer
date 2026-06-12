@@ -98,7 +98,6 @@ pub struct MovieMetadata {
     pub content_status: String,
     pub overview: String,
     pub poster_url: String,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub language: String,
     pub runtime_minutes: i32,
@@ -123,7 +122,6 @@ pub struct SeriesMetadata {
     pub network: String,
     pub runtime_minutes: i32,
     pub poster_url: String,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub country: String,
     pub genres: Vec<String>,
@@ -213,6 +211,7 @@ pub struct EpisodeMetadata {
     pub overview: String,
     pub absolute_number: String,
     pub season_number: i32,
+    pub image_url: String,
 }
 
 #[async_trait]
@@ -258,12 +257,49 @@ pub trait MetadataGateway: Send + Sync {
         series_tvdb_ids: &[i64],
         language: &str,
     ) -> AppResult<BulkMetadataResult>;
+
+    async fn get_artwork_urls_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        series_tvdb_ids: &[i64],
+        language: &str,
+    ) -> AppResult<BulkArtworkUrlResult> {
+        let _ = (movie_tvdb_ids, series_tvdb_ids, language);
+        Ok(BulkArtworkUrlResult::default())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct BulkMetadataResult {
     pub movies: std::collections::HashMap<i64, MovieMetadata>,
     pub series: std::collections::HashMap<i64, SeriesMetadata>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BulkArtworkUrlResult {
+    pub movies: std::collections::HashMap<i64, TitleArtworkUrls>,
+    pub series: std::collections::HashMap<i64, SeriesArtworkUrls>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TitleArtworkUrls {
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SeriesArtworkUrls {
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub episodes: Vec<EpisodeArtworkUrls>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EpisodeArtworkUrls {
+    pub tvdb_id: i64,
+    pub season_number: i32,
+    pub episode_number: i32,
+    pub image_url: Option<String>,
 }
 
 #[async_trait]

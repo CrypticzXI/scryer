@@ -5,6 +5,7 @@ use chrono::Utc;
 
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
+use crate::release_parser::AudioCodec;
 use crate::{
     AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
     normalize_release_attempt_hint, normalize_release_attempt_title,
@@ -39,8 +40,119 @@ pub struct ImportedFileRejection {
     pub blocking_rule_codes: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeSampleValidationMode {
+    EnforceAutomatic,
+    BypassRuntimeSampleCheck,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RuntimeSampleValidation {
+    pub mode: RuntimeSampleValidationMode,
+    pub expected_runtime_seconds: Option<i32>,
+}
+
+impl RuntimeSampleValidation {
+    pub(crate) fn automatic(expected_runtime_seconds: Option<i32>) -> Self {
+        Self {
+            mode: RuntimeSampleValidationMode::EnforceAutomatic,
+            expected_runtime_seconds,
+        }
+    }
+
+    pub(crate) fn manual_override(expected_runtime_seconds: Option<i32>) -> Self {
+        Self {
+            mode: RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
+            expected_runtime_seconds,
+        }
+    }
+}
+
+#[cfg(any(feature = "runtime-media-analysis", test))]
+pub(crate) const SAMPLE_RUNTIME_ZERO_CODE: &str = "sample_runtime_zero";
+#[cfg(any(feature = "runtime-media-analysis", test))]
+pub(crate) const SAMPLE_RUNTIME_TOO_SHORT_CODE: &str = "sample_runtime_too_short";
+#[cfg(any(feature = "runtime-media-analysis", test))]
+pub(crate) const SAMPLE_RUNTIME_INDETERMINATE_CODE: &str = "sample_runtime_indeterminate";
+
+#[cfg(any(feature = "runtime-media-analysis", test))]
+const MIN_EXPECTED_RUNTIME_FOR_SAMPLE_RATIO_SECONDS: i32 = 5 * 60;
+#[cfg(any(feature = "runtime-media-analysis", test))]
+const MIN_UNKNOWN_RUNTIME_SAMPLE_SECONDS: i32 = 60;
+#[cfg(any(feature = "runtime-media-analysis", test))]
+const MIN_RATIO_SAMPLE_SECONDS: i32 = 90;
+#[cfg(any(feature = "runtime-media-analysis", test))]
+const SAMPLE_RUNTIME_PERCENT: i32 = 10;
+
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
+}
+
+#[cfg(any(feature = "runtime-media-analysis", test))]
+fn runtime_sample_rejection(
+    validation: RuntimeSampleValidation,
+    actual_runtime_seconds: Option<i32>,
+) -> Option<ImportedFileRejection> {
+    if validation.mode == RuntimeSampleValidationMode::BypassRuntimeSampleCheck {
+        return None;
+    }
+
+    let Some(actual_seconds) = actual_runtime_seconds else {
+        return Some(imported_runtime_sample_rejection(
+            SAMPLE_RUNTIME_INDETERMINATE_CODE,
+            "imported file runtime could not be determined for automatic import".to_string(),
+        ));
+    };
+
+    if actual_seconds <= 0 {
+        return Some(imported_runtime_sample_rejection(
+            SAMPLE_RUNTIME_ZERO_CODE,
+            "imported file runtime is zero for automatic import".to_string(),
+        ));
+    }
+
+    if let Some(expected_seconds) = validation.expected_runtime_seconds
+        && expected_seconds >= MIN_EXPECTED_RUNTIME_FOR_SAMPLE_RATIO_SECONDS
+    {
+        let threshold_seconds = MIN_RATIO_SAMPLE_SECONDS
+            .max(expected_seconds.saturating_mul(SAMPLE_RUNTIME_PERCENT) / 100);
+        if actual_seconds < threshold_seconds {
+            return Some(imported_runtime_sample_rejection(
+                SAMPLE_RUNTIME_TOO_SHORT_CODE,
+                format!(
+                    "imported file runtime is too short for automatic import: expected about {} minutes, probed file is {} seconds",
+                    (expected_seconds + 59) / 60,
+                    actual_seconds
+                ),
+            ));
+        }
+
+        return None;
+    }
+
+    if validation.expected_runtime_seconds.is_none()
+        && actual_seconds < MIN_UNKNOWN_RUNTIME_SAMPLE_SECONDS
+    {
+        return Some(imported_runtime_sample_rejection(
+            SAMPLE_RUNTIME_TOO_SHORT_CODE,
+            format!(
+                "imported file runtime is too short for automatic import: probed file is {} seconds",
+                actual_seconds
+            ),
+        ));
+    }
+
+    None
+}
+
+#[cfg(any(feature = "runtime-media-analysis", test))]
+fn imported_runtime_sample_rejection(code: &'static str, message: String) -> ImportedFileRejection {
+    ImportedFileRejection {
+        message,
+        recycle_reason: code,
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        blocking_rule_codes: vec![code.to_string()],
+    }
 }
 
 #[expect(
@@ -260,6 +372,7 @@ pub(crate) async fn probe_and_validate(
     has_existing_file: bool,
     existing_score: Option<i32>,
     is_filler: bool,
+    runtime_sample_validation: RuntimeSampleValidation,
 ) -> ImportedFileGateDecision {
     if path
         .extension()
@@ -276,6 +389,9 @@ pub(crate) async fn probe_and_validate(
         Ok(analysis) => analysis,
         Err(error) => {
             warn!(error = %error, path = %path.display(), "media analysis failed");
+            if let Some(rejection) = runtime_sample_rejection(runtime_sample_validation, None) {
+                return ImportedFileGateDecision::Rejected(rejection);
+            }
             let synthetic_analysis = path_is_symlink(path).then(|| {
                 build_synthetic_media_file_analysis(
                     parsed,
@@ -289,13 +405,19 @@ pub(crate) async fn probe_and_validate(
         }
     };
 
-    if !scryer_mediainfo::is_valid_video(&analysis) {
+    if analysis.video_codec.is_none() {
         return ImportedFileGateDecision::Rejected(ImportedFileRejection {
             message: "imported file is not a valid video".to_string(),
             recycle_reason: "invalid_file",
             skip_reason: None,
             blocking_rule_codes: Vec::new(),
         });
+    }
+
+    if let Some(rejection) =
+        runtime_sample_rejection(runtime_sample_validation, analysis.duration_seconds)
+    {
+        return ImportedFileGateDecision::Rejected(rejection);
     }
 
     let category_hint = facet_to_category_hint(&title.facet);
@@ -466,6 +588,7 @@ pub(crate) async fn probe_and_validate(
     _has_existing_file: bool,
     _existing_score: Option<i32>,
     _is_filler: bool,
+    _runtime_sample_validation: RuntimeSampleValidation,
 ) -> ImportedFileGateDecision {
     ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
         analysis: Some(build_synthetic_media_file_analysis(
@@ -493,6 +616,7 @@ pub(crate) async fn prepare_import_candidate(
     has_existing_file: bool,
     existing_score: Option<i32>,
     is_filler: bool,
+    runtime_sample_validation: RuntimeSampleValidation,
 ) -> Result<PreparedImportCandidate, ImportedFileRejection> {
     match probe_and_validate(
         app,
@@ -504,6 +628,7 @@ pub(crate) async fn prepare_import_candidate(
         has_existing_file,
         existing_score,
         is_filler,
+        runtime_sample_validation,
     )
     .await
     {
@@ -542,6 +667,7 @@ pub(crate) fn rescore_from_mediainfo(
     let mut merged = parsed.clone();
     let mut changes = Vec::new();
     let resolved = resolve_release_labels_from_analysis(
+        analysis.video_width,
         analysis.video_height,
         analysis.video_codec.as_ref(),
         analysis.audio_codec.as_deref(),
@@ -609,14 +735,15 @@ pub(crate) fn rescore_from_mediainfo(
 
     // Override audio: iterate all streams to find best codec and max channels.
     if let Some(ref normalized) = resolved.audio_codec
-        && merged.audio.as_deref() != Some(normalized.as_str())
+        && let Some(codec) = AudioCodec::parse(normalized)
+        && merged.audio.as_ref() != Some(&codec)
     {
         changes.push(format!(
             "audio: {} → {}",
-            merged.audio.as_deref().unwrap_or("?"),
+            merged.audio.as_ref().map(AudioCodec::as_str).unwrap_or("?"),
             normalized
         ));
-        merged.audio = Some(normalized.clone());
+        merged.audio = Some(codec);
     }
 
     if let Some(ref ch_str) = resolved.audio_channels
@@ -862,5 +989,80 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
                 warn!(error = %error, title_id = %title_id, "failed to reset wanted item")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn automatic(expected_runtime_seconds: Option<i32>) -> RuntimeSampleValidation {
+        RuntimeSampleValidation::automatic(expected_runtime_seconds)
+    }
+
+    fn manual(expected_runtime_seconds: Option<i32>) -> RuntimeSampleValidation {
+        RuntimeSampleValidation::manual_override(expected_runtime_seconds)
+    }
+
+    #[test]
+    fn automatic_movie_import_rejects_twenty_second_runtime_for_normal_movie() {
+        let rejection = runtime_sample_rejection(automatic(Some(90 * 60)), Some(20))
+            .expect("short normal-runtime movie should reject");
+
+        assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_TOO_SHORT_CODE);
+        assert_eq!(
+            rejection.skip_reason,
+            Some(ImportSkipReason::PolicyMismatch)
+        );
+        assert_eq!(
+            rejection.blocking_rule_codes,
+            vec![SAMPLE_RUNTIME_TOO_SHORT_CODE.to_string()]
+        );
+    }
+
+    #[test]
+    fn automatic_episode_import_rejects_twenty_second_runtime_for_normal_episode() {
+        let rejection = runtime_sample_rejection(automatic(Some(42 * 60)), Some(20))
+            .expect("short normal-runtime episode should reject");
+
+        assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_TOO_SHORT_CODE);
+    }
+
+    #[test]
+    fn automatic_import_accepts_short_form_movie_above_fixture_runtime_floor() {
+        let rejection = runtime_sample_rejection(automatic(Some(3 * 60)), Some(180));
+
+        assert!(rejection.is_none());
+    }
+
+    #[test]
+    fn automatic_import_rejects_unknown_positive_runtime_under_one_minute() {
+        let rejection = runtime_sample_rejection(automatic(None), Some(59))
+            .expect("unknown-runtime short clip should reject");
+
+        assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_TOO_SHORT_CODE);
+    }
+
+    #[test]
+    fn automatic_import_rejects_zero_runtime() {
+        let rejection = runtime_sample_rejection(automatic(Some(42 * 60)), Some(0))
+            .expect("zero runtime should reject");
+
+        assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_ZERO_CODE);
+    }
+
+    #[test]
+    fn automatic_import_rejects_indeterminate_runtime() {
+        let rejection = runtime_sample_rejection(automatic(Some(42 * 60)), None)
+            .expect("indeterminate runtime should reject");
+
+        assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_INDETERMINATE_CODE);
+    }
+
+    #[test]
+    fn manual_queued_import_bypasses_runtime_sample_rejection() {
+        let rejection = runtime_sample_rejection(manual(Some(42 * 60)), Some(20));
+
+        assert!(rejection.is_none());
     }
 }

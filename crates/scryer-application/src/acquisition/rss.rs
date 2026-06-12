@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
     canonical_title_evidence, evaluate_auto_candidate, parsed_release_matches_title_evidence,
@@ -1032,12 +1033,23 @@ impl AppUseCase {
             "RSS sync: auto-grabbing release"
         );
 
+        let info_hash_hint = best
+            .extra
+            .get("info_hash")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let download_id = crate::download_identity::new_download_id();
+        let submission_identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.clone()),
+        };
+
         let grab_result = self
             .services
             .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind: best.source_kind,
@@ -1048,11 +1060,7 @@ impl AppUseCase {
                 download_directory: None,
                 release_title: Some(best.title.clone()),
                 indexer_name: Some(best.source.clone()),
-                info_hash_hint: best
-                    .extra
-                    .get("info_hash")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
+                info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 is_recent,
@@ -1070,22 +1078,20 @@ impl AppUseCase {
                     metrics::counter!("scryer_grabs_total", "indexer" => best.source.clone(), "facet" => facet_label).increment(1);
                 }
 
-                let _ = self
-                    .services
-                    .workflow
-                    .release_attempts
-                    .record_release_attempt(
-                        Some(title.id.clone()),
-                        source_hint_for_attempt,
-                        source_title_for_attempt,
-                        ReleaseDownloadAttemptOutcome::Success,
-                        None,
-                        source_password,
-                    )
-                    .await;
-
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind: best.source_kind,
+                            source_hint: source_hint.as_deref(),
+                            info_hash_hint: info_hash_hint.as_deref(),
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
                 let submission_scope = if let Some(parsed) = best.parsed_release_metadata.as_ref() {
                     let catalog_episodes = self
                         .services
@@ -1115,22 +1121,64 @@ impl AppUseCase {
                         &best.title,
                     )
                 };
-                let _ = self
+                let log_download_id = accepted_identity.download_id.clone();
+                if let Err(error) = self
                     .services
                     .workflow
                     .download_submissions
-                    .record_submission(DownloadSubmission {
-                        title_id: title.id.clone(),
-                        facet: facet_str.trim_matches('"').to_string(),
-                        download_client_id: grab.client_id,
-                        download_client_type: grab.client_type,
-                        download_client_item_id: grab.job_id,
-                        source_hint: None,
-                        source_kind: None,
-                        source_title: source_title.clone(),
-                        request_signature: request_signature.clone(),
-                        scope: submission_scope,
-                    })
+                    .record_submission_with_identity(
+                        DownloadSubmission {
+                            title_id: title.id.clone(),
+                            facet: facet_str.trim_matches('"').to_string(),
+                            download_client_id: grab.client_id.clone(),
+                            download_client_type: grab.client_type.clone(),
+                            download_client_item_id: grab.job_id.clone(),
+                            source_hint: None,
+                            source_kind: None,
+                            source_title: source_title.clone(),
+                            request_signature: request_signature.clone(),
+                            scope: submission_scope,
+                        },
+                        accepted_identity,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        client_id = ?grab.client_id,
+                        client_type = %grab.client_type,
+                        download_client_item_id = %grab.job_id,
+                        download_id = ?log_download_id,
+                        "download_identity_persistence_failed"
+                    );
+                    let _ = self
+                        .services
+                        .workflow
+                        .release_attempts
+                        .record_release_attempt(
+                            Some(title.id.clone()),
+                            source_hint_for_attempt,
+                            source_title_for_attempt,
+                            ReleaseDownloadAttemptOutcome::Failed,
+                            Some(error.to_string()),
+                            source_password,
+                        )
+                        .await;
+                    return;
+                }
+
+                let _ = self
+                    .services
+                    .workflow
+                    .release_attempts
+                    .record_release_attempt(
+                        Some(title.id.clone()),
+                        source_hint_for_attempt,
+                        source_title_for_attempt,
+                        ReleaseDownloadAttemptOutcome::Success,
+                        None,
+                        source_password,
+                    )
                     .await;
 
                 let grabbed_json = serde_json::json!({
@@ -1186,7 +1234,11 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint_for_attempt,
                         source_title_for_attempt,
-                        ReleaseDownloadAttemptOutcome::Failed,
+                        if is_download_submit_unavailable_error(&err) {
+                            ReleaseDownloadAttemptOutcome::Pending
+                        } else {
+                            ReleaseDownloadAttemptOutcome::Failed
+                        },
                         Some(err.to_string()),
                         source_password,
                     )
@@ -1224,8 +1276,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,

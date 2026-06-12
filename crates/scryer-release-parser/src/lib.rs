@@ -10,18 +10,21 @@ mod lex;
 mod model;
 mod parse;
 mod sanitize;
+mod trash_guides;
 
 pub use context::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ReleaseParseContext,
 };
 pub use lex::{BracketKind, CstNode, ReleaseCst, SeparatorKind, TextSpan, Token};
 pub use model::{
-    CandidateZones, MetadataAst, MetadataEnrichment, ParseDisposition, ParseFamily, ParseReason,
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata,
-    ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate,
+    AudioCodec, CandidateZones, ExternalIdSource, MetadataAst, MetadataEnrichment,
+    ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
+    ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind, ReleaseIdentity,
+    ReleaseParseAnalysis, ReleaseParseCandidate, ReleaseSource, StreamingService,
     TargetScoredAnalysis, TargetedReleaseParseAnalysis, TitleSegment, TitleSegmentKind,
     TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
+pub use trash_guides::detect_blocked_title as detect_trash_guides_blocked_title;
 
 use parse::{AnalysisInputs, analyze_inputs};
 use sanitize::sanitize_input;

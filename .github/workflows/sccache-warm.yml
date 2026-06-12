@@ -70,6 +70,7 @@ jobs:
         include:
           - arch: x86_64
             variant: portable
+            build_lane: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             sccache_lane: scryer-linux-x86_64-musl
@@ -78,18 +79,9 @@ jobs:
             release_profile: release
             install_nasm: true
             extra_rustflags: ""
-          - arch: x86_64
-            variant: haswell
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            sccache_lane: scryer-linux-x86_64-musl
-            sccache_writer_id: scryer-linux-x86_64-haswell
-            artifact_name: scryer-linux-x86_64-haswell
-            release_profile: release
-            install_nasm: true
-            extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
             variant: portable
+            build_lane: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             sccache_lane: scryer-linux-arm64-musl
@@ -98,16 +90,6 @@ jobs:
             release_profile: release
             install_nasm: false
             extra_rustflags: ""
-          - arch: arm64
-            variant: optimized
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            sccache_lane: scryer-linux-arm64-musl
-            sccache_writer_id: scryer-linux-arm64-optimized
-            artifact_name: scryer-linux-arm64-optimized
-            release_profile: release
-            install_nasm: false
-            extra_rustflags: "-C target-feature=+aes,+crc,+dotprod,+fp16,+lse,+neon,+rdm,+sha2 --cfg aes_armv8"
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -124,7 +106,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.96.0"
 
       - name: Install system dependencies
         shell: bash
@@ -170,6 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
@@ -209,6 +192,7 @@ jobs:
         include:
           - arch: arm64
             variant: portable
+            build_lane: portable
             runner: macos-15
             target: aarch64-apple-darwin
             sccache_lane: scryer-macos-arm64
@@ -217,18 +201,9 @@ jobs:
             release_profile: release-lean
             install_nasm: false
             extra_rustflags: ""
-          - arch: arm64
-            variant: apple-m1
-            runner: macos-15
-            target: aarch64-apple-darwin
-            sccache_lane: scryer-macos-arm64
-            sccache_writer_id: scryer-darwin-arm64-apple-m1
-            artifact_name: scryer-darwin-arm64-apple-m1
-            release_profile: release
-            install_nasm: false
-            extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
             variant: portable
+            build_lane: portable
             runner: macos-15-intel
             target: x86_64-apple-darwin
             sccache_lane: scryer-macos-x86_64
@@ -252,7 +227,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.96.0"
           targets: ${{ matrix.target }}
 
       - name: Restore sccache directory
@@ -298,6 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           export CC="sccache clang"
@@ -341,7 +317,7 @@ jobs:
         include:
           - arch: x86_64
             runner: windows-2025
-            toolchain: 1.95.0-x86_64-pc-windows-msvc
+            toolchain: 1.96.0-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
@@ -352,7 +328,7 @@ jobs:
             use_lld_link: true
           - arch: arm64
             runner: windows-11-arm
-            toolchain: 1.95.0-aarch64-pc-windows-msvc
+            toolchain: 1.96.0-aarch64-pc-windows-msvc
             target: aarch64-pc-windows-msvc
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable

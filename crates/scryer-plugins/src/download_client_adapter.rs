@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fs::File,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -6,7 +9,7 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest,
     DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadGrabResult,
-    DownloadSourceKind,
+    DownloadSourceKind, StagedNzbRef,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
@@ -30,6 +33,7 @@ pub struct WasmDownloadClient {
     client_name: String,
     client_id: String,
     http: reqwest::Client,
+    no_redirect_http: reqwest::Client,
 }
 
 impl WasmDownloadClient {
@@ -44,13 +48,8 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
-            http: {
-                scryer_outbound_http::install_default_rustls_provider();
-                reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .build()
-                    .unwrap_or_default()
-            },
+            http: scryer_outbound_http::plugin_reqwest_client(),
+            no_redirect_http: scryer_outbound_http::no_redirect_reqwest_client(),
         }
     }
 }
@@ -68,6 +67,9 @@ struct ResolvedTorrentSource {
     torrent_url: Option<String>,
     torrent_file_name: Option<String>,
     torrent_content_type: Option<String>,
+    nzb_bytes_base64: Option<String>,
+    nzb_file_name: Option<String>,
+    nzb_content_type: Option<String>,
 }
 
 fn map_source_kind(kind: DownloadSourceKind) -> DownloadInputKind {
@@ -102,6 +104,35 @@ fn attention_required(item: &PluginDownloadItem) -> bool {
     )
 }
 
+fn normalized_plugin_info_hash(raw: Option<&str>) -> Option<String> {
+    scryer_application::normalize_torrent_info_hash(raw)
+}
+
+fn map_add_response_to_grab_result(
+    response: PluginDownloadClientAddResponse,
+    request: &DownloadClientAddRequest,
+    client_type: &str,
+) -> DownloadGrabResult {
+    let client_item_id = response.client_item_id;
+    let info_hash = normalized_plugin_info_hash(response.info_hash.as_deref()).or_else(|| {
+        if matches!(
+            request.source_kind,
+            Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri)
+        ) {
+            normalized_plugin_info_hash(Some(client_item_id.as_str()))
+        } else {
+            None
+        }
+    });
+
+    DownloadGrabResult {
+        job_id: client_item_id,
+        client_id: None,
+        client_type: client_type.to_string(),
+        info_hash,
+    }
+}
+
 fn map_queue_item(
     item: PluginDownloadItem,
     client_id: &str,
@@ -110,20 +141,37 @@ fn map_queue_item(
 ) -> DownloadQueueItem {
     let attention = attention_required(&item);
     let attention_reason = item.message.clone();
-    let info_hash = item.info_hash.clone().or_else(|| {
-        item.torrent
-            .as_ref()
-            .and_then(|torrent| torrent.info_hash_v1.clone())
-    });
+    let info_hash = normalized_plugin_info_hash(item.info_hash.as_deref())
+        .or_else(|| {
+            item.torrent
+                .as_ref()
+                .and_then(|torrent| normalized_plugin_info_hash(torrent.info_hash_v1.as_deref()))
+        })
+        .or_else(|| normalized_plugin_info_hash(Some(item.client_item_id.as_str())));
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: item.download_id.as_deref(),
+            parameters: &[],
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     DownloadQueueItem {
         id: format!(
             "{client_type}:{}",
-            info_hash.unwrap_or_else(|| item.client_item_id.clone())
+            info_hash
+                .clone()
+                .unwrap_or_else(|| item.client_item_id.clone())
         ),
         title_id: None,
         episode_id: None,
         title_name: item.title,
         facet: None,
+        category: item
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         client_id: client_id.to_string(),
         client_name: client_name.to_string(),
         client_type: client_type.to_string(),
@@ -136,6 +184,7 @@ fn map_queue_item(
         attention_required: attention,
         attention_reason,
         download_client_item_id: item.client_item_id,
+        download_id: observed_identity.download_id,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -155,11 +204,20 @@ fn map_completed_download(
     client_id: &str,
     client_type: &str,
 ) -> CompletedDownload {
-    let info_hash = item.info_hash.clone();
+    let info_hash = normalized_plugin_info_hash(item.info_hash.as_deref())
+        .or_else(|| normalized_plugin_info_hash(Some(item.client_item_id.as_str())));
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: item.download_id.as_deref(),
+            parameters: &item.parameters,
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     CompletedDownload {
         client_type: client_type.to_string(),
         client_id: client_id.to_string(),
-        download_client_item_id: info_hash.unwrap_or(item.client_item_id),
+        download_client_item_id: item.client_item_id,
+        download_id: observed_identity.download_id,
         name: item.name,
         dest_dir: item.dest_dir,
         category: item.category,
@@ -175,7 +233,15 @@ fn map_history_item_from_completed(
     client_name: &str,
     client_type: &str,
 ) -> DownloadQueueItem {
-    let info_hash = item.info_hash.clone();
+    let info_hash = normalized_plugin_info_hash(item.info_hash.as_deref())
+        .or_else(|| normalized_plugin_info_hash(Some(item.client_item_id.as_str())));
+    let observed_identity = scryer_application::observed_download_identity(
+        scryer_application::ObservedDownloadIdentityInput {
+            download_id: item.download_id.as_deref(),
+            parameters: &item.parameters,
+            info_hash_hint: info_hash.as_deref(),
+        },
+    );
     let download_client_item_id = info_hash.unwrap_or_else(|| item.client_item_id.clone());
     DownloadQueueItem {
         id: format!("{client_type}:{download_client_item_id}"),
@@ -183,6 +249,12 @@ fn map_history_item_from_completed(
         episode_id: None,
         title_name: item.name,
         facet: None,
+        category: item
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         client_id: client_id.to_string(),
         client_name: client_name.to_string(),
         client_type: client_type.to_string(),
@@ -195,6 +267,7 @@ fn map_history_item_from_completed(
         attention_required: false,
         attention_reason: None,
         download_client_item_id,
+        download_id: observed_identity.download_id,
         import_status: None,
         import_error_code: None,
         import_error_message: None,
@@ -261,11 +334,47 @@ fn derive_torrent_file_name(request: &DownloadClientAddRequest) -> Option<String
         .filter(|value| !value.is_empty())
 }
 
+fn derive_nzb_file_name(request: &DownloadClientAddRequest) -> Option<String> {
+    derive_torrent_file_name(request).map(|value| {
+        if value.to_ascii_lowercase().ends_with(".nzb") {
+            value
+        } else {
+            format!("{value}.nzb")
+        }
+    })
+}
+
+fn load_staged_nzb_payload(staged_nzb: &StagedNzbRef) -> AppResult<String> {
+    let file = File::open(&staged_nzb.compressed_path).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to open staged nzb artifact {}: {error}",
+            staged_nzb.compressed_path.display()
+        ))
+    })?;
+    let bytes = zstd::stream::decode_all(file).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to decompress staged nzb artifact {}: {error}",
+            staged_nzb.compressed_path.display()
+        ))
+    })?;
+    if staged_nzb.raw_size_bytes > 0 && bytes.len() as u64 != staged_nzb.raw_size_bytes {
+        return Err(AppError::Repository(format!(
+            "staged nzb artifact {} decompressed to {} bytes, expected {}",
+            staged_nzb.id,
+            bytes.len(),
+            staged_nzb.raw_size_bytes
+        )));
+    }
+    Ok(BASE64.encode(bytes))
+}
+
 fn select_plugin_input_kind(
     source_kind: DownloadSourceKind,
     resolved: &ResolvedTorrentSource,
 ) -> DownloadInputKind {
-    if resolved.magnet_uri.is_some() {
+    if resolved.nzb_bytes_base64.is_some() {
+        DownloadInputKind::Nzb
+    } else if resolved.magnet_uri.is_some() {
         DownloadInputKind::MagnetUri
     } else if resolved.torrent_bytes_base64.is_some() {
         DownloadInputKind::TorrentBytes
@@ -321,10 +430,14 @@ fn build_plugin_add_request(
                 .torrent_file_name
                 .or_else(|| derive_torrent_file_name(request)),
             torrent_content_type: resolved.torrent_content_type,
+            nzb_bytes_base64: resolved.nzb_bytes_base64,
+            nzb_file_name: resolved.nzb_file_name,
+            nzb_content_type: resolved.nzb_content_type,
             source_title: request.source_title.clone(),
             source_password: request.source_password.clone(),
         },
         release: PluginDownloadRelease {
+            download_id: request.download_id.clone(),
             release_title: request
                 .release_title
                 .clone()
@@ -351,7 +464,11 @@ fn build_plugin_add_request(
             queue_priority: request.queue_priority.clone(),
             download_directory: request.download_directory.clone(),
         },
-        torrent: Some(PluginTorrentOptions {
+        torrent: matches!(
+            source_kind,
+            DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri
+        )
+        .then_some(PluginTorrentOptions {
             source_preference,
             seed_goal_ratio: request.seed_goal_ratio,
             seed_goal_seconds: request.seed_goal_seconds,
@@ -390,22 +507,31 @@ impl DownloadClient for WasmDownloadClient {
         let mut torrent_bytes_base64 = None;
         let mut resolved_magnet_uri: Option<String> = None;
         let mut resolved_download_url = source_hint.clone();
-        let mut torrent_url = source_hint
-            .clone()
-            .filter(|url| url.starts_with("http://") || url.starts_with("https://"));
+        let mut torrent_url = source_hint.clone().filter(|url| {
+            matches!(source_kind, DownloadSourceKind::TorrentFile)
+                && (url.starts_with("http://") || url.starts_with("https://"))
+        });
         let mut torrent_content_type = None;
-        if request.info_hash_hint.is_none()
+        let mut nzb_bytes_base64 = None;
+        let mut nzb_file_name = None;
+        let mut nzb_content_type = None;
+        if matches!(
+            source_kind,
+            DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl
+        ) && let Some(staged_nzb) = request.staged_nzb.as_ref()
+        {
+            nzb_bytes_base64 = Some(load_staged_nzb_payload(staged_nzb)?);
+            nzb_file_name = derive_nzb_file_name(request);
+            nzb_content_type = Some("application/x-nzb".to_string());
+        }
+
+        if matches!(source_kind, DownloadSourceKind::TorrentFile)
+            && request.info_hash_hint.is_none()
             && let Some(url) = source_hint.as_ref()
             && (url.starts_with("http://") || url.starts_with("https://"))
             && !url.starts_with("magnet:")
         {
-            let no_redirect = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default();
-
-            match no_redirect.get(url).send().await {
+            match scryer_outbound_http::send_reqwest_request(self.no_redirect_http.get(url)).await {
                 Ok(resp) if resp.status().is_redirection() => {
                     if let Some(location) =
                         resp.headers().get("location").and_then(|v| v.to_str().ok())
@@ -419,7 +545,9 @@ impl DownloadClient for WasmDownloadClient {
                             resolved_download_url = Some(location.to_string());
                             torrent_url = Some(location.to_string());
                             // Follow the redirect with the normal client
-                            if let Ok(resp) = self.http.get(location).send().await
+                            if let Ok(resp) =
+                                scryer_outbound_http::send_reqwest_request(self.http.get(location))
+                                    .await
                                 && resp.status().is_success()
                             {
                                 let content_type = resp
@@ -439,6 +567,11 @@ impl DownloadClient for WasmDownloadClient {
                     }
                 }
                 Ok(resp) if resp.status().is_success() => {
+                    let response_url = resp.url().to_string();
+                    if response_url != *url {
+                        resolved_download_url = Some(response_url.clone());
+                        torrent_url = Some(response_url);
+                    }
                     let content_type = resp
                         .headers()
                         .get(reqwest::header::CONTENT_TYPE)
@@ -482,6 +615,9 @@ impl DownloadClient for WasmDownloadClient {
                 torrent_url,
                 torrent_file_name: derive_torrent_file_name(request),
                 torrent_content_type,
+                nzb_bytes_base64,
+                nzb_file_name,
+                nzb_content_type,
             },
         );
 
@@ -499,16 +635,17 @@ impl DownloadClient for WasmDownloadClient {
                 .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
         })
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        .map_err(|e| AppError::download_submit_unavailable(format!("plugin task panicked: {e}")))?
+        .map_err(AppError::into_download_submit_unavailable)?;
 
         let response: PluginDownloadClientAddResponse =
-            decode_plugin_result(&output, EXPORT_DOWNLOAD_ADD)?;
-
-        Ok(DownloadGrabResult {
-            job_id: response.client_item_id,
-            client_id: None,
-            client_type: self.descriptor.provider_type().to_string(),
-        })
+            decode_plugin_result(&output, EXPORT_DOWNLOAD_ADD)
+                .map_err(AppError::into_download_submit_unavailable)?;
+        Ok(map_add_response_to_grab_result(
+            response,
+            request,
+            self.descriptor.provider_type(),
+        ))
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
@@ -810,8 +947,6 @@ mod tests {
                 overview: None,
                 poster_url: None,
                 poster_source_url: None,
-                banner_url: None,
-                banner_source_url: None,
                 background_url: None,
                 background_source_url: None,
                 sort_title: None,
@@ -833,6 +968,7 @@ mod tests {
                 digital_release_date: None,
                 folder_path: None,
             },
+            download_id: None,
             source_hint: Some("https://tracker.example/release.torrent".to_string()),
             staged_nzb: None,
             source_kind: Some(DownloadSourceKind::TorrentFile),
@@ -852,6 +988,43 @@ mod tests {
     }
 
     #[test]
+    fn add_response_forwards_plugin_info_hash() {
+        let request = sample_request();
+        let grab = map_add_response_to_grab_result(
+            PluginDownloadClientAddResponse {
+                client_item_id: "native-item-id".to_string(),
+                info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
+            },
+            &request,
+            "qbittorrent",
+        );
+
+        assert_eq!(grab.job_id, "native-item-id");
+        assert_eq!(
+            grab.info_hash.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
+    }
+
+    #[test]
+    fn add_response_falls_back_to_hash_shaped_torrent_item_id() {
+        let request = sample_request();
+        let grab = map_add_response_to_grab_result(
+            PluginDownloadClientAddResponse {
+                client_item_id: "ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string(),
+                info_hash: None,
+            },
+            &request,
+            "qbittorrent",
+        );
+
+        assert_eq!(
+            grab.info_hash.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
+    }
+
+    #[test]
     fn build_plugin_add_request_populates_v11_torrent_fields() {
         let request = sample_request();
         let plugin_request = build_plugin_add_request(
@@ -864,6 +1037,9 @@ mod tests {
                 torrent_url: request.source_hint.clone(),
                 torrent_file_name: Some("Example.Release.torrent".to_string()),
                 torrent_content_type: Some("application/x-bittorrent".to_string()),
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
             },
         );
 
@@ -912,6 +1088,9 @@ mod tests {
                 torrent_url: None,
                 torrent_file_name: None,
                 torrent_content_type: None,
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
             },
         );
 
@@ -923,6 +1102,78 @@ mod tests {
                 .map(|torrent| torrent.source_preference.clone()),
             Some(vec![DownloadInputKind::MagnetUri])
         );
+    }
+
+    #[test]
+    fn build_plugin_add_request_preserves_nzb_url_without_torrent_projection() {
+        let mut request = sample_request();
+        request.source_hint = Some("https://indexer.example/download/release.nzb".to_string());
+        request.source_kind = Some(DownloadSourceKind::NzbUrl);
+        request.source_title = Some("Example.Release.nzb".to_string());
+        request.info_hash_hint = None;
+        let plugin_request = build_plugin_add_request(
+            &request,
+            DownloadSourceKind::NzbUrl,
+            ResolvedTorrentSource {
+                download_url: request.source_hint.clone(),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
+            },
+        );
+
+        assert_eq!(plugin_request.source.kind, DownloadInputKind::NzbUrl);
+        assert_eq!(
+            plugin_request.source.download_url.as_deref(),
+            Some("https://indexer.example/download/release.nzb")
+        );
+        assert_eq!(plugin_request.source.torrent_url, None);
+        assert!(plugin_request.torrent.is_none());
+    }
+
+    #[test]
+    fn build_plugin_add_request_populates_staged_nzb_fields() {
+        let mut request = sample_request();
+        request.source_hint = Some("https://indexer.example/download/release.nzb".to_string());
+        request.source_kind = Some(DownloadSourceKind::NzbUrl);
+        request.source_title = Some("Example.Release".to_string());
+        request.info_hash_hint = None;
+        let plugin_request = build_plugin_add_request(
+            &request,
+            DownloadSourceKind::NzbUrl,
+            ResolvedTorrentSource {
+                download_url: request.source_hint.clone(),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: Some("bmti".to_string()),
+                nzb_file_name: Some("Example.Release.nzb".to_string()),
+                nzb_content_type: Some("application/x-nzb".to_string()),
+            },
+        );
+
+        assert_eq!(plugin_request.source.kind, DownloadInputKind::Nzb);
+        assert_eq!(
+            plugin_request.source.nzb_bytes_base64.as_deref(),
+            Some("bmti")
+        );
+        assert_eq!(
+            plugin_request.source.nzb_file_name.as_deref(),
+            Some("Example.Release.nzb")
+        );
+        assert_eq!(
+            plugin_request.source.nzb_content_type.as_deref(),
+            Some("application/x-nzb")
+        );
+        assert_eq!(plugin_request.source.torrent_url, None);
+        assert!(plugin_request.torrent.is_none());
     }
 
     #[test]
@@ -946,6 +1197,7 @@ mod tests {
         let queue_item = map_history_item_from_completed(
             PluginCompletedDownload {
                 client_item_id: "native-1".to_string(),
+                download_id: None,
                 info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
                 name: "Example Release".to_string(),
                 dest_dir: "/downloads/series".to_string(),
@@ -968,6 +1220,7 @@ mod tests {
         assert_eq!(queue_item.title_name, "Example Release");
         assert_eq!(queue_item.client_name, "qBittorrent");
         assert_eq!(queue_item.state, DownloadQueueState::Completed);
+        assert_eq!(queue_item.category.as_deref(), Some("series"));
         assert_eq!(queue_item.progress_percent, 100);
         assert_eq!(queue_item.remaining_seconds, Some(0));
     }
@@ -977,6 +1230,7 @@ mod tests {
         let queue_item = map_queue_item(
             PluginDownloadItem {
                 client_item_id: "native-id-1".to_string(),
+                download_id: None,
                 info_hash: None,
                 title: "Decypharr Queue Item".to_string(),
                 state: DownloadItemState::Seeding,
@@ -1011,14 +1265,51 @@ mod tests {
             "native-id-1".to_string()
         );
         assert_eq!(queue_item.state, DownloadQueueState::Completed);
+        assert_eq!(queue_item.category.as_deref(), Some("series"));
     }
 
     #[test]
-    fn completed_download_prefers_info_hash_identity_for_qbit_facades() {
+    fn queue_item_prefers_explicit_plugin_download_identity() {
+        let queue_item = map_queue_item(
+            PluginDownloadItem {
+                client_item_id: "native-id-3".to_string(),
+                download_id: Some("scryer-download:plugin-1".to_string()),
+                info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                title: "Plugin Queue Item".to_string(),
+                state: DownloadItemState::Downloading,
+                message: None,
+                category: Some("series".to_string()),
+                remote_output_path: Some("/downloads/series".to_string()),
+                torrent: None,
+                total_size_bytes: Some(2048),
+                remaining_size_bytes: Some(1024),
+                eta_seconds: Some(60),
+                progress_percent: Some(50),
+                can_move_files: Some(true),
+                can_remove: Some(true),
+                removed: Some(false),
+                raw_state: None,
+                completed_at: None,
+            },
+            "client-1",
+            "Plugin Client",
+            "plugin-client",
+        );
+
+        assert_eq!(
+            queue_item.download_id.as_deref(),
+            Some("scryer-download:plugin-1")
+        );
+    }
+
+    #[test]
+    fn completed_download_uses_info_hash_identity_without_replacing_live_handle() {
+        let info_hash = "fedcba9876543210fedcba9876543210fedcba98";
         let completed = map_completed_download(
             PluginCompletedDownload {
                 client_item_id: "native-id-2".to_string(),
-                info_hash: Some("fedcba9876543210fedcba9876543210fedcba98".to_string()),
+                download_id: None,
+                info_hash: Some(info_hash.to_string()),
                 name: "Decypharr Completed".to_string(),
                 dest_dir: "/downloads/movies".to_string(),
                 category: Some("movies".to_string()),
@@ -1032,10 +1323,8 @@ mod tests {
             "qbittorrent",
         );
 
-        assert_eq!(
-            completed.download_client_item_id,
-            "fedcba9876543210fedcba9876543210fedcba98"
-        );
+        assert_eq!(completed.download_client_item_id, "native-id-2");
+        assert_eq!(completed.download_id.as_deref(), Some(info_hash));
         assert_eq!(completed.dest_dir, "/downloads/movies");
         assert_eq!(
             completed.parameters,

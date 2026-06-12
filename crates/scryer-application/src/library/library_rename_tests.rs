@@ -66,6 +66,27 @@ fn render_title_folder_template_trims_empty_year_group() {
 }
 
 #[test]
+fn render_rename_template_disarms_reserved_device_filename() {
+    let t = tokens(&[("title", "CON"), ("ext", "mkv")]);
+    let result = render_rename_template("{title}.{ext}", &t);
+    assert_eq!(result, "CON_.mkv");
+}
+
+#[test]
+fn render_title_folder_template_disarms_reserved_device_prefix() {
+    let t = tokens(&[("title", "Com1 Sat"), ("year", "2024")]);
+    let result = render_title_folder_template("{title} ({year})", &t);
+    assert_eq!(result, "Com1_Sat (2024)");
+}
+
+#[test]
+fn configured_title_folder_path_disarms_reserved_device_title() {
+    let title = test_movie_title("CON");
+    let path = configured_title_folder_path("/library", &title, "{title}", None);
+    assert_eq!(path, std::path::Path::new("/library/CON_"));
+}
+
+#[test]
 fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
     let mut title = test_movie_title("Movie");
     title.year = Some(2024);
@@ -124,6 +145,45 @@ fn sanitize_replaces_question_and_asterisk() {
 fn sanitize_preserves_valid_chars() {
     let result = sanitize_filesystem_component("Movie Title (2024) - 1080p.mkv");
     assert_eq!(result, "Movie Title (2024) - 1080p.mkv");
+}
+
+#[test]
+fn sanitize_disarms_exact_windows_reserved_device_names() {
+    for (raw, expected) in [
+        ("CON", "CON_"),
+        ("prn", "prn_"),
+        ("AUX", "AUX_"),
+        ("NUL", "NUL_"),
+        ("COM1", "COM1_"),
+        ("LPT9", "LPT9_"),
+    ] {
+        assert_eq!(sanitize_filesystem_component(raw), expected);
+    }
+}
+
+#[test]
+fn sanitize_disarms_reserved_device_extension_forms() {
+    for (raw, expected) in [("CON.mkv", "CON_.mkv"), ("aux.srt", "aux_.srt")] {
+        assert_eq!(sanitize_filesystem_component(raw), expected);
+    }
+}
+
+#[test]
+fn sanitize_disarms_reserved_device_leading_tokens() {
+    for (raw, expected) in [
+        ("Con Game", "Con_Game"),
+        ("Com1 Sat", "Com1_Sat"),
+        ("LPT9 - Finale.mkv", "LPT9_Finale.mkv"),
+    ] {
+        assert_eq!(sanitize_filesystem_component(raw), expected);
+    }
+}
+
+#[test]
+fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
+    for value in ["Conan", "Comedy", "COM10", "LPT10", "Auxiliary"] {
+        assert_eq!(sanitize_filesystem_component(value), value);
+    }
 }
 
 // ── collapse_separators ───────────────────────────────────────────────────
@@ -292,8 +352,6 @@ fn test_movie_title(name: &str) -> Title {
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -414,6 +472,7 @@ fn resolve_rename_common_metadata_prefers_analysis_over_parsed_metadata() {
 fn resolve_rename_common_metadata_uses_persisted_parsed_backup_when_analysis_missing() {
     let mut media_file = test_media_file("/library/Movie.2024.mkv");
     media_file.video_codec = None;
+    media_file.video_width = None;
     media_file.video_height = None;
     media_file.audio_codec = None;
     media_file.audio_profile = None;

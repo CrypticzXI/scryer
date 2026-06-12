@@ -120,91 +120,91 @@ fn scoring_policies_empty_for_test_plugin() {
 #[test]
 fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
-        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB)
+        .with_builtin_asset(scryer_plugins::builtins::TORZNAB);
 
     let mut types = provider.available_provider_types();
     types.sort();
     assert!(
-        types.contains(&"nzbgeek".to_string()),
-        "nzbgeek should register"
-    );
-    assert!(
         types.contains(&"newznab".to_string()),
         "newznab should register"
     );
+    assert!(
+        types.contains(&"torznab".to_string()),
+        "torznab should register"
+    );
 
     assert!(
-        provider.plugin_name_for_provider("nzbgeek").is_some(),
-        "nzbgeek should have a plugin name"
+        provider.plugin_name_for_provider("torznab").is_some(),
+        "torznab should have a plugin name"
     );
     assert!(
         provider.plugin_name_for_provider("newznab").is_some(),
         "newznab should have a plugin name"
     );
     assert_eq!(
-        provider.default_base_url_for_provider("nzbgeek").as_deref(),
-        Some("https://api.nzbgeek.info"),
-        "nzbgeek should expose its default base URL"
+        provider.default_base_url_for_provider("newznab").as_deref(),
+        None,
+        "newznab should not expose a default base URL"
     );
-    let nzbgeek_fields = provider.config_fields_for_provider("nzbgeek");
+    let newznab_fields = provider.config_fields_for_provider("newznab");
     assert_eq!(
-        nzbgeek_fields
+        newznab_fields
             .iter()
             .find(|field| field.key == "base_url")
             .and_then(|field| field.default_value.as_deref()),
-        Some("https://api.nzbgeek.info"),
-        "nzbgeek base_url field should carry the builtin default URL"
+        None,
+        "newznab base_url field should not carry a builtin default URL"
     );
     assert!(
-        provider.default_base_url_for_provider("newznab").is_none(),
-        "newznab should not expose a default base URL"
+        provider.default_base_url_for_provider("torznab").is_none(),
+        "torznab should not expose a default base URL"
     );
 
-    let nzbgeek_capabilities = provider.capabilities_for_provider("nzbgeek");
+    let newznab_capabilities = provider.capabilities_for_provider("newznab");
     assert_eq!(
-        nzbgeek_capabilities.protocols,
+        newznab_capabilities.protocols,
         vec![scryer_domain::IndexerProtocolCapability::Usenet]
     );
     assert!(
-        nzbgeek_capabilities
+        newznab_capabilities
             .feed_modes
             .contains(&scryer_domain::IndexerFeedModeCapability::Recent),
-        "nzbgeek builtin should expose recent-feed capability metadata"
+        "newznab builtin should expose recent-feed capability metadata"
     );
     assert!(
-        nzbgeek_capabilities
+        newznab_capabilities
             .response_features
             .as_ref()
             .is_some_and(|features| features.grabs && features.comments),
-        "nzbgeek builtin should expose nested response feature metadata"
+        "newznab builtin should expose nested response feature metadata"
     );
 
-    let trimmed = provider.without_provider_type("nzbgeek");
+    let trimmed = provider.without_provider_type("newznab");
     let trimmed_types = trimmed.available_provider_types();
     assert!(
-        !trimmed_types.contains(&"nzbgeek".to_string()),
-        "without_provider_type should drop nzbgeek"
+        !trimmed_types.contains(&"newznab".to_string()),
+        "without_provider_type should drop newznab"
     );
     assert!(
-        trimmed_types.contains(&"newznab".to_string()),
-        "without_provider_type should leave newznab intact"
+        trimmed_types.contains(&"torznab".to_string()),
+        "without_provider_type should leave torznab intact"
     );
 }
 
 #[test]
 fn external_overrides_builtin_same_provider() {
     let wasm_bytes =
-        scryer_plugins::builtins::decode_builtin_wasm(scryer_plugins::builtins::NZBGEEK)
+        scryer_plugins::builtins::decode_builtin_wasm(scryer_plugins::builtins::NEWZNAB)
             .expect("builtin WASM should decode");
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
         .with_external_bytes(&wasm_bytes)
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
-    // Only one entry for "nzbgeek", not duplicated.
+    // Only one entry for "newznab", not duplicated.
     let types = provider.available_provider_types();
     assert_eq!(
-        types.iter().filter(|t| *t == "nzbgeek").count(),
+        types.iter().filter(|t| *t == "newznab").count(),
         1,
         "builtin should not duplicate external"
     );
@@ -224,12 +224,12 @@ fn invalid_wasm_bytes_silently_skipped() {
 #[test]
 fn invalid_bytes_dont_affect_valid() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB)
         .with_external_bytes(b"garbage");
 
     let types = provider.available_provider_types();
     assert!(
-        types.contains(&"nzbgeek".to_string()),
+        types.contains(&"newznab".to_string()),
         "valid builtin should survive despite garbage external"
     );
 }
@@ -246,7 +246,6 @@ fn subtitle_builtins_are_empty() {
 #[test]
 fn newznab_family_builtins_include_rss_search_path() {
     for (name, asset) in [
-        ("nzbgeek", scryer_plugins::builtins::NZBGEEK),
         ("newznab", scryer_plugins::builtins::NEWZNAB),
         ("torznab", scryer_plugins::builtins::TORZNAB),
     ] {
@@ -260,12 +259,12 @@ fn newznab_family_builtins_include_rss_search_path() {
 }
 
 #[tokio::test]
-async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
+async fn newznab_builtin_rss_search_uses_category_only_request() {
     let (base_url, request_rx) = spawn_newznab_response_server();
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
-    let mut config = test_config("nzbgeek");
+    let mut config = test_config("newznab");
     config.config_json = Some(
         serde_json::json!({
             "base_url": base_url,
@@ -423,12 +422,12 @@ async fn newznab_builtin_full_search_accepts_unprefixed_additional_params() {
 }
 
 #[tokio::test]
-async fn nzbgeek_builtin_full_search_canonicalizes_query_bearing_connection_urls() {
+async fn newznab_builtin_full_search_canonicalizes_query_bearing_connection_urls() {
     let (base_url, request_rx) = spawn_newznab_response_server();
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
-    let mut config = test_config("nzbgeek");
+    let mut config = test_config("newznab");
     config.config_json = Some(
         serde_json::json!({
             "base_url": format!(
@@ -596,18 +595,18 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
 #[test]
 fn dynamic_delegates_available_types() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     let types = dynamic.available_provider_types();
-    assert!(types.contains(&"nzbgeek".to_string()));
+    assert!(types.contains(&"newznab".to_string()));
 }
 
 #[test]
 fn dynamic_provider_reload_behaviour() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
-        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB)
+        .with_builtin_asset(scryer_plugins::builtins::TORZNAB);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
     assert_eq!(
@@ -618,16 +617,16 @@ fn dynamic_provider_reload_behaviour() {
 
     // reload_plugins disables a single provider while keeping the rest.
     dynamic
-        .reload_plugins(&[], &["nzbgeek".to_string()])
+        .reload_plugins(&[], &["newznab".to_string()])
         .unwrap();
     let after_disable = dynamic.available_provider_types();
     assert!(
-        !after_disable.contains(&"nzbgeek".to_string()),
-        "nzbgeek should be disabled after reload_plugins"
+        !after_disable.contains(&"newznab".to_string()),
+        "newznab should be disabled after reload_plugins"
     );
     assert!(
-        after_disable.contains(&"newznab".to_string()),
-        "newznab should remain after reload_plugins"
+        after_disable.contains(&"torznab".to_string()),
+        "torznab should remain after reload_plugins"
     );
 
     // reload swaps the inner provider entirely; an empty provider clears all.
@@ -641,10 +640,10 @@ fn dynamic_provider_reload_behaviour() {
 #[test]
 fn dynamic_client_cache_hit() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
-    let config = test_config("nzbgeek");
+    let config = test_config("newznab");
     let c1 = dynamic.client_for_provider(&config).unwrap();
     let c2 = dynamic.client_for_provider(&config).unwrap();
     assert!(
@@ -656,10 +655,10 @@ fn dynamic_client_cache_hit() {
 #[test]
 fn dynamic_client_cache_miss_on_updated_at() {
     let inner = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let dynamic = scryer_plugins::DynamicPluginProvider::new(inner);
 
-    let mut config1 = test_config("nzbgeek");
+    let mut config1 = test_config("newznab");
     let c1 = dynamic.client_for_provider(&config1).unwrap();
 
     // Change updated_at to simulate a config update
@@ -677,13 +676,13 @@ fn dynamic_client_cache_miss_on_updated_at() {
 #[test]
 fn builtin_with_valid_descriptor_loads() {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
     assert!(
         provider
             .available_provider_types()
-            .contains(&"nzbgeek".to_string()),
-        "NZBGEEK builtin should register as 'nzbgeek'"
+            .contains(&"newznab".to_string()),
+        "NEWZNAB builtin should register as 'newznab'"
     );
 }
 

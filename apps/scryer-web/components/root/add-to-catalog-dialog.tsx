@@ -40,8 +40,8 @@ type AddToCatalogDialogProps = {
   catalogConfigLoading: boolean;
   defaultQualityProfileId: string;
   rootFolders: RootFolderOption[];
-  libraries: LibraryRecord[];
-  onSubmit: (
+  manageableLibraries: LibraryRecord[];
+  onAdd: (
     result: MetadataTvdbSearchItem,
     facet: Facet,
     options: MetadataCatalogAddOptions,
@@ -94,10 +94,11 @@ export function AddToCatalogDialog({
   catalogConfigLoading,
   defaultQualityProfileId,
   rootFolders,
-  libraries,
-  onSubmit,
+  manageableLibraries,
+  onAdd,
 }: AddToCatalogDialogProps) {
   const t = useTranslate();
+  const libraries = manageableLibraries;
   const [draft, setDraft] = React.useState<MetadataCatalogAddOptions>(() =>
     buildDefaultDraft(
       facet,
@@ -135,14 +136,14 @@ export function AddToCatalogDialog({
     isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
 
   const handleSubmit = React.useCallback(async () => {
-    const qpId = (draft.qualityProfileId || defaultQualityProfileId).trim();
-    if (!qpId) return;
     const libraryId = selectedLibrary?.id?.trim();
     if (libraryRequired && !libraryId) return;
 
     setIsSubmitting(true);
     try {
-      const titleId = await onSubmit(result, facet, {
+      const qpId = (draft.qualityProfileId || defaultQualityProfileId).trim();
+      if (!qpId) return;
+      const titleId = await onAdd(result, facet, {
         ...draft,
         libraryId,
         qualityProfileId: qpId,
@@ -158,8 +159,8 @@ export function AddToCatalogDialog({
     defaultQualityProfileId,
     facet,
     libraryRequired,
+    onAdd,
     onOpenChange,
-    onSubmit,
     result,
     selectedLibrary,
   ]);
@@ -246,38 +247,39 @@ export function AddToCatalogDialog({
             </label>
           ) : null}
 
-          {/* Quality Profile — all facets */}
-          <label className="space-y-1">
-            <span className="block text-xs font-medium text-card-foreground">
-              {t("search.addConfigQualityProfile")}
-            </span>
-            <Select
-              value={catalogQualityProfileOptions.length > 0 ? qualityProfileValue : ""}
-              onValueChange={(v) => update({ qualityProfileId: v })}
-              disabled={qualityProfileSelectionDisabled}
-            >
-              <SelectTrigger
-                id="add-to-catalog-quality-profile"
-                className="h-9 w-full"
-                aria-busy={catalogConfigLoading}
+          {(
+            <label className="space-y-1">
+              <span className="block text-xs font-medium text-card-foreground">
+                {t("search.addConfigQualityProfile")}
+              </span>
+              <Select
+                value={catalogQualityProfileOptions.length > 0 ? qualityProfileValue : ""}
+                onValueChange={(v) => update({ qualityProfileId: v })}
+                disabled={qualityProfileSelectionDisabled}
               >
-                <SelectValue placeholder={catalogConfigLoading ? t("label.loading") : undefined} />
-              </SelectTrigger>
-              <SelectContent>
-                {catalogQualityProfileOptions.length === 0 ? (
-                  <SelectItem value="__none" disabled>
-                    {t("search.addConfigNoQualityProfiles")}
-                  </SelectItem>
-                ) : (
-                  catalogQualityProfileOptions.map((profile) => (
-                    <SelectItem key={profile.id} value={profile.id}>
-                      {profile.name}
+                <SelectTrigger
+                  id="add-to-catalog-quality-profile"
+                  className="h-9 w-full"
+                  aria-busy={catalogConfigLoading}
+                >
+                  <SelectValue placeholder={catalogConfigLoading ? t("label.loading") : undefined} />
+                </SelectTrigger>
+                <SelectContent>
+                  {catalogQualityProfileOptions.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      {t("search.addConfigNoQualityProfiles")}
                     </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </label>
+                  ) : (
+                    catalogQualityProfileOptions.map((profile) => (
+                      <SelectItem key={profile.id} value={profile.id}>
+                        {profile.name}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </label>
+          )}
 
           {/* Root Folder */}
           {selectedRootFolders.length >= 1 ? (

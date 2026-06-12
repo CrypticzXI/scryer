@@ -8,14 +8,14 @@ use async_trait::async_trait;
 use aws_lc_rs::digest;
 use reqwest::Client;
 use scryer_application::{
-    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkMetadataResult,
-    EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
-    SettingsRepository,
+    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkArtworkUrlResult,
+    BulkMetadataResult, EpisodeArtworkUrls, EpisodeMetadata, MetadataGateway, MetadataSearchItem,
+    MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
+    SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, SettingsRepository, TitleArtworkUrls,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    metadata_gateway_reqwest_client,
+    smg_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -77,10 +77,9 @@ fn apq_hash(query: &str) -> String {
     sha256_hex(query)
 }
 
-/// Configuration for SMG enrollment (mTLS client certificates).
+/// Configuration for SMG enrollment and application-layer instance auth.
 pub struct SmgEnrollmentConfig {
     pub registration_secret: Option<String>,
-    pub ca_cert: Option<String>,
 }
 
 /// Signing materials for application-layer instance authentication.
@@ -191,7 +190,6 @@ const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_se
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
 const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
 const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
-const SCRYER_SMG_USER_AGENT: &str = concat!("Scryer-", env!("CARGO_PKG_VERSION"));
 
 #[derive(Deserialize)]
 struct VersionCompatibilitySuccessResponse {
@@ -302,13 +300,11 @@ pub struct MetadataGatewayClient {
 impl MetadataGatewayClient {
     pub fn new(
         endpoint: String,
-        accept_invalid_certs: bool,
         db: crate::SqliteServices,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
         Self::new_with_enrollment_store(
             endpoint,
-            accept_invalid_certs,
             Arc::new(crate::SettingsStore::new(
                 db.datastore(),
                 db.encryption_key_state(),
@@ -319,14 +315,9 @@ impl MetadataGatewayClient {
 
     pub fn new_with_enrollment_store(
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_store: Arc<dyn SettingsRepository>,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
-        if accept_invalid_certs {
-            warn!("metadata gateway client: TLS certificate verification DISABLED");
-        }
-
         let search_hash = apq_hash(graphql_docs::SEARCH_TVDB_QUERY);
         let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
@@ -345,7 +336,6 @@ impl MetadataGatewayClient {
 
         debug!(
             endpoint = %endpoint,
-            accept_invalid_certs,
             has_registration_secret = enrollment_config.registration_secret.is_some(),
             %search_hash,
             %search_rich_hash,
@@ -355,8 +345,7 @@ impl MetadataGatewayClient {
             "metadata gateway client initialized (APQ enabled)"
         );
 
-        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
-            .expect("failed to build HTTP client");
+        let http = smg_reqwest_client();
 
         Self {
             outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
@@ -381,12 +370,8 @@ impl MetadataGatewayClient {
 
     pub fn new_without_enrollment_store(
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
-        if accept_invalid_certs {
-            warn!("metadata gateway client: TLS certificate verification DISABLED");
-        }
         if enrollment_config.registration_secret.is_some() {
             warn!(
                 "SMG enrollment is not available for this datastore engine in the PostgreSQL blank-install slice"
@@ -406,8 +391,7 @@ impl MetadataGatewayClient {
         } else {
             format!("{}/api/register", endpoint.trim_end_matches('/'))
         };
-        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
-            .expect("failed to build HTTP client");
+        let http = smg_reqwest_client();
 
         Self {
             outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
@@ -519,7 +503,6 @@ impl MetadataGatewayClient {
             &**db,
             &self.registration_url,
             registration_secret,
-            self.enrollment_config.ca_cert.as_deref(),
         )
         .await
         {
@@ -1149,7 +1132,6 @@ impl MetadataGatewayClient {
             seed_b64,
             key_id,
             &self.registration_url,
-            self.enrollment_config.ca_cert.as_deref(),
         )
         .await
         {
@@ -1379,7 +1361,9 @@ fn build_search_tvdb_batch_query(queries: &[MetadataSearchQuery]) -> Vec<Metadat
     for query in queries {
         let trimmed_query = query.query.trim();
         let trimmed_type = query.type_hint.trim();
-        if trimmed_query.is_empty() || trimmed_type.is_empty() {
+        let has_external_id =
+            query.imdb_id.is_some() || query.tmdb_id.is_some() || query.tvdb_id.is_some();
+        if trimmed_type.is_empty() || (trimmed_query.is_empty() && !has_external_id) {
             continue;
         }
 
@@ -1433,6 +1417,55 @@ fn build_bulk_metadata_alias_requests(
         .collect()
 }
 
+fn merge_bulk_artwork_url_partial(
+    data: &serde_json::Value,
+    movies: &mut HashMap<i64, TitleArtworkUrls>,
+    series: &mut HashMap<i64, SeriesArtworkUrls>,
+) {
+    let Some(obj) = data.as_object() else {
+        return;
+    };
+
+    for (alias, value) in obj {
+        if value.is_null() {
+            continue;
+        }
+        if alias.starts_with('m') {
+            if let Ok(movie_result) = serde_json::from_value::<ArtworkMovieResult>(value.clone()) {
+                let movie = movie_result.movie;
+                movies.insert(
+                    movie.tvdb_id,
+                    TitleArtworkUrls {
+                        poster_url: normalize_optional_artwork_url(Some(movie.poster_url)),
+                        background_url: pick_artwork_url(&movie.artworks, "background"),
+                    },
+                );
+            }
+        } else if alias.starts_with('s')
+            && let Ok(series_result) = serde_json::from_value::<ArtworkSeriesResult>(value.clone())
+        {
+            let item = series_result.series;
+            series.insert(
+                item.tvdb_id,
+                SeriesArtworkUrls {
+                    poster_url: normalize_optional_artwork_url(Some(item.poster_url)),
+                    background_url: pick_artwork_url(&item.artworks, "background"),
+                    episodes: item
+                        .episodes
+                        .into_iter()
+                        .map(|episode| EpisodeArtworkUrls {
+                            tvdb_id: episode.tvdb_id,
+                            season_number: episode.season_number,
+                            episode_number: episode.episode_number,
+                            image_url: normalize_optional_artwork_url(episode.image_url),
+                        })
+                        .collect(),
+                },
+            );
+        }
+    }
+}
+
 fn merge_bulk_metadata_partial(
     data: &serde_json::Value,
     movies: &mut HashMap<i64, MovieMetadata>,
@@ -1459,7 +1492,6 @@ fn merge_bulk_metadata_partial(
                         content_status: m.status,
                         overview: m.overview,
                         poster_url: normalize_artwork_url(&m.poster_url),
-                        banner_url: pick_artwork_url(&m.artworks, "banner"),
                         background_url: pick_artwork_url(&m.artworks, "background"),
                         language: m.language,
                         runtime_minutes: m.runtime_minutes,
@@ -1490,7 +1522,6 @@ fn merge_bulk_metadata_partial(
                     network: s.network,
                     runtime_minutes: s.runtime_minutes,
                     poster_url: normalize_artwork_url(&s.poster_url),
-                    banner_url: pick_artwork_url(&s.artworks, "banner"),
                     background_url: pick_artwork_url(&s.artworks, "background"),
                     country: s.country,
                     genres: s.genres,
@@ -1527,6 +1558,7 @@ fn merge_bulk_metadata_partial(
                             overview: ep.overview,
                             absolute_number: ep.absolute_number,
                             season_number: ep.season_number,
+                            image_url: ep.image_url,
                         })
                         .collect(),
                     anime_mappings: s
@@ -1627,13 +1659,31 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
     q
 }
 
+fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language: &str) -> String {
+    let mut q = String::from("query {\n");
+    for (i, &id) in movie_ids.iter().enumerate() {
+        let _ = writeln!(
+            q,
+            "  m{i}: movie(tvdbId: {id}, language: \"{language}\") {{ movie {{ tvdb_id poster_url artworks {{ kind url }} }} }}"
+        );
+    }
+    for (i, &id) in series_ids.iter().enumerate() {
+        let _ = writeln!(
+            q,
+            "  s{i}: series(id: \"{id}\", includeEpisodes: true, language: \"{language}\") {{ series {{ tvdb_id poster_url artworks {{ kind url }} episodes {{ tvdb_id season_number episode_number image_url }} }} }}"
+        );
+    }
+    q.push_str("}\n");
+    q
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_mixed_query,
-        build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
-        next_version_compatibility_poll_delay_at, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_version_compatibility_success,
+        ArtworkItem, MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
+        build_bulk_mixed_query, build_search_tvdb_batch_query, compatibility_poll_phase,
+        enrollment_retry_delay, next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_success, pick_artwork_url,
         validate_search_tvdb_batch_echo,
     };
     use std::time::{Duration, SystemTime};
@@ -1651,6 +1701,19 @@ mod tests {
         assert!(query.contains("fragment SeriesFields on TvdbSeries"));
         assert!(query.contains("tagged_aliases"));
         assert!(query.contains("language"));
+    }
+
+    #[test]
+    fn bulk_artwork_url_query_uses_narrow_projection() {
+        let query = build_bulk_artwork_url_query(&[11], &[22], "eng");
+
+        assert!(query.contains("movie(tvdbId: 11"));
+        assert!(query.contains("series(id: \"22\""));
+        assert!(query.contains("tvdb_id poster_url artworks { kind url }"));
+        assert!(query.contains("episodes { tvdb_id season_number episode_number image_url }"));
+        assert!(!query.contains("...MovieFields"));
+        assert!(!query.contains("...SeriesFields"));
+        assert!(!query.contains("tagged_aliases"));
     }
 
     #[test]
@@ -1681,6 +1744,14 @@ mod tests {
                 tvdb_id: None,
             },
             MetadataSearchQuery {
+                query: "   ".to_string(),
+                type_hint: "movie".to_string(),
+                year: None,
+                imdb_id: None,
+                tmdb_id: Some("2502".to_string()),
+                tvdb_id: None,
+            },
+            MetadataSearchQuery {
                 query: "Velvet Comet".to_string(),
                 type_hint: "anime".to_string(),
                 year: None,
@@ -1700,18 +1771,22 @@ mod tests {
 
         let normalized = build_search_tvdb_batch_query(&queries);
 
-        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized.len(), 4);
         assert_eq!(normalized[0].query, "Lantern Tide");
         assert_eq!(normalized[0].type_hint, "movie");
         assert_eq!(normalized[0].year, Some(2001));
         assert_eq!(normalized[0].imdb_id.as_deref(), Some("tt1234567"));
-        assert_eq!(normalized[1].query, "Velvet Comet");
-        assert_eq!(normalized[1].type_hint, "anime");
+        assert_eq!(normalized[1].query, "");
+        assert_eq!(normalized[1].type_hint, "movie");
         assert_eq!(normalized[1].year, None);
-        assert_eq!(normalized[1].tvdb_id.as_deref(), Some("999"));
-        assert_eq!(normalized[2].query, "Lantern Tide");
-        assert_eq!(normalized[2].type_hint, "movie");
-        assert_eq!(normalized[2].year, Some(2002));
+        assert_eq!(normalized[1].tmdb_id.as_deref(), Some("2502"));
+        assert_eq!(normalized[2].query, "Velvet Comet");
+        assert_eq!(normalized[2].type_hint, "anime");
+        assert_eq!(normalized[2].year, None);
+        assert_eq!(normalized[2].tvdb_id.as_deref(), Some("999"));
+        assert_eq!(normalized[3].query, "Lantern Tide");
+        assert_eq!(normalized[3].type_hint, "movie");
+        assert_eq!(normalized[3].year, Some(2002));
     }
 
     #[test]
@@ -1778,11 +1853,35 @@ mod tests {
     #[test]
     fn normalize_optional_artwork_url_preserves_missing_and_existing_urls() {
         assert_eq!(normalize_optional_artwork_url(None), None);
+        assert_eq!(normalize_optional_artwork_url(Some("".to_string())), None);
+        assert_eq!(
+            normalize_optional_artwork_url(Some("   ".to_string())),
+            None
+        );
         assert_eq!(
             normalize_optional_artwork_url(Some(
                 "https://artworks.thetvdb.com/banners/posters/example.jpg".to_string()
             )),
             Some("https://artworks.thetvdb.com/banners/posters/example.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_artwork_url_skips_blank_matching_artwork_urls() {
+        let artworks = vec![
+            ArtworkItem {
+                kind: "background".to_string(),
+                url: "   ".to_string(),
+            },
+            ArtworkItem {
+                kind: "background".to_string(),
+                url: "https://artworks.thetvdb.com/banners/backgrounds//usable.jpg".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            pick_artwork_url(&artworks, "background"),
+            Some("https://artworks.thetvdb.com/banners/backgrounds/usable.jpg".to_string())
         );
     }
 
@@ -2003,6 +2102,19 @@ struct SearchTvdbMultiResult {
 // --- Movie types ---
 
 #[derive(Deserialize)]
+struct ArtworkMovieResult {
+    movie: ArtworkTitleItem,
+}
+
+#[derive(Deserialize)]
+struct ArtworkTitleItem {
+    tvdb_id: i64,
+    poster_url: String,
+    #[serde(default)]
+    artworks: Vec<ArtworkItem>,
+}
+
+#[derive(Deserialize)]
 struct MovieResponse {
     movie: MovieResult,
 }
@@ -2051,12 +2163,15 @@ struct TaggedAliasItem {
 fn pick_artwork_url(artworks: &[ArtworkItem], kind: &str) -> Option<String> {
     artworks
         .iter()
-        .find(|a| a.kind == kind)
-        .map(|a| normalize_artwork_url(&a.url))
+        .filter(|a| a.kind == kind)
+        .find_map(|a| normalize_optional_artwork_url(Some(a.url.clone())))
 }
 
 fn normalize_optional_artwork_url(url: Option<String>) -> Option<String> {
-    url.map(|value| normalize_artwork_url(&value))
+    url.and_then(|value| {
+        let normalized = normalize_artwork_url(&value);
+        (!normalized.trim().is_empty()).then_some(normalized)
+    })
 }
 
 fn bounded_exponential_backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
@@ -2128,6 +2243,30 @@ fn normalize_artwork_url(url: &str) -> String {
 // --- Series types ---
 
 #[derive(Deserialize)]
+struct ArtworkSeriesResult {
+    series: ArtworkSeriesItem,
+}
+
+#[derive(Deserialize)]
+struct ArtworkSeriesItem {
+    tvdb_id: i64,
+    poster_url: String,
+    #[serde(default)]
+    artworks: Vec<ArtworkItem>,
+    #[serde(default)]
+    episodes: Vec<ArtworkEpisodeItem>,
+}
+
+#[derive(Deserialize)]
+struct ArtworkEpisodeItem {
+    tvdb_id: i64,
+    season_number: i32,
+    episode_number: i32,
+    #[serde(default)]
+    image_url: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct SeriesResponse {
     series: SeriesResult,
 }
@@ -2185,6 +2324,8 @@ struct SeriesEpisodeItem {
     is_recap: bool,
     overview: String,
     absolute_number: String,
+    #[serde(default)]
+    image_url: String,
 }
 
 #[derive(Deserialize)]
@@ -2474,7 +2615,6 @@ impl MetadataGateway for MetadataGatewayClient {
             content_status: m.status,
             overview: m.overview,
             poster_url: normalize_artwork_url(&m.poster_url),
-            banner_url: pick_artwork_url(&m.artworks, "banner"),
             background_url: pick_artwork_url(&m.artworks, "background"),
             language: m.language,
             runtime_minutes: m.runtime_minutes,
@@ -2511,7 +2651,6 @@ impl MetadataGateway for MetadataGatewayClient {
             network: s.network,
             runtime_minutes: s.runtime_minutes,
             poster_url: normalize_artwork_url(&s.poster_url),
-            banner_url: pick_artwork_url(&s.artworks, "banner"),
             background_url: pick_artwork_url(&s.artworks, "background"),
             country: s.country,
             genres: s.genres,
@@ -2548,6 +2687,7 @@ impl MetadataGateway for MetadataGatewayClient {
                     overview: ep.overview,
                     absolute_number: ep.absolute_number,
                     season_number: ep.season_number,
+                    image_url: ep.image_url,
                 })
                 .collect(),
             anime_mappings: s
@@ -2673,5 +2813,63 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata complete"
         );
         Ok(BulkMetadataResult { movies, series })
+    }
+
+    async fn get_artwork_urls_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        series_tvdb_ids: &[i64],
+        language: &str,
+    ) -> AppResult<BulkArtworkUrlResult> {
+        if movie_tvdb_ids.is_empty() && series_tvdb_ids.is_empty() {
+            return Ok(BulkArtworkUrlResult::default());
+        }
+
+        let unique_movies: Vec<i64> = movie_tvdb_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let unique_series: Vec<i64> = series_tvdb_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let request_started_at = Instant::now();
+        debug!(
+            movies = unique_movies.len(),
+            series = unique_series.len(),
+            "bulk artwork url request"
+        );
+
+        let mut movies = HashMap::new();
+        let mut series = HashMap::new();
+        let bulk_requests = build_bulk_metadata_alias_requests(&unique_movies, &unique_series);
+        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
+            let mut chunk_movie_ids = Vec::new();
+            let mut chunk_series_ids = Vec::new();
+            for request in chunk {
+                match request {
+                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
+                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
+                }
+            }
+
+            let query = build_bulk_artwork_url_query(&chunk_movie_ids, &chunk_series_ids, language);
+            let data = self.post_batched_graphql_partial(&query).await?;
+            merge_bulk_artwork_url_partial(&data, &mut movies, &mut series);
+        }
+
+        debug!(
+            movies_resolved = movies.len(),
+            series_resolved = series.len(),
+            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+            "bulk artwork url request complete"
+        );
+
+        Ok(BulkArtworkUrlResult { movies, series })
     }
 }

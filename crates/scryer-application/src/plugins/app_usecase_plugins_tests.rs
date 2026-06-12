@@ -1,4 +1,5 @@
 use super::*;
+use crate::plugins::catalog::RulePackCatalogEntry;
 use async_trait::async_trait;
 use scryer_domain::{
     NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
@@ -16,6 +17,7 @@ struct MockPluginInstallationRepo {
     installations: Arc<Mutex<Vec<PluginInstallation>>>,
     payloads: Arc<Mutex<HashMap<String, PersistedPluginWasmPayload>>>,
     catalog_sources: Arc<Mutex<Vec<scryer_domain::PluginCatalogSource>>>,
+    catalog_status: Arc<Mutex<Option<scryer_domain::PluginCatalogStatusRecord>>>,
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
     get_enabled_payload_calls: Arc<AtomicUsize>,
     get_single_payload_calls: Arc<AtomicUsize>,
@@ -78,6 +80,7 @@ impl MockPluginInstallationRepo {
             installations: Arc::new(Mutex::new(vec![])),
             payloads: Arc::new(Mutex::new(HashMap::new())),
             catalog_sources: Arc::new(Mutex::new(vec![])),
+            catalog_status: Arc::new(Mutex::new(None)),
             seeded: Arc::new(Mutex::new(vec![])),
             get_enabled_payload_calls: Arc::new(AtomicUsize::new(0)),
             get_single_payload_calls: Arc::new(AtomicUsize::new(0)),
@@ -93,10 +96,7 @@ impl MockPluginInstallationRepo {
 
     async fn store_catalog_fixture(&self, fixture: &CatalogFixtureManifest) -> AppResult<()> {
         let mut sources = self.catalog_sources.lock().await;
-        sources.retain(|source| {
-            source.source_key != CENTRAL_CATALOG_SOURCE_KEY
-                && !source.source_key.starts_with("child:")
-        });
+        sources.retain(|source| source.source_key != CENTRAL_CATALOG_SOURCE_KEY);
 
         if fixture.plugins.is_empty() && fixture.rule_packs.is_empty() {
             return Ok(());
@@ -107,98 +107,83 @@ impl MockPluginInstallationRepo {
 
         for plugin in &fixture.plugins {
             let source_repo = fixture_source_repo(&plugin.id);
-            let github_repo = GitHubRepo::parse(&source_repo)?;
-            central_plugins.push(CentralCatalogEntry {
-                id: plugin.id.clone(),
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                plugin_type: plugin.plugin_type.clone(),
-                provider_type: plugin.provider_type.clone(),
-                publisher: "scryer".to_string(),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
-                },
-                docs_url: format!("https://example.com/{}/docs", plugin.id),
-                source_repo: source_repo.clone(),
-                child_catalog_url: fixture_child_catalog_url(
-                    &github_repo,
-                    plugin
-                        .releases
-                        .first()
-                        .map(|release| release.version.as_str()),
-                ),
-                required_signer: RequiredSigner {
-                    github_repository: github_repo.slug(),
-                    github_workflow: None,
-                },
-            });
-
             let releases = plugin
                 .releases
                 .iter()
                 .filter(|release| !release.builtin)
                 .filter_map(|release| {
-                    release.wasm_url.as_ref()?;
-                    Some(ChildCatalogRelease {
-                        version: release.version.clone(),
-                        sdk_constraint: release.sdk_constraint.clone(),
-                        artifact_manifest_url: format!(
-                            "{}v{}/plugin.manifest.json",
-                            github_repo.release_asset_prefix(),
-                            release.version
-                        ),
-                    })
+                    let wasm_url = release.wasm_url.as_ref()?;
+                    let artifact_url = fixture_plugin_artifact_url(wasm_url);
+                    Some(serde_json::json!({
+                        "version": release.version.clone(),
+                        "sdk_constraint": release.sdk_constraint.clone(),
+                        "artifacts": [{
+                            "runtime": "wasm32-wasip1",
+                            "required_features": [],
+                            "url": artifact_url,
+                            "mirror_urls": [],
+                            "signature_url": format!("{artifact_url}.bundle.json"),
+                            "signature_mirror_urls": [],
+                            "digests": [fixture_artifact_digest()],
+                            "wasm_digests": [fixture_wasm_digest()],
+                            "bytes": 4,
+                        }],
+                    }))
                 })
                 .collect::<Vec<_>>();
 
-            let child = ChildCatalog {
-                schema_version: "scryer.plugin.child_catalog.v2".to_string(),
-                id: plugin.id.clone(),
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                plugin_type: plugin.plugin_type.clone(),
-                provider_type: plugin.provider_type.clone(),
-                publisher: "scryer".to_string(),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
+            central_plugins.push(serde_json::json!({
+                "id": plugin.id.clone(),
+                "name": plugin.name.clone(),
+                "description": plugin.description.clone(),
+                "plugin_type": plugin.plugin_type.clone(),
+                "provider_type": plugin.provider_type.clone(),
+                "publisher": "scryer",
+                "support_tier": if plugin.official { "official" } else { "unverified" },
+                "status": "active",
+                "docs_url": format!("https://example.com/{}/docs", plugin.id),
+                "source_repo": source_repo.clone(),
+                "required_signer": {
+                    "github_repository": format!(
+                        "scryer-media/test-plugin-{}",
+                        plugin.id.replace('_', "-")
+                    )
                 },
-                docs_url: format!("https://example.com/{}/docs", plugin.id),
-                source_repo,
-                releases,
-            };
-
-            sources.push(scryer_domain::PluginCatalogSource {
-                source_key: child_catalog_source_key(&plugin.id),
-                source_kind: "child".to_string(),
-                source_url: fixture_child_catalog_url(
-                    &github_repo,
-                    plugin
-                        .releases
-                        .first()
-                        .map(|release| release.version.as_str()),
-                ),
-                github_repo: Some(github_repo.slug()),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
-                },
-                catalog_json: Some(serde_json::to_string(&child).expect("serialize child catalog")),
-                last_success_at: Some(now),
-                last_error: None,
-                updated_at: now,
-            });
+                "releases": releases,
+            }));
         }
 
-        let central = CentralCatalog {
-            schema_version: "scryer.plugin.catalog.v2".to_string(),
-            plugins: central_plugins,
-            rule_packs: fixture.rule_packs.clone(),
-        };
+        let rule_packs = fixture
+            .rule_packs
+            .iter()
+            .map(|pack| {
+                serde_json::json!({
+                    "id": pack.id.clone(),
+                    "name": pack.name.clone(),
+                    "description": pack.description.clone(),
+                    "author": pack.author.clone(),
+                    "releases": [{
+                        "version": pack.version.clone(),
+                        "min_scryer_version": pack.min_scryer_version.clone(),
+                        "rule_pack_digests": [fixture_rule_pack_digest()],
+                        "artifacts": [{
+                            "url": pack.url.clone(),
+                            "mirror_urls": [],
+                            "signature_url": format!("{}.bundle.json", pack.url),
+                            "signature_mirror_urls": [],
+                            "digests": [fixture_artifact_digest()],
+                        }],
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let central = serde_json::json!({
+            "schema_version": "scryer.plugin.catalog.v3",
+            "catalog_version": 1,
+            "plugins": central_plugins,
+            "rule_packs": rule_packs,
+        });
 
         sources.push(scryer_domain::PluginCatalogSource {
             source_key: CENTRAL_CATALOG_SOURCE_KEY.to_string(),
@@ -206,7 +191,7 @@ impl MockPluginInstallationRepo {
             source_url: plugin_catalog_url(),
             github_repo: Some(CENTRAL_CATALOG_REPO.to_string()),
             support_tier: PluginSupportTier::Official,
-            catalog_json: Some(serde_json::to_string(&central).expect("serialize central catalog")),
+            catalog_json: Some(central.to_string()),
             last_success_at: Some(now),
             last_error: None,
             updated_at: now,
@@ -241,6 +226,43 @@ impl MockPluginInstallationRepo {
         } else {
             sources.push(source);
         }
+    }
+
+    async fn store_community_catalog_source(
+        &self,
+        plugin_id: &str,
+        github_repo: &str,
+        catalog_json: String,
+    ) {
+        self.store_community_catalog_source_with_support_tier(
+            plugin_id,
+            github_repo,
+            PluginSupportTier::VerifiedCommunity,
+            catalog_json,
+        )
+        .await;
+    }
+
+    async fn store_community_catalog_source_with_support_tier(
+        &self,
+        plugin_id: &str,
+        github_repo: &str,
+        support_tier: PluginSupportTier,
+        catalog_json: String,
+    ) {
+        let source = scryer_domain::PluginCatalogSource {
+            source_key: format!("community:{plugin_id}"),
+            source_kind: "community".to_string(),
+            source_url: "https://example.com/catalog.json".to_string(),
+            github_repo: Some(github_repo.to_string()),
+            support_tier,
+            catalog_json: Some(catalog_json),
+            last_success_at: Some(Utc::now()),
+            last_error: None,
+            updated_at: Utc::now(),
+        };
+        let mut sources = self.catalog_sources.lock().await;
+        sources.push(source);
     }
 }
 
@@ -415,6 +437,14 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         Ok(())
     }
 
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()> {
+        self.catalog_sources
+            .lock()
+            .await
+            .retain(|source| source.source_key != source_key);
+        Ok(())
+    }
+
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
@@ -436,16 +466,22 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
 
     async fn upsert_plugin_catalog_status(
         &self,
-        _status: &scryer_domain::PluginCatalogStatusRecord,
+        status: &scryer_domain::PluginCatalogStatusRecord,
     ) -> AppResult<()> {
+        *self.catalog_status.lock().await = Some(status.clone());
         Ok(())
     }
 
     async fn get_plugin_catalog_status(
         &self,
-        _status_key: &str,
+        status_key: &str,
     ) -> AppResult<Option<scryer_domain::PluginCatalogStatusRecord>> {
-        Ok(None)
+        Ok(self
+            .catalog_status
+            .lock()
+            .await
+            .clone()
+            .filter(|status| status.status_key == status_key))
     }
 }
 
@@ -514,6 +550,7 @@ struct MockPluginProvider {
     plugin_sdk_versions: HashMap<String, String>,
     plugin_sdk_constraints: HashMap<String, String>,
     plugin_types: HashMap<String, String>,
+    extra_config_fields: HashMap<String, Vec<scryer_domain::ConfigFieldDef>>,
     removed_provider_types: StdArc<StdMutex<Vec<String>>>,
     reload_count: AtomicUsize,
     upsert_count: AtomicUsize,
@@ -533,6 +570,7 @@ impl MockPluginProvider {
             plugin_sdk_versions: HashMap::new(),
             plugin_sdk_constraints: HashMap::new(),
             plugin_types: HashMap::new(),
+            extra_config_fields: HashMap::new(),
             removed_provider_types: StdArc::new(StdMutex::new(vec![])),
             reload_count: AtomicUsize::new(0),
             upsert_count: AtomicUsize::new(0),
@@ -561,6 +599,25 @@ impl MockPluginProvider {
     fn with_builtin_provider(mut self, pt: &str, name: &str, default_url: Option<&str>) -> Self {
         self = self.with_provider(pt, name, default_url);
         self.builtin_types.push(pt.to_string());
+        self
+    }
+
+    fn with_required_secret_field(mut self, pt: &str, key: &str) -> Self {
+        self.extra_config_fields
+            .entry(pt.to_string())
+            .or_default()
+            .push(scryer_domain::ConfigFieldDef {
+                key: key.to_string(),
+                label: "API Key".to_string(),
+                field_type: scryer_domain::ConfigFieldType::Password,
+                required: true,
+                default_value: None,
+                value_source: scryer_domain::ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: Vec::new(),
+                help_text: None,
+            });
         self
     }
 
@@ -620,8 +677,9 @@ impl IndexerPluginProvider for MockPluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
+        let mut fields = Vec::new();
         if let Some(default_url) = self.default_urls.get(provider_type) {
-            return vec![scryer_domain::ConfigFieldDef {
+            fields.push(scryer_domain::ConfigFieldDef {
                 key: "base_url".to_string(),
                 label: "Base URL".to_string(),
                 field_type: scryer_domain::ConfigFieldType::String,
@@ -632,10 +690,14 @@ impl IndexerPluginProvider for MockPluginProvider {
                 host_binding: None,
                 options: Vec::new(),
                 help_text: None,
-            }];
+            });
         }
 
-        Vec::new()
+        if let Some(extra_fields) = self.extra_config_fields.get(provider_type) {
+            fields.extend(extra_fields.iter().cloned());
+        }
+
+        fields
     }
 
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -720,12 +782,14 @@ impl IndexerPluginProvider for MockPluginProvider {
 
 struct MockPluginDescriptorLoader {
     descriptors: StdArc<StdMutex<HashMap<Vec<u8>, scryer_plugin_sdk::PluginDescriptor>>>,
+    load_calls: StdArc<AtomicUsize>,
 }
 
 impl MockPluginDescriptorLoader {
     fn new() -> Self {
         Self {
             descriptors: StdArc::new(StdMutex::new(HashMap::new())),
+            load_calls: StdArc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -735,6 +799,10 @@ impl MockPluginDescriptorLoader {
             .expect("plugin descriptor loader lock")
             .insert(wasm_bytes.to_vec(), descriptor);
     }
+
+    fn load_count(&self) -> usize {
+        self.load_calls.load(Ordering::Relaxed)
+    }
 }
 
 impl PluginDescriptorLoader for MockPluginDescriptorLoader {
@@ -742,6 +810,7 @@ impl PluginDescriptorLoader for MockPluginDescriptorLoader {
         &self,
         wasm_bytes: &[u8],
     ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
+        self.load_calls.fetch_add(1, Ordering::Relaxed);
         self.descriptors
             .lock()
             .expect("plugin descriptor loader lock")
@@ -786,6 +855,7 @@ fn viewer() -> User {
         id: scryer_domain::Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
@@ -801,6 +871,7 @@ fn config_admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "config-admin".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageSystemSettings,
@@ -988,12 +1059,60 @@ fn fixture_source_repo(plugin_id: &str) -> String {
     )
 }
 
-fn fixture_child_catalog_url(github_repo: &GitHubRepo, version: Option<&str>) -> String {
-    format!(
-        "{}v{}/catalog-v2.min.json.zst",
-        github_repo.release_asset_prefix(),
-        version.unwrap_or("0.1.0")
-    )
+fn prepared_catalog_plugin_install_fixture(
+    plugin_id: &str,
+    plugin_type: &str,
+    provider_type: &str,
+    wasm_bytes: Vec<u8>,
+) -> PreparedCatalogPluginInstall {
+    PreparedCatalogPluginInstall {
+        plugin_id: plugin_id.to_string(),
+        expected_plugin_type: plugin_type.to_string(),
+        expected_provider_type: provider_type.to_string(),
+        release: DownloadedPluginReleaseContract {
+            version: "0.1.0".to_string(),
+            sdk_version: None,
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            scryer_constraint: None,
+        },
+        scryer_constraint: None,
+        source_kind: PluginSourceKind::Downloaded,
+        support_tier: PluginSupportTier::Official,
+        persisted_wasm_bytes: vec![9, 8, 7, 6],
+        runtime_wasm_bytes: wasm_bytes,
+        runtime_first_party: true,
+        wasm_encoding: PluginWasmEncoding::Zstd,
+        wasm_digest_algo: "blake3".to_string(),
+        source_url: "https://example.com/plugin.wasm.zst".to_string(),
+        publisher: "scryer".to_string(),
+        docs_url: "https://example.com/docs".to_string(),
+        source_repo: fixture_source_repo(plugin_id),
+        manifest_url: "https://example.com/plugin.wasm.zst".to_string(),
+        wasm_digest: "abc123".to_string(),
+        artifact_digest: "def456".to_string(),
+        description: "Fixture plugin".to_string(),
+    }
+}
+
+fn fixture_plugin_artifact_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.ends_with(".zst") || trimmed.ends_with(".br") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.zst")
+    }
+}
+
+fn fixture_artifact_digest() -> &'static str {
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+fn fixture_wasm_digest() -> &'static str {
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}
+
+fn fixture_rule_pack_digest() -> &'static str {
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 }
 
 fn make_catalog_fixture_json(entries: &[serde_json::Value]) -> String {
@@ -1062,6 +1181,18 @@ fn catalog_entry_with_type(
 ) -> serde_json::Value {
     let mut entry = catalog_entry(id, version, builtin, wasm_url);
     entry["plugin_type"] = serde_json::json!(plugin_type);
+    entry
+}
+
+fn catalog_entry_with_provider_type(
+    id: &str,
+    provider_type: &str,
+    version: &str,
+    builtin: bool,
+    wasm_url: Option<&str>,
+) -> serde_json::Value {
+    let mut entry = catalog_entry(id, version, builtin, wasm_url);
+    entry["provider_type"] = serde_json::json!(provider_type);
     entry
 }
 
@@ -1595,7 +1726,7 @@ async fn apply_runtime_plugin_upsert_routes_usenet_indexer_to_indexer_family_onl
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1604,14 +1735,14 @@ async fn apply_runtime_plugin_upsert_routes_usenet_indexer_to_indexer_family_onl
     h.app
         .apply_runtime_plugin_upsert(
             &make_installation_with_type(
-                "animetosho",
+                "example-indexer",
                 "0.1.0",
                 "usenet_indexer",
-                "animetosho",
+                "example_indexer",
                 false,
                 true,
             ),
-            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho"),
+            make_runtime_plugin_load("example-indexer", "usenet_indexer", "example_indexer"),
         )
         .unwrap();
 
@@ -1632,28 +1763,28 @@ async fn apply_runtime_plugin_replace_removes_previous_indexer_provider_when_key
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle),
         Some(download),
         Some(notification),
     );
 
     let previous = make_installation_with_type(
-        "animetosho",
+        "example-indexer",
         "0.1.0",
         "usenet_indexer",
-        "animetosho",
+        "example_indexer",
         false,
         true,
     );
     let mut next = previous.clone();
-    next.provider_type = "animetosho_v2".to_string();
+    next.provider_type = "example_indexer_v2".to_string();
 
     h.app
         .apply_runtime_plugin_replace(
             &previous,
             &next,
-            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho_v2"),
+            make_runtime_plugin_load("example-indexer", "usenet_indexer", "example_indexer_v2"),
         )
         .unwrap();
 
@@ -1666,7 +1797,7 @@ async fn apply_runtime_plugin_replace_removes_previous_indexer_provider_when_key
             .removed_provider_types
             .lock()
             .expect("removed provider types lock"),
-        vec!["animetosho".to_string()]
+        vec!["example_indexer".to_string()]
     );
 }
 
@@ -1676,7 +1807,7 @@ async fn apply_runtime_plugin_upsert_routes_subtitle_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1713,7 +1844,7 @@ async fn apply_runtime_plugin_upsert_routes_notification_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1743,7 +1874,7 @@ async fn apply_runtime_plugin_upsert_routes_download_client_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1855,7 +1986,7 @@ async fn uninstall_notification_plugin_touches_only_notification_family() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&["email"]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1962,6 +2093,119 @@ async fn list_catalog_entries_not_installed() {
         assert!(p.installed_version.is_none());
         assert!(!p.update_available);
     }
+}
+
+#[tokio::test]
+async fn list_available_plugins_includes_cached_verified_community_source() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let artifact_url = fixture_plugin_artifact_url("https://example.com/community-alpha.wasm");
+    let catalog_json = serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
+        "plugins": [{
+            "id": "community-alpha",
+            "name": "Community Alpha",
+            "description": "Community plugin",
+            "plugin_type": "indexer",
+            "provider_type": "community-alpha",
+            "publisher": "community",
+            "support_tier": "verified_community",
+            "status": "active",
+            "docs_url": "https://github.com/scryer-community/community-alpha",
+            "source_repo": "https://github.com/scryer-community/community-alpha",
+            "required_signer": {
+                "github_repository": "scryer-community/community-alpha"
+            },
+            "releases": [{
+                "version": "1.0.0",
+                "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+                "artifacts": [{
+                    "runtime": "wasm32-wasip1",
+                    "required_features": [],
+                    "url": artifact_url,
+                    "mirror_urls": [],
+                    "signature_url": format!("{artifact_url}.bundle.json"),
+                    "signature_mirror_urls": [],
+                    "digests": [fixture_artifact_digest()],
+                    "wasm_digests": [fixture_wasm_digest()],
+                    "bytes": 4,
+                }]
+            }]
+        }],
+        "rule_packs": []
+    })
+    .to_string();
+    h.plugin_repo
+        .store_community_catalog_source(
+            "community-alpha",
+            "scryer-community/community-alpha",
+            catalog_json,
+        )
+        .await;
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+
+    assert_eq!(result.len(), 1);
+    let plugin = &result[0];
+    assert_eq!(plugin.id, "community-alpha");
+    assert_eq!(plugin.source_kind.as_deref(), Some("community"));
+    assert_eq!(plugin.support_tier, PluginSupportTier::VerifiedCommunity);
+    assert!(!plugin.official);
+    assert_eq!(plugin.bytes, Some(4));
+}
+
+#[tokio::test]
+async fn list_available_plugins_ignores_cached_community_source_with_unapproved_tier() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let artifact_url = fixture_plugin_artifact_url("https://example.com/community-alpha.wasm");
+    let catalog_json = serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
+        "plugins": [{
+            "id": "community-alpha",
+            "name": "Community Alpha",
+            "description": "Community plugin",
+            "plugin_type": "indexer",
+            "provider_type": "community-alpha",
+            "publisher": "community",
+            "support_tier": "official",
+            "status": "active",
+            "docs_url": "https://github.com/scryer-community/community-alpha",
+            "source_repo": "https://github.com/scryer-community/community-alpha",
+            "required_signer": {
+                "github_repository": "scryer-community/community-alpha"
+            },
+            "releases": [{
+                "version": "1.0.0",
+                "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+                "artifacts": [{
+                    "runtime": "wasm32-wasip1",
+                    "required_features": [],
+                    "url": artifact_url,
+                    "mirror_urls": [],
+                    "signature_url": format!("{artifact_url}.bundle.json"),
+                    "signature_mirror_urls": [],
+                    "digests": [fixture_artifact_digest()],
+                    "wasm_digests": [fixture_wasm_digest()],
+                    "bytes": 4,
+                }]
+            }]
+        }],
+        "rule_packs": []
+    })
+    .to_string();
+    h.plugin_repo
+        .store_community_catalog_source_with_support_tier(
+            "community-alpha",
+            "scryer-community/community-alpha",
+            PluginSupportTier::Official,
+            catalog_json,
+        )
+        .await;
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+
+    assert!(result.is_empty());
 }
 
 #[tokio::test]
@@ -2349,16 +2593,17 @@ async fn plugin_update_count_matches_available_plugins() {
 #[tokio::test]
 async fn list_default_base_url_from_provider() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
-    let json = make_catalog_fixture_json(&[catalog_entry(
-        "animetosho",
+    let json = make_catalog_fixture_json(&[catalog_entry_with_provider_type(
+        "example-indexer",
+        "example_indexer",
         "0.1.0",
         false,
-        Some("https://example.com/animetosho.wasm.zst"),
+        Some("https://example.com/example-indexer.wasm.zst"),
     )]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2368,26 +2613,28 @@ async fn list_default_base_url_from_provider() {
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(
         result[0].default_base_url.as_deref(),
-        Some("https://feed.animetosho.org")
+        Some("https://indexer.example")
     );
 }
 
 #[tokio::test]
 async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
     let provider = MockPluginProvider::new().with_builtin_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&[]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
-    let json = make_catalog_fixture_json(&[catalog_entry_with_type(
-        "animetosho",
+    let mut entry = catalog_entry_with_type(
+        "example-indexer",
         "indexer",
         "0.3.4",
         false,
-        Some("https://example.com/animetosho.wasm.zst"),
-    )]);
+        Some("https://example.com/example-indexer.wasm.zst"),
+    );
+    entry["provider_type"] = serde_json::json!("example_indexer");
+    let json = make_catalog_fixture_json(&[entry]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
         .await
@@ -2398,7 +2645,7 @@ async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
     assert!(
         result
             .iter()
-            .find(|plugin| plugin.id == "animetosho")
+            .find(|plugin| plugin.id == "example-indexer")
             .unwrap()
             .builtin
     );
@@ -2681,6 +2928,58 @@ async fn install_catalog_not_loaded() {
 }
 
 #[tokio::test]
+async fn catalog_descriptor_load_is_deferred_until_install_validation() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let runtime_plugin = make_runtime_plugin_load("alpha", "indexer", "alpha");
+    let wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, runtime_plugin.descriptor);
+
+    let prepared =
+        prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes.clone());
+
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 0);
+
+    let validated = h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+        .expect("prepared install should validate descriptor during installing phase");
+
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
+    let (installation, runtime_plugin) = validated
+        .into_new_installation("alpha".to_string())
+        .expect("validated install should convert to persisted installation");
+    assert_eq!(installation.plugin_id, "alpha");
+    assert_eq!(installation.provider_type, "alpha");
+    assert_eq!(runtime_plugin.wasm_bytes, wasm_bytes);
+}
+
+#[tokio::test]
+async fn catalog_descriptor_mismatch_fails_before_installation_is_created() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let runtime_plugin = make_runtime_plugin_load("wrong-alpha", "indexer", "alpha");
+    let wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, runtime_plugin.descriptor);
+
+    let prepared = prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes);
+
+    let err = match h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+    {
+        Ok(_) => panic!("descriptor id mismatch should fail during installing phase"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, AppError::Validation(_)));
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
+    assert!(h.plugin_repo.installations.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn install_not_in_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[catalog_entry(
@@ -2709,6 +3008,95 @@ async fn install_builtin_rejected() {
 
     let err = h.app.install_plugin(&admin(), "nzbgeek").await.unwrap_err();
     assert_not_available_from_catalog(err, "nzbgeek");
+}
+
+#[tokio::test]
+async fn nzbgeek_catalog_migration_uses_newest_compatible_catalog_release() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = serde_json::json!({
+        "plugins": [{
+            "id": "nzbgeek",
+            "name": "NZBGeek",
+            "description": "NZBGeek indexer",
+            "plugin_type": "indexer",
+            "provider_type": "nzbgeek",
+            "official": true,
+            "releases": [
+                {
+                    "version": "0.2.10",
+                    "wasm_url": "https://example.com/nzbgeek-0.2.10.wasm"
+                },
+                {
+                    "version": "0.3.0",
+                    "wasm_url": "https://example.com/nzbgeek-0.3.0.wasm"
+                }
+            ]
+        }]
+    })
+    .to_string();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
+
+    let plugins = h.app.list_available_plugins(&admin()).await.unwrap();
+    let nzbgeek = plugins
+        .iter()
+        .find(|plugin| plugin.id == "nzbgeek")
+        .expect("nzbgeek registry entry");
+
+    assert_eq!(nzbgeek.version, "0.3.0");
+    assert!(nzbgeek.official);
+    assert_eq!(nzbgeek.bytes, Some(4));
+}
+
+#[tokio::test]
+async fn nzbgeek_catalog_migration_converts_legacy_builtin_to_downloaded_installation() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut legacy = make_installation("nzbgeek", "0.2.10", true, true);
+    legacy.sdk_version = "1.6.0".to_string();
+    legacy.sdk_constraint = ">=1.6.0, <1.7.0".to_string();
+
+    let mut runtime_plugin = make_runtime_plugin_load("nzbgeek", "indexer", "nzbgeek");
+    runtime_plugin.descriptor.version = "0.3.0".to_string();
+    let runtime_wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&runtime_wasm_bytes, runtime_plugin.descriptor);
+    let mut prepared =
+        prepared_catalog_plugin_install_fixture("nzbgeek", "indexer", "nzbgeek", runtime_wasm_bytes);
+    prepared.release.version = "0.3.0".to_string();
+    let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
+    let validated = h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+        .unwrap();
+
+    let (updated, runtime_plugin) = validated.into_updated_installation(legacy).unwrap();
+    h.plugin_repo
+        .update_plugin_installation(&updated, Some(&persisted_wasm_bytes))
+        .await
+        .unwrap();
+
+    assert_eq!(updated.plugin_id, "nzbgeek");
+    assert_eq!(updated.version, "0.3.0");
+    assert!(!updated.is_builtin);
+    assert!(updated.is_enabled);
+    assert_eq!(updated.source_kind, PluginSourceKind::Downloaded);
+    assert_eq!(updated.support_tier, PluginSupportTier::Official);
+    assert_eq!(updated.sdk_version, scryer_plugin_sdk::SDK_VERSION);
+    assert_eq!(updated.sdk_constraint, scryer_plugin_sdk::current_sdk_constraint());
+    assert_eq!(runtime_plugin.wasm_bytes, vec![1, 2, 3, 4]);
+    assert!(updated.descriptor_json.is_some());
+
+    let payload = h
+        .plugin_repo
+        .get_plugin_installation_wasm_payload("nzbgeek")
+        .await
+        .unwrap()
+        .expect("persisted nzbgeek payload");
+    assert_eq!(payload.bytes, persisted_wasm_bytes);
+    assert_eq!(payload.encoding, PluginWasmEncoding::Zstd);
 }
 
 #[tokio::test]
@@ -3164,6 +3552,17 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────
 
+#[test]
+fn available_subtitle_provider_types_hide_generator_only_plugins() {
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["enhanced-subtitle-sync"]));
+    let h = bootstrap_plugins_with_subtitles(None, Some(subtitle_provider));
+
+    assert!(
+        h.app.available_subtitle_provider_types().is_empty(),
+        "generator-only subtitle plugins should not appear in subtitle provider setup"
+    );
+}
+
 #[tokio::test]
 async fn seed_uses_provider_builtin_inventory() {
     let provider = MockPluginProvider::new()
@@ -3189,6 +3588,29 @@ async fn seed_uses_provider_builtin_inventory() {
     assert!(ids.contains(&"newznab"));
     assert!(ids.contains(&"torznab"));
     assert!(ids.contains(&"jimaku"));
+}
+
+#[tokio::test]
+async fn seed_preserves_legacy_nzbgeek_builtin_for_catalog_migration() {
+    let provider = MockPluginProvider::new()
+        .with_builtin_provider("newznab", "Newznab Indexer", None)
+        .with_builtin_provider("torznab", "Torznab Indexer", None);
+    let h = bootstrap_plugins(Some(provider));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("nzbgeek", "0.2.10", true, true));
+
+    h.app.seed_builtin_plugins().await.unwrap();
+
+    let installations = h.plugin_repo.list_plugin_installations().await.unwrap();
+    let legacy = installations
+        .iter()
+        .find(|installation| installation.plugin_id == "nzbgeek")
+        .expect("legacy nzbgeek builtin should be preserved for catalog migration");
+    assert!(legacy.is_builtin);
+    assert_eq!(legacy.source_kind, PluginSourceKind::Bundled);
 }
 
 #[tokio::test]
@@ -3221,9 +3643,9 @@ async fn rebuild_plugin_provider_seeds_builtin_installations() {
 #[tokio::test]
 async fn reconcile_creates_config_for_default_url_plugin() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
 
@@ -3231,24 +3653,24 @@ async fn reconcile_creates_config_for_default_url_plugin() {
 
     let configs = h.indexer_config_repo.store.lock().await;
     assert_eq!(configs.len(), 1);
-    assert_eq!(configs[0].provider_type, "animetosho");
-    assert_eq!(configs[0].base_url, "https://feed.animetosho.org");
+    assert_eq!(configs[0].provider_type, "example_indexer");
+    assert_eq!(configs[0].base_url, "https://indexer.example");
     assert!(configs[0].is_enabled);
 }
 
 #[tokio::test]
 async fn reconcile_skips_when_config_exists() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
     h.indexer_config_repo
         .store
         .lock()
         .await
-        .push(make_indexer_config("animetosho"));
+        .push(make_indexer_config("example_indexer"));
 
     h.app.reconcile_indexer_configs().await.unwrap();
 
@@ -3259,6 +3681,23 @@ async fn reconcile_skips_when_config_exists() {
 #[tokio::test]
 async fn reconcile_skips_without_default_url() {
     let provider = MockPluginProvider::new().with_provider("newznab", "Newznab", None);
+    let h = bootstrap_plugins(Some(provider));
+
+    h.app.reconcile_indexer_configs().await.unwrap();
+
+    let configs = h.indexer_config_repo.store.lock().await;
+    assert!(configs.is_empty());
+}
+
+#[tokio::test]
+async fn reconcile_skips_when_plugin_requires_user_secret() {
+    let provider = MockPluginProvider::new()
+        .with_provider(
+            "private_indexer",
+            "Private Indexer",
+            Some("https://indexer.example"),
+        )
+        .with_required_secret_field("private_indexer", "api_key");
     let h = bootstrap_plugins(Some(provider));
 
     h.app.reconcile_indexer_configs().await.unwrap();
@@ -3311,4 +3750,35 @@ fn latest_compatible_child_release_keeps_older_sdk_line_visible() {
     let selected = latest_compatible_child_release(&catalog).expect("compatible release");
 
     assert_eq!(selected.version, "0.1.0");
+}
+
+#[tokio::test]
+async fn recover_restored_plugins_skips_local_uploads_and_persists_warning() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut installation = make_installation("local-upload", "0.1.0", false, true);
+    installation.name = "Local Upload".to_string();
+    installation.source_kind = PluginSourceKind::Manual;
+    installation.source_repo = None;
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    h.app
+        .recover_restored_plugins_after_backup_restore()
+        .await
+        .unwrap();
+
+    assert!(h.plugin_repo.installations.lock().await.is_empty());
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_catalog_status(CATALOG_STATUS_KEY)
+        .await
+        .unwrap()
+        .expect("stored plugin catalog status");
+    let payload: serde_json::Value = serde_json::from_str(&stored.status_json).unwrap();
+    assert_eq!(
+        payload["restoreWarnings"],
+        serde_json::json!([
+            "Skipped restoring plugin 'Local Upload' because it was uploaded locally and cannot be re-downloaded from a remote catalog source."
+        ])
+    );
 }

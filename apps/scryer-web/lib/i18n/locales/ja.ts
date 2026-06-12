@@ -1435,7 +1435,7 @@ const ja: LocaleDictionary = {
   "profile.passwordUpdated": "パスワードを変更しました。",
   "profile.externalConnections": "外部接続",
   "profile.externalConnectionsPlaceholder":
-    "Plex、パスキー、その他の外部接続がここに表示される予定です。",
+    "パスキーと外部アカウント接続がここに表示される予定です。",
   "auth.loginTitle": "サインイン",
   "auth.usernamePlaceholder": "ユーザー名",
   "auth.passwordPlaceholder": "パスワード",
@@ -1579,6 +1579,14 @@ const ja: LocaleDictionary = {
   "settings.notificationEvent.postProcessingCompleted": "後処理が完了しました",
   "settings.notificationEvent.subtitleDownloaded": "字幕をダウンロードしました",
   "settings.notificationEvent.subtitleSearchFailed": "字幕検索に失敗しました",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "メディアリクエストが送信されました",
+  "settings.notificationEvent.mediaRequestApproved":
+    "メディアリクエストが承認されました",
+  "settings.notificationEvent.mediaRequestRejected":
+    "メディアリクエストが拒否されました",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "メディアリクエストがキャンセルされました",
   "settings.notificationEvent.healthIssue": "健康問題",
   "settings.notificationEvent.healthRestored": "健康が回復しました",
   "settings.notificationEvent.applicationUpdate":

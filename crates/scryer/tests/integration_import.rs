@@ -3,7 +3,9 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
@@ -48,6 +50,7 @@ fn scryer_completed(
         client_type: "nzbget".to_string(),
         client_id: "test-client".to_string(),
         download_client_item_id: item_id.to_string(),
+        download_id: None,
         name: format!("Test.Download.{item_id}"),
         dest_dir: dest_dir.to_string(),
         category: None,
@@ -78,14 +81,15 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
         slug: None,
         imdb_id: None,
-        runtime_minutes: None,
+        // These integration fixtures use tiny synthetic videos; mark them as
+        // short-form so runtime-sample validation does not preempt unrelated
+        // import-path, rule, dedupe, or symlink assertions.
+        runtime_minutes: Some(1),
         genres: vec![],
         content_status: None,
         language: None,
@@ -105,6 +109,25 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
 }
 
 async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &str) -> Title {
+    add_series_title_with_runtime(ctx, id, name, media_root, Some(24)).await
+}
+
+async fn add_short_form_series_title(
+    ctx: &TestContext,
+    id: &str,
+    name: &str,
+    media_root: &str,
+) -> Title {
+    add_series_title_with_runtime(ctx, id, name, media_root, Some(1)).await
+}
+
+async fn add_series_title_with_runtime(
+    ctx: &TestContext,
+    id: &str,
+    name: &str,
+    media_root: &str,
+    runtime_minutes: Option<i32>,
+) -> Title {
     let title = Title {
         id: id.to_string(),
         name: name.to_string(),
@@ -119,14 +142,12 @@ async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
         slug: None,
         imdb_id: None,
-        runtime_minutes: Some(24),
+        runtime_minutes,
         genres: vec![],
         content_status: None,
         language: None,
@@ -182,6 +203,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 monitor_filler_movies: None,
                 nfo_write_on_import: None,
                 plexmatch_write_on_import: None,
+                import_mode: None,
             },
         )
         .await
@@ -244,6 +266,18 @@ async fn seed_movie_wanted_item(
 }
 
 async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
+    seed_series_episode_with_duration(ctx, title, Some(1440)).await
+}
+
+async fn seed_short_form_series_episode(ctx: &TestContext, title: &Title) -> Episode {
+    seed_series_episode_with_duration(ctx, title, Some(60)).await
+}
+
+async fn seed_series_episode_with_duration(
+    ctx: &TestContext,
+    title: &Title,
+    duration_seconds: Option<i64>,
+) -> Episode {
     let collection = Collection {
         id: Id::new().0,
         title_id: title.id.clone(),
@@ -275,7 +309,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         episode_label: Some("S01E01".to_string()),
         title: Some("Pilot".to_string()),
         air_date: None,
-        duration_seconds: Some(1440),
+        duration_seconds,
         has_multi_audio: false,
         has_subtitle: false,
         is_filler: false,
@@ -283,6 +317,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -397,6 +432,7 @@ async fn seed_series_episode_in_collection(
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -405,6 +441,137 @@ async fn seed_series_episode_in_collection(
         .await
         .expect("create seeded episode");
     episode
+}
+
+#[test]
+fn completed_download_series_import_stack_subprocess_probe() {
+    let exe = std::env::current_exe().expect("resolve current test executable");
+    let mut child = Command::new(exe)
+        .arg("--exact")
+        .arg("completed_download_series_import_stack_subprocess_probe_child")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env("RUST_TEST_THREADS", "1")
+        .env("RUST_BACKTRACE", "1")
+        .env("SCRYER_COMPLETED_IMPORT_STACK_PROBE_CHILD", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn completed import stack probe");
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if child
+            .try_wait()
+            .expect("poll completed import stack probe status")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("collect completed import stack probe output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "completed import stack probe child failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                stderr
+            );
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("collect timed-out completed import stack probe output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "completed import stack probe child timed out after {}s\nstdout:\n{}\nstderr:\n{}",
+                deadline.elapsed().as_secs(),
+                stdout,
+                stderr
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[ignore = "subprocess-only completed import stack probe child"]
+fn completed_download_series_import_stack_subprocess_probe_child() {
+    if std::env::var_os("SCRYER_COMPLETED_IMPORT_STACK_PROBE_CHILD").is_none() {
+        return;
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()
+        .expect("build tokio runtime for completed import stack probe");
+
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            run_completed_download_series_import_stack_probe(),
+        )
+        .await
+        .expect("completed import stack probe should finish within timeout");
+    });
+}
+
+async fn run_completed_download_series_import_stack_probe() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_video = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Bluey.S01E01.720p.WEB-DL.H264.AAC2.0.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_video);
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_short_form_series_title(
+        &ctx,
+        "title-series-completed-import-stack-probe",
+        "Bluey",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode = seed_short_form_series_episode(&ctx, &title).await;
+
+    let completed = scryer_completed(
+        "dl-series-completed-import-stack-probe",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("completed download series import");
+
+    assert_eq!(
+        result.decision,
+        ImportDecision::Imported,
+        "unexpected completed import result: {result:?}"
+    );
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list imported media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +607,7 @@ async fn import_deduplicates_completed_imports() {
         client_type: "nzbget".to_string(),
         client_id: "test-client".to_string(),
         download_client_item_id: "dl-dedup".to_string(),
+        download_id: None,
         name: "Already.Imported.Movie".to_string(),
         dest_dir: "/tmp/wherever".to_string(),
         category: None,
@@ -477,6 +645,7 @@ async fn import_returns_unmatched_when_title_not_found() {
         client_type: "nzbget".to_string(),
         client_id: "test-client".to_string(),
         download_client_item_id: "dl-no-title".to_string(),
+        download_id: None,
         name: "Unknown.Movie.2024".to_string(),
         dest_dir: source_dir.path().to_str().unwrap().to_string(),
         category: None,
@@ -637,16 +806,17 @@ async fn import_movie_rejection_does_not_persist_title_folder_path() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn import_movie_symlink_file_preserves_symlink_and_synthetic_media_traits() {
+async fn import_movie_symlink_file_preserves_symlink_and_media_analysis() {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
-    let backing_video = backing_dir
-        .path()
-        .join("Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv");
-    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+    let backing_video = copy_fixture(
+        backing_dir.path(),
+        "h264_aac.mkv",
+        "Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv",
+    );
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_link = source_dir
@@ -693,11 +863,14 @@ async fn import_movie_symlink_file_preserves_symlink_and_synthetic_media_traits(
         .await
         .expect("list media files");
     assert_eq!(media_files.len(), 1);
-    assert_eq!(media_files[0].video_height, Some(2160));
-    assert_eq!(media_files[0].video_width, Some(3840));
-    assert_eq!(media_files[0].video_codec, None);
-    assert_eq!(media_files[0].audio_codec, None);
-    assert_eq!(media_files[0].audio_channels, None);
+    assert_eq!(media_files[0].video_height, Some(72));
+    assert_eq!(media_files[0].video_width, Some(128));
+    assert_eq!(
+        media_files[0].video_codec.as_ref(),
+        Some(&scryer_application::VideoCodec::H264)
+    );
+    assert_eq!(media_files[0].audio_codec.as_deref(), Some("aac"));
+    assert_eq!(media_files[0].audio_channels, Some(2));
 }
 
 #[cfg(unix)]
@@ -712,8 +885,7 @@ async fn import_movie_decypharr_symlink_release_folder_succeeds() {
     let file_name = format!("{release_name}.mkv");
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
-    let backing_video = backing_dir.path().join(&file_name);
-    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+    let backing_video = copy_fixture(backing_dir.path(), "h264_aac.mkv", &file_name);
 
     let symlink_root = tempfile::tempdir().expect("symlink root tempdir");
     let release_dir = symlink_root.path().join("radarr").join(release_name);
@@ -734,6 +906,7 @@ async fn import_movie_decypharr_symlink_release_folder_succeeds() {
         client_type: "qbittorrent".to_string(),
         client_id: "test-client".to_string(),
         download_client_item_id: "dl-movie-decypharr-1".to_string(),
+        download_id: None,
         name: release_name.to_string(),
         dest_dir: release_dir.to_string_lossy().to_string(),
         category: Some("radarr".to_string()),
@@ -775,8 +948,7 @@ async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping(
     let file_name = format!("{release_name}.mkv");
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
-    let backing_video = backing_dir.path().join(&file_name);
-    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+    let backing_video = copy_fixture(backing_dir.path(), "h264_aac.mkv", &file_name);
 
     let local_symlink_root = tempfile::tempdir().expect("local symlink root tempdir");
     let local_category_root = local_symlink_root.path().join("radarr");
@@ -822,6 +994,7 @@ async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping(
         client_type: "qbittorrent".to_string(),
         client_id: config.id,
         download_client_item_id: "dl-movie-decypharr-2".to_string(),
+        download_id: None,
         name: release_name.to_string(),
         dest_dir: format!("{remote_category_root}/{release_name}"),
         category: Some("radarr".to_string()),
@@ -863,10 +1036,11 @@ async fn import_movie_succeeds_and_copies_file() {
 
     // Source: a temp dir containing a plausible movie .mkv file.
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let mkv = source_dir
-        .path()
-        .join("Test.Movie.2024.1080p.WEB-DL.H264.mkv");
-    std::fs::write(&mkv, b"fake video content").expect("write mkv");
+    copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Test.Movie.2024.1080p.WEB-DL.H264.mkv",
+    );
 
     // Destination: a different temp dir used as the media library root.
     let dest_root = tempfile::tempdir().expect("dest tempdir");
@@ -921,11 +1095,7 @@ async fn import_movie_second_attempt_is_deduped() {
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    std::fs::write(
-        source_dir.path().join("Movie.2024.1080p.mkv"),
-        b"fake video",
-    )
-    .expect("write mkv");
+    copy_fixture(source_dir.path(), "h264_aac.mkv", "Movie.2024.1080p.mkv");
 
     let dest_root = tempfile::tempdir().expect("dest tempdir");
     let title = add_movie_title(
@@ -1087,14 +1257,14 @@ async fn import_series_rejected_by_post_download_rule_resets_episode_wanted_item
     );
     pad_file_past_series_sample_threshold(&source_file);
     let dest_root = tempfile::tempdir().expect("dest tempdir");
-    let title = add_series_title(
+    let title = add_short_form_series_title(
         &ctx,
         "title-series-rule-blocked",
         "Blocked Show",
         dest_root.path().to_str().unwrap(),
     )
     .await;
-    let episode = seed_series_episode(&ctx, &title).await;
+    let episode = seed_short_form_series_episode(&ctx, &title).await;
     let wanted = seed_episode_wanted_item(
         &ctx,
         &title,

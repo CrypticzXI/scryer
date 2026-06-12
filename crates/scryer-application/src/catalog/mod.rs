@@ -5,7 +5,6 @@ pub(crate) mod facets;
 pub(crate) mod helpers;
 pub(crate) mod title_hydration;
 pub(crate) mod title_images;
-#[path = "catalog.rs"]
 pub(crate) mod workflow;
 
 pub(crate) use workflow as catalog;

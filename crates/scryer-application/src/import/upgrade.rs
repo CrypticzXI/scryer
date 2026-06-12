@@ -12,7 +12,10 @@ use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
-use scryer_domain::{DomainEventPayload, MediaFileUpgradedEventData, Title, User};
+use scryer_domain::{
+    DomainEventPayload, ImportMode, ImportSourceCleanupGuard, MediaFileUpgradedEventData, Title,
+    User,
+};
 use std::path::{Path, PathBuf};
 
 /// Result of a successful upgrade operation.
@@ -51,6 +54,7 @@ pub(crate) async fn execute_upgrade(
     target_episode_ids: &[String],
     media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
+    import_mode: ImportMode,
 ) -> AppResult<UpgradeResult> {
     ensure_old_file_disposition_ready(recycle_config)?;
 
@@ -92,6 +96,7 @@ pub(crate) async fn execute_upgrade(
         media_root,
         &scoring_log,
         &source_path_string,
+        import_mode,
     )
     .await?;
 
@@ -105,6 +110,10 @@ pub(crate) async fn execute_upgrade(
         media_root,
     )
     .await?;
+
+    if import_mode == ImportMode::Move {
+        remove_upgrade_import_source_after_verified_commit(app, &replacement).await?;
+    }
 
     append_upgrade_event(
         app,
@@ -130,6 +139,7 @@ struct PreparedUpgradeReplacement {
     import_path: PathBuf,
     final_path_string: String,
     same_final_path: bool,
+    source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 
 fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppResult<()> {
@@ -164,13 +174,14 @@ async fn prepare_replacement_before_old_removal(
     media_root: Option<&str>,
     scoring_log: &str,
     source_path_string: &str,
+    import_mode: ImportMode,
 ) -> AppResult<PreparedUpgradeReplacement> {
     let import_path_string = path_to_stored_string(import_path);
     let file_result = app
         .services
         .workflow
         .file_importer
-        .import_file(source_path, import_path)
+        .import_file(source_path, import_path, import_mode)
         .await
         .map_err(|err| {
             AppError::Repository(format!(
@@ -187,12 +198,12 @@ async fn prepare_replacement_before_old_removal(
             .or_else(|| prepared.parsed.quality.clone()),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.clone(),
+        source_type: crate::release_parser::parsed_release_source_type(&prepared.parsed),
         resolution: stored_quality_label
             .map(str::to_string)
             .or_else(|| prepared.parsed.quality.clone()),
-        video_codec_parsed: prepared.parsed.video_codec.clone(),
-        audio_codec_parsed: prepared.parsed.audio.clone(),
+        video_codec_parsed: prepared.parsed.video_codec,
+        audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(source_path_string.to_string()),
         acquisition_score: Some(final_score),
@@ -249,6 +260,7 @@ async fn prepare_replacement_before_old_removal(
         import_path: import_path.to_path_buf(),
         final_path_string,
         same_final_path,
+        source_cleanup: file_result.source_cleanup,
     })
 }
 
@@ -678,6 +690,24 @@ async fn remove_old_file_after_verified_upgrade(path: &Path) -> AppResult<()> {
         )));
     }
     Ok(())
+}
+
+async fn remove_upgrade_import_source_after_verified_commit(
+    app: &AppUseCase,
+    replacement: &PreparedUpgradeReplacement,
+) -> AppResult<()> {
+    let guard = replacement.source_cleanup.clone().ok_or_else(|| {
+        AppError::Repository(format!(
+            "move upgrade did not return a source cleanup guard for {}",
+            replacement.import_path.display()
+        ))
+    })?;
+    let final_path = stored_path_to_path_buf(&replacement.final_path_string);
+    app.services
+        .workflow
+        .file_importer
+        .remove_import_source_after_verified_import(guard, &final_path)
+        .await
 }
 
 async fn append_upgrade_event(

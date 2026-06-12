@@ -17,6 +17,7 @@ fn admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([
@@ -27,15 +28,15 @@ fn admin() -> User {
     }
 }
 
-/// Create an IndexerClient backed by the built-in nzbgeek WASM plugin,
+/// Create an IndexerClient backed by the built-in Newznab WASM plugin,
 /// configured to talk to the given wiremock URI.
 fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let config = scryer_domain::IndexerConfig {
-        id: "test-nzbgeek".to_string(),
-        name: "Test NZBGeek".to_string(),
-        provider_type: "nzbgeek".to_string(),
+        id: "test-newznab".to_string(),
+        name: "Test Newznab".to_string(),
+        provider_type: "newznab".to_string(),
         base_url: uri.to_string(),
         api_key_encrypted: None,
         is_enabled: true,
@@ -62,7 +63,7 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
     };
     provider
         .client_for_provider(&config)
-        .expect("should create nzbgeek WASM client")
+        .expect("should create newznab WASM client")
 }
 
 fn search_ids(
@@ -515,11 +516,11 @@ async fn nzbgeek_search_single_item_response() {
 async fn nzbgeek_search_no_api_key_fails() {
     let ctx = TestContext::new().await;
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
-        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
     let config = scryer_domain::IndexerConfig {
         id: "test-no-key".to_string(),
         name: "Test No Key".to_string(),
-        provider_type: "nzbgeek".to_string(),
+        provider_type: "newznab".to_string(),
         base_url: ctx.nzbgeek_server.uri(),
         api_key_encrypted: None,
         is_enabled: true,
@@ -706,7 +707,7 @@ async fn nzbgeek_search_empty_query_and_no_ids_fails() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn nzbgeek_search_extracts_metadata_attributes() {
+async fn newznab_search_extracts_standard_metadata_attributes() {
     let ctx = TestContext::new().await;
     Mock::given(method("GET"))
         .and(path("/api"))
@@ -736,8 +737,6 @@ async fn nzbgeek_search_extracts_metadata_attributes() {
         .results;
 
     let result = &results[0];
-    assert_eq!(result.thumbs_up, Some(42), "thumbsup should be parsed");
-    assert_eq!(result.thumbs_down, Some(3), "thumbsdown should be parsed");
     assert_eq!(result.indexer_grabs, Some(128), "grabs should be parsed");
     assert!(
         result.indexer_languages.is_some(),

@@ -7,12 +7,14 @@ use scryer_application::external_import::{
     ExternalArrClient,
 };
 use scryer_application::{
-    AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
-    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
-    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorWarmupPhase,
-    ExternalImportMonitorWarmupProgressSnapshot, ExternalImportMonitorWarmupStatus,
-    IndexerConfigUpdate,
+    AppError, ExternalIdHint, ExternalIdProvider, ExternalImportLibraryPathsSelection,
+    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
+    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
+    ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
+    ExternalImportMonitorWarmupStatus, IndexerConfigUpdate, LibraryScanHint, LibraryScanHintFacet,
+    LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+    library_scan_folder_leaf_key,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use serde::Serialize;
@@ -268,6 +270,17 @@ fn merge_prowlarr_group(
     }
 }
 
+fn detect_imported_prowlarr_proxy_indexer(
+    indexer: &ArrIndexer,
+    linked_prowlarr_base_url: Option<&str>,
+) -> Option<DetectedProwlarrIndexer> {
+    if let Some(linked_prowlarr_base_url) = linked_prowlarr_base_url {
+        external_import::detect_linked_prowlarr_proxy_indexer(indexer, linked_prowlarr_base_url)
+    } else {
+        external_import::detect_prowlarr_proxy_indexer(indexer)
+    }
+}
+
 fn version_from_validation_result(
     result: &scryer_application::IndexerValidationResult,
 ) -> Option<String> {
@@ -365,6 +378,7 @@ impl ExternalImportMutations {
         let mut idx_key_idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
+        let linked_prowlarr_base_url = input.prowlarr.as_ref().map(|conn| conn.base_url.as_str());
 
         if let Some(conn) = &input.prowlarr {
             let config_json = prowlarr_parent_config_json(&conn.base_url, &conn.api_key);
@@ -442,9 +456,10 @@ impl ExternalImportMutations {
                             if external_import::should_skip_imported_indexer(&idx) {
                                 continue;
                             }
-                            if let Some(detected) =
-                                external_import::detect_prowlarr_proxy_indexer(&idx)
-                            {
+                            if let Some(detected) = detect_imported_prowlarr_proxy_indexer(
+                                &idx,
+                                linked_prowlarr_base_url,
+                            ) {
                                 merge_prowlarr_group(&mut prowlarr_groups, detected, source);
                                 continue;
                             }
@@ -599,6 +614,11 @@ impl ExternalImportMutations {
             .into_iter()
             .map(|o| (o.dedup_key, o.api_key))
             .collect();
+        let dc_password_overrides: HashMap<String, String> = input
+            .download_client_password_overrides
+            .into_iter()
+            .map(|o| (o.dedup_key, o.password))
+            .collect();
         let idx_api_key_overrides: HashMap<String, String> = input
             .indexer_api_key_overrides
             .into_iter()
@@ -637,6 +657,7 @@ impl ExternalImportMutations {
         let mut seen_dc_keys: HashSet<String> = HashSet::new();
         let mut seen_idx_keys: HashSet<String> = HashSet::new();
         let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
+        let linked_prowlarr_base_url = input.prowlarr.as_ref().map(|conn| conn.base_url.as_str());
 
         if let Some(conn) = &input.prowlarr {
             let dedup_key = prowlarr_dedup_key(&conn.base_url);
@@ -677,7 +698,13 @@ impl ExternalImportMutations {
 
             if let Ok(indexers) = client.list_indexers().await {
                 for idx in indexers {
-                    if let Some(detected) = external_import::detect_prowlarr_proxy_indexer(&idx) {
+                    if external_import::should_skip_imported_indexer(&idx) {
+                        continue;
+                    }
+
+                    if let Some(detected) =
+                        detect_imported_prowlarr_proxy_indexer(&idx, linked_prowlarr_base_url)
+                    {
                         let dedup_key = prowlarr_dedup_key(&detected.base_url);
                         if selected_idx_keys.contains(&dedup_key) {
                             merge_prowlarr_group(&mut prowlarr_groups, detected, source);
@@ -730,10 +757,15 @@ impl ExternalImportMutations {
                     config_obj.insert("api_key".into(), serde_json::Value::String(api_key));
                 }
             } else {
+                let dedup_key = format!("{}:{}:{}", scryer_type, host, port);
                 if let Some(username) = external_import::field_str(&dc.fields, "username") {
                     config_obj.insert("username".into(), serde_json::Value::String(username));
                 }
-                if let Some(password) = external_import::field_str(&dc.fields, "password") {
+                let password = dc_password_overrides
+                    .get(&dedup_key)
+                    .cloned()
+                    .or_else(|| external_import::field_str_sensitive(&dc.fields, "password"));
+                if let Some(password) = password {
                     config_obj.insert("password".into(), serde_json::Value::String(password));
                 }
             }
@@ -825,41 +857,35 @@ impl ExternalImportMutations {
                 )
             });
 
-            let parent_id = if let Some(existing_config) = existing_parent {
-                if existing_config.config_json.as_deref() == Some(config_json.as_str())
-                    && existing_config.is_enabled
+            if let Some(existing_config) = existing_parent {
+                match app
+                    .update_indexer_config(
+                        &actor,
+                        IndexerConfigUpdate {
+                            id: existing_config.id.clone(),
+                            name: None,
+                            provider_type: None,
+                            derived_base_url: None,
+                            rate_limit_seconds: None,
+                            rate_limit_burst: None,
+                            is_enabled: Some(true),
+                            enable_interactive_search: None,
+                            enable_auto_search: None,
+                            managed_parent_config_id: None,
+                            managed_child_key: None,
+                            managed_metadata_json: None,
+                            caps_snapshot_json: None,
+                            config_json: Some(config_json.clone()),
+                        },
+                    )
+                    .await
                 {
-                    existing_config.id
-                } else {
-                    match app
-                        .update_indexer_config(
-                            &actor,
-                            IndexerConfigUpdate {
-                                id: existing_config.id.clone(),
-                                name: None,
-                                provider_type: None,
-                                derived_base_url: None,
-                                rate_limit_seconds: None,
-                                rate_limit_burst: None,
-                                is_enabled: Some(true),
-                                enable_interactive_search: None,
-                                enable_auto_search: None,
-                                managed_parent_config_id: None,
-                                managed_child_key: None,
-                                managed_metadata_json: None,
-                                caps_snapshot_json: None,
-                                config_json: Some(config_json.clone()),
-                            },
-                        )
-                        .await
-                    {
-                        Ok(updated) => updated.id,
-                        Err(err) => {
-                            result
-                                .errors
-                                .push(format!("failed to update Prowlarr config '{name}': {err}"));
-                            continue;
-                        }
+                    Ok(_) => {}
+                    Err(err) => {
+                        result
+                            .errors
+                            .push(format!("failed to update Prowlarr config '{name}': {err}"));
+                        continue;
                     }
                 }
             } else {
@@ -879,9 +905,8 @@ impl ExternalImportMutations {
                     )
                     .await
                 {
-                    Ok(config) => {
+                    Ok(_config) => {
                         result.indexers_created += 1;
-                        config.id
                     }
                     Err(err) => {
                         result
@@ -890,12 +915,6 @@ impl ExternalImportMutations {
                         continue;
                     }
                 }
-            };
-
-            if let Err(err) = app.sync_indexer_config(&actor, &parent_id).await {
-                result.errors.push(format!(
-                    "failed to sync Prowlarr indexers for '{name}': {err}"
-                ));
             }
         }
 
@@ -1033,10 +1052,72 @@ impl ExternalImportMutations {
     }
 }
 
-fn movie_monitor_entry_from_arr(movie: ArrMovie) -> ExternalImportMonitorMovieEntry {
+fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
+    let path_key = library_scan_file_leaf_key(movie.file_path.as_deref()?)?;
+    let mut ids = Vec::new();
+    if let Some(tmdb_id) = movie
+        .tmdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tmdb, value))
+    {
+        ids.push(tmdb_id);
+    }
+    if let Some(imdb_id) = movie
+        .imdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Imdb, value))
+    {
+        ids.push(imdb_id);
+    }
+
+    (!ids.is_empty()).then_some(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportRadarr,
+        facet: LibraryScanHintFacet::Movie,
+        path_key,
+        ids,
+    })
+}
+
+fn series_folder_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
+    let path_key = library_scan_folder_leaf_key(series.path.as_deref()?)?;
+    let ids = series
+        .tvdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tvdb, value))
+        .map(|id| vec![id])?;
+
+    Some(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportSonarr,
+        facet: LibraryScanHintFacet::Series,
+        path_key,
+        ids,
+    })
+}
+
+fn series_episode_scan_hint_from_arr(
+    series: &ArrSeries,
+    episode: &ArrEpisode,
+) -> Option<LibraryScanHint> {
+    let path_key = library_scan_file_leaf_key(episode.file_path.as_deref()?)?;
+    let ids = series
+        .tvdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tvdb, value))
+        .map(|id| vec![id])?;
+
+    Some(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportSonarr,
+        facet: LibraryScanHintFacet::Series,
+        path_key,
+        ids,
+    })
+}
+
+fn movie_monitor_entry_from_arr(movie: &ArrMovie) -> ExternalImportMonitorMovieEntry {
     ExternalImportMonitorMovieEntry {
-        tmdb_id: movie.tmdb_id,
-        imdb_id: movie.imdb_id,
+        tmdb_id: movie.tmdb_id.clone(),
+        imdb_id: movie.imdb_id.clone(),
+        path: movie.path.clone(),
         monitored: movie.monitored,
     }
 }
@@ -1054,6 +1135,7 @@ fn series_monitor_entry_from_arr(
 
     ExternalImportMonitorSeriesEntry {
         tvdb_id: series.tvdb_id,
+        path: series.path,
         monitored: title_monitored,
         seasons: series
             .seasons
@@ -1183,6 +1265,7 @@ async fn capture_external_import_monitor_warmup(
 ) -> scryer_application::AppResult<()> {
     clear_external_import_monitor_apply_targets(app, actor).await?;
 
+    let mut scan_hints = LibraryScanHintSet::new();
     let mut movie_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
@@ -1230,8 +1313,11 @@ async fn capture_external_import_monitor_warmup(
                 return Ok(());
             }
 
+            if let Some(hint) = movie_scan_hint_from_arr(&movie) {
+                scan_hints.push(hint);
+            }
             movie_writer
-                .push(&movie_monitor_entry_from_arr(movie))
+                .push(&movie_monitor_entry_from_arr(&movie))
                 .await?;
             snapshot.movies_progress.completed =
                 snapshot.movies_progress.completed.saturating_add(1);
@@ -1300,7 +1386,10 @@ async fn capture_external_import_monitor_warmup(
                                    series: ArrSeries| {
             let client = client.clone();
             join_set.spawn(async move {
-                let result = client.list_episodes_for_series(series.id).await;
+                let series_path = series.path.clone();
+                let result = client
+                    .list_episodes_for_series(series.id, series_path.as_deref())
+                    .await;
                 (series, result)
             });
         };
@@ -1322,6 +1411,14 @@ async fn capture_external_import_monitor_warmup(
             })?;
             let episodes = episodes_result?;
             let episode_count = i32::try_from(episodes.len()).unwrap_or(i32::MAX);
+            if let Some(hint) = series_folder_scan_hint_from_arr(&series) {
+                scan_hints.push(hint);
+            }
+            for episode in &episodes {
+                if let Some(hint) = series_episode_scan_hint_from_arr(&series, episode) {
+                    scan_hints.push(hint);
+                }
+            }
             let entry = series_monitor_entry_from_arr(series, episodes);
             series_writer.push(&entry).await?;
             anime_writer.push(&entry).await?;
@@ -1354,6 +1451,8 @@ async fn capture_external_import_monitor_warmup(
     movie_writer.finish().await?;
     series_writer.finish().await?;
     anime_writer.finish().await?;
+    app.set_external_import_monitor_warmup_scan_hints(session_id, scan_hints)
+        .await;
     snapshot.snapshot_build_progress.completed = snapshot.snapshot_build_progress.total;
 
     Ok(())
@@ -1499,6 +1598,7 @@ fn map_download_client(
     // Use field_str_sensitive so that Sonarr/Radarr's "********" mask becomes
     // None — callers can then detect that the key must be entered manually.
     let api_key = external_import::field_str_sensitive(&dc.fields, "apiKey");
+    let password = external_import::field_str_sensitive(&dc.fields, "password");
 
     let dedup_key = format!(
         "{}:{}:{}",
@@ -1520,6 +1620,8 @@ fn map_download_client(
         api_key,
         dedup_key,
         supported: scryer_type.is_some(),
+        requires_password_override: password.is_none()
+            && scryer_type.is_some_and(|client_type| client_type == "nzbget"),
     }
 }
 
@@ -1554,14 +1656,158 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 mod tests {
     use std::collections::HashMap;
 
-    use scryer_application::external_import::{ArrDownloadClient, ArrIndexer};
+    use scryer_application::external_import::{
+        ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
+    };
+    use scryer_application::{
+        ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource,
+        library_scan_file_leaf_key, library_scan_folder_leaf_key,
+    };
     use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
     use serde_json::Value;
 
     use super::{
-        imported_indexer_config_json, map_download_client, map_indexer,
-        merge_direct_prowlarr_group, merge_prowlarr_group, prowlarr_dedup_key,
+        detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
+        map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
+        prowlarr_dedup_key, series_episode_scan_hint_from_arr, series_folder_scan_hint_from_arr,
     };
+
+    #[test]
+    fn radarr_warmup_builds_movie_hint_with_tmdb_and_imdb() {
+        let path = "/Movies/The Bourne Supremacy (2004)";
+        let file_path = "/Movies/The Bourne Supremacy (2004)/The Bourne Supremacy.mkv";
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some(path.into()),
+            file_path: Some(file_path.into()),
+            tmdb_id: Some("2502".into()),
+            imdb_id: Some("tt0372183".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert_eq!(hint.source, LibraryScanHintSource::ExternalImportRadarr);
+        assert_eq!(hint.facet, LibraryScanHintFacet::Movie);
+        assert_eq!(
+            hint.path_key,
+            library_scan_file_leaf_key(file_path).unwrap()
+        );
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "2502" })
+        );
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Imdb && id.value == "tt0372183" })
+        );
+    }
+
+    #[test]
+    fn radarr_warmup_omits_numeric_only_imdb_hint() {
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some("/Movies/Children of Men (2006)".into()),
+            file_path: Some("/Movies/Children of Men (2006)/Children of Men.mkv".into()),
+            tmdb_id: Some("9693".into()),
+            imdb_id: Some("9693".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "9693" })
+        );
+        assert!(
+            !hint
+                .ids
+                .iter()
+                .any(|id| id.provider == ExternalIdProvider::Imdb)
+        );
+    }
+
+    #[test]
+    fn radarr_warmup_omits_malformed_imdb_hint() {
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some("/Movies/Children of Men (2006)".into()),
+            file_path: Some("/Movies/Children of Men (2006)/Children of Men.mkv".into()),
+            tmdb_id: Some("9693".into()),
+            imdb_id: Some("tt0206634-extra".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "9693" })
+        );
+        assert!(
+            !hint
+                .ids
+                .iter()
+                .any(|id| id.provider == ExternalIdProvider::Imdb)
+        );
+    }
+
+    #[test]
+    fn sonarr_warmup_builds_series_hint_with_tvdb() {
+        let path = "/Series/Foundation (2021)";
+        let series = ArrSeries {
+            id: 1,
+            root_folder_path: "/Series".into(),
+            path: Some(path.into()),
+            tvdb_id: Some("366972".into()),
+            monitored: true,
+            seasons: Vec::new(),
+            statistics: ArrSeriesStatistics {
+                total_episode_count: None,
+                monitored_episode_count: None,
+            },
+        };
+        let hint = series_folder_scan_hint_from_arr(&series).expect("series hint");
+
+        assert_eq!(hint.source, LibraryScanHintSource::ExternalImportSonarr);
+        assert_eq!(hint.facet, LibraryScanHintFacet::Series);
+        assert_eq!(hint.path_key, library_scan_folder_leaf_key(path).unwrap());
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
+        );
+
+        let episode_path = "/Series/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let episode_hint = series_episode_scan_hint_from_arr(
+            &series,
+            &ArrEpisode {
+                id: 1,
+                series_id: 1,
+                tvdb_id: Some("777001".into()),
+                season_number: 1,
+                episode_number: 1,
+                file_path: Some(episode_path.into()),
+                monitored: true,
+            },
+        )
+        .expect("episode hint");
+        assert_eq!(
+            episode_hint.path_key,
+            library_scan_file_leaf_key(episode_path).unwrap()
+        );
+        assert!(
+            episode_hint
+                .ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
+        );
+    }
 
     #[test]
     fn map_download_client_marks_qbittorrent_as_supported() {
@@ -1584,23 +1830,43 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_marks_sonarr_animetosho_as_unsupported() {
+    fn map_indexer_marks_sonarr_torznab_as_supported() {
         let payload = map_indexer(
             &ArrIndexer {
                 id: 1,
-                name: "AnimeTosho".into(),
+                name: "Torrent Indexer".into(),
                 implementation: "Torznab".into(),
                 fields: HashMap::from([(
                     "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
+                    Value::String("https://torznab.example".into()),
                 )]),
             },
             "sonarr",
         );
 
-        assert!(!payload.supported);
-        assert_eq!(payload.scryer_provider_type, None);
-        assert_eq!(payload.dedup_key, "unsupported:https://feed.animetosho.org");
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_provider_type.as_deref(), Some("torznab"));
+        assert_eq!(payload.dedup_key, "torznab:https://torznab.example");
+    }
+
+    #[test]
+    fn map_indexer_marks_sonarr_newznab_preset_as_generic_newznab() {
+        let payload = map_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "NZBGeek".into(),
+                implementation: "Newznab".into(),
+                fields: HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://api.nzbgeek.info".into()),
+                )]),
+            },
+            "sonarr",
+        );
+
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_provider_type.as_deref(), Some("newznab"));
+        assert_eq!(payload.dedup_key, "newznab:https://api.nzbgeek.info");
     }
 
     #[test]
@@ -1701,5 +1967,46 @@ mod tests {
                 "Indexer C".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn linked_prowlarr_proxy_detection_accepts_torznab_without_api_path() {
+        let detected = detect_imported_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("http://prowlarr.local/12345".into()),
+                )]),
+            },
+            Some("http://prowlarr.local"),
+        )
+        .expect("linked prowlarr proxy");
+
+        assert_eq!(detected.base_url, "http://prowlarr.local");
+        assert_eq!(detected.child_name, "Torrent Child");
+    }
+
+    #[test]
+    fn direct_linked_prowlarr_detection_does_not_match_other_parents() {
+        let detected = detect_imported_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([
+                    (
+                        "baseUrl".into(),
+                        Value::String("http://other-prowlarr.local/12345".into()),
+                    ),
+                    ("apiPath".into(), Value::String("/api".into())),
+                ]),
+            },
+            Some("http://prowlarr.local"),
+        );
+
+        assert!(detected.is_none());
     }
 }

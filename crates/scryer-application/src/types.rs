@@ -22,7 +22,6 @@ pub struct TitleMetadataUpdate {
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub sort_title: Option<String>,
     pub slug: Option<String>,
@@ -140,6 +139,8 @@ pub struct PendingTitleHydration {
 pub struct ExternalImportMonitorMovieEntry {
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub monitored: bool,
 }
 
@@ -160,6 +161,8 @@ pub struct ExternalImportMonitorEpisodeEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSeriesEntry {
     pub tvdb_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub monitored: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seasons: Vec<ExternalImportMonitorSeasonEntry>,
@@ -200,6 +203,184 @@ pub struct ExternalImportMonitorSnapshotChunk {
     pub created_at: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LibraryScanHintSource {
+    ExternalImportRadarr,
+    ExternalImportSonarr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LibraryScanHintFacet {
+    Movie,
+    Series,
+}
+
+impl LibraryScanHintFacet {
+    pub const fn from_media_facet(facet: scryer_domain::MediaFacet) -> Option<Self> {
+        match facet {
+            scryer_domain::MediaFacet::Movie => Some(Self::Movie),
+            scryer_domain::MediaFacet::Series => Some(Self::Series),
+            scryer_domain::MediaFacet::Anime => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalIdProvider {
+    Imdb,
+    Tmdb,
+    Tvdb,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalIdHint {
+    pub provider: ExternalIdProvider,
+    pub value: String,
+}
+
+impl ExternalIdHint {
+    pub fn normalized(provider: ExternalIdProvider, raw: &str) -> Option<Self> {
+        let value = match provider {
+            ExternalIdProvider::Imdb => normalize_strict_imdb_id(raw)?,
+            ExternalIdProvider::Tmdb | ExternalIdProvider::Tvdb => {
+                normalize_numeric_external_id(raw)?
+            }
+        };
+        Some(Self { provider, value })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryScanHint {
+    pub source: LibraryScanHintSource,
+    pub facet: LibraryScanHintFacet,
+    pub path_key: String,
+    pub ids: Vec<ExternalIdHint>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LibraryScanHintSet {
+    hints: Vec<LibraryScanHint>,
+}
+
+impl LibraryScanHintSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, hint: LibraryScanHint) {
+        if hint.ids.is_empty() || hint.path_key.trim().is_empty() {
+            return;
+        }
+        if let Some(existing) = self.hints.iter_mut().find(|existing| {
+            existing.facet == hint.facet
+                && stored_path_keys_match(&existing.path_key, &hint.path_key)
+        }) {
+            if existing.ids.is_empty() || !external_ids_overlap(&existing.ids, &hint.ids) {
+                existing.ids.clear();
+                return;
+            }
+            for id in hint.ids {
+                if !existing.ids.iter().any(|existing_id| existing_id == &id) {
+                    existing.ids.push(id);
+                }
+            }
+            return;
+        }
+        self.hints.push(hint);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hints.is_empty()
+    }
+
+    pub fn hint_for_external_ids(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_ids: &[ExternalIdHint],
+    ) -> Option<&LibraryScanHint> {
+        if candidate_ids.is_empty() {
+            return None;
+        }
+        self.hints
+            .iter()
+            .find(|hint| hint.facet == facet && external_ids_overlap(&hint.ids, candidate_ids))
+    }
+
+    pub fn hint_for_stored_path(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_path_key: &str,
+    ) -> Option<&LibraryScanHint> {
+        self.hints.iter().find(|hint| {
+            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
+        })
+    }
+}
+
+fn stored_path_keys_match(left: &str, right: &str) -> bool {
+    let left = normalize_stored_path_key(left);
+    let right = normalize_stored_path_key(right);
+    !left.is_empty() && left == right
+}
+
+fn normalize_stored_path_key(value: &str) -> String {
+    value.trim().trim_end_matches(['/', '\\']).to_lowercase()
+}
+
+pub fn library_scan_file_leaf_key(path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    let file = components.last()?;
+    let parent = components.iter().rev().nth(1)?;
+    Some(format!(
+        "file:{}/{}",
+        normalize_leaf_path_component(parent),
+        normalize_leaf_path_component(file)
+    ))
+}
+
+pub fn library_scan_folder_leaf_key(path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    let folder = components.last()?;
+    Some(format!("folder:{}", normalize_leaf_path_component(folder)))
+}
+
+fn leaf_path_components(path: &str) -> Vec<&str> {
+    path.trim()
+        .trim_end_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .collect()
+}
+
+fn normalize_leaf_path_component(component: &str) -> String {
+    component.trim().to_lowercase()
+}
+
+fn external_ids_overlap(left: &[ExternalIdHint], right: &[ExternalIdHint]) -> bool {
+    left.iter().any(|left_id| {
+        right.iter().any(|right_id| {
+            left_id.provider == right_id.provider && left_id.value == right_id.value
+        })
+    })
+}
+
+fn normalize_strict_imdb_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let lower = value.to_ascii_lowercase();
+    let digits = lower.strip_prefix("tt")?;
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("tt{digits}"))
+}
+
+fn normalize_numeric_external_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())).then(|| value.to_string())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadQueueCommandRecord {
     pub id: String,
@@ -221,7 +402,6 @@ pub struct DownloadQueueCommandRecord {
 #[serde(rename_all = "snake_case")]
 pub enum TitleImageKind {
     Poster,
-    Banner,
     Fanart,
 }
 
@@ -229,7 +409,6 @@ impl TitleImageKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Poster => "poster",
-            Self::Banner => "banner",
             Self::Fanart => "fanart",
         }
     }
@@ -237,32 +416,7 @@ impl TitleImageKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "poster" => Some(Self::Poster),
-            "banner" => Some(Self::Banner),
             "fanart" => Some(Self::Fanart),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TitleImageStorageMode {
-    Original,
-    AvifMaster,
-}
-
-impl TitleImageStorageMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Original => "original",
-            Self::AvifMaster => "avif_master",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "original" => Some(Self::Original),
-            "avif_master" => Some(Self::AvifMaster),
             _ => None,
         }
     }
@@ -275,11 +429,17 @@ pub struct TitleImageVariantRecord {
     pub width: i32,
     pub height: i32,
     pub bytes: Vec<u8>,
-    pub sha256: String,
+    pub digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleImageVariantSpec {
+    pub variant_key: String,
+    pub width: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct TitleImageReplacement {
+pub struct TitleImageSourceResult {
     pub kind: TitleImageKind,
     pub source_url: String,
     pub source_etag: Option<String>,
@@ -287,20 +447,15 @@ pub struct TitleImageReplacement {
     pub source_format: String,
     pub source_width: i32,
     pub source_height: i32,
-    pub storage_mode: TitleImageStorageMode,
-    pub master_format: String,
-    pub master_sha256: String,
-    pub master_width: i32,
-    pub master_height: i32,
-    pub master_bytes: Vec<u8>,
     pub variants: Vec<TitleImageVariantRecord>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TitleImageSyncTask {
     pub title_id: String,
+    pub kind: TitleImageKind,
     pub source_url: String,
-    pub cached_source_url: Option<String>,
+    pub variants: Vec<TitleImageVariantSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -462,6 +617,13 @@ pub struct FixTitleMatchResult {
 
 #[derive(Clone, Debug, Default)]
 pub struct PendingImportCounts {
+    pub movie: i64,
+    pub series: i64,
+    pub anime: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MediaRequestCounts {
     pub movie: i64,
     pub series: i64,
     pub anime: i64,
@@ -827,6 +989,7 @@ pub struct DownloadGrabResult {
     pub job_id: String,
     pub client_id: Option<String>,
     pub client_type: String,
+    pub info_hash: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1060,6 +1223,155 @@ pub struct JwtAuthConfig {
     pub jwt_signing_salt: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebauthnChallengeType {
+    Registration,
+    Authentication,
+}
+
+impl WebauthnChallengeType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Registration => "registration",
+            Self::Authentication => "authentication",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "registration" => Some(Self::Registration),
+            "authentication" => Some(Self::Authentication),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnCredentialRecord {
+    pub id: String,
+    pub user_id: String,
+    pub credential_id: String,
+    pub credential_json: String,
+    pub friendly_name: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnChallengeRecord {
+    pub id: String,
+    pub user_id: Option<String>,
+    pub challenge_type: WebauthnChallengeType,
+    pub state_json: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnChallengeStart {
+    pub challenge_id: String,
+    pub options_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeySummary {
+    pub id: String,
+    pub friendly_name: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpCredentialRecord {
+    pub id: String,
+    pub user_id: String,
+    pub secret_base32: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period_seconds: i32,
+    pub last_accepted_step: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentChallengeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub secret_base32: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period_seconds: i32,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpRecoveryCodeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub code_hash: String,
+    pub created_at: String,
+    pub used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpFailedAttemptRecord {
+    pub id: String,
+    pub user_id: String,
+    pub attempted_at: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserAuthFactorStatus {
+    pub has_mfa: bool,
+    pub has_passkey: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpStatus {
+    pub enabled: bool,
+    pub created_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub recovery_codes_remaining: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentStart {
+    pub challenge_id: String,
+    pub otpauth_url: String,
+    pub secret_base32: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentComplete {
+    pub status: TotpStatus,
+    pub recovery_codes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginFailureTimingClass {
+    PasswordBackedLocal,
+    FastMasked,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JwtSessionScope {
+    #[default]
+    Full,
+    MfaEnrollment,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuthenticatedTokenClaims {
+    pub mfa_verified_until: Option<i64>,
+    pub mfa_step_up_verified_until: Option<i64>,
+    pub session_scope: JwtSessionScope,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
     pub sub: String,
@@ -1072,6 +1384,12 @@ pub(crate) struct JwtClaims {
     pub app_permissions: Vec<String>,
     #[serde(default, rename = "libraryPermissions")]
     pub library_permissions: Vec<JwtLibraryPermissionClaim>,
+    #[serde(default, rename = "mfaVerifiedUntil")]
+    pub mfa_verified_until: Option<i64>,
+    #[serde(default, rename = "mfaStepUpVerifiedUntil")]
+    pub mfa_step_up_verified_until: Option<i64>,
+    #[serde(default, rename = "authScope")]
+    pub auth_scope: JwtSessionScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1298,4 +1616,61 @@ pub struct HousekeepingReport {
     pub staged_nzb_artifacts_pruned: u32,
     pub recycled_purged: u32,
     pub ran_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ExternalIdHint, ExternalIdProvider, LibraryScanHint, LibraryScanHintFacet,
+        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
+        library_scan_folder_leaf_key,
+    };
+
+    #[test]
+    fn library_scan_leaf_keys_ignore_root_and_separator_style() {
+        let unix = library_scan_file_leaf_key(
+            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
+        );
+        let windows = library_scan_file_leaf_key(
+            r"D:\Series\Foundation (2021)\Season 01\Foundation.S01E01.mkv",
+        );
+        assert_eq!(unix, windows);
+
+        assert_eq!(
+            library_scan_folder_leaf_key("/mnt/media/Foundation (2021)"),
+            library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
+        );
+    }
+
+    #[test]
+    fn library_scan_hint_set_marks_conflicting_leaf_key_ambiguous() {
+        let path_key = library_scan_file_leaf_key(
+            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
+        )
+        .expect("leaf key");
+        let mut hints = LibraryScanHintSet::new();
+        hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: path_key.clone(),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "366972".to_string(),
+            }],
+        });
+        hints.push(LibraryScanHint {
+            source: LibraryScanHintSource::ExternalImportSonarr,
+            facet: LibraryScanHintFacet::Series,
+            path_key: path_key.clone(),
+            ids: vec![ExternalIdHint {
+                provider: ExternalIdProvider::Tvdb,
+                value: "999999".to_string(),
+            }],
+        });
+
+        let hint = hints
+            .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
+            .expect("ambiguous hint remains addressable");
+        assert!(hint.ids.is_empty());
+    }
 }

@@ -87,8 +87,6 @@ async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) 
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,

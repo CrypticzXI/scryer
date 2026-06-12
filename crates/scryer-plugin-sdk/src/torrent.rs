@@ -38,6 +38,8 @@ pub fn choose_source_kind(
             DownloadInputKind::TorrentBytes,
             DownloadInputKind::TorrentUrl,
             DownloadInputKind::TorrentFile,
+            DownloadInputKind::Nzb,
+            DownloadInputKind::NzbUrl,
         ]);
     }
 
@@ -110,28 +112,34 @@ pub fn set_completed_output(
     item.content_paths = content_paths;
 }
 
+fn has_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
 fn source_kind_available(kind: DownloadInputKind, source: &PluginDownloadSource) -> bool {
     match kind {
-        DownloadInputKind::TorrentBytes | DownloadInputKind::TorrentFile => {
+        DownloadInputKind::TorrentBytes => has_value(source.torrent_bytes_base64.as_deref()),
+        DownloadInputKind::TorrentFile => {
+            has_value(source.torrent_bytes_base64.as_deref())
+                || (source.kind == DownloadInputKind::TorrentFile
+                    && has_value(source.download_url.as_deref()))
+        }
+        DownloadInputKind::TorrentUrl => {
             source
-                .torrent_bytes_base64
+                .torrent_url
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
-                || source
-                    .download_url
-                    .as_deref()
-                    .is_some_and(|value| !value.trim().is_empty())
+                || (source.kind == DownloadInputKind::TorrentUrl
+                    && has_value(source.download_url.as_deref()))
         }
-        DownloadInputKind::TorrentUrl => source
-            .torrent_url
-            .as_deref()
-            .or(source.download_url.as_deref())
-            .is_some_and(|value| !value.trim().is_empty()),
         DownloadInputKind::MagnetUri => source
             .magnet_uri
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty()),
-        DownloadInputKind::Nzb | DownloadInputKind::NzbUrl => false,
+        DownloadInputKind::Nzb => has_value(source.nzb_bytes_base64.as_deref()),
+        DownloadInputKind::NzbUrl => {
+            source.kind == DownloadInputKind::NzbUrl && has_value(source.download_url.as_deref())
+        }
     }
 }
 
@@ -144,6 +152,10 @@ fn fallback_source_kind(source: &PluginDownloadSource) -> Option<DownloadInputKi
         Some(DownloadInputKind::TorrentUrl)
     } else if source_kind_available(DownloadInputKind::TorrentFile, source) {
         Some(DownloadInputKind::TorrentFile)
+    } else if source_kind_available(DownloadInputKind::Nzb, source) {
+        Some(DownloadInputKind::Nzb)
+    } else if source_kind_available(DownloadInputKind::NzbUrl, source) {
+        Some(DownloadInputKind::NzbUrl)
     } else {
         None
     }

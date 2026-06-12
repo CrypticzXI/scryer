@@ -1,6 +1,6 @@
 [package]
 name = "scryer"
-version = "0.15.9"
+version = "0.16.0"
 edition.workspace = true
 
 [dependencies]
@@ -10,6 +10,7 @@ scryer-interface = { path = "../scryer-interface" }
 scryer-infrastructure = { path = "../scryer-infrastructure" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugins = { path = "../scryer-plugins" }
+scryer-runtime-info = { path = "../scryer-runtime-info" }
 async-graphql = { workspace = true }
 async-graphql-axum = { version = "7.0" }
 axum = { version = "0.8", features = ["macros", "http1", "http2", "json", "multipart", "ws"] }
@@ -36,6 +37,8 @@ metrics-exporter-prometheus = "0.18"
 directories = "6"
 open = "5"
 governor = { workspace = true }
+webauthn-rs = { workspace = true }
+url = "2"
 
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }
@@ -44,3 +47,6 @@ chrono = { workspace = true }
 wiremock = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
 tempfile = "3"
+
+[build-dependencies]
+scryer-runtime-info = { path = "../scryer-runtime-info" }

@@ -34,6 +34,7 @@ import type {
   NotificationProviderType,
   NotificationSubscriptionDraft,
   NotificationSubscriptionRow,
+  NotificationTarget,
   TitleRecord,
 } from "@/lib/types";
 import type { Facet } from "@/lib/types/titles";
@@ -62,6 +63,7 @@ type SettingsNotificationsSectionProps = {
   channelEditorMode: "create" | "edit";
   startCreateChannel: () => void;
   providerTypes: NotificationProviderType[];
+  notificationTargets: NotificationTarget[];
   subscriptions: NotificationSubscriptionRow[];
   subscriptionTitlesById: Record<string, TitleRecord | null>;
   editingSubscriptionId: string | null;
@@ -76,11 +78,16 @@ type SettingsNotificationsSectionProps = {
   eventTypes: string[];
   isSubscriptionEditorOpen: boolean;
   subscriptionEditorMode: "create" | "edit";
-  startCreateSubscription: () => void;
+  startCreateSubscription: (target?: Pick<NotificationTarget, "targetKind" | "id">) => void;
 };
 
 const SCOPE_OPTIONS = ["global", "facet", "title"] as const;
 const FACET_SCOPE_OPTIONS: Facet[] = ["movie", "series", "anime"];
+const MEDIA_SERVER_PROVIDER_TYPES = new Set(["jellyfin", "plex", "emby"]);
+
+function isMediaServerProviderType(providerType: string): boolean {
+  return MEDIA_SERVER_PROVIDER_TYPES.has(providerType.trim().toLowerCase());
+}
 
 function NotificationActionButton({
   label,
@@ -125,6 +132,10 @@ const NOTIFICATION_EVENT_LABEL_KEYS: Record<string, string> = {
   post_processing_completed: "settings.notificationEvent.postProcessingCompleted",
   subtitle_downloaded: "settings.notificationEvent.subtitleDownloaded",
   subtitle_search_failed: "settings.notificationEvent.subtitleSearchFailed",
+  media_request_submitted: "settings.notificationEvent.mediaRequestSubmitted",
+  media_request_approved: "settings.notificationEvent.mediaRequestApproved",
+  media_request_rejected: "settings.notificationEvent.mediaRequestRejected",
+  media_request_canceled: "settings.notificationEvent.mediaRequestCanceled",
   health_issue: "settings.notificationEvent.healthIssue",
   health_restored: "settings.notificationEvent.healthRestored",
   application_update: "settings.notificationEvent.applicationUpdate",
@@ -335,8 +346,32 @@ function DynamicConfigField({
   );
 }
 
-function channelNameById(channels: NotificationChannel[], id: string): string {
-  return channels.find((c) => c.id === id)?.name ?? id;
+function notificationTargetValue(target: NotificationTarget): string {
+  return `${target.targetKind}:${target.id}`;
+}
+
+function parseNotificationTargetValue(value: string): Pick<NotificationTarget, "targetKind" | "id"> | null {
+  const separator = value.indexOf(":");
+  if (separator <= 0) {
+    return null;
+  }
+  const targetKind = value.slice(0, separator);
+  if (targetKind !== "plugin_channel" && targetKind !== "media_server_connection") {
+    return null;
+  }
+  const id = value.slice(separator + 1);
+  return id ? { targetKind, id } : null;
+}
+
+function notificationTargetName(
+  targets: NotificationTarget[],
+  targetKind: NotificationSubscriptionRow["targetKind"],
+  targetId: string,
+): string {
+  return (
+    targets.find((target) => target.targetKind === targetKind && target.id === targetId)?.name ??
+    targetId
+  );
 }
 
 type MultiSelectDropdownOption = {
@@ -349,11 +384,15 @@ function MultiSelectDropdown({
   selectedValues,
   onSelectedValuesChange,
   placeholder,
+  triggerId,
+  optionIdPrefix,
 }: {
   options: MultiSelectDropdownOption[];
   selectedValues: string[];
   onSelectedValuesChange: (values: string[]) => void;
   placeholder: string;
+  triggerId?: string;
+  optionIdPrefix?: string;
 }) {
   const selectedLabel = React.useMemo(() => {
     const labels = options
@@ -384,6 +423,7 @@ function MultiSelectDropdown({
     <Popover>
       <PopoverTrigger asChild>
         <Button
+          id={triggerId}
           type="button"
           variant="outline"
           className="w-full justify-between px-3 text-left font-normal"
@@ -403,6 +443,7 @@ function MultiSelectDropdown({
             return (
               <button
                 key={option.value}
+                id={selectorId(optionIdPrefix, option.value)}
                 type="button"
                 onClick={() => toggleOption(option.value)}
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
@@ -435,6 +476,7 @@ export function SettingsNotificationsSection({
   channelEditorMode,
   startCreateChannel,
   providerTypes,
+  notificationTargets,
   subscriptions,
   subscriptionTitlesById,
   editingSubscriptionId,
@@ -474,13 +516,19 @@ export function SettingsNotificationsSection({
       })),
     [t],
   );
-  const selectedSubscriptionChannel = React.useMemo(() => {
-    return channels.find((channel) => channel.id === subscriptionDraft.channelId) ?? null;
-  }, [channels, subscriptionDraft.channelId]);
+  const selectedSubscriptionTarget = React.useMemo(() => {
+    return (
+      notificationTargets.find(
+        (target) =>
+          target.targetKind === subscriptionDraft.targetKind &&
+          target.id === subscriptionDraft.targetId,
+      ) ?? null
+    );
+  }, [notificationTargets, subscriptionDraft.targetId, subscriptionDraft.targetKind]);
   const selectedSubscriptionProvider = React.useMemo(() => {
-    const providerType = selectedSubscriptionChannel?.channelType.trim().toLowerCase();
+    const providerType = selectedSubscriptionTarget?.providerType.trim().toLowerCase();
     return providerType ? providerByType.get(providerType) ?? null : null;
-  }, [providerByType, selectedSubscriptionChannel]);
+  }, [providerByType, selectedSubscriptionTarget]);
   const supportedSubscriptionEventTypes = React.useMemo(() => {
     const supportedEvents = selectedSubscriptionProvider?.supportedEvents ?? [];
     return supportedEvents.length > 0 ? supportedEvents : eventTypes;
@@ -508,7 +556,7 @@ export function SettingsNotificationsSection({
     [eventTypes],
   );
   const isSubscriptionDraftValid =
-    subscriptionDraft.channelId.trim().length > 0 &&
+    subscriptionDraft.targetId.trim().length > 0 &&
     subscriptionDraft.eventTypes.length > 0 &&
     subscriptionDraft.scope.trim().length > 0 &&
     (subscriptionDraft.scope !== "facet" || selectedFacetScopeIds.length > 0) &&
@@ -517,7 +565,9 @@ export function SettingsNotificationsSection({
 
   const providerTypeOptions = React.useMemo(() => {
     if (providerTypes.length === 0) return [];
-    return providerTypes.map((pt) => ({ value: pt.providerType, label: pt.name }));
+    return providerTypes
+      .filter((pt) => !isMediaServerProviderType(pt.providerType))
+      .map((pt) => ({ value: pt.providerType, label: pt.name }));
   }, [providerTypes]);
 
   const selectedProvider = React.useMemo(() => {
@@ -597,73 +647,106 @@ export function SettingsNotificationsSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {channels.map((channel) => (
-                <TableRow
-                  key={channel.id}
-                  id={selectorId("settings-notification-channel-row", channel.name)}
-                >
-                  <TableCell>{channel.name}</TableCell>
-                  <TableCell>{channel.channelType}</TableCell>
-                  <TableCell className="text-center">
-                    <RenderBooleanIcon
-                      value={channel.isEnabled}
-                      label={`${t("label.enabled")}: ${channel.name}`}
-                    />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="inline-flex items-center gap-2">
-                      <NotificationActionButton
-                        id={selectorId("settings-notification-channel-test", channel.name)}
-                        label={t("settings.notificationTest")}
-                        tone="neutral"
-                        onClick={() => void testChannel(channel)}
-                        disabled={testingChannelId === channel.id}
-                      >
-                        {testingChannelId === channel.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Send className="h-4 w-4" />
-                        )}
-                      </NotificationActionButton>
-                      <NotificationActionButton
-                        id={selectorId("settings-notification-channel-toggle", channel.name)}
-                        label={channel.isEnabled ? t("label.disable") : t("label.enable")}
-                        tone={channel.isEnabled ? "enabled" : "disabled"}
-                        onClick={() => void toggleChannelEnabled(channel)}
-                        disabled={mutatingChannelId === channel.id}
-                      >
-                        {channel.isEnabled ? (
-                          <Power className="h-4 w-4" />
-                        ) : (
-                          <PowerOff className="h-4 w-4" />
-                        )}
-                      </NotificationActionButton>
-                      <NotificationActionButton
-                        id={selectorId("settings-notification-channel-edit", channel.name)}
-                        label={t("label.edit")}
-                        tone="edit"
-                        onClick={() => editChannel(channel)}
-                      >
-                        <Edit className="h-4 w-4" />
-                      </NotificationActionButton>
-                      <NotificationActionButton
-                        id={selectorId("settings-notification-channel-delete", channel.name)}
-                        label={t("label.delete")}
-                        tone="delete"
-                        onClick={() => void deleteChannel(channel)}
-                        disabled={mutatingChannelId === channel.id}
-                      >
-                        {mutatingChannelId === channel.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-4 w-4" />
-                        )}
-                      </NotificationActionButton>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {channels.length === 0 ? (
+              {notificationTargets.map((target) => {
+                const channel =
+                  target.targetKind === "plugin_channel"
+                    ? channels.find((item) => item.id === target.id) ?? null
+                    : null;
+                const providerLabel =
+                  providerByType.get(target.providerType.trim().toLowerCase())?.name ??
+                  humanizeSnakeCase(target.providerType);
+                const targetLabel =
+                  target.targetKind === "media_server_connection"
+                    ? t("settings.mediaServersSection")
+                    : t("settings.notificationChannel");
+                return (
+                  <TableRow
+                    key={notificationTargetValue(target)}
+                    id={selectorId("settings-notification-channel-row", target.name)}
+                  >
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{target.name}</span>
+                        <span className="rounded border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground">
+                          {targetLabel}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>{providerLabel}</TableCell>
+                    <TableCell className="text-center">
+                      <RenderBooleanIcon
+                        value={target.isEnabled}
+                        label={`${t("label.enabled")}: ${target.name}`}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="inline-flex items-center gap-2">
+                        <NotificationActionButton
+                          id={selectorId("settings-notification-subscription-create-for", target.name)}
+                          label={t("settings.notificationSubscriptionCreate")}
+                          tone="neutral"
+                          onClick={() => startCreateSubscription(target)}
+                          disabled={!target.isEnabled}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </NotificationActionButton>
+                        {channel ? (
+                          <>
+                            <NotificationActionButton
+                              id={selectorId("settings-notification-channel-test", channel.name)}
+                              label={t("settings.notificationTest")}
+                              tone="neutral"
+                              onClick={() => void testChannel(channel)}
+                              disabled={testingChannelId === channel.id}
+                            >
+                              {testingChannelId === channel.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Send className="h-4 w-4" />
+                              )}
+                            </NotificationActionButton>
+                            <NotificationActionButton
+                              id={selectorId("settings-notification-channel-toggle", channel.name)}
+                              label={channel.isEnabled ? t("label.disable") : t("label.enable")}
+                              tone={channel.isEnabled ? "enabled" : "disabled"}
+                              onClick={() => void toggleChannelEnabled(channel)}
+                              disabled={mutatingChannelId === channel.id}
+                            >
+                              {channel.isEnabled ? (
+                                <Power className="h-4 w-4" />
+                              ) : (
+                                <PowerOff className="h-4 w-4" />
+                              )}
+                            </NotificationActionButton>
+                            <NotificationActionButton
+                              id={selectorId("settings-notification-channel-edit", channel.name)}
+                              label={t("label.edit")}
+                              tone="edit"
+                              onClick={() => editChannel(channel)}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </NotificationActionButton>
+                            <NotificationActionButton
+                              id={selectorId("settings-notification-channel-delete", channel.name)}
+                              label={t("label.delete")}
+                              tone="delete"
+                              onClick={() => void deleteChannel(channel)}
+                              disabled={mutatingChannelId === channel.id}
+                            >
+                              {mutatingChannelId === channel.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </NotificationActionButton>
+                          </>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {notificationTargets.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="text-muted-foreground">
                     {t("settings.notificationNoChannels")}
@@ -700,6 +783,7 @@ export function SettingsNotificationsSection({
                        setChannelDraft((prev) => ({
                          ...prev,
                          channelType: v,
+                         mediaServerConnectionId: "",
                          name: provider?.name ?? "",
                        }));
                      }}
@@ -708,8 +792,14 @@ export function SettingsNotificationsSection({
                        <SelectValue placeholder={t("settings.notificationProviderType")} />
                      </SelectTrigger>
                      <SelectContent>
-                       {providerTypeOptions.map((opt) => (
-                         <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                      {providerTypeOptions.map((opt) => (
+                         <SelectItem
+                           id={selectorId("settings-notification-channel-provider-type-option", opt.value)}
+                           key={opt.value}
+                           value={opt.value}
+                         >
+                           {opt.label}
+                         </SelectItem>
                        ))}
                      </SelectContent>
                    </Select>
@@ -760,12 +850,6 @@ export function SettingsNotificationsSection({
                     </div>
                   ) : null}
                 </div>
-              ) : null}
-
-              {selectedProvider?.providerType === "jellyfin" ? (
-                <p className="text-sm text-muted-foreground">
-                  {t("settings.notificationJellyfinChannelHint")}
-                </p>
               ) : null}
 
               <label className="flex items-center gap-2">
@@ -853,7 +937,22 @@ export function SettingsNotificationsSection({
               {subscriptions.map((sub) => (
                 <TableRow
                   key={sub.id}
-                  id={selectorId("settings-notification-subscription-row", sub.id)}
+                  id={selectorId(
+                    "settings-notification-subscription-row",
+                    notificationTargetName(notificationTargets, sub.targetKind, sub.targetId),
+                    orderedSubscriptionEventTypes(sub.eventTypes).join("-"),
+                    sub.scope,
+                    sub.scopeId,
+                  )}
+                  data-notification-target-name={notificationTargetName(
+                    notificationTargets,
+                    sub.targetKind,
+                    sub.targetId,
+                  )}
+                  data-notification-target-kind={sub.targetKind}
+                  data-notification-events={orderedSubscriptionEventTypes(sub.eventTypes).join(",")}
+                  data-notification-scope={sub.scope}
+                  data-notification-scope-id={sub.scopeId ?? ""}
                 >
                   <TableCell>
                     <div className="space-y-1">
@@ -864,7 +963,9 @@ export function SettingsNotificationsSection({
                       ))}
                     </div>
                   </TableCell>
-                  <TableCell>{channelNameById(channels, sub.channelId)}</TableCell>
+                  <TableCell>
+                    {notificationTargetName(notificationTargets, sub.targetKind, sub.targetId)}
+                  </TableCell>
                   <TableCell>
                     {(() => {
                       const scopeIdLabel = notificationScopeIdLabel(
@@ -975,10 +1076,14 @@ export function SettingsNotificationsSection({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {channels.length === 0 ? (
+              {notificationTargets.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("settings.notificationNoChannels")}</p>
               ) : (
-                <form className="space-y-3" onSubmit={submitSubscription}>
+                <form
+                  id="settings-notification-subscription-form"
+                  className="space-y-3"
+                  onSubmit={submitSubscription}
+                >
               <div className="grid gap-3 md:grid-cols-3">
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationEventType")}</Label>
@@ -992,26 +1097,48 @@ export function SettingsNotificationsSection({
                       }))
                     }
                     placeholder={t("settings.notificationEventType")}
+                    triggerId="settings-notification-subscription-event-types"
+                    optionIdPrefix="settings-notification-subscription-event-type-option"
                   />
                 </label>
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationChannel")}</Label>
                   <Select
-                    value={subscriptionDraft.channelId || undefined}
-                    onValueChange={(v) =>
+                    value={
+                      subscriptionDraft.targetId
+                        ? `${subscriptionDraft.targetKind}:${subscriptionDraft.targetId}`
+                        : undefined
+                    }
+                    onValueChange={(v) => {
+                      const target = parseNotificationTargetValue(v);
+                      if (!target) {
+                        return;
+                      }
                       setSubscriptionDraft((prev) => ({
                         ...prev,
-                        channelId: v,
-                      }))
-                    }
+                        targetKind: target.targetKind,
+                        targetId: target.id,
+                      }));
+                    }}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="settings-notification-subscription-target" className="w-full">
                       <SelectValue placeholder={t("settings.notificationChannel")} />
                     </SelectTrigger>
                     <SelectContent>
-                      {channels.map((ch) => (
-                        <SelectItem key={ch.id} value={ch.id}>{ch.name}</SelectItem>
-                      ))}
+                      {notificationTargets
+                        .filter((target) => target.isEnabled)
+                        .map((target) => (
+                          <SelectItem
+                            id={selectorId(
+                              "settings-notification-subscription-target-option",
+                              target.name,
+                            )}
+                            key={notificationTargetValue(target)}
+                            value={notificationTargetValue(target)}
+                          >
+                            {target.name}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </label>
@@ -1026,12 +1153,16 @@ export function SettingsNotificationsSection({
                       }))
                     }
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="settings-notification-subscription-scope" className="w-full">
                       <SelectValue placeholder={t("settings.notificationScope")} />
                     </SelectTrigger>
                     <SelectContent>
                       {scopeOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
+                        <SelectItem
+                          id={selectorId("settings-notification-subscription-scope-option", option.value)}
+                          key={option.value}
+                          value={option.value}
+                        >
                           {option.label}
                         </SelectItem>
                       ))}
@@ -1086,6 +1217,7 @@ export function SettingsNotificationsSection({
 
               <label className="flex items-center gap-2">
                 <input
+                  id="settings-notification-subscription-enabled"
                   type="checkbox"
                   checked={subscriptionDraft.isEnabled}
                   onChange={(event) =>
@@ -1100,14 +1232,23 @@ export function SettingsNotificationsSection({
               </label>
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={!isSubscriptionDraftValid || mutatingSubscriptionId !== null}>
+                <Button
+                  id="settings-notification-subscription-save"
+                  type="submit"
+                  disabled={!isSubscriptionDraftValid || mutatingSubscriptionId !== null}
+                >
                   {mutatingSubscriptionId !== null
                     ? t("label.saving")
                     : editingSubscriptionId
                       ? t("settings.notificationSubscriptionUpdate")
                       : t("settings.notificationSubscriptionCreate")}
                 </Button>
-                <Button type="button" variant="outline" onClick={resetSubscriptionDraft}>
+                <Button
+                  id="settings-notification-subscription-cancel"
+                  type="button"
+                  variant="outline"
+                  onClick={resetSubscriptionDraft}
+                >
                   {t("label.cancel")}
                 </Button>
               </div>
@@ -1118,9 +1259,10 @@ export function SettingsNotificationsSection({
           {isEditingSubscription ? (
             <div className="flex justify-center">
               <Button
+                id="settings-notification-subscription-create"
                 type="button"
                 size="lg"
-                onClick={startCreateSubscription}
+                onClick={() => startCreateSubscription()}
                 disabled={mutatingSubscriptionId !== null}
                 className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
               >
@@ -1133,9 +1275,10 @@ export function SettingsNotificationsSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-notification-subscription-create"
             type="button"
             size="lg"
-            onClick={startCreateSubscription}
+            onClick={() => startCreateSubscription()}
             className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
           >
             <Plus className="h-5 w-5" />

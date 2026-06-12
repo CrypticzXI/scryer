@@ -46,6 +46,8 @@ export type JobKey =
   | "wanted_sync"
   | "pending_release_processing"
   | "staged_nzb_prune"
+  | "title_image_cache_refresh"
+  | "title_deletion"
   | "auto_backup";
 
 export type JobScheduleInfo = {

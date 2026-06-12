@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use scryer_application::{
@@ -10,11 +13,12 @@ use tracing::warn;
 
 use crate::socket_host::SocketHost;
 use crate::types::{
-    EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor, PluginNotificationActor,
-    PluginNotificationApp, PluginNotificationApplicationUpdate, PluginNotificationDownload,
-    PluginNotificationEpisode, PluginNotificationExternalIds, PluginNotificationFile,
-    PluginNotificationHealth, PluginNotificationImport, PluginNotificationManualInteraction,
-    PluginNotificationMediaFile, PluginNotificationMediaUpdate, PluginNotificationRequest,
+    EXPORT_NOTIFICATION_ACTION, EXPORT_NOTIFICATION_SEND, NotificationEventType, PluginDescriptor,
+    PluginNotificationActor, PluginNotificationApp, PluginNotificationApplicationUpdate,
+    PluginNotificationDownload, PluginNotificationEpisode, PluginNotificationExternalIds,
+    PluginNotificationFile, PluginNotificationHealth, PluginNotificationImport,
+    PluginNotificationManualInteraction, PluginNotificationMediaFile,
+    PluginNotificationMediaRequest, PluginNotificationMediaUpdate, PluginNotificationRequest,
     PluginNotificationResponse, PluginNotificationTitle, decode_plugin_result,
 };
 
@@ -38,6 +42,51 @@ impl WasmNotificationClient {
             channel_name,
             socket_host,
         }
+    }
+
+    #[allow(dead_code)]
+    pub async fn notification_action(
+        &self,
+        action: &str,
+        query: BTreeMap<String, String>,
+    ) -> AppResult<Option<serde_json::Value>> {
+        let request = serde_json::json!({
+            "action": action,
+            "query": query,
+        });
+        let input = serde_json::to_string(&request).map_err(|e| {
+            AppError::Repository(format!(
+                "failed to serialize notification action request: {e}"
+            ))
+        })?;
+
+        let plugin = Arc::clone(&self.plugin);
+        let socket_host = self.socket_host.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            let mut guard = plugin
+                .lock()
+                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+            if !guard.function_exists(EXPORT_NOTIFICATION_ACTION) {
+                if let Some(socket_host) = socket_host {
+                    socket_host.cleanup();
+                }
+                return Ok(None);
+            }
+
+            let output = guard.call::<&str, String>(EXPORT_NOTIFICATION_ACTION, &input);
+            if let Some(socket_host) = socket_host {
+                socket_host.cleanup();
+            }
+            output.map(Some).map_err(|e| {
+                AppError::Repository(format!("plugin {EXPORT_NOTIFICATION_ACTION}() failed: {e}"))
+            })
+        })
+        .await
+        .map_err(|e| AppError::Repository(format!("notification plugin task panicked: {e}")))??;
+
+        output
+            .map(|output| decode_plugin_result(&output, EXPORT_NOTIFICATION_ACTION))
+            .transpose()
     }
 }
 
@@ -70,7 +119,6 @@ impl NotificationClient for WasmNotificationClient {
                 path: title.path.clone(),
                 overview: title.overview.clone(),
                 sort_title: title.sort_title.clone(),
-                banner_url: title.banner_url.clone(),
                 background_url: title.background_url.clone(),
                 poster_url: title.poster_url.clone(),
                 genres: title.genres.clone(),
@@ -211,6 +259,20 @@ impl NotificationClient for WasmNotificationClient {
                     link: manual.link.clone(),
                 }
             }),
+            media_request: payload.media_request.as_ref().map(|request| {
+                PluginNotificationMediaRequest {
+                    request_id: request.request_id.clone(),
+                    library_id: request.library_id.clone(),
+                    status: request.status.clone(),
+                    facet: request.facet.clone(),
+                    requested_quality_profile_id: request.requested_quality_profile_id.clone(),
+                    requested_quality_profile_name: request.requested_quality_profile_name.clone(),
+                    requested_monitor_type: request.requested_monitor_type.clone(),
+                    approved_quality_profile_id: request.approved_quality_profile_id.clone(),
+                    approved_quality_profile_name: request.approved_quality_profile_name.clone(),
+                    created_title_id: request.created_title_id.clone(),
+                }
+            }),
         };
 
         let input = serde_json::to_string(&request).map_err(|e| {
@@ -279,6 +341,8 @@ fn map_episode(episode: &NotificationEpisodePayload) -> PluginNotificationEpisod
     PluginNotificationEpisode {
         id: episode.id.clone(),
         episode_ids: episode.episode_ids.clone(),
+        media_file_id: episode.media_file_id.clone(),
+        media_file_path: episode.media_file_path.clone(),
         display: episode.display.clone(),
         collection_id: episode.collection_id.clone(),
         season_number: episode.season_number.clone(),
@@ -324,6 +388,18 @@ fn map_event_type(event_type: DomainNotificationEventType) -> NotificationEventT
         }
         DomainNotificationEventType::SubtitleSearchFailed => {
             NotificationEventType::SubtitleSearchFailed
+        }
+        DomainNotificationEventType::MediaRequestSubmitted => {
+            NotificationEventType::MediaRequestSubmitted
+        }
+        DomainNotificationEventType::MediaRequestApproved => {
+            NotificationEventType::MediaRequestApproved
+        }
+        DomainNotificationEventType::MediaRequestRejected => {
+            NotificationEventType::MediaRequestRejected
+        }
+        DomainNotificationEventType::MediaRequestCanceled => {
+            NotificationEventType::MediaRequestCanceled
         }
         DomainNotificationEventType::HealthIssue => NotificationEventType::HealthIssue,
         DomainNotificationEventType::HealthRestored => NotificationEventType::HealthRestored,

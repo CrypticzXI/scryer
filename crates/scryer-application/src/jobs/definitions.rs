@@ -155,6 +155,8 @@ pub enum JobKey {
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
+    TitleImageCacheRefresh,
+    TitleDeletion,
 }
 
 impl JobKey {
@@ -177,6 +179,8 @@ impl JobKey {
             Self::WantedSync => "wanted_sync",
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
+            Self::TitleImageCacheRefresh => "title_image_cache_refresh",
+            Self::TitleDeletion => "title_deletion",
         }
     }
 
@@ -199,6 +203,8 @@ impl JobKey {
             "wanted_sync" => Some(Self::WantedSync),
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
+            "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
+            "title_deletion" => Some(Self::TitleDeletion),
             _ => None,
         }
     }
@@ -222,6 +228,8 @@ impl JobKey {
             Self::WantedSync => "Wanted Sync",
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
+            Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
+            Self::TitleDeletion => "Title Deletion",
         }
     }
 
@@ -256,6 +264,10 @@ impl JobKey {
                 "Process delayed pending releases whose hold period has expired."
             }
             Self::StagedNzbPrune => "Prune expired staged NZB artifacts.",
+            Self::TitleImageCacheRefresh => {
+                "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
+            }
+            Self::TitleDeletion => "Delete selected titles from the catalog.",
         }
     }
 
@@ -269,9 +281,11 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
             Self::ProwlarrSync | Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
             Self::SubtitleSearch => JobCategory::Subtitles,
-            Self::PluginRegistryRefresh | Self::HealthChecks | Self::AutoBackup => {
-                JobCategory::System
-            }
+            Self::PluginRegistryRefresh
+            | Self::HealthChecks
+            | Self::AutoBackup
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => JobCategory::System,
             Self::Housekeeping
             | Self::WantedSync
             | Self::PendingReleaseProcessing
@@ -304,9 +318,11 @@ impl JobKey {
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
             Self::AutoBackup => JobScheduleKind::DailyAtTime,
-            Self::LibraryScanMovies | Self::LibraryScanSeries | Self::LibraryScanAnime => {
-                JobScheduleKind::Manual
-            }
+            Self::LibraryScanMovies
+            | Self::LibraryScanSeries
+            | Self::LibraryScanAnime
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => JobScheduleKind::Manual,
         }
     }
 
@@ -326,9 +342,11 @@ impl JobKey {
             Self::WantedSync => "Based on acquisition sync interval",
             Self::PendingReleaseProcessing => "Every minute",
             Self::StagedNzbPrune => "Every hour",
-            Self::LibraryScanMovies | Self::LibraryScanSeries | Self::LibraryScanAnime => {
-                "Manual only"
-            }
+            Self::LibraryScanMovies
+            | Self::LibraryScanSeries
+            | Self::LibraryScanAnime
+            | Self::TitleImageCacheRefresh
+            | Self::TitleDeletion => "Manual only",
         }
     }
 
@@ -361,7 +379,7 @@ impl JobKey {
     }
 
     pub fn manual_trigger_allowed(self) -> bool {
-        !matches!(self, Self::AutoBackup)
+        !matches!(self, Self::AutoBackup | Self::TitleDeletion)
     }
 
     pub fn uses_library_scan_progress(self) -> bool {
@@ -377,7 +395,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 16] = [
+pub const ALL_JOB_KEYS: [JobKey; 17] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -394,6 +412,7 @@ pub const ALL_JOB_KEYS: [JobKey; 16] = [
     JobKey::WantedSync,
     JobKey::PendingReleaseProcessing,
     JobKey::StagedNzbPrune,
+    JobKey::TitleImageCacheRefresh,
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -744,6 +763,26 @@ mod tests {
 
         assert_eq!(definition.schedule.description, "Hourly");
         assert_eq!(definition.schedule.initial_delay_seconds, None);
+    }
+
+    #[test]
+    fn title_image_cache_refresh_is_registered_as_manual_system_job() {
+        let definition = JobDefinition::from_key(JobKey::TitleImageCacheRefresh, None);
+
+        assert_eq!(
+            JobKey::TitleImageCacheRefresh.as_str(),
+            "title_image_cache_refresh"
+        );
+        assert_eq!(
+            JobKey::parse("title_image_cache_refresh"),
+            Some(JobKey::TitleImageCacheRefresh)
+        );
+        assert!(ALL_JOB_KEYS.contains(&JobKey::TitleImageCacheRefresh));
+        assert_eq!(definition.display_name, "Title Image Cache Refresh");
+        assert_eq!(definition.category, JobCategory::System);
+        assert_eq!(definition.schedule.kind, JobScheduleKind::Manual);
+        assert_eq!(definition.schedule.description, "Manual only");
+        assert!(definition.manual_trigger_allowed);
     }
 
     #[tokio::test]

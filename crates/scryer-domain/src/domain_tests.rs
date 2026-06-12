@@ -104,6 +104,7 @@ fn catalog_settings_permission_does_not_include_system_settings() {
         id: Id::new().0,
         username: "catalog-settings".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization::default(),
     };
     user.authorization.loaded = true;
@@ -268,6 +269,7 @@ fn user_with_limited_permission_masks() {
         id: Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             default_library: LibraryPermissionMask::from_permissions([
                 LibraryPermission::View,
@@ -307,6 +309,7 @@ fn user_with_no_permission_masks() {
         id: Id::new().0,
         username: "empty".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     assert!(
@@ -391,10 +394,23 @@ fn import_error_code_round_trips() {
 }
 
 #[test]
+fn import_mode_as_str_and_setting_parse() {
+    assert_eq!(ImportMode::HardlinkOrCopy.as_str(), "hardlink_or_copy");
+    assert_eq!(ImportMode::Move.as_str(), "move");
+    assert_eq!(
+        ImportMode::from_setting("hardlink_or_copy"),
+        Ok(ImportMode::HardlinkOrCopy)
+    );
+    assert_eq!(ImportMode::from_setting("move"), Ok(ImportMode::Move));
+    assert!(ImportMode::from_setting("auto").is_err());
+}
+
+#[test]
 fn import_strategy_as_str() {
     assert_eq!(ImportStrategy::HardLink.as_str(), "hardlink");
     assert_eq!(ImportStrategy::Copy.as_str(), "copy");
     assert_eq!(ImportStrategy::Symlink.as_str(), "symlink");
+    assert_eq!(ImportStrategy::Move.as_str(), "move");
 }
 
 // ── NewTitle ──────────────────────────────────────────────────────────────

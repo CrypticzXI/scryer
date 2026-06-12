@@ -109,6 +109,14 @@ export function seriesOverviewEpisodeInteractiveSearchId(
   );
 }
 
+export function seriesOverviewSeasonMonitorId(collectionId: string): string {
+  return selectorId("series-overview-season-monitor", collectionId);
+}
+
+export function seriesOverviewSeasonSearchId(collectionId: string): string {
+  return selectorId("series-overview-season-search", collectionId);
+}
+
 export function globalSearchConfigureAddId(
   facet: string,
   result: MetadataSearchSelectorInput,
@@ -118,6 +126,49 @@ export function globalSearchConfigureAddId(
     facet,
     ...metadataSearchSelectorParts(result),
   );
+}
+
+export function globalSearchRequestId(
+  facet: string,
+  result: MetadataSearchSelectorInput,
+): string {
+  return selectorId(
+    "global-search-request",
+    facet,
+    ...metadataSearchSelectorParts(result),
+  );
+}
+
+export function mediaRequestRowId(requestId: string): string {
+  return selectorId("media-request-row", requestId);
+}
+
+export function mediaRequestStatusId(requestId: string): string {
+  return selectorId("media-request-status", requestId);
+}
+
+export function mediaRequestApproveId(requestId: string): string {
+  return selectorId("media-request-approve", requestId);
+}
+
+export function mediaRequestDismissId(requestId: string): string {
+  return selectorId("media-request-dismiss", requestId);
+}
+
+export function mediaRequestEditId(requestId: string): string {
+  return selectorId("media-request-edit", requestId);
+}
+
+export function mediaRequestCancelId(requestId: string): string {
+  return selectorId("media-request-cancel", requestId);
+}
+
+export function mediaRequestProfileOptionId(scope: string, profileId: string): string {
+  return selectorId(scope, "media-request-profile-option", profileId);
+}
+
+export function mediaRequestMonitorOptionId(scope: string, monitorType: string): string {
+  return selectorId(scope, "media-request-monitor-option", monitorType);
 }
 
 export function selectorId(

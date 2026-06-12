@@ -38,10 +38,19 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 
 fn library_settings_draft(
     input: LibrarySettingsInput,
-) -> scryer_application::LibrarySettingsOverrideDraft {
-    scryer_application::LibrarySettingsOverrideDraft {
+) -> GqlResult<scryer_application::LibrarySettingsOverrideDraft> {
+    let import_mode = input
+        .import_mode
+        .map(|value| {
+            scryer_domain::ImportMode::from_setting(&value)
+                .map_err(|message| Error::new(format!("invalid importMode: {message}")))
+        })
+        .transpose()?;
+
+    Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
         quality_profile_id: input.quality_profile_id,
+        request_quality_profile_ids: input.request_quality_profile_ids,
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
@@ -52,6 +61,7 @@ fn library_settings_draft(
         monitor_filler_movies: input.monitor_filler_movies,
         nfo_write_on_import: input.nfo_write_on_import,
         plexmatch_write_on_import: input.plexmatch_write_on_import,
+        import_mode,
         indexer_routing: input.indexer_routing.map(|entries| {
             entries
                 .into_iter()
@@ -79,7 +89,7 @@ fn library_settings_draft(
                 )
                 .collect()
         }),
-    }
+    })
 }
 
 #[derive(Default)]
@@ -108,7 +118,7 @@ impl LibraryMutations {
                 input.facet.into_domain(),
                 input.name,
                 roots,
-                input.settings.map(library_settings_draft),
+                input.settings.map(library_settings_draft).transpose()?,
             )
             .await
             .map_err(to_gql_error)?;
@@ -137,7 +147,7 @@ impl LibraryMutations {
                 &input.library_id,
                 input.name,
                 roots,
-                input.settings.map(library_settings_draft),
+                input.settings.map(library_settings_draft).transpose()?,
             )
             .await
             .map_err(to_gql_error)?;
@@ -160,11 +170,19 @@ impl LibraryMutations {
         &self,
         ctx: &Context<'_>,
         library_id: String,
+        import_warmup_session_id: Option<String>,
     ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let scan_hints = match import_warmup_session_id.as_deref() {
+            Some(session_id) if !session_id.trim().is_empty() => {
+                app.external_import_monitor_warmup_scan_hints(&actor, session_id)
+                    .await
+            }
+            _ => None,
+        };
         let session = app
-            .trigger_library_scan_by_id(&actor, &library_id)
+            .trigger_library_scan_by_id_with_hints(&actor, &library_id, scan_hints)
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_session(session))

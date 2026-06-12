@@ -7,15 +7,16 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use scryer_application::{AppError, AppUseCase};
+use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope};
 use scryer_domain::AppPermission;
-use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch};
+use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
 
 use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
 use crate::rate_limit::{
     RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
+    should_precheck_graphql_login,
 };
 
 #[derive(Clone, Debug)]
@@ -335,9 +336,13 @@ pub(crate) async fn graphql_handler(
     let mut batch = body.into_inner();
     let response_status = graphql_response_status(&mut batch);
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
-    let rate_limit_key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    let rate_limit_key = RateLimitKey::new(
+        client_ip,
+        actor.as_ref().map(|actor| actor.user.id.as_str()),
+    );
     let rate_limit_class = classify_graphql(&batch);
-    if rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login
+    let precheck_login = should_precheck_graphql_login(&batch);
+    if (rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login || precheck_login)
         && let Err(decision) = state
             .rate_limiter
             .check_graphql(rate_limit_class, &rate_limit_key)
@@ -350,13 +355,15 @@ pub(crate) async fn graphql_handler(
             .body(Body::from(body))
             .unwrap();
     }
-    let batch = if let Some(user) = actor {
+    let batch = if let Some(actor) = actor {
         match batch {
-            async_graphql::BatchRequest::Single(req) => {
-                async_graphql::BatchRequest::Single(req.data(user))
-            }
+            async_graphql::BatchRequest::Single(req) => async_graphql::BatchRequest::Single(
+                req.data(actor.mfa_verification()).data(actor.user),
+            ),
             async_graphql::BatchRequest::Batch(reqs) => async_graphql::BatchRequest::Batch(
-                reqs.into_iter().map(|req| req.data(user.clone())).collect(),
+                reqs.into_iter()
+                    .map(|req| req.data(actor.mfa_verification()).data(actor.user.clone()))
+                    .collect(),
             ),
         }
     } else {
@@ -370,6 +377,7 @@ pub(crate) async fn graphql_handler(
     let body_stream = futures_util::stream::once(async move {
         let mut batch_response = schema.execute_batch(batch).await;
         if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
+            && !precheck_login
             && !batch_response.is_ok()
             && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
         {
@@ -392,11 +400,28 @@ fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCod
     StatusCode::OK
 }
 
-fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<scryer_domain::User>) -> Data {
+#[derive(Clone)]
+struct ResolvedActor {
+    user: scryer_domain::User,
+    token_claims: AuthenticatedTokenClaims,
+}
+
+impl ResolvedActor {
+    fn mfa_verification(&self) -> MfaVerification {
+        MfaVerification {
+            verified_until: self.token_claims.mfa_verified_until,
+            step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
+            session_scope: self.token_claims.session_scope,
+        }
+    }
+}
+
+fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<ResolvedActor>) -> Data {
     let mut data = Data::default();
     data.insert(ConnectionAuthEpoch(connection_epoch));
-    if let Some(user) = actor {
-        data.insert(user);
+    if let Some(actor) = actor {
+        data.insert(actor.mfa_verification());
+        data.insert(actor.user);
     }
     data
 }
@@ -405,9 +430,9 @@ async fn resolve_ws_connection_init_actor(
     app: &AppUseCase,
     auth_enabled: bool,
     local_bypass_active: bool,
-    initial_actor: Option<scryer_domain::User>,
+    initial_actor: Option<ResolvedActor>,
     auth_value: Option<&str>,
-) -> Result<Option<scryer_domain::User>, async_graphql::Error> {
+) -> Result<Option<ResolvedActor>, async_graphql::Error> {
     if !auth_enabled {
         return Ok(initial_actor);
     }
@@ -417,11 +442,11 @@ async fn resolve_ws_connection_init_actor(
     };
 
     match parse_bearer_token(raw) {
-        Some(token) => match app.authenticate_token(token).await {
-            Ok(user) => app
+        Some(token) => match app.authenticate_token_with_claims(token).await {
+            Ok((user, token_claims)) => app
                 .attach_user_authorization(user)
                 .await
-                .map(Some)
+                .map(|user| Some(ResolvedActor { user, token_claims }))
                 .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
             Err(_) if local_bypass_active => Ok(initial_actor),
             Err(e) => Err(async_graphql::Error::new(format!(
@@ -437,25 +462,36 @@ async fn resolve_actor(
     state: &AuthState,
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
-) -> Option<scryer_domain::User> {
+) -> Option<ResolvedActor> {
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = if !snapshot.effective_form_login_enabled {
-        resolve_default_user(&state.app).await
+        resolve_default_user(&state.app)
+            .await
+            .map(|user| (user, AuthenticatedTokenClaims::default()))
     } else {
         match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match state.app.authenticate_token(token).await {
-                Ok(user) => Some(user),
-                Err(_) if local_bypass => resolve_default_user(&state.app).await,
+            Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
+                Ok((user, token_claims)) => Some((user, token_claims)),
+                Err(_) if local_bypass => resolve_default_user(&state.app)
+                    .await
+                    .map(|user| (user, mfa_bypass_token_claims())),
                 Err(_) => None,
             },
-            Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app).await,
+            Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app)
+                .await
+                .map(|user| (user, mfa_bypass_token_claims())),
             Ok(None) | Err(_) => None,
         }
     };
 
     match actor {
-        Some(user) => state.app.attach_user_authorization(user).await.ok(),
+        Some((user, token_claims)) => state
+            .app
+            .attach_user_authorization(user)
+            .await
+            .ok()
+            .map(|user| ResolvedActor { user, token_claims }),
         None => None,
     }
 }
@@ -466,6 +502,24 @@ async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain
         Ok(None) => app_use_case.find_or_create_default_user().await.ok(),
         Err(_) => None,
     }
+}
+
+fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {
+    AuthenticatedTokenClaims {
+        mfa_verified_until: Some(i64::MAX),
+        mfa_step_up_verified_until: Some(i64::MAX),
+        ..AuthenticatedTokenClaims::default()
+    }
+}
+
+fn ensure_full_session_claims(claims: &AuthenticatedTokenClaims) -> Result<(), AppError> {
+    if claims.session_scope == JwtSessionScope::MfaEnrollment {
+        return Err(AppError::MfaEnrollmentRequired(
+            "MFA enrollment must be completed before accessing Scryer".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn authorization_token_from_headers(headers: &HeaderMap) -> Result<Option<&str>, AppError> {
@@ -509,8 +563,11 @@ pub(crate) async fn resolve_actor_with_app_permission(
         resolve_default_user_required(app_use_case).await?
     } else {
         match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
-                Ok(actor) => actor,
+            Ok(Some(token)) => match app_use_case.authenticate_token_with_claims(token).await {
+                Ok((actor, claims)) => {
+                    ensure_full_session_claims(&claims)?;
+                    actor
+                }
                 Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
                 Err(error) => return Err(error),
             },
@@ -547,11 +604,16 @@ fn local_ip_bypass_active(
         return false;
     }
 
-    request_client_ip(headers, remote_addr).is_some_and(is_local_network_ip)
-        || remote_addr
-            .map(|addr| addr.ip())
-            .is_some_and(is_trusted_proxy_ip)
-            && request_target_is_local(headers)
+    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
+        return false;
+    };
+
+    if has_proxy_forwarding_headers(headers) {
+        return is_trusted_proxy_ip(peer_ip)
+            && forwarded_client_ip(headers).is_some_and(is_local_network_ip);
+    }
+
+    is_local_network_ip(peer_ip)
 }
 
 fn request_client_ip(headers: &HeaderMap, remote_addr: Option<SocketAddr>) -> Option<IpAddr> {
@@ -570,41 +632,11 @@ fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
         .or_else(|| forwarded_header_client_ip(headers))
 }
 
-fn request_target_is_local(headers: &HeaderMap) -> bool {
-    forwarded_host_header(headers)
-        .or_else(|| host_header(headers))
-        .is_some_and(is_local_host_value)
-}
-
-fn forwarded_host_header(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("x-forwarded-host")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-}
-
-fn host_header(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-}
-
-fn is_local_host_value(raw: &str) -> bool {
-    let trimmed = raw.trim().trim_matches('"');
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    let Ok(authority) = trimmed.parse::<http::uri::Authority>() else {
-        return trimmed.eq_ignore_ascii_case("localhost")
-            || parse_forwarded_ip_token(trimmed).is_some_and(is_local_network_ip);
-    };
-
-    let host = authority.host().trim_end_matches('.');
-    host.eq_ignore_ascii_case("localhost")
-        || parse_forwarded_ip_token(host).is_some_and(is_local_network_ip)
+fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-forwarded-for")
+        || headers.contains_key("x-real-ip")
+        || headers.contains_key(header::FORWARDED)
+        || headers.contains_key("x-forwarded-host")
 }
 
 fn x_forwarded_for_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
@@ -690,7 +722,10 @@ pub(crate) async fn rate_limit_http_api(
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
     let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr)).await;
-    let key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    let key = RateLimitKey::new(
+        client_ip,
+        actor.as_ref().map(|actor| actor.user.id.as_str()),
+    );
     match auth_state.rate_limiter.check_http_api(&key) {
         Ok(()) => next.run(request).await,
         Err(decision) => {
@@ -716,12 +751,7 @@ fn skip_http_rate_limit(_method: &Method, path: &str) -> bool {
 }
 
 fn is_rate_limited_http_api_path(path: &str) -> bool {
-    path == "/admin"
-        || path.starts_with("/admin/")
-        || path == "/api"
-        || path.starts_with("/api/")
-        || path == "/images"
-        || path.starts_with("/images/")
+    path == "/admin" || path.starts_with("/admin/") || path == "/api" || path.starts_with("/api/")
 }
 
 pub(crate) fn map_app_error(error: AppError) -> Response {
@@ -746,6 +776,25 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             .into_response(),
         AppError::DownloadFeedbackTimeout(message) => (
             StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        AppError::DownloadSubmitAmbiguous(message) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        AppError::DownloadSubmitUnavailable(message) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        AppError::MfaStepUpRequired(message)
+        | AppError::TotpEnrollmentRequired(message)
+        | AppError::MfaEnrollmentRequired(message)
+        | AppError::TotpInvalidCode(message)
+        | AppError::TotpRecoveryCodeUsed(message) => (
+            StatusCode::UNAUTHORIZED,
             Json(ErrorResponse { error: message }),
         )
             .into_response(),
@@ -902,16 +951,22 @@ mod tests {
         ))));
     }
 
-    #[test]
-    fn local_ip_bypass_accepts_direct_private_and_loopback_clients() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
+    fn local_bypass_snapshot() -> scryer_interface::context::AuthRuntimeStateSnapshot {
+        scryer_interface::context::AuthRuntimeStateSnapshot {
             form_login_enabled: true,
             skip_login_for_local_ips: true,
             effective_form_login_enabled: true,
+            webauthn_configured: false,
+            passkey_enabled: false,
             env_override_active: false,
             env_override_description: None,
             epoch: 1,
-        };
+        }
+    }
+
+    #[test]
+    fn local_ip_bypass_accepts_direct_private_and_loopback_clients() {
+        let snapshot = local_bypass_snapshot();
         let headers = HeaderMap::new();
 
         assert!(local_ip_bypass_active(
@@ -929,6 +984,29 @@ mod tests {
             &headers,
             Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
         ));
+    }
+
+    #[test]
+    fn local_ip_bypass_claims_satisfy_step_up_checks() {
+        let claims = mfa_bypass_token_claims();
+
+        assert_eq!(claims.mfa_verified_until, Some(i64::MAX));
+        assert_eq!(
+            claims.session_scope,
+            scryer_application::JwtSessionScope::Full
+        );
+    }
+
+    #[test]
+    fn enrollment_scoped_claims_are_not_full_admin_sessions() {
+        let claims = AuthenticatedTokenClaims {
+            session_scope: JwtSessionScope::MfaEnrollment,
+            ..AuthenticatedTokenClaims::default()
+        };
+
+        let error = ensure_full_session_claims(&claims).expect_err("enrollment scope rejected");
+
+        assert!(matches!(error, AppError::MfaEnrollmentRequired(_)));
     }
 
     #[test]
@@ -980,56 +1058,12 @@ mod tests {
     }
 
     #[test]
-    fn spa_fallback_routes_do_not_consume_http_api_quota() {
-        assert!(skip_http_rate_limit(&Method::GET, "/activity"));
-        assert!(skip_http_rate_limit(&Method::GET, "/settings/profile"));
-    }
-
-    #[test]
-    fn admin_and_image_routes_still_consume_http_api_quota() {
-        assert!(!skip_http_rate_limit(&Method::GET, "/admin/settings"));
-        assert!(!skip_http_rate_limit(
-            &Method::GET,
-            "/images/titles/title-1/poster/original"
-        ));
-    }
-
-    #[test]
-    fn local_bypass_accepts_localhost_host_through_trusted_proxy() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
+    fn local_ip_bypass_accepts_local_forwarded_client_through_trusted_proxy() {
+        let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
-        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
-
-        assert!(local_ip_bypass_active(
-            &snapshot,
-            &headers,
-            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
-        ));
-    }
-
-    #[test]
-    fn local_bypass_accepts_private_host_through_trusted_proxy() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
         headers.insert(
-            "x-forwarded-host",
-            HeaderValue::from_static("172.16.5.173:3000"),
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.2"),
         );
 
         assert!(local_ip_bypass_active(
@@ -1040,15 +1074,81 @@ mod tests {
     }
 
     #[test]
-    fn local_bypass_rejects_public_host_with_public_forwarded_ip() {
-        let snapshot = scryer_interface::context::AuthRuntimeStateSnapshot {
-            form_login_enabled: true,
-            skip_login_for_local_ips: true,
-            effective_form_login_enabled: true,
-            env_override_active: false,
-            env_override_description: None,
-            epoch: 1,
-        };
+    fn local_ip_bypass_accepts_local_forwarded_ipv6_client_through_trusted_proxy() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("[fc00::25]:8443"));
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        ));
+    }
+
+    #[test]
+    fn spa_fallback_routes_do_not_consume_http_api_quota() {
+        assert!(skip_http_rate_limit(&Method::GET, "/activity"));
+        assert!(skip_http_rate_limit(&Method::GET, "/settings/profile"));
+    }
+
+    #[test]
+    fn admin_routes_still_consume_http_api_quota() {
+        assert!(!skip_http_rate_limit(&Method::GET, "/admin/settings"));
+        assert!(!skip_http_rate_limit(&Method::GET, "/api/system/jobs"));
+    }
+
+    #[test]
+    fn title_images_and_static_assets_do_not_consume_http_api_quota() {
+        assert!(skip_http_rate_limit(
+            &Method::GET,
+            "/images/titles/title-1/poster/original"
+        ));
+        assert!(skip_http_rate_limit(
+            &Method::GET,
+            "/images/titles/title-1/fanart/w1280"
+        ));
+        assert!(skip_http_rate_limit(
+            &Method::GET,
+            "/assets/index-B3b5rA.js"
+        ));
+        assert!(skip_http_rate_limit(&Method::GET, "/manifest.json"));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_localhost_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_private_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("172.16.5.173:3000"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_public_host_with_public_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
         headers.insert(
@@ -1060,6 +1160,49 @@ mod tests {
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_private_forwarded_host_without_forwarded_client_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("172.16.5.173:3000"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_malformed_forwarded_ip_with_local_host() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_public_peer_with_spoofed_local_forwarded_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("192.168.1.25"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
         ));
     }
 }

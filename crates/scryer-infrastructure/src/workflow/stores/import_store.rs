@@ -3,8 +3,8 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, DownloadSourceIdentity, ImportArtifact, ImportArtifactRepository,
-    ImportRepository,
+    AppError, AppResult, DownloadSourceIdentity, DownloadSubmissionIdentity, ImportArtifact,
+    ImportArtifactRepository, ImportRepository,
 };
 use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType};
 
@@ -30,6 +30,23 @@ impl ImportRepository for ImportStore {
         payload_json: String,
     ) -> AppResult<String> {
         queue_import_request(&self.datastore, source_identity, import_type, payload_json).await
+    }
+
+    async fn queue_import_request_with_identity(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        submission_identity: Option<DownloadSubmissionIdentity>,
+    ) -> AppResult<String> {
+        queue_import_request_with_identity(
+            &self.datastore,
+            source_identity,
+            import_type,
+            payload_json,
+            submission_identity,
+        )
+        .await
     }
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
@@ -172,6 +189,41 @@ impl ImportRepository for ImportStore {
         )
         .await?
         .ok_or_else(|| AppError::Repository("missing import count".into()))?;
+        Ok(row.i64("count")? > 0)
+    }
+
+    async fn is_already_imported_by_download_id(
+        &self,
+        source_identity: &DownloadSourceIdentity,
+        identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        let Some(download_id) = identity
+            .download_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(false);
+        };
+
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(1) AS count
+             FROM imports
+             WHERE status IN ('completed', 'skipped')
+               AND COALESCE(source_client_id, '') = {}
+               AND source_system = {}
+               AND download_id = {}",
+            &[
+                SqlArg::Text(normalize_download_client_id(
+                    source_identity.client_id.as_deref(),
+                )),
+                SqlArg::Text(source_identity.client_type.clone()),
+                SqlArg::Text(download_id.to_string()),
+            ],
+        )
+        .await?
+        .ok_or_else(|| AppError::Repository("missing import identity count".into()))?;
         Ok(row.i64("count")? > 0)
     }
 

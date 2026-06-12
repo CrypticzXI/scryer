@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
-use scryer_application::{AppError, AppUseCase, BackupRestorePreparedBundle};
+use scryer_application::{
+    AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
+};
 use scryer_domain::{AppPermission, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
+
+pub const LOGIN_FAILED_MESSAGE: &str = "Sign-in failed. Check your sign-in details and try again.";
 
 /// Opaque handle to a log snapshot provider and subscription source.
 /// The `scryer` crate constructs this from its `LogRingBuffer`.
@@ -39,6 +44,8 @@ pub struct AuthRuntimeStateSnapshot {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub effective_form_login_enabled: bool,
+    pub webauthn_configured: bool,
+    pub passkey_enabled: bool,
     pub env_override_active: bool,
     pub env_override_description: Option<String>,
     pub epoch: u64,
@@ -79,15 +86,19 @@ impl AuthRuntimeStateHandle {
             let previous_policy = (
                 snapshot.effective_form_login_enabled,
                 snapshot.effective_form_login_enabled && snapshot.skip_login_for_local_ips,
+                snapshot.passkey_enabled,
             );
             snapshot.form_login_enabled = form_login_enabled;
             snapshot.skip_login_for_local_ips = skip_login_for_local_ips;
             if !snapshot.env_override_active {
                 snapshot.effective_form_login_enabled = form_login_enabled;
             }
+            snapshot.passkey_enabled =
+                snapshot.webauthn_configured && snapshot.effective_form_login_enabled;
             let next_policy = (
                 snapshot.effective_form_login_enabled,
                 snapshot.effective_form_login_enabled && snapshot.skip_login_for_local_ips,
+                snapshot.passkey_enabled,
             );
             if next_policy != previous_policy {
                 snapshot.epoch += 1;
@@ -106,6 +117,13 @@ impl AuthRuntimeStateHandle {
 
 #[derive(Clone, Copy)]
 pub struct ConnectionAuthEpoch(pub u64);
+
+#[derive(Clone, Copy, Default)]
+pub struct MfaVerification {
+    pub verified_until: Option<i64>,
+    pub step_up_verified_until: Option<i64>,
+    pub session_scope: JwtSessionScope,
+}
 
 #[derive(Clone)]
 pub struct ApiContext {
@@ -225,17 +243,116 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
             })
         }
+        AppError::DownloadSubmitUnavailable(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "DOWNLOAD_SUBMIT_UNAVAILABLE");
+            })
+        }
         AppError::PluginInstallInProgress(message) => {
             Error::new(message).extend_with(|_, extensions| {
                 extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
+            })
+        }
+        AppError::MfaStepUpRequired(message) => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "MFA_STEP_UP_REQUIRED");
+        }),
+        AppError::TotpEnrollmentRequired(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "TOTP_ENROLLMENT_REQUIRED");
+            })
+        }
+        AppError::MfaEnrollmentRequired(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "MFA_ENROLLMENT_REQUIRED");
+            })
+        }
+        AppError::TotpInvalidCode(message) => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "TOTP_INVALID_CODE");
+        }),
+        AppError::TotpRecoveryCodeUsed(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "TOTP_RECOVERY_CODE_USED");
             })
         }
         _ => Error::new(err.to_string()),
     }
 }
 
+fn login_progression_error(err: &AppError) -> bool {
+    matches!(
+        err,
+        AppError::MfaStepUpRequired(_)
+            | AppError::TotpEnrollmentRequired(_)
+            | AppError::MfaEnrollmentRequired(_)
+            | AppError::TotpInvalidCode(_)
+            | AppError::TotpRecoveryCodeUsed(_)
+    )
+}
+
+fn app_error_kind(err: &AppError) -> &'static str {
+    match err {
+        AppError::Unauthorized(_) => "Unauthorized",
+        AppError::Validation(_) => "Validation",
+        AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
+        AppError::NotFound(_) => "NotFound",
+        AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
+        AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
+        AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
+        AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
+        AppError::TotpInvalidCode(_) => "TotpInvalidCode",
+        AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
+        AppError::Repository(_) => "Repository",
+    }
+}
+
+pub fn to_login_gql_error(method: &'static str, err: AppError) -> Error {
+    if login_progression_error(&err) {
+        return to_gql_error(err);
+    }
+
+    let error_kind = app_error_kind(&err);
+    if matches!(err, AppError::Repository(_)) {
+        tracing::warn!(login_method = method, error_kind, "masked login failure");
+    } else {
+        tracing::debug!(login_method = method, error_kind, "masked login failure");
+    }
+    Error::new(LOGIN_FAILED_MESSAGE).extend_with(|_, extensions| {
+        extensions.set("code", "LOGIN_FAILED");
+    })
+}
+
+pub async fn to_login_gql_error_after_timing(
+    method: &'static str,
+    timing_class: LoginFailureTimingClass,
+    started_at: Instant,
+    err: AppError,
+) -> Error {
+    if login_progression_error(&err) {
+        return to_gql_error(err);
+    }
+
+    AppUseCase::apply_login_failure_timing(timing_class, started_at).await;
+    to_login_gql_error(method, err)
+}
+
 pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
-    current_user_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+        return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+            "MFA enrollment must be completed before accessing Scryer".into(),
+        )));
+    }
+    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+}
+
+pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::MfaEnrollment {
+        return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+            "MFA enrollment session required".into(),
+        )));
+    }
+    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
 }
 
 pub async fn require_app_permission(
@@ -273,6 +390,13 @@ pub async fn actor_has_any_library_permission(
 }
 
 pub fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
+    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+        return None;
+    }
+    current_user_any_scope_from_ctx(ctx)
+}
+
+fn current_user_any_scope_from_ctx(ctx: &Context<'_>) -> Option<User> {
     if let Some(connection_epoch) = ctx.data_opt::<ConnectionAuthEpoch>()
         && connection_epoch.0 != auth_runtime_from_ctx(ctx).snapshot().epoch
     {
@@ -280,4 +404,49 @@ pub fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
     }
 
     ctx.data_opt::<User>().cloned()
+}
+
+pub fn mfa_verification_from_ctx(ctx: &Context<'_>) -> MfaVerification {
+    ctx.data_opt::<MfaVerification>()
+        .copied()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graphql_error_code(error: &Error) -> Option<&str> {
+        error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("code"))
+            .and_then(|value| match value {
+                async_graphql::Value::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn login_errors_mask_disclosure_details() {
+        for err in [
+            AppError::Unauthorized("external account is not invited".into()),
+            AppError::NotFound("user 00000000-0000-0000-0000-000000000001".into()),
+            AppError::Validation("passkeys require a password-backed account".into()),
+        ] {
+            let error = to_login_gql_error("jellyfin", err);
+            assert_eq!(error.message, LOGIN_FAILED_MESSAGE);
+            assert_eq!(graphql_error_code(&error), Some("LOGIN_FAILED"));
+        }
+    }
+
+    #[test]
+    fn login_errors_preserve_mfa_progression() {
+        let error = to_login_gql_error(
+            "local",
+            AppError::MfaStepUpRequired("MFA code is required for password login".into()),
+        );
+        assert_eq!(error.message, "MFA code is required for password login");
+        assert_eq!(graphql_error_code(&error), Some("MFA_STEP_UP_REQUIRED"));
+    }
 }

@@ -464,6 +464,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "download_identity_states",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "download_queue_commands",
         classification: BackupTableClassification::Export,
     },
@@ -537,6 +541,42 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "media_files",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_server_connections",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_server_default_library_grants",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_server_path_mappings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "jellyfin_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "plex_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "emby_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_request_external_ids",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_request_requesters",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_requests",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -652,7 +692,27 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "totp_credentials",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_enrollment_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_failed_attempts",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_recovery_codes",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "user_app_permission_masks",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "user_external_accounts",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -665,6 +725,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "wanted_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "webauthn_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "webauthn_credentials",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -721,7 +789,6 @@ pub struct BackupInstanceSecrets {
     encryption_master_key: String,
     jwt_signing_secret: String,
     smg_registration_secret: Option<String>,
-    smg_ca_cert: Option<String>,
     smg_gateway_url: Option<String>,
 }
 
@@ -731,7 +798,6 @@ impl BackupInstanceSecrets {
             encryption_master_key: secrets.encryption_master_key,
             jwt_signing_secret: secrets.jwt_signing_secret,
             smg_registration_secret: secrets.smg_registration_secret,
-            smg_ca_cert: secrets.smg_ca_cert,
             smg_gateway_url: secrets.smg_gateway_url,
         }
     }
@@ -751,9 +817,6 @@ impl BackupInstanceSecrets {
         if let Some(value) = self.smg_registration_secret.as_deref() {
             push_env_assignment(&mut output, "SCRYER_SMG_REGISTRATION_SECRET", value);
         }
-        if let Some(value) = self.smg_ca_cert.as_deref() {
-            push_env_assignment(&mut output, "SCRYER_SMG_CA_CERT", value);
-        }
         if let Some(value) = self.smg_gateway_url.as_deref() {
             push_env_assignment(&mut output, "SCRYER_METADATA_GATEWAY_GRAPHQL_URL", value);
         }
@@ -766,7 +829,6 @@ pub struct BackupExportSecrets {
     pub encryption_master_key: String,
     pub jwt_signing_secret: String,
     pub smg_registration_secret: Option<String>,
-    pub smg_ca_cert: Option<String>,
     pub smg_gateway_url: Option<String>,
 }
 
@@ -1482,18 +1544,26 @@ mod tests {
     }
 
     #[test]
+    fn backup_table_catalog_exports_download_identity_states() {
+        let classification = BACKUP_TABLE_CATALOG
+            .iter()
+            .find(|entry| entry.table == "download_identity_states")
+            .map(|entry| entry.classification);
+
+        assert_eq!(classification, Some(BackupTableClassification::Export));
+    }
+
+    #[test]
     fn env_file_writer_escapes_multiline_values() {
         let secrets = BackupInstanceSecrets {
             encryption_master_key: "enc".into(),
             jwt_signing_secret: "jwt".into(),
             smg_registration_secret: Some("reg".into()),
-            smg_ca_cert: Some("line1\nline2".into()),
             smg_gateway_url: Some("https://smg.example/graphql".into()),
         };
 
         let env_file = secrets.to_env_file();
         assert!(env_file.contains("SCRYER_ENCRYPTION_KEY=\"enc\""));
-        assert!(env_file.contains("SCRYER_SMG_CA_CERT=\"line1\\nline2\""));
     }
 
     #[test]
@@ -1927,7 +1997,6 @@ mod tests {
                 encryption_master_key: "master-key".to_string(),
                 jwt_signing_secret: "jwt-secret".to_string(),
                 smg_registration_secret: Some("smg-secret".to_string()),
-                smg_ca_cert: None,
                 smg_gateway_url: None,
             },
         })?;

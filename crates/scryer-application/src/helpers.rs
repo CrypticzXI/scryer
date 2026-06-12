@@ -3,7 +3,6 @@ use std::future::Future;
 
 pub(crate) const INHERIT_QUALITY_PROFILE_VALUE: &str = "__inherit__";
 pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 3] = ["nzbget", "sabnzbd", "weaver"];
-pub(crate) const INDEXER_PROVIDER_NZBGEEK: &str = "nzbgeek";
 
 pub(crate) fn parsed_episode_lookup_season(
     ep_meta: &ParsedEpisodeMetadata,
@@ -47,12 +46,19 @@ fn native_accepted_inputs(client_type: &str) -> Vec<DownloadSourceKind> {
     }
 }
 
-/// Lower the calling thread's scheduling priority via `nice(10)`.
+/// Lower the calling thread's scheduling priority.
 ///
 /// Call this at the top of CPU-heavy `spawn_blocking` closures (AVIF encoding,
 /// alass alignment, audio decoding) so they don't starve the async runtime.
-/// Safe to call on any Unix platform; silently ignored on Windows.
-#[cfg(unix)]
+/// Safe to call on supported platforms; silently ignored on Windows.
+#[cfg(target_os = "macos")]
+pub fn nice_thread() {
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn nice_thread() {
     unsafe {
         libc::nice(10);

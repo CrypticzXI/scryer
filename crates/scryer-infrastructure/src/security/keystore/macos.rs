@@ -48,15 +48,18 @@ impl KeyStore for MacOSKeychain {
 
 #[cfg(test)]
 mod tests {
-    // Keychain tests require an interactive macOS session with a login keychain.
-    // They cannot run in CI (headless runners get errSecInteractionNotAllowed).
-    // Run manually: cargo nextest run -p scryer-infrastructure keystore::macos --ignored
+    // The real Keychain round trip requires an interactive macOS login keychain
+    // and may prompt for the user's password. Keep it out of automated tests;
+    // run with SCRYER_MANUAL_KEYCHAIN_TEST=1 only while debugging this backend.
 
     use super::*;
 
     #[test]
-    #[ignore = "requires macOS login keychain — run manually"]
-    fn keychain_round_trip() {
+    fn manual_keychain_round_trip_is_opt_in() {
+        if std::env::var("SCRYER_MANUAL_KEYCHAIN_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+
         let store = MacOSKeychain;
         let test_key = "dGVzdC1rZXktZm9yLWtleWNoYWlu";
         let original = store.get_key().unwrap();

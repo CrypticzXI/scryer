@@ -9,8 +9,10 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import {
   catalogSearchTitlesQuery,
   globalSearchInitQuery,
+  globalSearchRequesterInitQuery,
   metadataMovieQuery,
   metadataSeriesQuery,
+  requestableLibrariesQuery,
   searchMetadataMultiQuery,
   searchMetadataQuery,
   titlesByExternalIdsQuery,
@@ -19,13 +21,14 @@ import {
   isAbortError,
   makeAbortableFetch,
 } from "@/lib/graphql/urql-client";
-import { addTitleMutation } from "@/lib/graphql/mutations";
+import { addTitleMutation, submitMediaRequestMutation } from "@/lib/graphql/mutations";
 import {
   ANIME_INTER_SEASON_MOVIES_KEY,
   ANIME_MONITOR_SPECIALS_KEY,
   QUALITY_PROFILE_CATALOG_KEY,
   QUALITY_PROFILE_ID_KEY,
   QUALITY_PROFILE_INHERIT_VALUE,
+  REQUEST_QUALITY_PROFILE_IDS_KEY,
 } from "@/lib/constants/settings";
 import {
   coerceProfileSetting,
@@ -33,6 +36,12 @@ import {
 } from "@/lib/utils/quality-profiles";
 import { FACET_REGISTRY, facetById } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import type { AuthUser } from "@/lib/hooks/use-auth";
+import {
+  hasAnyLibraryPermission,
+  LIBRARY_PERMISSIONS,
+} from "@/lib/utils/permissions";
 
 export type MetadataSearchResults = Record<string, MetadataTvdbSearchItem[]>;
 
@@ -61,6 +70,12 @@ export type MetadataCatalogAddOptions = {
   monitorSpecials?: boolean;
   interSeasonMovies?: boolean;
   rootFolder?: string;
+};
+
+export type MetadataCatalogRequestOptions = {
+  libraryId: string;
+  requestedQualityProfileId?: string;
+  requestedMonitorType?: MetadataCatalogMonitorType;
 };
 
 export type AnimeCatalogDefaults = {
@@ -198,9 +213,12 @@ const AUTOCOMPLETE_DEBOUNCE_MS = 250;
 const AUTOCOMPLETE_LIMIT = 10;
 
 type UseGlobalSearchArgs = {
+  authenticatedUser: AuthUser;
   queueFacet: Facet;
   uiLanguage: LocaleCode;
 };
+
+type CatalogConfigAccessMode = "manager" | "requester";
 
 export interface UseGlobalSearchResult {
   globalSearch: string;
@@ -230,12 +248,18 @@ export interface UseGlobalSearchResult {
     facet: Facet,
     options: MetadataCatalogAddOptions,
   ) => Promise<string | null>;
+  requestMetadataSearchResult: (
+    result: MetadataTvdbSearchItem,
+    facet: Facet,
+    options: MetadataCatalogRequestOptions,
+  ) => Promise<boolean>;
   isMetadataSearchResultInCatalog: (
     facet: Facet,
     result: MetadataTvdbSearchItem,
   ) => boolean;
   rootFoldersByFacet: Record<Facet, RootFolderOption[]>;
   librariesByFacet: Record<Facet, LibraryRecord[]>;
+  requestableLibrariesByFacet: Record<Facet, LibraryRecord[]>;
   queueFacet: Facet;
   setQueueFacet: (value: Facet) => void;
   catalogChangeSignal: number;
@@ -268,13 +292,55 @@ function normalizeCatalogAddRequestKey(
   return `${facet}|${normalizedIds}`;
 }
 
+function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, LibraryRecord[]> {
+  return libraries.reduce(
+    (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
+      acc[library.facet]?.push(library);
+      return acc;
+    },
+    { movie: [], series: [], anime: [] },
+  );
+}
+
+function sameLibrariesByFacet(
+  previous: Record<Facet, LibraryRecord[]>,
+  next: Record<Facet, LibraryRecord[]>,
+): boolean {
+  return (["movie", "series", "anime"] as Facet[]).every((facet) => {
+    const previousFacetLibraries = previous[facet];
+    const nextFacetLibraries = next[facet];
+    return (
+      previousFacetLibraries.length === nextFacetLibraries.length &&
+      previousFacetLibraries.every((entry, index) => {
+        const candidate = nextFacetLibraries[index];
+        return (
+          candidate &&
+          entry.id === candidate.id &&
+          entry.name === candidate.name &&
+          entry.slug === candidate.slug &&
+          (entry.requestQualityProfileDefaultId ?? null) ===
+            (candidate.requestQualityProfileDefaultId ?? null) &&
+          (entry.requestQualityProfileIds ?? []).join("|") ===
+            (candidate.requestQualityProfileIds ?? []).join("|") &&
+          entry.roots.length === candidate.roots.length
+        );
+      })
+    );
+  });
+}
+
 export function useGlobalSearch({
+  authenticatedUser,
   queueFacet: initialQueueFacet,
   uiLanguage,
 }: UseGlobalSearchArgs): UseGlobalSearchResult {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const canManageTitle = hasAnyLibraryPermission(
+    authenticatedUser,
+    LIBRARY_PERMISSIONS.manageTitles,
+  );
   const [queueFacet, setQueueFacet] = useState<Facet>(initialQueueFacet);
   const catalogChangeSignal = 0;
   const sortByRelevance = useCallback((results: MetadataTvdbSearchItem[], query: string) => {
@@ -333,11 +399,19 @@ export function useGlobalSearch({
   const [librariesByFacet, setLibrariesByFacet] = useState<Record<Facet, LibraryRecord[]>>(
     () => ({ movie: [], series: [], anime: [] }),
   );
+  const [requestableLibrariesByFacet, setRequestableLibrariesByFacet] = useState<
+    Record<Facet, LibraryRecord[]>
+  >(() => ({ movie: [], series: [], anime: [] }));
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
-  const catalogConfigRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingRequestKeysRef = useRef<Set<string>>(new Set());
+  const catalogConfigRefreshPromiseRef = useRef<{
+    mode: CatalogConfigAccessMode;
+    promise: Promise<void>;
+  } | null>(null);
+  const catalogConfigRefreshTokenRef = useRef(0);
 
   const cancelAutocomplete = useCallback(() => {
     autocompleteRequestId.current += 1;
@@ -388,23 +462,42 @@ export function useGlobalSearch({
 
   const isCatalogConfigReady = useCallback(
     (facet: Facet) =>
-      catalogQualityProfileOptions.length > 0 &&
-      (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0),
-    [catalogQualityProfileOptions, librariesByFacet, rootFoldersByFacet],
+      requestableLibrariesByFacet[facet].length > 0 ||
+      (catalogQualityProfileOptions.length > 0 &&
+        (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0)),
+    [
+      catalogQualityProfileOptions,
+      librariesByFacet,
+      requestableLibrariesByFacet,
+      rootFoldersByFacet,
+    ],
   );
 
   const refreshCatalogQualityProfileState = useCallback(async () => {
-    if (catalogConfigRefreshPromiseRef.current) {
-      return catalogConfigRefreshPromiseRef.current;
+    const accessMode: CatalogConfigAccessMode = canManageTitle
+      ? "manager"
+      : "requester";
+    if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+      return catalogConfigRefreshPromiseRef.current.promise;
     }
+
+    const refreshToken = catalogConfigRefreshTokenRef.current + 1;
+    catalogConfigRefreshTokenRef.current = refreshToken;
+    const isCurrentRefresh = () =>
+      catalogConfigRefreshTokenRef.current === refreshToken;
 
     const refreshPromise = (async () => {
       setCatalogConfigLoading(true);
       try {
         const { data, error } = await client
-          .query(globalSearchInitQuery, {}, { requestPolicy: "network-only" })
+          .query(
+            canManageTitle ? globalSearchInitQuery : globalSearchRequesterInitQuery,
+            {},
+            { requestPolicy: "network-only" },
+          )
           .toPromise();
         if (error) throw error;
+        if (!isCurrentRefresh()) return;
 
         const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
           (profile: { id: string; name: string }) => ({
@@ -441,60 +534,84 @@ export function useGlobalSearch({
             : nextOverrides,
         );
 
-        const nextAnimeDefaults: AnimeCatalogDefaults = {
-          monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
-          interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
-        };
-        setAnimeCatalogDefaults((previous) =>
-          previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
-          previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
-            ? previous
-            : nextAnimeDefaults,
-        );
+        if (canManageTitle) {
+          const nextAnimeDefaults: AnimeCatalogDefaults = {
+            monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
+            interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
+          };
+          setAnimeCatalogDefaults((previous) =>
+            previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
+            previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
+              ? previous
+              : nextAnimeDefaults,
+          );
 
-        const nextRootFolders: Record<Facet, RootFolderOption[]> = {
-          movie: data.movieSettings?.rootFolders ?? [],
-          series: data.seriesSettings?.rootFolders ?? [],
-          anime: data.animeSettings?.rootFolders ?? [],
-        };
-        setRootFoldersByFacet((previous) => {
-          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-            const prev = previous[f];
-            const next = nextRootFolders[f];
-            return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
+          const nextRootFolders: Record<Facet, RootFolderOption[]> = {
+            movie: data.movieSettings?.rootFolders ?? [],
+            series: data.seriesSettings?.rootFolders ?? [],
+            anime: data.animeSettings?.rootFolders ?? [],
+          };
+          setRootFoldersByFacet((previous) => {
+            const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+              const prev = previous[f];
+              const next = nextRootFolders[f];
+              return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
+            });
+            return same ? previous : nextRootFolders;
           });
-          return same ? previous : nextRootFolders;
-        });
+        }
 
-        const nextLibrariesByFacet = (data.manageableLibraries ?? []).reduce(
-          (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
-            acc[library.facet]?.push(library);
-            return acc;
-          },
-          { movie: [], series: [], anime: [] },
+        const nextLibrariesByFacet = librariesByFacetFromList(
+          data.manageableLibraries ?? [],
+        );
+        const nextRequestableLibrariesByFacet = librariesByFacetFromList(
+          data.requestableLibraries ?? [],
         );
         setLibrariesByFacet((previous) => {
-          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-            const prev = previous[f];
-            const next = nextLibrariesByFacet[f];
-            return prev.length === next.length && prev.every((entry, index) => {
-              const candidate = next[index];
-              return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
-            });
-          });
-          return same ? previous : nextLibrariesByFacet;
+          return sameLibrariesByFacet(previous, nextLibrariesByFacet)
+            ? previous
+            : nextLibrariesByFacet;
+        });
+        setRequestableLibrariesByFacet((previous) => {
+          return sameLibrariesByFacet(previous, nextRequestableLibrariesByFacet)
+            ? previous
+            : nextRequestableLibrariesByFacet;
         });
       } catch {
+        try {
+          const { data, error } = await client
+            .query(requestableLibrariesQuery, {}, { requestPolicy: "network-only" })
+            .toPromise();
+          if (error) throw error;
+          if (!isCurrentRefresh()) return;
+          const nextRequestableLibrariesByFacet = librariesByFacetFromList(
+            data?.requestableLibraries ?? [],
+          );
+          setRequestableLibrariesByFacet((previous) => {
+            return sameLibrariesByFacet(previous, nextRequestableLibrariesByFacet)
+              ? previous
+              : nextRequestableLibrariesByFacet;
+          });
+        } catch {
+          // ignore requestable library fallback failures here; search remains functional
+        }
         // ignore settings fetch failures here; search remains functional
       } finally {
-        setCatalogConfigLoading(false);
-        catalogConfigRefreshPromiseRef.current = null;
+        if (isCurrentRefresh()) {
+          setCatalogConfigLoading(false);
+          if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+            catalogConfigRefreshPromiseRef.current = null;
+          }
+        }
       }
     })();
 
-    catalogConfigRefreshPromiseRef.current = refreshPromise;
+    catalogConfigRefreshPromiseRef.current = {
+      mode: accessMode,
+      promise: refreshPromise,
+    };
     return refreshPromise;
-  }, [client]);
+  }, [canManageTitle, client]);
 
   const ensureCatalogConfigReady = useCallback(
     async (facet: Facet) => {
@@ -516,6 +633,7 @@ export function useGlobalSearch({
       new Set([
         QUALITY_PROFILE_CATALOG_KEY,
         QUALITY_PROFILE_ID_KEY,
+        REQUEST_QUALITY_PROFILE_IDS_KEY,
         ...FACET_REGISTRY.map((f) => f.rootFoldersKey),
         ...FACET_REGISTRY.map((f) => f.folderSettingKey),
         ANIME_MONITOR_SPECIALS_KEY,
@@ -1043,6 +1161,64 @@ export function useGlobalSearch({
     ],
   );
 
+  const requestMetadataSearchResult = useCallback(
+    async (
+      result: MetadataTvdbSearchItem,
+      facet: Facet,
+      options: MetadataCatalogRequestOptions,
+    ) => {
+      const name = result.name.trim();
+      const libraryId = options.libraryId.trim();
+      if (!name || !libraryId) {
+        setGlobalStatus(t("status.titleRequired"));
+        return false;
+      }
+
+      const tvdbId = String(result.tvdbId).trim();
+      const imdbId = result.imdbId?.trim();
+      const externalIds = [
+        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+      ];
+      const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
+      if (pendingRequestKeysRef.current.has(requestKey)) {
+        return false;
+      }
+      pendingRequestKeysRef.current.add(requestKey);
+      try {
+        const { error } = await client.mutation(submitMediaRequestMutation, {
+          input: {
+            libraryId,
+            facet,
+            title: name,
+            externalIds,
+            posterUrl: result.posterUrl || undefined,
+            year: result.year ?? undefined,
+            overview: result.overview || undefined,
+            sortTitle: result.sortTitle || undefined,
+            slug: result.slug || undefined,
+            runtimeMinutes: result.runtimeMinutes ?? undefined,
+            language: result.language || undefined,
+            contentStatus: result.status || undefined,
+            requestedQualityProfileId: options.requestedQualityProfileId || undefined,
+            requestedMonitorType: options.requestedMonitorType || undefined,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.requestSubmitted", { name }));
+        dispatchNavigationBadgesRefresh();
+        await runMetadataAutocomplete(globalSearch.trim());
+        return true;
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        return false;
+      } finally {
+        pendingRequestKeysRef.current.delete(requestKey);
+      }
+    },
+    [client, globalSearch, runMetadataAutocomplete, setGlobalStatus, t],
+  );
+
   /** Force-trigger global search (bypasses autocomplete min-char threshold). */
   const forceSearchGlobal = useCallback(async () => {
     const trimmed = globalSearch.trim();
@@ -1075,9 +1251,11 @@ export function useGlobalSearch({
     resolveDefaultQualityProfileIdForFacet,
     animeCatalogDefaults,
     addMetadataSearchResultToCatalog,
+    requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     rootFoldersByFacet,
     librariesByFacet,
+    requestableLibrariesByFacet,
     queueFacet,
     setQueueFacet,
     catalogChangeSignal,

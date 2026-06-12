@@ -11,3 +11,15 @@ export type DeletePreview = {
   targetLabel: string;
   samplePaths: string[];
 };
+
+export type DeleteTitlePreviewResult = {
+  titleId: string;
+  preview: DeletePreview | null;
+  error: string | null;
+};
+
+export type DeleteTitlesPreview = {
+  preview: DeletePreview;
+  items: DeleteTitlePreviewResult[];
+  failedCount: number;
+};

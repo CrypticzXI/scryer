@@ -131,6 +131,21 @@ owner=$(probe_owner "$config_volume")
 rootfs_container_id=$(docker create --platform "$PLATFORM" "$IMAGE_TAG" --version)
 docker export "$rootfs_container_id" | tar -C "$rootfs_dir" -xf -
 
+[ -x "$rootfs_dir/opt/scryer/scryer" ] || {
+    printf 'assertion failed: runtime image should include the single scryer payload at /opt/scryer/scryer\n' >&2
+    exit 1
+}
+
+[ -x "$rootfs_dir/opt/scryer/scryer-launcher" ] || {
+    printf 'assertion failed: runtime image should include the launcher at /opt/scryer/scryer-launcher\n' >&2
+    exit 1
+}
+
+if find "$rootfs_dir/opt/scryer" -maxdepth 1 -type f \( -name 'scryer-portable' -o -name 'scryer-haswell' -o -name 'scryer-arm64-optimized' \) | grep . >/dev/null; then
+    printf 'assertion failed: runtime image should not include legacy CPU-lane payload names\n' >&2
+    exit 1
+fi
+
 [ -f "$rootfs_dir/etc/ssl/certs/ca-certificates.crt" ] || {
     printf 'assertion failed: runtime image should include a CA bundle at /etc/ssl/certs/ca-certificates.crt\n' >&2
     exit 1

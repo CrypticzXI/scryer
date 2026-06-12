@@ -16,6 +16,7 @@ export type ExternalImportDownloadClient = {
   apiKey: string | null;
   dedupKey: string;
   supported: boolean;
+  requiresPasswordOverride: boolean;
 };
 
 export type ExternalImportIndexer = {

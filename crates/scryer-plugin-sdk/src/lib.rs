@@ -34,10 +34,10 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "1.6.0";
+pub const SDK_VERSION: &str = "3.0.0";
 
 pub fn current_sdk_constraint() -> String {
-    sdk_minor_line_constraint(SDK_VERSION).unwrap_or_else(|| legacy_sdk_constraint(SDK_VERSION))
+    legacy_sdk_constraint(SDK_VERSION)
 }
 
 pub fn sdk_constraint_or_legacy(sdk_version: &str, sdk_constraint: &str) -> String {
@@ -47,6 +47,28 @@ pub fn sdk_constraint_or_legacy(sdk_version: &str, sdk_constraint: &str) -> Stri
     }
 
     legacy_sdk_constraint(sdk_version)
+}
+
+pub fn effective_host_sdk_constraint(sdk_version: Option<&str>, sdk_constraint: &str) -> String {
+    let explicit = sdk_constraint.trim();
+    if explicit.is_empty() {
+        return sdk_version.map_or_else(|| ">=0.0.0".to_string(), legacy_sdk_constraint);
+    }
+
+    if let Some(sdk_version) = sdk_version {
+        if sdk_minor_line_constraint(sdk_version)
+            .as_deref()
+            .is_some_and(|minor_line| {
+                normalize_constraint_literal(explicit) == normalize_constraint_literal(minor_line)
+            })
+        {
+            return legacy_sdk_constraint(sdk_version);
+        }
+    } else if let Some(abi_line) = abi_major_constraint_from_generated_minor_line(explicit) {
+        return abi_line;
+    }
+
+    explicit.to_string()
 }
 
 pub fn plugin_descriptor_sdk_constraint(descriptor: &PluginDescriptor) -> String {
@@ -74,17 +96,21 @@ pub fn validate_sdk_contract(
         .map_err(|error| format!("invalid host sdk_version {host_sdk_version}: {error}"))?;
     let descriptor_version = Version::parse(sdk_version.trim())
         .map_err(|error| format!("{subject}: invalid sdk_version {sdk_version}: {error}"))?;
-    let constraint = sdk_constraint_or_legacy(sdk_version, sdk_constraint);
-    let req = VersionReq::parse(constraint.trim())
-        .map_err(|error| format!("{subject}: invalid sdk_constraint {constraint}: {error}"))?;
-    if !req.matches(&descriptor_version) {
+    let descriptor_constraint = sdk_constraint_or_legacy(sdk_version, sdk_constraint);
+    let descriptor_req = VersionReq::parse(descriptor_constraint.trim()).map_err(|error| {
+        format!("{subject}: invalid sdk_constraint {descriptor_constraint}: {error}")
+    })?;
+    if !descriptor_req.matches(&descriptor_version) {
         return Err(format!(
-            "{subject}: sdk_version {sdk_version} does not satisfy sdk_constraint {constraint}"
+            "{subject}: sdk_version {sdk_version} does not satisfy sdk_constraint {descriptor_constraint}"
         ));
     }
-    if !req.matches(&host_version) {
+    let host_constraint = effective_host_sdk_constraint(Some(sdk_version), sdk_constraint);
+    let host_req = VersionReq::parse(host_constraint.trim())
+        .map_err(|error| format!("{subject}: invalid sdk_constraint {host_constraint}: {error}"))?;
+    if !host_req.matches(&host_version) {
         return Err(format!(
-            "{subject}: host sdk_version {host_sdk_version} does not satisfy sdk_constraint {constraint}"
+            "{subject}: host sdk_version {host_sdk_version} does not satisfy sdk_constraint {host_constraint}"
         ));
     }
     Ok(())
@@ -199,7 +225,18 @@ fn legacy_sdk_constraint(version: &str) -> String {
     let Some(version) = parsed else {
         return ">=0.0.0".to_string();
     };
-    format!(">={}.0.0, <{}.0.0", version.major, version.major + 1)
+    let (lower_major, lower_minor) = if version.major == 1 {
+        (1, 0)
+    } else {
+        (version.major, version.minor)
+    };
+    let upper_major = if version.major == 1 {
+        // SDK 2 kept the SDK-v1 guest ABI loadable; SDK 3 is the hard boundary.
+        3
+    } else {
+        version.major + 1
+    };
+    format!(">={lower_major}.{lower_minor}.0, <{upper_major}.0.0")
 }
 
 fn sdk_minor_line_constraint(version: &str) -> Option<String> {
@@ -213,9 +250,44 @@ fn sdk_minor_line_constraint(version: &str) -> Option<String> {
     ))
 }
 
+fn normalize_constraint_literal(raw: &str) -> String {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn abi_major_constraint_from_generated_minor_line(constraint: &str) -> Option<String> {
+    let normalized = normalize_constraint_literal(constraint);
+    let mut parts = normalized.split(", ");
+    let lower = parts.next()?.strip_prefix(">=")?.trim();
+    let upper = parts.next()?.strip_prefix('<')?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let lower = Version::parse(lower).ok()?;
+    let upper = Version::parse(upper).ok()?;
+    if !lower.pre.is_empty()
+        || !lower.build.is_empty()
+        || !upper.pre.is_empty()
+        || !upper.build.is_empty()
+        || lower.patch != 0
+        || upper.patch != 0
+        || lower.major != upper.major
+        || upper.minor != lower.minor + 1
+    {
+        return None;
+    }
+
+    Some(legacy_sdk_constraint(&lower.to_string()))
+}
+
 pub const EXPORT_DESCRIBE: &str = "scryer_describe";
 pub const EXPORT_VALIDATE_CONFIG: &str = "scryer_validate_config";
 pub const EXPORT_INDEXER_SEARCH: &str = "scryer_indexer_search";
+pub const EXPORT_INDEXER_ACTION: &str = "scryer_indexer_action";
 pub const EXPORT_DOWNLOAD_ADD: &str = "scryer_download_add";
 pub const EXPORT_DOWNLOAD_LIST_QUEUE: &str = "scryer_download_list_queue";
 pub const EXPORT_DOWNLOAD_LIST_HISTORY: &str = "scryer_download_list_history";
@@ -225,9 +297,11 @@ pub const EXPORT_DOWNLOAD_MARK_IMPORTED: &str = "scryer_download_mark_imported";
 pub const EXPORT_DOWNLOAD_STATUS: &str = "scryer_download_status";
 pub const EXPORT_DOWNLOAD_TEST_CONNECTION: &str = "scryer_download_test_connection";
 pub const EXPORT_NOTIFICATION_SEND: &str = "scryer_notification_send";
+pub const EXPORT_NOTIFICATION_ACTION: &str = "scryer_notification_action";
 pub const EXPORT_SUBTITLE_SEARCH: &str = "scryer_subtitle_search";
 pub const EXPORT_SUBTITLE_DOWNLOAD: &str = "scryer_subtitle_download";
 pub const EXPORT_SUBTITLE_GENERATE: &str = "scryer_subtitle_generate";
+pub const EXPORT_SUBSYNC_ALIGN: &str = "scryer_subsync_align";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1095,6 +1169,10 @@ pub enum NotificationEventType {
     PostProcessingCompleted,
     SubtitleDownloaded,
     SubtitleSearchFailed,
+    MediaRequestSubmitted,
+    MediaRequestApproved,
+    MediaRequestRejected,
+    MediaRequestCanceled,
     HealthIssue,
     HealthRestored,
     ApplicationUpdate,
@@ -1118,6 +1196,10 @@ impl NotificationEventType {
             Self::PostProcessingCompleted => "post_processing_completed",
             Self::SubtitleDownloaded => "subtitle_downloaded",
             Self::SubtitleSearchFailed => "subtitle_search_failed",
+            Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestApproved => "media_request_approved",
+            Self::MediaRequestRejected => "media_request_rejected",
+            Self::MediaRequestCanceled => "media_request_canceled",
             Self::HealthIssue => "health_issue",
             Self::HealthRestored => "health_restored",
             Self::ApplicationUpdate => "application_update",
@@ -1296,6 +1378,149 @@ pub struct SubtitlePluginGenerateResponse {
     pub format: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncAudioCodec {
+    Ac3,
+    Eac3,
+    Dts,
+    DtsHdMaCore,
+    TrueHd,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AudioStreamSelector {
+    Default,
+    StreamIndex { index: u32 },
+    Language { language: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncAlignSkipReason {
+    AudioDecodeFailed,
+    NotEnoughReferenceSpans,
+    WeakAlignment,
+    LowAlignmentConsistency,
+    OffsetExceedsMaximum,
+    OffsetTooSmall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleTimingSpan {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAlignInputRef {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncInputSubtitle {
+    pub content_base64: String,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncReferenceSubtitle {
+    pub content_base64: String,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAlignRequest {
+    pub input: SubtitleSyncAlignInputRef,
+    pub subtitle: SubtitleSyncInputSubtitle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_subtitle: Option<SubtitleSyncReferenceSubtitle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_spans: Vec<SubtitleTimingSpan>,
+    pub max_offset_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_options: Option<SubtitleSyncOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<AudioStreamSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_codec: Option<SubtitleSyncAudioCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncOptions {
+    #[serde(default)]
+    pub start_seconds: u32,
+    #[serde(default = "default_max_subtitle_duration_ms")]
+    pub max_subtitle_duration_ms: u64,
+    #[serde(default = "default_precise_framerate_search")]
+    pub precise_framerate_search: bool,
+    #[serde(default = "default_output_encoding")]
+    pub output_encoding: String,
+}
+
+impl Default for SubtitleSyncOptions {
+    fn default() -> Self {
+        Self {
+            start_seconds: 0,
+            max_subtitle_duration_ms: default_max_subtitle_duration_ms(),
+            precise_framerate_search: default_precise_framerate_search(),
+            output_encoding: default_output_encoding(),
+        }
+    }
+}
+
+fn default_max_subtitle_duration_ms() -> u64 {
+    10_000
+}
+
+fn default_precise_framerate_search() -> bool {
+    true
+}
+
+fn default_output_encoding() -> String {
+    "same".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncRewrittenSubtitle {
+    pub content_base64: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAlignResponse {
+    pub applied: bool,
+    pub offset_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten_subtitle: Option<SubtitleSyncRewrittenSubtitle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_framerate_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nosplit_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<SubtitleSyncAlignSkipReason>,
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadClientAddRequest {
     pub source: PluginDownloadSource,
@@ -1321,6 +1546,12 @@ pub struct PluginDownloadSource {
     pub torrent_file_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_bytes_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1363,6 +1594,8 @@ pub struct PluginTorrentOptions {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadRelease {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1417,6 +1650,8 @@ pub struct PluginDownloadClientAddResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadItem {
     pub client_item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub title: String,
@@ -1496,6 +1731,8 @@ pub struct PluginTorrentItem {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginCompletedDownload {
     pub client_item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub name: String,
@@ -1618,8 +1855,6 @@ pub struct PluginNotificationTitle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub banner_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster_url: Option<String>,
@@ -1646,6 +1881,10 @@ pub struct PluginNotificationEpisode {
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episode_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1853,6 +2092,30 @@ pub struct PluginNotificationManualInteraction {
     pub link: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PluginNotificationMediaRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_quality_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_quality_profile_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_monitor_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_quality_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_quality_profile_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_title_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginNotificationRequest {
     #[serde(default = "default_notification_request_schema_version")]
@@ -1895,6 +2158,8 @@ pub struct PluginNotificationRequest {
     pub application_update: Option<PluginNotificationApplicationUpdate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_interaction: Option<PluginNotificationManualInteraction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_request: Option<PluginNotificationMediaRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2057,6 +2322,8 @@ struct PluginSdkSchemaDocument {
     subtitle_validate_config_result: PluginResult<SubtitlePluginValidateConfigResponse>,
     subtitle_generate_request: SubtitlePluginGenerateRequest,
     subtitle_generate_result: PluginResult<SubtitlePluginGenerateResponse>,
+    subtitle_sync_align_request: SubtitleSyncAlignRequest,
+    subtitle_sync_align_result: PluginResult<SubtitleSyncAlignResponse>,
     download_add_request: PluginDownloadClientAddRequest,
     download_add_result: PluginResult<PluginDownloadClientAddResponse>,
     download_queue_result: PluginResult<Vec<PluginDownloadItem>>,
@@ -2084,6 +2351,45 @@ mod tests {
     use crate::torrent::{
         choose_source_kind, decode_torrent_bytes, normalize_info_hash_pair, seed_seconds_to_minutes,
     };
+
+    #[test]
+    fn current_sdk_constraint_uses_current_v3_major_floor() {
+        assert_eq!(current_sdk_constraint(), ">=3.0.0, <4.0.0");
+    }
+
+    #[test]
+    fn effective_host_sdk_constraint_widens_legacy_minor_line() {
+        assert_eq!(
+            effective_host_sdk_constraint(Some("1.5.0"), ">=1.5.0, <1.6.0"),
+            ">=1.0.0, <3.0.0"
+        );
+        assert_eq!(
+            effective_host_sdk_constraint(None, ">=1.5.0, <1.6.0"),
+            ">=1.0.0, <3.0.0"
+        );
+    }
+
+    #[test]
+    fn effective_host_sdk_constraint_keeps_non_generated_explicit_pin() {
+        assert_eq!(
+            effective_host_sdk_constraint(Some("1.5.0"), ">=1.5.0, <1.5.2"),
+            ">=1.5.0, <1.5.2"
+        );
+    }
+
+    #[test]
+    fn validate_sdk_contract_rejects_legacy_minor_line_plugin_on_sdk3_host() {
+        let err = validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
+            .expect_err("legacy minor-line plugin should not load across SDK 3 boundary");
+        assert!(err.contains("host sdk_version 3.0.0"));
+    }
+
+    #[test]
+    fn validate_sdk_contract_rejects_sdk2_plugin_on_sdk3_host() {
+        let err = validate_sdk_contract("sdk2-plugin", "2.3.0", ">=2.3.0, <3.0.0", SDK_VERSION)
+            .expect_err("SDK 2 plugin should not load on SDK 3 host");
+        assert!(err.contains("host sdk_version 3.0.0"));
+    }
 
     #[test]
     fn tagged_descriptor_round_trips() {
@@ -2324,6 +2630,9 @@ mod tests {
                 torrent_url: Some("https://tracker.example/release.torrent".to_string()),
                 torrent_file_name: Some("release.torrent".to_string()),
                 torrent_content_type: Some("application/x-bittorrent".to_string()),
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
                 source_title: None,
                 source_password: None,
             },
@@ -2371,6 +2680,122 @@ mod tests {
         assert_eq!(
             seed_seconds_to_minutes(request.release.seed_goal_seconds),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_choose_nzb_url_source() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::NzbUrl,
+                download_url: Some("https://indexer.example/release.nzb".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: None,
+                nzb_file_name: Some("release.nzb".to_string()),
+                nzb_content_type: Some("application/x-nzb".to_string()),
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: None,
+        };
+        let capabilities = DownloadTorrentCapabilities {
+            supported_sources: vec![DownloadInputKind::NzbUrl],
+            ..DownloadTorrentCapabilities::default()
+        };
+
+        assert_eq!(
+            choose_source_kind(Some(&capabilities), &request),
+            Some(DownloadInputKind::NzbUrl)
+        );
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::NzbUrl)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_choose_nzb_bytes_source() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::Nzb,
+                download_url: Some("https://indexer.example/release.nzb".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: None,
+                torrent_content_type: None,
+                nzb_bytes_base64: Some("bmti".to_string()),
+                nzb_file_name: Some("release.nzb".to_string()),
+                nzb_content_type: Some("application/x-nzb".to_string()),
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: Some(PluginTorrentOptions {
+                source_preference: vec![DownloadInputKind::Nzb, DownloadInputKind::NzbUrl],
+                ..PluginTorrentOptions::default()
+            }),
+        };
+
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::Nzb)
+        );
+    }
+
+    #[test]
+    fn torrent_helpers_do_not_treat_torrent_download_url_as_nzb_url() {
+        let request = PluginDownloadClientAddRequest {
+            source: PluginDownloadSource {
+                kind: DownloadInputKind::TorrentUrl,
+                download_url: Some("https://tracker.example/release.torrent".to_string()),
+                magnet_uri: None,
+                torrent_bytes_base64: None,
+                torrent_url: None,
+                torrent_file_name: Some("release.torrent".to_string()),
+                torrent_content_type: Some("application/x-bittorrent".to_string()),
+                nzb_bytes_base64: None,
+                nzb_file_name: None,
+                nzb_content_type: None,
+                source_title: None,
+                source_password: None,
+            },
+            release: PluginDownloadRelease::default(),
+            title: PluginDownloadTitle {
+                title_id: Some("title-1".to_string()),
+                title_name: "Example".to_string(),
+                media_facet: "series".to_string(),
+                tags: Vec::new(),
+            },
+            routing: PluginDownloadRouting::default(),
+            torrent: Some(PluginTorrentOptions {
+                source_preference: vec![DownloadInputKind::NzbUrl],
+                ..PluginTorrentOptions::default()
+            }),
+        };
+
+        assert_eq!(
+            choose_source_kind(None, &request),
+            Some(DownloadInputKind::TorrentUrl)
         );
     }
 
@@ -2476,9 +2901,38 @@ mod tests {
     }
 
     #[test]
+    fn notification_media_request_payload_round_trips() {
+        let request = PluginNotificationRequest {
+            event_type: NotificationEventType::MediaRequestApproved,
+            media_request: Some(PluginNotificationMediaRequest {
+                request_id: Some("request-1".to_string()),
+                library_id: Some("library-1".to_string()),
+                status: Some("approved".to_string()),
+                facet: Some("movie".to_string()),
+                requested_quality_profile_id: Some("quality-requested".to_string()),
+                requested_quality_profile_name: Some("Requested HD".to_string()),
+                requested_monitor_type: None,
+                approved_quality_profile_id: Some("quality-approved".to_string()),
+                approved_quality_profile_name: Some("Approved HD".to_string()),
+                created_title_id: Some("title-1".to_string()),
+            }),
+            ..sample_notification_request()
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"event_type\":\"media_request_approved\""));
+        assert!(json.contains("\"media_request\""));
+
+        let parsed: PluginNotificationRequest = serde_json::from_str(&json).unwrap();
+        let media_request = parsed.media_request.expect("media request payload");
+        assert_eq!(media_request.status.as_deref(), Some("approved"));
+        assert_eq!(media_request.created_title_id.as_deref(), Some("title-1"));
+    }
+
+    #[test]
     fn committed_schema_matches_generated_types() {
         let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("schemas/plugin-sdk-v1.schema.json");
+            .join("schemas/plugin-sdk-v3.schema.json");
         let expected = std::fs::read_to_string(schema_path).unwrap();
         assert_eq!(expected, plugin_sdk_schema_json());
     }
@@ -2487,6 +2941,20 @@ mod tests {
     fn notification_schema_stays_provider_neutral() {
         let schema = plugin_sdk_schema_json();
         assert!(!schema.contains("Sonarr"));
+    }
+
+    #[test]
+    fn notification_schema_includes_media_request_events() {
+        let schema = plugin_sdk_schema_json();
+        for event_type in [
+            "media_request_submitted",
+            "media_request_approved",
+            "media_request_rejected",
+            "media_request_canceled",
+        ] {
+            assert!(schema.contains(event_type));
+        }
+        assert!(schema.contains("PluginNotificationMediaRequest"));
     }
 
     fn torrent_capability_fixtures() -> Vec<PluginDescriptor> {
@@ -2904,7 +3372,6 @@ mod tests {
                 path: Some("/library/Example Show".to_string()),
                 overview: Some("Overview".to_string()),
                 sort_title: Some("Example Show".to_string()),
-                banner_url: None,
                 background_url: None,
                 poster_url: Some("https://example.invalid/poster.jpg".to_string()),
                 genres: vec!["Drama".to_string()],
@@ -2970,6 +3437,7 @@ mod tests {
             }],
             application_update: None,
             manual_interaction: None,
+            media_request: None,
         }
     }
 }

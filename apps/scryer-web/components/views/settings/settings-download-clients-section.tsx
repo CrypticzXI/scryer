@@ -538,7 +538,7 @@ export function SettingsDownloadClientsSection({
                 );
               })}
               {orderedClients.length === 0 ? (
-                <TableRow>
+                <TableRow id="settings-download-clients-empty-row">
                   <TableCell colSpan={7} className="text-muted-foreground">
                     {t("settings.noDownloadClientsFound")}
                   </TableCell>

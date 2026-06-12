@@ -14,13 +14,13 @@ export function providerRequiresApiKey(fields: ConfigFieldDef[]): boolean {
   return fields.some((field) => {
     const normalizedKey = field.key.trim().toLowerCase();
     const normalizedFieldType = field.fieldType.trim().toLowerCase();
-    return field.required && (
-      normalizedKey === "api_key" ||
-      normalizedKey === "apikey" ||
-      (
-        (normalizedFieldType === "password" || normalizedFieldType === "secret")
-        && normalizedKey.includes("api")
-      )
+    return (
+      field.required &&
+      (normalizedKey === "api_key" ||
+        normalizedKey === "apikey" ||
+        ((normalizedFieldType === "password" ||
+          normalizedFieldType === "secret") &&
+          normalizedKey.includes("api")))
     );
   });
 }
@@ -28,7 +28,8 @@ export function providerRequiresApiKey(fields: ConfigFieldDef[]): boolean {
 export function externalImportDownloadClientNeedsUserSuppliedApiKey(
   downloadClient: ExternalImportDownloadClient,
 ): boolean {
-  const normalizedClientType = downloadClient.scryerClientType?.trim().toLowerCase() ?? null;
+  const normalizedClientType =
+    downloadClient.scryerClientType?.trim().toLowerCase() ?? null;
   return (
     downloadClient.supported &&
     downloadClient.apiKey === null &&
@@ -37,17 +38,25 @@ export function externalImportDownloadClientNeedsUserSuppliedApiKey(
   );
 }
 
+export function externalImportDownloadClientNeedsUserSuppliedPassword(
+  downloadClient: ExternalImportDownloadClient,
+): boolean {
+  return downloadClient.supported && downloadClient.requiresPasswordOverride;
+}
+
 export function externalImportIndexerNeedsUserSuppliedApiKey(
   indexer: ExternalImportIndexer,
   providerConfigFields: ConfigFieldDef[],
 ): boolean {
-  return indexer.supported && (
-    indexer.requiresApiKeyOverride ||
-    (indexer.apiKey === null && providerRequiresApiKey(providerConfigFields))
+  return (
+    indexer.supported &&
+    (indexer.requiresApiKeyOverride ||
+      (indexer.apiKey === null && providerRequiresApiKey(providerConfigFields)))
   );
 }
 
 export type MissingExternalImportApiKeyRequirement = {
+  kind: "api_key" | "password";
   isProwlarr: boolean;
   name: string;
 };
@@ -57,6 +66,7 @@ export function findMissingExternalImportApiKeyRequirement({
   selectedDcKeys,
   selectedIdxKeys,
   dcApiKeyOverrides,
+  dcPasswordOverrides,
   idxApiKeyOverrides,
   indexerProviderConfigFieldsByType,
 }: {
@@ -64,18 +74,35 @@ export function findMissingExternalImportApiKeyRequirement({
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
   dcApiKeyOverrides: Map<string, string>;
+  dcPasswordOverrides: Map<string, string>;
   idxApiKeyOverrides: Map<string, string>;
   indexerProviderConfigFieldsByType: Map<string, ConfigFieldDef[]>;
 }): MissingExternalImportApiKeyRequirement | null {
-  const missingDownloadClient = preview.downloadClients.find((downloadClient) => (
-    selectedDcKeys.has(downloadClient.dedupKey) &&
-    externalImportDownloadClientNeedsUserSuppliedApiKey(downloadClient) &&
-    !(dcApiKeyOverrides.get(downloadClient.dedupKey)?.trim())
-  ));
+  const missingDownloadClient = preview.downloadClients.find(
+    (downloadClient) =>
+      selectedDcKeys.has(downloadClient.dedupKey) &&
+      externalImportDownloadClientNeedsUserSuppliedApiKey(downloadClient) &&
+      !dcApiKeyOverrides.get(downloadClient.dedupKey)?.trim(),
+  );
   if (missingDownloadClient) {
     return {
+      kind: "api_key",
       isProwlarr: false,
       name: missingDownloadClient.name,
+    };
+  }
+
+  const missingPasswordDownloadClient = preview.downloadClients.find(
+    (downloadClient) =>
+      selectedDcKeys.has(downloadClient.dedupKey) &&
+      externalImportDownloadClientNeedsUserSuppliedPassword(downloadClient) &&
+      !dcPasswordOverrides.get(downloadClient.dedupKey)?.trim(),
+  );
+  if (missingPasswordDownloadClient) {
+    return {
+      kind: "password",
+      isProwlarr: false,
+      name: missingPasswordDownloadClient.name,
     };
   }
 
@@ -83,15 +110,20 @@ export function findMissingExternalImportApiKeyRequirement({
     const providerConfigFields =
       indexer.scryerProviderType === null
         ? []
-        : (indexerProviderConfigFieldsByType.get(indexer.scryerProviderType) ?? []);
+        : (indexerProviderConfigFieldsByType.get(indexer.scryerProviderType) ??
+          []);
     return (
       selectedIdxKeys.has(indexer.dedupKey) &&
-      externalImportIndexerNeedsUserSuppliedApiKey(indexer, providerConfigFields) &&
-      !(idxApiKeyOverrides.get(indexer.dedupKey)?.trim())
+      externalImportIndexerNeedsUserSuppliedApiKey(
+        indexer,
+        providerConfigFields,
+      ) &&
+      !idxApiKeyOverrides.get(indexer.dedupKey)?.trim()
     );
   });
   if (missingIndexer) {
     return {
+      kind: "api_key",
       isProwlarr: missingIndexer.scryerProviderType === "prowlarr",
       name: missingIndexer.name,
     };

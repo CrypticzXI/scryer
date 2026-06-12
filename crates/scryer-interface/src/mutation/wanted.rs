@@ -7,7 +7,7 @@ use crate::types::*;
 #[derive(Default)]
 pub(crate) struct WantedMutations;
 
-fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearchPayload {
+pub(crate) fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearchPayload {
     WantedSearchPayload {
         queued_count: outcome.queued_count as i32,
         skipped_in_progress_count: outcome.skipped_in_progress_count as i32,

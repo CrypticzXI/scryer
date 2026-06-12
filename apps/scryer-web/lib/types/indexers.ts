@@ -62,15 +62,9 @@ export type ProviderTypeInfo = {
 };
 
 export function visibleIndexerConfigFields(
-  providerType: string,
+  _providerType: string,
   configFields: ConfigFieldDef[],
 ): ConfigFieldDef[] {
-  const normalizedProviderType = providerType.trim().toLowerCase();
-  if (normalizedProviderType === "nzbgeek") {
-    return configFields.filter(
-      (field) => field.key !== "base_url" && field.key !== "api_path",
-    );
-  }
   return configFields;
 }
 

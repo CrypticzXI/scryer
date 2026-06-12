@@ -4,6 +4,7 @@ import {
   Bell,
   CalendarDays,
   Captions,
+  ClipboardList,
   FolderCog,
   MonitorCog,
   Puzzle,
@@ -75,6 +76,7 @@ export function buildRouteCommands({
 }: BuildRouteCommandsArgs): RouteCommand[] {
   const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
   const canManageUsers = hasAnyAppPermission(user, [
     APP_PERMISSIONS.manageUsers,
@@ -82,17 +84,19 @@ export function buildRouteCommands({
   ]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
-  const mediaCommands = canViewCatalog ? FACET_REGISTRY.flatMap((f) => {
-    const commands: RouteCommand[] = [
-      {
+  const mediaCommands = canViewCatalog || canRequestMedia ? FACET_REGISTRY.flatMap((f) => {
+    const commands: RouteCommand[] = [];
+
+    if (canViewCatalog) {
+      commands.push({
         id: `${f.viewId}-overview`,
         label: t(f.overviewLabelKey),
         description: t(f.navLabelKey),
         keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId),
-      },
-    ];
+      });
+    }
 
     if (canResolveImports && hasImportItemsForView(pendingImportCounts, f.viewId)) {
       commands.push({
@@ -102,6 +106,17 @@ export function buildRouteCommands({
         keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
+      });
+    }
+
+    if (canManageTitle || canRequestMedia) {
+      commands.push({
+        id: `${f.viewId}-requests`,
+        label: `${t(f.navLabelKey)} / ${t("nav.requests")}`,
+        description: t("nav.requests"),
+        keywords: [f.viewId, f.id, "requests", "request queue", "media requests", "library"],
+        icon: ClipboardList,
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "requests"),
       });
     }
 

@@ -8,6 +8,7 @@ use crate::migration_assets::{
     self, CompiledBaseline, CompiledMigration, CompiledMigrationCatalog, CompiledMigrationStep,
     EngineScope, MigrationInstallKind,
 };
+use crate::migrations::MigrationHookContext;
 use crate::{MigrationMode, MigrationStatus};
 
 pub async fn replay_source_catalog_for_fresh_install(
@@ -60,11 +61,21 @@ pub async fn replay_catalog_into_fresh_db(
         MigrationInstallKind::FreshInstall,
         baseline.through_version + 1,
         target_version,
+        &MigrationHookContext::default(),
     )
     .await
 }
 
+#[allow(dead_code)]
 pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppResult<()> {
+    run_migrations_with_hook_context(pool, mode, MigrationHookContext::default()).await
+}
+
+pub(crate) async fn run_migrations_with_hook_context(
+    pool: &PgPool,
+    mode: MigrationMode,
+    hook_context: MigrationHookContext,
+) -> AppResult<()> {
     let catalog = crate::migrations::embedded_catalog()?;
 
     if !matches!(mode, MigrationMode::ValidateOnly) {
@@ -105,6 +116,7 @@ pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppRes
                 MigrationInstallKind::FreshInstall,
                 baseline.through_version + 1,
                 target_version,
+                &hook_context,
             )
             .await?;
         }
@@ -116,6 +128,7 @@ pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppRes
                 MigrationInstallKind::Upgrade,
                 1,
                 catalog.max_version(),
+                &hook_context,
             )
             .await?;
         }
@@ -360,6 +373,7 @@ async fn apply_version_range(
     install_kind: MigrationInstallKind,
     start_version: i64,
     target_version: i64,
+    hook_context: &MigrationHookContext,
 ) -> AppResult<()> {
     let applied_versions: HashSet<i64> = load_applied_migrations(pool)
         .await?
@@ -374,7 +388,7 @@ async fn apply_version_range(
         if applied_versions.contains(&migration.version) {
             continue;
         }
-        apply_single_migration(pool, migration, payload_bytes, install_kind).await?;
+        apply_single_migration(pool, migration, payload_bytes, install_kind, hook_context).await?;
     }
 
     Ok(())
@@ -385,6 +399,7 @@ async fn apply_single_migration(
     migration: &CompiledMigration,
     payload_bytes: &[u8],
     install_kind: MigrationInstallKind,
+    hook_context: &MigrationHookContext,
 ) -> AppResult<()> {
     let start = Instant::now();
     let mut tx = pool
@@ -419,10 +434,14 @@ async fn apply_single_migration(
                     })?;
             }
             CompiledMigrationStep::Rust { hook_id, .. } => {
-                return Err(AppError::Repository(format!(
-                    "PostgreSQL migration {:04} references unsupported Rust hook '{hook_id}'",
-                    migration.version
-                )));
+                run_postgres_rust_hook(
+                    hook_id.clone(),
+                    &mut tx,
+                    migration.version,
+                    install_kind,
+                    hook_context,
+                )
+                .await?;
             }
         }
     }
@@ -433,6 +452,44 @@ async fn apply_single_migration(
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
     Ok(())
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+async fn run_postgres_rust_hook(
+    hook_id: String,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    version: i64,
+    install_kind: MigrationInstallKind,
+    hook_context: &MigrationHookContext,
+) -> AppResult<()> {
+    crate::migration_hook_ids::validate_migration_hook_id(&hook_id)
+        .map_err(AppError::Repository)?;
+    match hook_id.as_str() {
+        "migrate_jellyfin_notification_channels_to_media_server_targets" => {
+            crate::migrations::notification_targets::migrate_jellyfin_notification_channels_to_media_server_targets_postgres(
+                tx,
+                hook_context.encryption_key.as_ref(),
+            )
+            .await
+        }
+        #[cfg(test)]
+        "test_insert_hook_marker" => {
+            let marker = match install_kind {
+                MigrationInstallKind::FreshInstall => "fresh",
+                MigrationInstallKind::Upgrade => "upgrade",
+            };
+            sqlx::query("INSERT INTO migration_hook_markers (version, marker) VALUES ($1, $2)")
+                .bind(version)
+                .bind(marker)
+                .execute(&mut **tx)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            Ok(())
+        }
+        _ => Err(AppError::Repository(format!(
+            "unknown migration hook id '{hook_id}'"
+        ))),
+    }
 }
 
 async fn insert_applied_migration(

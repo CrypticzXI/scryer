@@ -14,7 +14,6 @@ pub struct PersistedTitleDecodeOptions<'a> {
     pub include_external_ids: bool,
     pub base_path: &'a str,
     pub poster_local_path: Option<&'a str>,
-    pub banner_local_path: Option<&'a str>,
     pub background_local_path: Option<&'a str>,
 }
 
@@ -32,12 +31,6 @@ pub fn finalize_persisted_title(
             &mut title.poster_source_url,
             options.base_path,
             options.poster_local_path,
-        );
-        apply_local_image(
-            &mut title.banner_url,
-            &mut title.banner_source_url,
-            options.base_path,
-            options.banner_local_path,
         );
         apply_local_image(
             &mut title.background_url,
@@ -58,7 +51,7 @@ pub fn external_plugin_installation_is_supported_shape(
     descriptor_present: bool,
 ) -> bool {
     wasm_bytes.is_some()
-        && wasm_encoding == "zstd"
+        && matches!(wasm_encoding, "zstd" | "brotli")
         && matches!(
             wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
             Some(value) if value == "blake3"
@@ -112,7 +105,6 @@ mod tests {
                 include_external_ids: true,
                 base_path: "/scryer",
                 poster_local_path: Some("/images/titles/title-1/poster/w500"),
-                banner_local_path: Some("/images/titles/title-1/banner/master"),
                 background_local_path: None,
             },
         );
@@ -124,14 +116,6 @@ mod tests {
         assert_eq!(
             decoded.poster_source_url.as_deref(),
             Some("https://example.com/poster.jpg")
-        );
-        assert_eq!(
-            decoded.banner_url.as_deref(),
-            Some("/scryer/images/titles/title-1/banner/master")
-        );
-        assert_eq!(
-            decoded.banner_source_url.as_deref(),
-            Some("https://example.com/banner.jpg")
         );
         assert_eq!(
             decoded.background_url.as_deref(),
@@ -149,7 +133,6 @@ mod tests {
                 include_external_ids: false,
                 base_path: "/ignored",
                 poster_local_path: Some("/images/titles/title-1/poster/w500"),
-                banner_local_path: None,
                 background_local_path: None,
             },
         );
@@ -219,8 +202,6 @@ mod tests {
             overview: Some("Overview".to_string()),
             poster_url: Some("https://example.com/poster.jpg".to_string()),
             poster_source_url: None,
-            banner_url: Some("https://example.com/banner.jpg".to_string()),
-            banner_source_url: None,
             background_url: Some("https://example.com/background.jpg".to_string()),
             background_source_url: None,
             sort_title: Some("Example".to_string()),

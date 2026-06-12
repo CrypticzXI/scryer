@@ -15,6 +15,7 @@ enum WalkEntryKind {
 enum WalkFilterPolicy {
     None,
     LibraryScanJunkOnly,
+    EpisodicTitleScan,
     MovieTitleScan,
 }
 
@@ -71,6 +72,11 @@ impl FilesystemWalker {
 
     pub fn skip_library_scan_junk(mut self) -> Self {
         self.filter_policy = WalkFilterPolicy::LibraryScanJunkOnly;
+        self
+    }
+
+    pub fn skip_episodic_scan_junk_and_trailers(mut self) -> Self {
+        self.filter_policy = WalkFilterPolicy::EpisodicTitleScan;
         self
     }
 
@@ -268,6 +274,18 @@ impl FilesystemWalker {
                 });
                 listing.files.retain(|path| {
                     !crate::library_discovery::should_skip_library_subpath(root, path, false)
+                });
+            }
+            WalkFilterPolicy::EpisodicTitleScan => {
+                listing.subdirs.retain(|path| {
+                    !crate::library_discovery::should_skip_episodic_library_subpath(
+                        root, path, true,
+                    )
+                });
+                listing.files.retain(|path| {
+                    !crate::library_discovery::should_skip_episodic_library_subpath(
+                        root, path, false,
+                    )
                 });
             }
             WalkFilterPolicy::MovieTitleScan => {

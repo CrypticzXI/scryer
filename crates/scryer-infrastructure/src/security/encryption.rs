@@ -238,6 +238,59 @@ pub async fn ensure_encryption_key_without_legacy(
     Ok(key)
 }
 
+/// Load an already configured encryption key without generating or storing one.
+///
+/// Migration hooks use this before normal bootstrap so encrypted legacy values
+/// can be read without changing a fresh install's key lifecycle.
+pub fn load_existing_encryption_key_without_generation(
+    data_dir: Option<PathBuf>,
+) -> Result<Option<EncryptionKey>, String> {
+    if let Some(key) = from_env_var()? {
+        tracing::info!("using encryption master key from SCRYER_ENCRYPTION_KEY for migrations");
+        return Ok(Some(key));
+    }
+
+    let stores = keystore::platform_keystores(data_dir);
+    for store in &stores {
+        match store.get_key() {
+            Ok(Some(key_b64)) => {
+                let key = EncryptionKey::from_base64(&key_b64)
+                    .map_err(|e| format!("invalid key in {}: {e}", store.name()))?;
+                tracing::info!(
+                    "using encryption master key from {} for migrations",
+                    store.name()
+                );
+                return Ok(Some(key));
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    "could not read migration encryption key from {}: {e}",
+                    store.name()
+                );
+                continue;
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Load an existing key for SQLite migrations, including the deprecated
+/// database-stored key so migration hooks can decrypt legacy config before
+/// normal bootstrap has a chance to migrate that key out.
+pub async fn load_existing_sqlite_migration_encryption_key(
+    pool: &sqlx::SqlitePool,
+    data_dir: Option<PathBuf>,
+) -> Result<Option<EncryptionKey>, String> {
+    if let Some(key) = load_existing_encryption_key_without_generation(data_dir)? {
+        return Ok(Some(key));
+    }
+
+    #[allow(deprecated)]
+    read_legacy_db_key_from_pool(pool).await
+}
+
 /// Check the `SCRYER_ENCRYPTION_KEY` environment variable.
 fn from_env_var() -> Result<Option<EncryptionKey>, String> {
     let Ok(env_key) = std::env::var("SCRYER_ENCRYPTION_KEY") else {
@@ -357,6 +410,53 @@ async fn read_legacy_db_key(db: &crate::SqliteServices) -> Result<Option<Encrypt
         Some(key_b64) if !key_b64.is_empty() && key_b64 != "migrated" => {
             let key = EncryptionKey::from_base64(&key_b64)
                 .map_err(|e| format!("invalid encryption key in database: {e}"))?;
+            Ok(Some(key))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
+async fn read_legacy_db_key_from_pool(
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<EncryptionKey>, String> {
+    let table_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name IN ('settings_definitions', 'settings_values')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("failed to inspect settings tables for encryption key: {e}"))?;
+    if table_count < 2 {
+        return Ok(None);
+    }
+
+    let raw_value = sqlx::query_scalar::<_, String>(
+        "SELECT values_table.value_json
+           FROM settings_values values_table
+           JOIN settings_definitions definitions
+             ON definitions.id = values_table.setting_definition_id
+          WHERE definitions.scope = ?1
+            AND definitions.key_name = ?2
+            AND values_table.scope = ?1
+            AND COALESCE(values_table.scope_id, '') = ''
+          ORDER BY values_table.updated_at DESC
+          LIMIT 1",
+    )
+    .bind(SETTINGS_SCOPE_SYSTEM)
+    .bind(ENCRYPTION_KEY_SETTING)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("failed to read legacy encryption key setting: {e}"))?;
+
+    let existing = raw_value.as_deref().and_then(parse_string_json);
+    match existing {
+        Some(key_b64) if !key_b64.is_empty() && key_b64 != "migrated" => {
+            let key = EncryptionKey::from_base64(&key_b64)
+                .map_err(|e| format!("invalid encryption key in database: {e}"))?;
+            tracing::info!("using legacy database encryption key for migrations");
             Ok(Some(key))
         }
         _ => Ok(None),

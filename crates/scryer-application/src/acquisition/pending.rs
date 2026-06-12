@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use chrono::{Duration, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
@@ -7,6 +8,13 @@ use tracing::{info, warn};
 use crate::delay_profile::DelayProfile;
 use crate::types::{PendingRelease, PendingReleaseStatus};
 use std::collections::HashSet;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingGrabOutcome {
+    Grabbed,
+    Rejected,
+    Deferred,
+}
 
 impl AppUseCase {
     /// Load delay profiles from settings.
@@ -195,7 +203,7 @@ impl AppUseCase {
             let mut grabbed = false;
             for pr in &releases {
                 match self.try_grab_pending_release(&wanted, pr, &now).await {
-                    Ok(true) => {
+                    Ok(PendingGrabOutcome::Grabbed) => {
                         // Mark this one as grabbed
                         let _ = self
                             .services
@@ -218,7 +226,7 @@ impl AppUseCase {
                         grabbed_count += 1;
                         break;
                     }
-                    Ok(false) => {
+                    Ok(PendingGrabOutcome::Rejected) => {
                         // This release couldn't be grabbed (blocklisted, etc) — try next
                         let _ = self
                             .services
@@ -230,6 +238,13 @@ impl AppUseCase {
                                 None,
                             )
                             .await;
+                    }
+                    Ok(PendingGrabOutcome::Deferred) => {
+                        info!(
+                            release = pr.release_title.as_str(),
+                            "pending release: download client unavailable, keeping release pending"
+                        );
+                        break;
                     }
                     Err(e) => {
                         warn!(
@@ -399,7 +414,10 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::Repository(format!("wanted item {} not found", pr.wanted_item_id))
             })?;
-        self.try_grab_pending_release(&wanted, &pr, &now).await
+        Ok(matches!(
+            self.try_grab_pending_release(&wanted, &pr, &now).await?,
+            PendingGrabOutcome::Grabbed
+        ))
     }
 
     /// Dismiss a pending release (set status to dismissed).
@@ -441,16 +459,16 @@ impl AppUseCase {
         Ok(true)
     }
 
-    /// Attempt to grab a single pending release. Returns Ok(true) if grabbed successfully.
+    /// Attempt to grab a single pending release.
     pub(crate) async fn try_grab_pending_release(
         &self,
         wanted: &WantedItem,
         pr: &PendingRelease,
         now: &chrono::DateTime<Utc>,
-    ) -> AppResult<bool> {
+    ) -> AppResult<PendingGrabOutcome> {
         // Load title
         let Some(title) = self.services.catalog.titles.get_by_id(&pr.title_id).await? else {
-            return Ok(false);
+            return Ok(PendingGrabOutcome::Rejected);
         };
 
         // Check blocklist
@@ -467,7 +485,7 @@ impl AppUseCase {
             .collect();
 
         if db_blocklist.contains(&pr.release_title.to_ascii_lowercase()) {
-            return Ok(false);
+            return Ok(PendingGrabOutcome::Rejected);
         }
 
         // Check if this release is already active in the download client.
@@ -480,7 +498,7 @@ impl AppUseCase {
                 release = pr.release_title.as_str(),
                 "pending release: skipping, already active in download client"
             );
-            return Ok(false);
+            return Ok(PendingGrabOutcome::Rejected);
         }
 
         let upgrade_context = self
@@ -488,7 +506,7 @@ impl AppUseCase {
             .await;
 
         if upgrade_context.cutoff_reached {
-            return Ok(false);
+            return Ok(PendingGrabOutcome::Rejected);
         }
         let decision = crate::acquisition_policy::evaluate_upgrade(
             pr.release_score,
@@ -501,7 +519,7 @@ impl AppUseCase {
         );
 
         if !decision.is_accept() {
-            return Ok(false);
+            return Ok(PendingGrabOutcome::Rejected);
         }
 
         // Submit to download client
@@ -547,12 +565,18 @@ impl AppUseCase {
             "persisted candidate: grabbing"
         );
 
+        let download_id = crate::download_identity::new_download_id();
+        let submission_identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.clone()),
+        };
+
         let grab_result = self
             .services
             .integrations
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 source_kind,
@@ -585,6 +609,19 @@ impl AppUseCase {
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => indexer_label, "facet" => facet_label).increment(1);
                 }
+
+                let accepted_identity =
+                    crate::download_identity::accepted_download_submission_identity(
+                        crate::download_identity::AcceptedDownloadIdentityInput {
+                            initial_download_id: submission_identity.download_id.as_deref(),
+                            source_kind,
+                            source_hint: source_hint.as_deref(),
+                            info_hash_hint: pr.info_hash.as_deref(),
+                            client_type: Some(grab.client_type.as_str()),
+                            client_item_id: Some(grab.job_id.as_str()),
+                            accepted_info_hash: grab.info_hash.as_deref(),
+                        },
+                    );
 
                 let _ = self
                     .services
@@ -679,15 +716,16 @@ impl AppUseCase {
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id,
-                            download_client_type: grab.client_type,
-                            download_client_item_id: grab.job_id,
+                            download_client_id: grab.client_id.clone(),
+                            download_client_type: grab.client_type.clone(),
+                            download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
+                        download_submission_identity: Some(accepted_identity),
                         grabbed_pending_release_id: Some(pr.id.clone()),
                         grabbed_at: Some(now.to_rfc3339()),
                     })
@@ -707,7 +745,7 @@ impl AppUseCase {
                     ))
                     .await;
 
-                Ok(true)
+                Ok(PendingGrabOutcome::Grabbed)
             }
             Err(err) => {
                 warn!(
@@ -725,13 +763,21 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint,
                         source_title,
-                        ReleaseDownloadAttemptOutcome::Failed,
+                        if is_download_submit_unavailable_error(&err) {
+                            ReleaseDownloadAttemptOutcome::Pending
+                        } else {
+                            ReleaseDownloadAttemptOutcome::Failed
+                        },
                         Some(err.to_string()),
                         pr.source_password.clone(),
                     )
                     .await;
 
-                Ok(false)
+                if is_download_submit_unavailable_error(&err) {
+                    Ok(PendingGrabOutcome::Deferred)
+                } else {
+                    Ok(PendingGrabOutcome::Rejected)
+                }
             }
         }
     }

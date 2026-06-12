@@ -10,7 +10,7 @@ use scryer_application::{
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, default_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -176,7 +176,7 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: normalize_optional_auth_value(api_key),
@@ -685,7 +685,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                             error = %error,
                             "sabnzbd enqueue request failed before response"
                         );
-                        error
+                        error.into_download_submit_unavailable()
                     })?;
 
                 match evaluate_sab_api_response("sabnzbd addfile", Some("addfile"), status, &body) {
@@ -705,23 +705,28 @@ impl DownloadClient for SabnzbdDownloadClient {
                         last_retryable_error = Some(error);
                     }
                     SabApiResponseEvaluation::Retry(error)
-                    | SabApiResponseEvaluation::Failure(error) => return Err(error),
+                    | SabApiResponseEvaluation::Failure(error) => {
+                        return Err(error.into_download_submit_unavailable());
+                    }
                 }
             }
 
-            let json = addfile_json.ok_or_else(|| {
-                last_retryable_error.unwrap_or_else(|| {
-                    AppError::Repository(
-                        "sabnzbd addfile did not return a usable response".to_string(),
-                    )
+            let json = addfile_json
+                .ok_or_else(|| {
+                    last_retryable_error.unwrap_or_else(|| {
+                        AppError::Repository(
+                            "sabnzbd addfile did not return a usable response".to_string(),
+                        )
+                    })
                 })
-            })?;
+                .map_err(AppError::into_download_submit_unavailable)?;
 
             let nzo_id = sab_addfile_nzo_id(&json)
                 .map(str::to_string)
                 .ok_or_else(|| {
                     AppError::Repository("sabnzbd addfile did not return an nzo_id".into())
-                })?;
+                })
+                .map_err(AppError::into_download_submit_unavailable)?;
 
             debug!(
                 nzo_id = nzo_id.as_str(),
@@ -734,6 +739,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                 job_id: nzo_id,
                 client_id: None,
                 client_type: "sabnzbd".to_string(),
+                info_hash: None,
             })
         }
         .await;
@@ -850,6 +856,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                 } else {
                     pp_status
                 };
+                let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
@@ -857,6 +864,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: None,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "sabnzbd".to_string(),
@@ -868,7 +876,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     last_updated_at: None,
                     attention_required,
                     attention_reason,
-                    download_client_item_id: nzo_id,
+                    download_client_item_id: nzo_id.clone(),
+                    download_id: Some(nzo_id),
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -922,6 +931,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
                 }
+                let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
@@ -929,6 +939,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: None,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "sabnzbd".to_string(),
@@ -944,7 +955,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     last_updated_at: completed_ts.map(|v| v.to_string()),
                     attention_required: matches!(state, DownloadQueueState::Failed),
                     attention_reason,
-                    download_client_item_id: nzo_id,
+                    download_client_item_id: nzo_id.clone(),
+                    download_id: Some(nzo_id),
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -999,6 +1011,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
                 }
+                let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
                     id: nzo_id.clone(),
@@ -1006,6 +1019,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     episode_id: None,
                     title_name,
                     facet: None,
+                    category,
                     client_id: String::new(),
                     client_name: String::new(),
                     client_type: "sabnzbd".to_string(),
@@ -1022,7 +1036,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     last_updated_at: completed_ts.map(|value| value.to_string()),
                     attention_required: matches!(state, DownloadQueueState::Failed),
                     attention_reason,
-                    download_client_item_id: nzo_id,
+                    download_client_item_id: nzo_id.clone(),
+                    download_id: Some(nzo_id),
                     import_status: None,
                     import_error_code: None,
                     import_error_message: None,
@@ -1079,11 +1094,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     .unwrap_or("Unnamed download")
                     .to_string();
 
-                let category = slot
-                    .get("category")
-                    .and_then(Value::as_str)
-                    .filter(|c| !c.is_empty() && *c != "*")
-                    .map(str::to_string);
+                let category = extract_sabnzbd_category(slot);
 
                 let size_bytes = extract_i64_value(slot.get("bytes"));
 
@@ -1093,7 +1104,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                 Some(CompletedDownload {
                     client_type: "sabnzbd".to_string(),
                     client_id: String::new(),
-                    download_client_item_id: nzo_id,
+                    download_client_item_id: nzo_id.clone(),
+                    download_id: Some(nzo_id),
                     name,
                     dest_dir,
                     category,
@@ -1479,6 +1491,15 @@ fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
     }
 }
 
+fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<String> {
+    slot.get("cat")
+        .or_else(|| slot.get("category"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "*")
+        .map(str::to_string)
+}
+
 fn deserialize_sab_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1584,10 +1605,25 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
 mod tests {
     use super::{
         SabApiResponseEvaluation, build_sab_api_urls, evaluate_sab_api_response,
-        sab_api_mode_matches_response,
+        extract_sabnzbd_category, sab_api_mode_matches_response,
     };
     use reqwest::StatusCode;
     use serde_json::json;
+
+    #[test]
+    fn extract_sabnzbd_category_trims_and_ignores_star() {
+        let slot = json!({"cat": " movies "});
+        let slot = slot.as_object().expect("object");
+        assert_eq!(extract_sabnzbd_category(slot).as_deref(), Some("movies"));
+
+        let slot = json!({"category": "*"});
+        let slot = slot.as_object().expect("object");
+        assert_eq!(extract_sabnzbd_category(slot), None);
+
+        let slot = json!({"category": ""});
+        let slot = slot.as_object().expect("object");
+        assert_eq!(extract_sabnzbd_category(slot), None);
+    }
 
     #[test]
     fn build_sab_api_urls_includes_sabnzbd_compatibility_path() {

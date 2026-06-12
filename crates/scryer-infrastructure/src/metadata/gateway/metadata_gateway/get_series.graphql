@@ -40,6 +40,7 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
         is_recap
         overview
         absolute_number
+        image_url
       }
       anime_mappings {
         mal_id

@@ -80,6 +80,13 @@ fn remux_group_not_found_without_remux_flag() {
     assert!(lookup_group("FraMeSToR", Some("BLURAY"), Some("2160P"), false, None).is_none());
 }
 
+#[test]
+fn movie_only_group_does_not_apply_to_series_facet() {
+    assert!(lookup_group("3L", Some("BLURAY"), Some("2160P"), true, Some("series")).is_none());
+    let entry = lookup_group("3L", Some("BLURAY"), Some("2160P"), true, Some("movie")).unwrap();
+    assert_eq!(entry.tier, GroupTier::Gold);
+}
+
 // ── Anime context ────────────────────────────────────────────────────────────
 
 #[test]
@@ -93,6 +100,13 @@ fn anime_banned_group_not_found_for_non_anime_source() {
 fn anime_banned_group_found_for_anime_context() {
     let entry = lookup_group("AnimeRG", Some("WEB-DL"), None, false, Some("anime")).unwrap();
     assert_eq!(entry.tier, GroupTier::Banned);
+    assert_eq!(entry.source_context, SourceContext::Anime);
+}
+
+#[test]
+fn generated_carry_forward_group_still_applies_when_upstream_has_no_rule() {
+    let entry = lookup_group("NAN0", Some("WEB-DL"), None, false, Some("anime")).unwrap();
+    assert_eq!(entry.tier, GroupTier::Gold);
     assert_eq!(entry.source_context, SourceContext::Anime);
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 
+import { normalizeGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { classifyStatusToastLevel } from "@/lib/utils/status-toast";
 
 type SetGlobalStatus = (status: string) => void;
@@ -36,18 +37,23 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
       return;
     }
 
+    const displayStatus =
+      toastLevel === "error"
+        ? normalizeGraphQlErrorMessage(rawStatus) || rawStatus.trim()
+        : rawStatus;
+
     const now = Date.now();
-    const key = `${toastLevel}:${rawStatus.trim()}`;
+    const key = `${toastLevel}:${displayStatus.trim()}`;
     if (lastToastRef.current.key === key && now - lastToastRef.current.at < dedupeMs) {
       return;
     }
 
     if (toastLevel === "success") {
-      toast.success(rawStatus);
+      toast.success(displayStatus);
     } else if (toastLevel === "error") {
-      toast.error(rawStatus);
+      toast.error(displayStatus);
     } else {
-      toast.warning(rawStatus);
+      toast.warning(displayStatus);
     }
 
     lastToastRef.current = { key, at: now };

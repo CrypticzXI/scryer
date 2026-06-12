@@ -96,6 +96,75 @@ pub struct Library {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+pub enum MediaRequestStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Canceled,
+}
+
+impl MediaRequestStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Canceled => "canceled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
+            "canceled" => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestRequester {
+    pub user_id: String,
+    pub username: String,
+    pub avatar_url: Option<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequest {
+    pub id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub status: MediaRequestStatus,
+    pub identity_fingerprint: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub resolved_by_user_id: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_title_id: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
+    pub external_ids: Vec<ExternalId>,
+    pub requesters: Vec<MediaRequestRequester>,
+    pub created_by_user_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum AppPermission {
     ManageUsers,
     ManagePermissions,
@@ -291,6 +360,38 @@ impl LibraryPermissionMask {
         .collect()
     }
 
+    pub fn with_request_shadowing(self) -> Self {
+        let mut mask = self;
+        if mask.contains(Self::MANAGE_TITLES) {
+            mask.insert(Self::AUTO_APPROVE_REQUESTS);
+            mask.insert(Self::REQUEST);
+        } else if mask.contains(Self::AUTO_APPROVE_REQUESTS) {
+            mask.insert(Self::REQUEST);
+        }
+        mask
+    }
+
+    pub fn normalized_for_storage(self) -> Self {
+        if self.contains(Self::MANAGE_TITLES) {
+            Self(self.0 & !Self::AUTO_APPROVE_REQUESTS.0 & !Self::REQUEST.0)
+        } else if self.contains(Self::AUTO_APPROVE_REQUESTS) {
+            Self(self.0 & !Self::REQUEST.0)
+        } else {
+            self
+        }
+    }
+
+    pub fn is_strictly_requestable(self) -> bool {
+        !self.contains(Self::MANAGE_TITLES) && self.with_request_shadowing().contains(Self::REQUEST)
+    }
+
+    pub fn can_auto_approve_requests(self) -> bool {
+        !self.contains(Self::MANAGE_TITLES)
+            && self
+                .with_request_shadowing()
+                .contains(Self::AUTO_APPROVE_REQUESTS)
+    }
+
     pub fn contains(self, required: Self) -> bool {
         (self.0 & required.0) == required.0
     }
@@ -373,17 +474,44 @@ impl UserAuthorization {
     }
 
     pub fn has_library_permission(&self, library_id: &str, permission: LibraryPermission) -> bool {
-        self.library_permissions(library_id)
-            .contains(LibraryPermissionMask::from_permission(permission))
+        match permission {
+            LibraryPermission::Request => self
+                .library_permissions(library_id)
+                .is_strictly_requestable(),
+            LibraryPermission::AutoApproveRequests => self
+                .library_permissions(library_id)
+                .can_auto_approve_requests(),
+            _ => self
+                .library_permissions(library_id)
+                .contains(LibraryPermissionMask::from_permission(permission)),
+        }
     }
 
     pub fn has_any_library_permission(&self, permission: LibraryPermission) -> bool {
-        let required = LibraryPermissionMask::from_permission(permission);
-        self.default_library.contains(required)
-            || self
-                .libraries
-                .values()
-                .any(|permissions| permissions.contains(required))
+        match permission {
+            LibraryPermission::Request => {
+                self.default_library.is_strictly_requestable()
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.is_strictly_requestable())
+            }
+            LibraryPermission::AutoApproveRequests => {
+                self.default_library.can_auto_approve_requests()
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.can_auto_approve_requests())
+            }
+            _ => {
+                let required = LibraryPermissionMask::from_permission(permission);
+                self.default_library.contains(required)
+                    || self
+                        .libraries
+                        .values()
+                        .any(|permissions| permissions.contains(required))
+            }
+        }
     }
 }
 
@@ -415,8 +543,6 @@ pub struct Title {
     pub overview: Option<String>,
     pub poster_url: Option<String>,
     pub poster_source_url: Option<String>,
-    pub banner_url: Option<String>,
-    pub banner_source_url: Option<String>,
     pub background_url: Option<String>,
     pub background_source_url: Option<String>,
     pub sort_title: Option<String>,
@@ -590,6 +716,7 @@ pub struct Episode {
     pub absolute_number: Option<String>,
     pub overview: Option<String>,
     pub tvdb_id: Option<String>,
+    pub image_url: Option<String>,
     pub monitored: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -922,6 +1049,8 @@ pub struct DownloadQueueItem {
     pub episode_id: Option<String>,
     pub title_name: String,
     pub facet: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
     pub client_id: String,
     pub client_name: String,
     pub client_type: String,
@@ -934,6 +1063,8 @@ pub struct DownloadQueueItem {
     pub attention_required: bool,
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
+    #[serde(default)]
+    pub download_id: Option<String>,
     pub import_status: Option<ImportStatus>,
     pub import_error_code: Option<ImportErrorCode>,
     pub import_error_message: Option<String>,
@@ -1044,6 +1175,8 @@ pub struct CompletedDownload {
     pub client_type: String,
     pub client_id: String,
     pub download_client_item_id: String,
+    #[serde(default)]
+    pub download_id: Option<String>,
     pub name: String,
     pub dest_dir: String,
     pub category: Option<String>,
@@ -1259,10 +1392,35 @@ impl ImportSkipReason {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    HardlinkOrCopy,
+    Move,
+}
+
+impl ImportMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HardlinkOrCopy => "hardlink_or_copy",
+            Self::Move => "move",
+        }
+    }
+
+    pub fn from_setting(value: &str) -> Result<Self, String> {
+        match value.trim() {
+            "hardlink_or_copy" => Ok(Self::HardlinkOrCopy),
+            "move" => Ok(Self::Move),
+            other => Err(format!("unsupported import mode: {other}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ImportStrategy {
     HardLink,
     Copy,
     Symlink,
+    Move,
 }
 
 impl ImportStrategy {
@@ -1271,6 +1429,7 @@ impl ImportStrategy {
             Self::HardLink => "hardlink",
             Self::Copy => "copy",
             Self::Symlink => "symlink",
+            Self::Move => "move",
         }
     }
 }
@@ -1305,6 +1464,7 @@ pub struct ImportRecord {
     pub status: ImportStatus,
     pub payload_json: String,
     pub result_json: Option<String>,
+    pub download_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
@@ -1317,6 +1477,49 @@ pub struct ImportFileResult {
     pub source_path: std::path::PathBuf,
     pub dest_path: std::path::PathBuf,
     pub size_bytes: u64,
+    pub source_cleanup: Option<ImportSourceCleanupGuard>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportSourceCleanupGuard {
+    pub source_path: std::path::PathBuf,
+    pub dest_path: std::path::PathBuf,
+    pub size_bytes: u64,
+    pub source_identity: ImportSourceIdentity,
+    pub source_proof: ImportContentProof,
+    pub dest_proof: ImportContentProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportContentProof {
+    pub size_bytes: u64,
+    pub sample_bytes: u64,
+    pub sample_blake3: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportSourceIdentity {
+    pub file: ImportFileIdentity,
+    pub kind: ImportSourceIdentityKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportFileIdentity {
+    pub len: u64,
+    pub modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    pub dev: u64,
+    #[cfg(unix)]
+    pub ino: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportSourceIdentityKind {
+    Regular,
+    Symlink {
+        source_link_target: std::path::PathBuf,
+        resolved_target: std::path::PathBuf,
+    },
 }
 
 // ── Title history ────────────────────────────────────────────────────────────
@@ -1324,6 +1527,7 @@ pub struct ImportFileResult {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleHistoryEventType {
+    Requested,
     Grabbed,
     DownloadFailed,
     Blocklisted,
@@ -1340,6 +1544,7 @@ pub enum TitleHistoryEventType {
 impl TitleHistoryEventType {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Requested => "requested",
             Self::Grabbed => "grabbed",
             Self::DownloadFailed => "download_failed",
             Self::Blocklisted => "blocklisted",
@@ -1356,6 +1561,7 @@ impl TitleHistoryEventType {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "requested" => Some(Self::Requested),
             "grabbed" => Some(Self::Grabbed),
             "download_failed" => Some(Self::DownloadFailed),
             "blocklisted" => Some(Self::Blocklisted),
@@ -1372,6 +1578,7 @@ impl TitleHistoryEventType {
     }
 
     pub const ALL: &[Self] = &[
+        Self::Requested,
         Self::Grabbed,
         Self::DownloadFailed,
         Self::Blocklisted,
@@ -1551,6 +1758,11 @@ pub enum EventType {
 #[serde(rename_all = "snake_case")]
 #[derive(strum::EnumIter)]
 pub enum DomainEventType {
+    MediaRequestSubmitted,
+    MediaRequestUpdated,
+    MediaRequestApproved,
+    MediaRequestRejected,
+    MediaRequestCanceled,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -1594,6 +1806,11 @@ pub enum DomainEventType {
 impl DomainEventType {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestUpdated => "media_request_updated",
+            Self::MediaRequestApproved => "media_request_approved",
+            Self::MediaRequestRejected => "media_request_rejected",
+            Self::MediaRequestCanceled => "media_request_canceled",
             Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
             Self::TitleRematched => "title_rematched",
@@ -1637,6 +1854,11 @@ impl DomainEventType {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "media_request_submitted" => Some(Self::MediaRequestSubmitted),
+            "media_request_updated" => Some(Self::MediaRequestUpdated),
+            "media_request_approved" => Some(Self::MediaRequestApproved),
+            "media_request_rejected" => Some(Self::MediaRequestRejected),
+            "media_request_canceled" => Some(Self::MediaRequestCanceled),
             "title_added" => Some(Self::TitleAdded),
             "title_updated" => Some(Self::TitleUpdated),
             "title_rematched" => Some(Self::TitleRematched),
@@ -1724,6 +1946,35 @@ pub struct TitleContextSnapshot {
     pub external_ids: DomainExternalIds,
     pub poster_url: Option<String>,
     pub year: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestSubmittedEventData {
+    pub request_id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub title_name: String,
+    pub external_ids: Vec<ExternalId>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestResolvedEventData {
+    pub request_id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub title_name: String,
+    pub external_ids: Vec<ExternalId>,
+    pub created_title_id: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2205,6 +2456,11 @@ pub struct DownloadQueueItemRemovedEventData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
+    MediaRequestSubmitted(MediaRequestSubmittedEventData),
+    MediaRequestUpdated(MediaRequestSubmittedEventData),
+    MediaRequestApproved(MediaRequestResolvedEventData),
+    MediaRequestRejected(MediaRequestResolvedEventData),
+    MediaRequestCanceled(MediaRequestResolvedEventData),
     TitleAdded(TitleAddedEventData),
     TitleUpdated(TitleUpdatedEventData),
     TitleRematched(TitleRematchedEventData),
@@ -2248,6 +2504,11 @@ pub enum DomainEventPayload {
 impl DomainEventPayload {
     pub fn event_type(&self) -> DomainEventType {
         match self {
+            Self::MediaRequestSubmitted(_) => DomainEventType::MediaRequestSubmitted,
+            Self::MediaRequestUpdated(_) => DomainEventType::MediaRequestUpdated,
+            Self::MediaRequestApproved(_) => DomainEventType::MediaRequestApproved,
+            Self::MediaRequestRejected(_) => DomainEventType::MediaRequestRejected,
+            Self::MediaRequestCanceled(_) => DomainEventType::MediaRequestCanceled,
             Self::TitleAdded(_) => DomainEventType::TitleAdded,
             Self::TitleUpdated(_) => DomainEventType::TitleUpdated,
             Self::TitleRematched(_) => DomainEventType::TitleRematched,
@@ -2424,6 +2685,7 @@ pub enum PluginSourceKind {
     Bundled,
     #[default]
     Downloaded,
+    Community,
     Manual,
 }
 
@@ -2441,6 +2703,7 @@ pub enum PluginSupportTier {
 pub enum PluginWasmEncoding {
     #[default]
     Identity,
+    Brotli,
     Zstd,
 }
 
@@ -2519,13 +2782,218 @@ pub struct RuleSet {
     pub managed_key: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserAccountKind {
+    #[default]
+    Local,
+    ExternalAutoProvisioned,
+}
+
+impl UserAccountKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::ExternalAutoProvisioned => "external_auto_provisioned",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "local" => Some(Self::Local),
+            "external_auto_provisioned" => Some(Self::ExternalAutoProvisioned),
+            _ => None,
+        }
+    }
+
+    pub fn allows_local_credentials(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: Option<String>,
     #[serde(default)]
+    pub account_kind: UserAccountKind,
+    #[serde(default)]
     pub authorization: UserAuthorization,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaServerProvider {
+    Jellyfin,
+    Plex,
+    Emby,
+}
+
+impl MediaServerProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Jellyfin => "jellyfin",
+            Self::Plex => "plex",
+            Self::Emby => "emby",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "jellyfin" => Some(Self::Jellyfin),
+            "plex" => Some(Self::Plex),
+            "emby" => Some(Self::Emby),
+            _ => None,
+        }
+    }
+
+    pub fn supports_external_auth(&self) -> bool {
+        matches!(self, Self::Jellyfin | Self::Plex)
+    }
+
+    pub fn external_account_provider(&self) -> Option<ExternalAccountProvider> {
+        match self {
+            Self::Jellyfin => Some(ExternalAccountProvider::Jellyfin),
+            Self::Plex => Some(ExternalAccountProvider::Plex),
+            Self::Emby => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerPathMapping {
+    pub source_path: String,
+    pub destination_path: String,
+    pub sort_order: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerDefaultLibraryGrant {
+    pub library_id: String,
+    pub permissions: LibraryPermissionMask,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerConnection {
+    pub id: String,
+    pub provider: MediaServerProvider,
+    pub display_name: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub login_enabled: bool,
+    pub linking_enabled: bool,
+    pub auto_add_enabled: bool,
+    pub default_app_permissions: AppPermissionMask,
+    pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
+    pub machine_id: Option<String>,
+    pub api_key: Option<String>,
+    pub path_mappings: Vec<MediaServerPathMapping>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl MediaServerConnection {
+    pub fn api_key_present(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccountProvider {
+    Plex,
+    Jellyfin,
+}
+
+impl ExternalAccountProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Plex => "plex",
+            Self::Jellyfin => "jellyfin",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plex" => Some(Self::Plex),
+            "jellyfin" => Some(Self::Jellyfin),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccountStatus {
+    PendingClaim,
+    Active,
+    Disabled,
+}
+
+impl ExternalAccountStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PendingClaim => "pending_claim",
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pending_claim" => Some(Self::PendingClaim),
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserExternalAccount {
+    pub id: String,
+    pub user_id: String,
+    pub provider: ExternalAccountProvider,
+    pub connection_id: String,
+    pub external_user_id: Option<String>,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub status: ExternalAccountStatus,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl UserExternalAccount {
+    pub fn pending_claim(
+        user_id: impl Into<String>,
+        provider: ExternalAccountProvider,
+        connection_id: impl Into<String>,
+        external_user_id: Option<String>,
+        username: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Id::new().0,
+            user_id: user_id.into(),
+            provider,
+            connection_id: connection_id.into(),
+            external_user_id,
+            username: username.into(),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::PendingClaim,
+            verified_at: None,
+            last_login_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 }
 
 impl User {
@@ -2534,6 +3002,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
+            account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
     }
@@ -2546,6 +3015,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
+            account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
     }
@@ -2750,11 +3220,12 @@ pub struct IndexerProviderCapabilities {
     /// it can search on for each facet. Values must be from the core vocabulary:
     /// `"imdb_id"`, `"tvdb_id"`, `"anidb_id"` — matching the field names on
     /// `PluginSearchRequest`. The plugin maps these to its own query format
-    /// internally (e.g. `anidb_id` → `aid=` for AnimeTosho).
+    /// internally (for example, an anime indexer may map `anidb_id` to its own
+    /// provider-specific ID parameter).
     ///
     /// Examples:
     ///   NZBGeek:    {"movie": ["imdb_id"], "series": ["tvdb_id"]}
-    ///   AnimeTosho: {"anime": ["anidb_id"], "movie": ["anidb_id"]}
+    ///   Id-only anime indexer: {"anime": ["anidb_id"], "movie": ["anidb_id"]}
     ///   RSS:        {} (empty — feed-only, no structured search)
     #[serde(default)]
     pub supported_ids: HashMap<String, Vec<String>>,
@@ -2988,6 +3459,7 @@ pub struct NotificationChannelConfig {
     pub name: String,
     pub channel_type: ChannelType,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -2998,13 +3470,51 @@ pub struct NewNotificationChannelConfig {
     pub name: String,
     pub channel_type: ChannelType,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
+    pub is_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationTargetKind {
+    PluginChannel,
+    MediaServerConnection,
+}
+
+impl NotificationTargetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PluginChannel => "plugin_channel",
+            Self::MediaServerConnection => "media_server_connection",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plugin_channel" => Some(Self::PluginChannel),
+            "media_server_connection" => Some(Self::MediaServerConnection),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationTarget {
+    pub id: String,
+    pub target_kind: NotificationTargetKind,
+    pub name: String,
+    pub provider_type: String,
+    pub media_server_provider: Option<MediaServerProvider>,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NotificationSubscription {
     pub id: String,
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: NotificationTargetKind,
+    pub target_id: String,
     pub event_type: NotificationEventType,
     pub scope: String,
     pub scope_id: Option<String>,
@@ -3015,7 +3525,9 @@ pub struct NotificationSubscription {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NewNotificationSubscription {
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: NotificationTargetKind,
+    pub target_id: String,
     pub event_type: NotificationEventType,
     pub scope: String,
     pub scope_id: Option<String>,
@@ -3039,6 +3551,10 @@ pub enum NotificationEventType {
     PostProcessingCompleted,
     SubtitleDownloaded,
     SubtitleSearchFailed,
+    MediaRequestSubmitted,
+    MediaRequestApproved,
+    MediaRequestRejected,
+    MediaRequestCanceled,
     HealthIssue,
     HealthRestored,
     ApplicationUpdate,
@@ -3062,6 +3578,10 @@ impl NotificationEventType {
             Self::PostProcessingCompleted => "post_processing_completed",
             Self::SubtitleDownloaded => "subtitle_downloaded",
             Self::SubtitleSearchFailed => "subtitle_search_failed",
+            Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestApproved => "media_request_approved",
+            Self::MediaRequestRejected => "media_request_rejected",
+            Self::MediaRequestCanceled => "media_request_canceled",
             Self::HealthIssue => "health_issue",
             Self::HealthRestored => "health_restored",
             Self::ApplicationUpdate => "application_update",
@@ -3085,6 +3605,10 @@ impl NotificationEventType {
             Self::PostProcessingCompleted,
             Self::SubtitleDownloaded,
             Self::SubtitleSearchFailed,
+            Self::MediaRequestSubmitted,
+            Self::MediaRequestApproved,
+            Self::MediaRequestRejected,
+            Self::MediaRequestCanceled,
             Self::HealthIssue,
             Self::HealthRestored,
             Self::ApplicationUpdate,
@@ -3108,6 +3632,10 @@ impl NotificationEventType {
             "post_processing_completed" => Some(Self::PostProcessingCompleted),
             "subtitle_downloaded" => Some(Self::SubtitleDownloaded),
             "subtitle_search_failed" => Some(Self::SubtitleSearchFailed),
+            "media_request_submitted" => Some(Self::MediaRequestSubmitted),
+            "media_request_approved" => Some(Self::MediaRequestApproved),
+            "media_request_rejected" => Some(Self::MediaRequestRejected),
+            "media_request_canceled" => Some(Self::MediaRequestCanceled),
             "health_issue" => Some(Self::HealthIssue),
             "health_restored" => Some(Self::HealthRestored),
             "application_update" => Some(Self::ApplicationUpdate),

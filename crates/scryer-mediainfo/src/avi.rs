@@ -1,7 +1,11 @@
-use crate::MediaInfoError;
+use crate::scan::{self, AudioSyncKind};
 use crate::types::{RawContainer, RawTrack, TrackKind};
-use std::io::{Read, Seek};
+use crate::{AnalysisProfile, MediaInfoError};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+
+const AVI_IDX1_READ_BATCH_BYTES: usize = 64 * 1024;
+const AVI_MP3_FALLBACK_SCAN_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct AviTrack {
@@ -10,6 +14,12 @@ struct AviTrack {
     duration_seconds: Option<f64>,
     declared_payload_bytes: Option<u64>,
     index_bytes: u64,
+}
+
+struct ParsedAviStream {
+    raw: RawTrack,
+    duration_seconds: Option<f64>,
+    declared_payload_bytes: Option<u64>,
 }
 
 fn chunk_id_matches(chunk_id: riff::ChunkId, expected: &[u8; 4]) -> bool {
@@ -23,7 +33,10 @@ fn format_chunk_id(chunk_id: riff::ChunkId) -> String {
 }
 
 /// Parse an AVI (RIFF) container and extract stream metadata.
-pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
+pub(crate) fn parse_avi(
+    path: &Path,
+    profile: AnalysisProfile,
+) -> Result<RawContainer, MediaInfoError> {
     let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
     let riff_chunk = riff::Chunk::read(&mut file, 0)
@@ -50,6 +63,7 @@ pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let mut duration_seconds: Option<f64> = None;
     let mut tracks = Vec::new();
     let mut idx1_offset = None;
+    let mut movi_payload_offset = None;
 
     for offset in top_chunks {
         let child = riff::Chunk::read(&mut file, offset)
@@ -62,6 +76,8 @@ pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
 
             if chunk_id_matches(list_type, b"hdrl") {
                 parse_hdrl(&child, &mut file, &mut duration_seconds, &mut tracks)?;
+            } else if chunk_id_matches(list_type, b"movi") {
+                movi_payload_offset = Some(child.offset() + 12);
             }
         } else if chunk_id_matches(child.id(), b"idx1") {
             idx1_offset = Some(offset);
@@ -74,7 +90,7 @@ pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
         apply_idx1_stream_sizes(&idx1, &mut file, &mut tracks)?;
     }
 
-    backfill_track_bitrates(&mut file, &mut tracks)?;
+    backfill_track_bitrates(&mut file, movi_payload_offset, &mut tracks, profile)?;
 
     Ok(RawContainer {
         format_name: "avi".into(),
@@ -128,12 +144,12 @@ fn parse_hdrl<T: Read + Seek>(
                 MediaInfoError::Parse(format!("error reading LIST type in hdrl: {e}"))
             })?;
             if chunk_id_matches(list_type, b"strl") {
-                if let Some(track) = parse_strl(&child, stream)? {
+                if let Some(parsed) = parse_strl(&child, stream)? {
                     tracks.push(AviTrack {
-                        raw: track,
+                        raw: parsed.raw,
                         stream_number: stream_number as usize,
-                        duration_seconds: parse_stream_duration(&child, stream)?,
-                        declared_payload_bytes: parse_declared_payload_bytes(&child, stream)?,
+                        duration_seconds: parsed.duration_seconds,
+                        declared_payload_bytes: parsed.declared_payload_bytes,
                         index_bytes: 0,
                     });
                 }
@@ -158,7 +174,7 @@ fn parse_hdrl<T: Read + Seek>(
 fn parse_strl<T: Read + Seek>(
     strl: &riff::Chunk,
     stream: &mut T,
-) -> Result<Option<RawTrack>, MediaInfoError> {
+) -> Result<Option<ParsedAviStream>, MediaInfoError> {
     let child_offsets = collect_child_offsets(strl, stream)?;
 
     let mut strh_data: Option<Vec<u8>> = None;
@@ -196,12 +212,20 @@ fn parse_strl<T: Read + Seek>(
     }
 
     let fcc_type = &strh[0..4];
+    let duration_seconds = parse_stream_duration_from_strh(&strh);
+    let declared_payload_bytes = parse_declared_payload_bytes_from_strh(&strh);
 
-    match fcc_type {
-        b"vids" => Ok(Some(parse_video_stream(&strh, &strf))),
-        b"auds" => Ok(Some(parse_audio_stream(&strh, &strf))),
-        _ => Ok(None),
-    }
+    let raw = match fcc_type {
+        b"vids" => parse_video_stream(&strh, &strf),
+        b"auds" => parse_audio_stream(&strh, &strf),
+        _ => return Ok(None),
+    };
+
+    Ok(Some(ParsedAviStream {
+        raw,
+        duration_seconds,
+        declared_payload_bytes,
+    }))
 }
 
 /// Build a video `RawTrack` from strh + strf (BITMAPINFOHEADER).
@@ -291,11 +315,16 @@ fn parse_audio_stream(_strh: &[u8], strf: &[u8]) -> RawTrack {
 
     if strf.len() >= 12 {
         let w_format_tag = read_u16_le(strf, 0);
+        let codec_format_tag = wave_format_extensible_subformat(strf).unwrap_or(w_format_tag);
         let n_channels = read_u16_le(strf, 2);
         let n_avg_bytes_per_sec = read_u32_le(strf, 8);
 
-        codec_id = format!("0x{w_format_tag:04X}");
-        codec_name = Some(map_audio_format_tag(w_format_tag).to_owned());
+        codec_id = if codec_format_tag == w_format_tag {
+            format!("0x{w_format_tag:04X}")
+        } else {
+            format!("0x{w_format_tag:04X}/0x{codec_format_tag:04X}")
+        };
+        codec_name = Some(map_audio_format_tag(codec_format_tag).to_owned());
         channels = Some(n_channels as i32);
         bit_rate_bps = Some(n_avg_bytes_per_sec as i64 * 8);
     }
@@ -321,61 +350,27 @@ fn parse_audio_stream(_strh: &[u8], strf: &[u8]) -> RawTrack {
     }
 }
 
-fn parse_stream_duration<T: Read + Seek>(
-    strl: &riff::Chunk,
-    stream: &mut T,
-) -> Result<Option<f64>, MediaInfoError> {
-    let child_offsets = collect_child_offsets(strl, stream)?;
-    for offset in child_offsets {
-        let child = riff::Chunk::read(stream, offset)
-            .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
-        if !chunk_id_matches(child.id(), b"strh") {
-            continue;
-        }
-        let data = child
-            .read_contents(stream)
-            .map_err(|e| MediaInfoError::Parse(format!("error reading strh: {e}")))?;
-        if data.len() < 36 {
-            return Ok(None);
-        }
-        let dw_scale = read_u32_le(&data, 20);
-        let dw_rate = read_u32_le(&data, 24);
-        let dw_length = read_u32_le(&data, 32);
-        if dw_scale > 0 && dw_rate > 0 && dw_length > 0 {
-            return Ok(Some(dw_length as f64 * dw_scale as f64 / dw_rate as f64));
-        }
-        return Ok(None);
+fn parse_stream_duration_from_strh(strh: &[u8]) -> Option<f64> {
+    if strh.len() < 36 {
+        return None;
     }
 
-    Ok(None)
+    let dw_scale = read_u32_le(strh, 20);
+    let dw_rate = read_u32_le(strh, 24);
+    let dw_length = read_u32_le(strh, 32);
+    (dw_scale > 0 && dw_rate > 0 && dw_length > 0)
+        .then_some(dw_length as f64 * dw_scale as f64 / dw_rate as f64)
 }
 
-fn parse_declared_payload_bytes<T: Read + Seek>(
-    strl: &riff::Chunk,
-    stream: &mut T,
-) -> Result<Option<u64>, MediaInfoError> {
-    let child_offsets = collect_child_offsets(strl, stream)?;
-    for offset in child_offsets {
-        let child = riff::Chunk::read(stream, offset)
-            .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
-        if !chunk_id_matches(child.id(), b"strh") {
-            continue;
-        }
-        let data = child
-            .read_contents(stream)
-            .map_err(|e| MediaInfoError::Parse(format!("error reading strh: {e}")))?;
-        if data.len() < 48 {
-            return Ok(None);
-        }
-        let dw_length = read_u32_le(&data, 32);
-        let dw_sample_size = read_u32_le(&data, 44);
-        if dw_length > 0 && dw_sample_size > 0 {
-            return Ok(Some(u64::from(dw_length) * u64::from(dw_sample_size)));
-        }
-        return Ok(None);
+fn parse_declared_payload_bytes_from_strh(strh: &[u8]) -> Option<u64> {
+    if strh.len() < 48 {
+        return None;
     }
 
-    Ok(None)
+    let dw_length = read_u32_le(strh, 32);
+    let dw_sample_size = read_u32_le(strh, 44);
+    (dw_length > 0 && dw_sample_size > 0)
+        .then_some(u64::from(dw_length) * u64::from(dw_sample_size))
 }
 
 fn apply_idx1_stream_sizes<T: Read + Seek>(
@@ -384,40 +379,62 @@ fn apply_idx1_stream_sizes<T: Read + Seek>(
     tracks: &mut [AviTrack],
 ) -> Result<(), MediaInfoError> {
     stream
-        .seek(std::io::SeekFrom::Start(idx1.offset() + 8))
+        .seek(SeekFrom::Start(idx1.offset() + 8))
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
     let mut remaining = idx1.len() as usize;
-    let mut entry = [0_u8; 16];
-    while remaining >= entry.len() {
+    let mut buf = vec![0_u8; AVI_IDX1_READ_BATCH_BYTES];
+    while remaining >= 16 {
+        let read_len = remaining.min(buf.len());
+        let read_len = read_len - (read_len % 16);
+        if read_len == 0 {
+            break;
+        }
         stream
-            .read_exact(&mut entry)
+            .read_exact(&mut buf[..read_len])
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-        remaining -= entry.len();
+        remaining -= read_len;
 
-        let Some(stream_number) = parse_idx1_stream_number(&entry[..2]) else {
-            continue;
-        };
-        let Some(track) = tracks
-            .iter_mut()
-            .find(|track| track.stream_number == stream_number)
-        else {
-            continue;
-        };
-        track.index_bytes += u64::from(read_u32_le(&entry, 12));
+        if tracks.iter().all(|track| track.stream_number < 100) {
+            let mut stream_sizes = [0_u64; 100];
+            scan::accumulate_avi_idx1_stream_sizes(&buf[..read_len], &mut stream_sizes);
+            for track in tracks.iter_mut() {
+                track.index_bytes += stream_sizes[track.stream_number];
+            }
+        } else {
+            for entry in buf[..read_len].chunks_exact(16) {
+                let Some(stream_number) = parse_idx1_stream_number(&entry[..2]) else {
+                    continue;
+                };
+                let Some(track) = tracks
+                    .iter_mut()
+                    .find(|track| track.stream_number == stream_number)
+                else {
+                    continue;
+                };
+                track.index_bytes += u64::from(read_u32_le(entry, 12));
+            }
+        }
     }
 
     Ok(())
 }
 
 fn parse_idx1_stream_number(prefix: &[u8]) -> Option<usize> {
+    let first = prefix.first().copied()?;
+    let second = prefix.get(1).copied()?;
+    if first.is_ascii_digit() && second.is_ascii_digit() {
+        return Some(usize::from(first - b'0') * 10 + usize::from(second - b'0'));
+    }
     let value = std::str::from_utf8(prefix).ok()?;
     usize::from_str_radix(value, 16).ok()
 }
 
 fn backfill_track_bitrates<T: Read + Seek>(
     stream: &mut T,
+    movi_payload_offset: Option<u64>,
     tracks: &mut [AviTrack],
+    profile: AnalysisProfile,
 ) -> Result<(), MediaInfoError> {
     for track in tracks.iter_mut() {
         if track.raw.bit_rate_bps.unwrap_or_default() > 0 {
@@ -444,12 +461,15 @@ fn backfill_track_bitrates<T: Read + Seek>(
     if !needs_mp3_bitrate {
         return Ok(());
     }
+    if profile == AnalysisProfile::Fast {
+        return Ok(());
+    }
 
     stream
-        .rewind()
+        .seek(SeekFrom::Start(movi_payload_offset.unwrap_or(0)))
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
-    let mut buf = vec![0_u8; 1024 * 1024];
+    let mut buf = vec![0_u8; AVI_MP3_FALLBACK_SCAN_BYTES];
     let bytes_read = stream
         .read(&mut buf)
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
@@ -484,6 +504,16 @@ fn map_video_fourcc(fcc: &str) -> &'static str {
         "VP90" | "vp90" => "vp9",
         _ => "unknown",
     }
+}
+
+fn wave_format_extensible_subformat(strf: &[u8]) -> Option<u16> {
+    if read_u16_le(strf, 0) != 0xFFFE || strf.len() < 40 {
+        return None;
+    }
+
+    // WAVEFORMATEXTENSIBLE stores the actual subformat in the first little-endian
+    // word of the GUID extension after WAVEFORMATEX.
+    Some(read_u16_le(strf, 24))
 }
 
 /// Map a WAVEFORMATEX wFormatTag to a canonical codec name.
@@ -522,7 +552,22 @@ fn find_mp3_bitrate(data: &[u8]) -> Option<i64> {
         0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
     ];
 
-    for i in 0..=data.len() - 4 {
+    let mut cursor = 0;
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        if !matches!(
+            candidate.kind,
+            AudioSyncKind::MpegAudio | AudioSyncKind::Adts
+        ) {
+            cursor = candidate.offset + 1;
+            continue;
+        }
+
+        let i = candidate.offset;
+        if i + 4 > data.len() {
+            return None;
+        }
+        cursor = i + 1;
+
         let header = u32::from_be_bytes(data[i..i + 4].try_into().ok()?);
         if (header & 0xFFE0_0000) != 0xFFE0_0000 {
             continue;
@@ -587,6 +632,7 @@ fn read_u16_le(data: &[u8], offset: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::parse_avi;
+    use crate::AnalysisProfile;
     use crate::MediaInfoError;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -633,7 +679,8 @@ mod tests {
             .concat(),
         );
 
-        let error = parse_avi(fixture.path()).expect_err("invalid RIFF type should be rejected");
+        let error = parse_avi(fixture.path(), AnalysisProfile::DefaultRich)
+            .expect_err("invalid RIFF type should be rejected");
         let MediaInfoError::Parse(message) = error else {
             panic!("expected parse error for invalid RIFF type");
         };
@@ -655,9 +702,18 @@ mod tests {
             .concat(),
         );
 
-        let container = parse_avi(fixture.path()).expect("malformed chunk ids should not crash");
+        let container = parse_avi(fixture.path(), AnalysisProfile::DefaultRich)
+            .expect("malformed chunk ids should not crash");
         assert_eq!(container.format_name, "avi");
         assert_eq!(container.duration_seconds, None);
         assert!(container.tracks.is_empty());
+    }
+
+    #[test]
+    fn find_mp3_bitrate_uses_late_sync_candidate() {
+        let mut data = vec![0x55; 4096];
+        data.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+
+        assert_eq!(super::find_mp3_bitrate(&data), Some(128_000));
     }
 }

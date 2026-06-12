@@ -19,6 +19,7 @@ fn source_kind_matches_preference(result: &IndexerSearchResult, preferred: &str)
     }
 }
 
+#[cfg(test)]
 pub(crate) fn extract_http_status_from_message(message: &str) -> Option<u16> {
     let marker = "status ";
     let lowered = message.to_ascii_lowercase();
@@ -36,6 +37,7 @@ pub(crate) fn extract_http_status_from_message(message: &str) -> Option<u16> {
     digits.parse::<u16>().ok()
 }
 
+#[cfg(test)]
 pub(crate) fn is_4xx_or_5xx_status(status: u16) -> bool {
     (400..=599).contains(&status)
 }
@@ -74,6 +76,7 @@ fn resolve_requested_episode(
     })
 }
 
+#[cfg(test)]
 fn extract_indexer_http_status(error: &AppError) -> Option<u16> {
     match error {
         AppError::Repository(message) => extract_http_status_from_message(message),
@@ -81,6 +84,7 @@ fn extract_indexer_http_status(error: &AppError) -> Option<u16> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn is_indexer_http_error(error: &AppError) -> bool {
     extract_indexer_http_status(error).is_some_and(is_4xx_or_5xx_status)
 }
@@ -384,22 +388,6 @@ impl AppUseCase {
                     .map(|name| (name.to_string(), entry.priority))
             })
             .collect()
-    }
-
-    pub(crate) async fn record_indexer_http_error_timestamp(&self, error: &AppError) {
-        if !is_indexer_http_error(error) {
-            return;
-        }
-
-        if let Err(err) = self
-            .services
-            .integrations
-            .indexer_configs
-            .touch_last_error(super::INDEXER_PROVIDER_NZBGEEK)
-            .await
-        {
-            warn!(error = %err, "failed to update indexer last_error_at");
-        }
     }
 
     #[expect(
@@ -863,7 +851,6 @@ impl AppUseCase {
                 Ok(Err(error)) => {
                     query_failures += 1;
                     first_failure = first_failure.or_else(|| Some(error.to_string()));
-                    self.record_indexer_http_error_timestamp(&error).await;
                     warn!(
                         caller = caller_label,
                         error = %error,

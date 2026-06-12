@@ -2,15 +2,24 @@ use chrono::NaiveDate;
 use scryer_domain::{Collection, Episode, MediaFacet, Title};
 
 pub use scryer_release_parser::{
-    ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseDisposition,
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis, VideoCodec,
-    analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
+    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ExternalIdSource,
+    ParseDisposition, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata,
+    ParsedSpecialKind, ReleaseParseAnalysis, ReleaseParseContext, ReleaseSource, StreamingService,
+    TargetedReleaseParseAnalysis, VideoCodec, analyze_release_against_targets,
+    analyze_release_for_target, best_parse_for_target,
 };
 
 pub fn parse_release_metadata(raw: &str) -> ParsedReleaseMetadata {
     let context = synthesize_release_parse_context(raw);
     project_analysis(raw, &analyze_release_for_target(raw, &context))
+}
+
+pub(crate) fn parsed_release_source_type(parsed: &ParsedReleaseMetadata) -> Option<String> {
+    if parsed.is_remux {
+        return Some("Remux".to_string());
+    }
+
+    parsed.source.as_ref().map(ToString::to_string)
 }
 
 pub fn parse_release_metadata_for_target(
@@ -296,76 +305,79 @@ fn looks_like_release_metadata_token(token: &str, tokens: &[String]) -> bool {
         || looks_like_daily_token(&normalized)
         || looks_like_absolute_episode_token(&normalized)
         || looks_like_season_pack_marker(&normalized, tokens)
-        || matches!(
-            normalized.as_str(),
-            "WEB"
-                | "WEBDL"
-                | "WEBRIP"
-                | "BLURAY"
-                | "BDRIP"
-                | "BRRIP"
-                | "HDTV"
-                | "CAM"
-                | "HQCAM"
-                | "TS"
-                | "TC"
-                | "TELESYNC"
-                | "TELECINE"
-                | "DVDSCR"
-                | "WORKPRINT"
-                | "DVDRIP"
-                | "NF"
-                | "AMZN"
-                | "DSNP"
-                | "CR"
-                | "HULU"
-                | "MAX"
-                | "HEVC"
-                | "AVC"
-                | "X265"
-                | "X264"
-                | "H265"
-                | "H264"
-                | "AAC"
-                | "DDP"
-                | "DTS"
-                | "DTSX"
-                | "DTSHD"
-                | "DTSMA"
-                | "TRUEHD"
-                | "FLAC"
-                | "DUAL"
-                | "DUALAUDIO"
-                | "AUDIO"
-                | "DUB"
-                | "DUBS"
-                | "DUBBED"
-                | "SUB"
-                | "SUBS"
-                | "MULTI"
-                | "MULTIAUDIO"
-                | "MULTISUB"
-                | "MULTISUBS"
-                | "EN"
-                | "ENG"
-                | "ENGLISH"
-                | "JP"
-                | "JPN"
-                | "JAPANESE"
-                | "HDR"
-                | "HDR10"
-                | "HDR10PLUS"
-                | "HDR10P"
-                | "HLG"
-                | "DV"
-                | "DOVI"
-                | "ATMOS"
-                | "PROPER"
-                | "REPACK"
-                | "REMUX"
-                | "UNCENSORED"
-        )
-        || normalized.contains("2160")
+        || looks_like_release_provenance_normalized(&normalized)
+}
+
+fn looks_like_release_provenance_normalized(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "WEB"
+            | "WEBDL"
+            | "WEBRIP"
+            | "BLURAY"
+            | "BDRIP"
+            | "BRRIP"
+            | "HDTV"
+            | "CAM"
+            | "HQCAM"
+            | "TS"
+            | "TC"
+            | "TELESYNC"
+            | "TELECINE"
+            | "DVDSCR"
+            | "WORKPRINT"
+            | "DVDRIP"
+            | "NF"
+            | "AMZN"
+            | "DSNP"
+            | "CR"
+            | "HULU"
+            | "MAX"
+            | "HEVC"
+            | "AVC"
+            | "X265"
+            | "X264"
+            | "H265"
+            | "H264"
+            | "AAC"
+            | "DDP"
+            | "DTS"
+            | "DTSX"
+            | "DTSHD"
+            | "DTSMA"
+            | "TRUEHD"
+            | "FLAC"
+            | "DUAL"
+            | "DUALAUDIO"
+            | "AUDIO"
+            | "DUB"
+            | "DUBS"
+            | "DUBBED"
+            | "SUB"
+            | "SUBS"
+            | "MULTI"
+            | "MULTIAUDIO"
+            | "MULTISUB"
+            | "MULTISUBS"
+            | "EN"
+            | "ENG"
+            | "ENGLISH"
+            | "JP"
+            | "JPN"
+            | "JAPANESE"
+            | "HDR"
+            | "HDR10"
+            | "HDR10PLUS"
+            | "HDR10P"
+            | "HLG"
+            | "DV"
+            | "DOVI"
+            | "ATMOS"
+            | "PROPER"
+            | "REPACK"
+            | "REMUX"
+            | "UNCENSORED"
+    ) || normalized.contains("2160")
         || normalized.contains("1080")
         || normalized.contains("720")
         || normalized.contains("480")

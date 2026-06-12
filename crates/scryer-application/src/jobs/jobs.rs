@@ -213,8 +213,14 @@ impl AppUseCase {
         job_key: JobKey,
         limit: usize,
     ) -> AppResult<Vec<JobRun>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+        let can_manage_system = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+        if !can_manage_system && job_key != JobKey::TitleDeletion {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ));
+        }
         let active_runs = {
             let runs = self.runtime.jobs.job_run_tracker.list_active().await;
             if runs.is_empty() {
@@ -228,12 +234,19 @@ impl AppUseCase {
             .map(|run| (run.id.clone(), run))
             .collect::<HashMap<_, _>>();
 
-        let records = self
-            .services
-            .events
-            .job_runs
-            .list_job_runs(Some(job_key), limit.max(1))
-            .await?;
+        let records = if can_manage_system {
+            self.services
+                .events
+                .job_runs
+                .list_job_runs(Some(job_key), limit.max(1))
+                .await?
+        } else {
+            self.services
+                .events
+                .job_runs
+                .list_job_runs_for_actor(Some(job_key), &actor.id, limit.max(1))
+                .await?
+        };
 
         Ok(records
             .into_iter()
@@ -814,6 +827,19 @@ impl AppUseCase {
                     serde_json::to_string(&CountSummary { count }).ok(),
                 ))
             }
+            JobKey::TitleImageCacheRefresh => {
+                let summary = self.run_title_image_cache_refresh().await?;
+                Ok(JobExecutionOutcome::new(
+                    Some(format!(
+                        "Refreshed artwork URLs for {} title(s) and {} episode(s); image cache reset",
+                        summary.title_urls_updated, summary.episode_urls_updated
+                    )),
+                    serde_json::to_string(&summary).ok(),
+                ))
+            }
+            JobKey::TitleDeletion => Err(AppError::Validation(
+                "title deletion jobs must be started from the title deletion mutation".into(),
+            )),
         }
     }
 

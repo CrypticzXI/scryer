@@ -725,6 +725,7 @@ export function SettingsIndexersContainer({
       />
       <ConfirmDialog
         open={pendingDeleteIndexer !== null}
+        contentId="settings-indexer-delete-dialog"
         title={t("label.delete")}
         description={
           pendingDeleteIndexer
@@ -733,6 +734,8 @@ export function SettingsIndexersContainer({
         }
         confirmLabel={t("label.delete")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-indexer-delete-confirm"
+        cancelButtonId="settings-indexer-delete-cancel"
         isBusy={mutatingIndexerId !== null}
         onConfirm={confirmDeleteIndexer}
         onCancel={() => setPendingDeleteIndexer(null)}

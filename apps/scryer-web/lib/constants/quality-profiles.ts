@@ -15,9 +15,16 @@ export const DEFAULT_QUALITY_PROFILE_QUALITY_TIERS = ["2160P", "1080P", "720P"] 
 
 export const QUALITY_SOURCE_CHOICES = [
   { value: "WEB-DL", label: "WEB-DL" },
+  { value: "WEBRip", label: "WEBRip" },
   { value: "BluRay", label: "BluRay" },
-  { value: "HDTV", label: "HDTV" },
+  { value: "BRDISK", label: "BRDISK" },
   { value: "DVD", label: "DVD" },
+  { value: "HDTV", label: "HDTV" },
+  { value: "CAM", label: "CAM" },
+  { value: "TELESYNC", label: "TELESYNC" },
+  { value: "TELECINE", label: "TELECINE" },
+  { value: "DVDSCR", label: "DVDSCR" },
+  { value: "WORKPRINT", label: "WORKPRINT" },
 ] as const;
 
 export const VIDEO_CODEC_CHOICES = [
@@ -34,14 +41,20 @@ export const VIDEO_CODEC_CHOICES = [
 ] as const;
 
 export const AUDIO_CODEC_CHOICES = [
-  { value: "AAC", label: "AAC" },
-  { value: "AC3", label: "AC3" },
   { value: "DDP", label: "DDP" },
-  { value: "DTS", label: "DTS" },
   { value: "EAC3", label: "EAC3" },
+  { value: "AC3", label: "AC3" },
+  { value: "AAC", label: "AAC" },
+  { value: "TRUEHD", label: "TrueHD" },
+  { value: "DTSMA", label: "DTS-HD MA" },
+  { value: "DTSX", label: "DTS:X" },
+  { value: "DTSHD", label: "DTS-HD" },
+  { value: "DTS", label: "DTS" },
   { value: "FLAC", label: "FLAC" },
   { value: "OPUS", label: "OPUS" },
-  { value: "TRUEHD", label: "TrueHD" },
+  { value: "VORBIS", label: "Vorbis" },
+  { value: "MP3", label: "MP3" },
+  { value: "PCM", label: "PCM" },
 ] as const;
 
 export const SCORING_PERSONA_CHOICES = [

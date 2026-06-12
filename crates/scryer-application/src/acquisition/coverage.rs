@@ -267,6 +267,7 @@ mod tests {
             absolute_number: absolute.map(str::to_string),
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         }

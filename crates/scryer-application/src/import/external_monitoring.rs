@@ -143,4 +143,29 @@ impl AppUseCase {
             .update(session_id, snapshot)
             .await;
     }
+
+    pub async fn set_external_import_monitor_warmup_scan_hints(
+        &self,
+        session_id: &str,
+        scan_hints: LibraryScanHintSet,
+    ) {
+        let _ = self
+            .runtime
+            .imports
+            .external_import_warmup_orchestrator
+            .set_scan_hints(session_id, scan_hints)
+            .await;
+    }
+
+    pub async fn external_import_monitor_warmup_scan_hints(
+        &self,
+        actor: &User,
+        session_id: &str,
+    ) -> Option<LibraryScanHintSet> {
+        self.runtime
+            .imports
+            .external_import_warmup_orchestrator
+            .scan_hints(&actor.id, session_id)
+            .await
+    }
 }

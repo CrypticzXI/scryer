@@ -1,4 +1,4 @@
-use crate::ports::NOTIFICATION_REQUEST_SCHEMA_VERSION;
+use crate::ports::{NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationMediaRequestPayload};
 use crate::{
     AppUseCase, NotificationActorPayload, NotificationAppPayload, NotificationDownloadPayload,
     NotificationEpisodePayload, NotificationExternalIdsPayload, NotificationFilePayload,
@@ -7,13 +7,15 @@ use crate::{
     NotificationSeverityPayload, NotificationTitlePayload,
 };
 use scryer_domain::{
-    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType, DownloadFailedEventData,
-    Episode, ExternalId, ImportCompletedEventData, ImportRejectedEventData,
-    MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
-    MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NotificationEventType,
-    PostProcessingCompletedEventData, PostProcessingResult, ReleaseGrabbedEventData,
-    SubtitleDownloadedEventData, SubtitleSearchFailedEventData, Title, TitleAddedEventData,
-    TitleContextSnapshot, TitleDeletedEventData,
+    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType, DomainExternalIds,
+    DownloadFailedEventData, Episode, ExternalId, ImportCompletedEventData,
+    ImportRejectedEventData, MediaFileDeletedEventData, MediaFileDeletedReason,
+    MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate,
+    MediaRequestResolvedEventData, MediaRequestSubmittedEventData, MediaUpdateType,
+    NotificationEventType, NotificationTargetKind, PostProcessingCompletedEventData,
+    PostProcessingResult, ReleaseGrabbedEventData, SubtitleDownloadedEventData,
+    SubtitleSearchFailedEventData, Title, TitleAddedEventData, TitleContextSnapshot,
+    TitleDeletedEventData,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
@@ -39,6 +41,10 @@ macro_rules! notification_event_mappings {
             post_processing_completed => DomainEventPayload::PostProcessingCompleted(_) => DomainEventPayload::PostProcessingCompleted(data) => DomainEventType::PostProcessingCompleted => NotificationEventType::PostProcessingCompleted => build_post_processing_completed_notification(data),
             subtitle_downloaded => DomainEventPayload::SubtitleDownloaded(_) => DomainEventPayload::SubtitleDownloaded(data) => DomainEventType::SubtitleDownloaded => NotificationEventType::SubtitleDownloaded => build_subtitle_downloaded_notification(data),
             subtitle_search_failed => DomainEventPayload::SubtitleSearchFailed(_) => DomainEventPayload::SubtitleSearchFailed(data) => DomainEventType::SubtitleSearchFailed => NotificationEventType::SubtitleSearchFailed => build_subtitle_search_failed_notification(data),
+            media_request_submitted => DomainEventPayload::MediaRequestSubmitted(_) => DomainEventPayload::MediaRequestSubmitted(data) => DomainEventType::MediaRequestSubmitted => NotificationEventType::MediaRequestSubmitted => build_media_request_submitted_notification(data),
+            media_request_approved => DomainEventPayload::MediaRequestApproved(_) => DomainEventPayload::MediaRequestApproved(data) => DomainEventType::MediaRequestApproved => NotificationEventType::MediaRequestApproved => build_media_request_resolved_notification(data, NotificationEventType::MediaRequestApproved),
+            media_request_rejected => DomainEventPayload::MediaRequestRejected(_) => DomainEventPayload::MediaRequestRejected(data) => DomainEventType::MediaRequestRejected => NotificationEventType::MediaRequestRejected => build_media_request_resolved_notification(data, NotificationEventType::MediaRequestRejected),
+            media_request_canceled => DomainEventPayload::MediaRequestCanceled(_) => DomainEventPayload::MediaRequestCanceled(data) => DomainEventType::MediaRequestCanceled => NotificationEventType::MediaRequestCanceled => build_media_request_resolved_notification(data, NotificationEventType::MediaRequestCanceled),
         }
     };
 }
@@ -230,9 +236,61 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
             continue;
         }
 
-        let channel = match ch_repo.get_channel(&subscription.channel_id).await {
-            Ok(Some(channel)) if channel.is_enabled => channel,
-            _ => continue,
+        let channel = match subscription.target_kind {
+            NotificationTargetKind::PluginChannel => {
+                let Some(channel_id) = subscription.channel_id.as_deref() else {
+                    warn!(
+                        subscription_id = subscription.id.as_str(),
+                        target_id = subscription.target_id.as_str(),
+                        "plugin notification subscription is missing channel_id"
+                    );
+                    continue;
+                };
+                match ch_repo.get_channel(channel_id).await {
+                    Ok(Some(channel)) if channel.is_enabled => channel,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        warn!(
+                            subscription_id = subscription.id.as_str(),
+                            channel_id,
+                            error = %error,
+                            "failed to load notification channel"
+                        );
+                        continue;
+                    }
+                }
+            }
+            NotificationTargetKind::MediaServerConnection => match app
+                .notification_channel_for_media_server_target(&subscription.target_id)
+                .await
+            {
+                Ok(channel) if channel.is_enabled => channel,
+                Ok(_) => continue,
+                Err(error) => {
+                    warn!(
+                        subscription_id = subscription.id.as_str(),
+                        target_id = subscription.target_id.as_str(),
+                        error = %error,
+                        "failed to resolve media server notification target"
+                    );
+                    continue;
+                }
+            },
+        };
+        let channel = match app
+            .notification_channel_with_resolved_media_server_config(channel)
+            .await
+        {
+            Ok(channel) => channel,
+            Err(error) => {
+                warn!(
+                    target_kind = subscription.target_kind.as_str(),
+                    target_id = subscription.target_id.as_str(),
+                    error = %error,
+                    "failed to resolve notification target configuration"
+                );
+                continue;
+            }
         };
 
         let client = match provider.client_for_channel(&channel) {
@@ -592,6 +650,65 @@ fn build_subtitle_search_failed_notification(
     BuiltNotification { payload }
 }
 
+fn build_media_request_submitted_notification(
+    data: &MediaRequestSubmittedEventData,
+) -> BuiltNotification {
+    let title = media_request_submitted_title_context(data);
+    let mut payload = base_notification_payload(
+        NotificationEventType::MediaRequestSubmitted,
+        format!("Media request submitted: {}", data.title_name),
+        format!("Submitted media request for '{}'.", data.title_name),
+        Some(&title),
+        &[],
+        &[],
+    );
+    payload.media_request = Some(NotificationMediaRequestPayload {
+        request_id: Some(data.request_id.clone()),
+        library_id: Some(data.library_id.clone()),
+        status: Some("pending".to_string()),
+        facet: Some(data.facet.as_str().to_string()),
+        requested_quality_profile_id: data.requested_quality_profile_id.clone(),
+        requested_quality_profile_name: data.requested_quality_profile_name.clone(),
+        requested_monitor_type: data.requested_monitor_type.clone(),
+        ..Default::default()
+    });
+    BuiltNotification { payload }
+}
+
+fn build_media_request_resolved_notification(
+    data: &MediaRequestResolvedEventData,
+    event_type: NotificationEventType,
+) -> BuiltNotification {
+    let title = media_request_resolved_title_context(data);
+    let (status, verb) = match event_type {
+        NotificationEventType::MediaRequestApproved => ("approved", "Approved"),
+        NotificationEventType::MediaRequestRejected => ("rejected", "Rejected"),
+        NotificationEventType::MediaRequestCanceled => ("canceled", "Canceled"),
+        _ => ("resolved", "Resolved"),
+    };
+    let mut payload = base_notification_payload(
+        event_type,
+        format!("Media request {status}: {}", data.title_name),
+        format!("{verb} media request for '{}'.", data.title_name),
+        Some(&title),
+        &[],
+        &[],
+    );
+    payload.media_request = Some(NotificationMediaRequestPayload {
+        request_id: Some(data.request_id.clone()),
+        library_id: Some(data.library_id.clone()),
+        status: Some(status.to_string()),
+        facet: Some(data.facet.as_str().to_string()),
+        requested_quality_profile_id: data.requested_quality_profile_id.clone(),
+        requested_quality_profile_name: data.requested_quality_profile_name.clone(),
+        requested_monitor_type: data.requested_monitor_type.clone(),
+        approved_quality_profile_id: data.approved_quality_profile_id.clone(),
+        approved_quality_profile_name: data.approved_quality_profile_name.clone(),
+        created_title_id: data.created_title_id.clone(),
+    });
+    BuiltNotification { payload }
+}
+
 fn base_notification_payload(
     event_type: NotificationEventType,
     summary_title: String,
@@ -626,6 +743,7 @@ fn base_notification_payload(
         media_files: Vec::new(),
         application_update: None,
         manual_interaction: None,
+        media_request: None,
     }
 }
 
@@ -640,7 +758,6 @@ fn title_payload_from_context(title: &TitleContextSnapshot) -> NotificationTitle
         overview: None,
         sort_title: None,
         poster_url: title.poster_url.clone(),
-        banner_url: None,
         background_url: None,
         genres: Vec::new(),
         tags: Vec::new(),
@@ -659,6 +776,44 @@ fn title_payload_from_context(title: &TitleContextSnapshot) -> NotificationTitle
             by_source: external_ids_by_source_from_snapshot(title),
         },
     }
+}
+
+fn media_request_submitted_title_context(
+    data: &MediaRequestSubmittedEventData,
+) -> TitleContextSnapshot {
+    TitleContextSnapshot {
+        title_name: data.title_name.clone(),
+        facet: data.facet.clone(),
+        external_ids: media_request_external_ids(&data.external_ids),
+        poster_url: data.poster_url.clone(),
+        year: data.year,
+    }
+}
+
+fn media_request_resolved_title_context(
+    data: &MediaRequestResolvedEventData,
+) -> TitleContextSnapshot {
+    TitleContextSnapshot {
+        title_name: data.title_name.clone(),
+        facet: data.facet.clone(),
+        external_ids: media_request_external_ids(&data.external_ids),
+        poster_url: None,
+        year: None,
+    }
+}
+
+fn media_request_external_ids(external_ids: &[ExternalId]) -> DomainExternalIds {
+    let mut out = DomainExternalIds::default();
+    for external_id in external_ids {
+        match external_id.source.as_str() {
+            "imdb" => out.imdb_id = Some(external_id.value.clone()),
+            "tmdb" => out.tmdb_id = Some(external_id.value.clone()),
+            "tvdb" => out.tvdb_id = Some(external_id.value.clone()),
+            "anidb" => out.anidb_id = Some(external_id.value.clone()),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn episode_payload(episode_ids: &[String]) -> Option<NotificationEpisodePayload> {
@@ -725,6 +880,7 @@ async fn enrich_notification(
     }
     notification.payload.media_files =
         resolve_notification_media_files(app, event, notification.payload.file.as_ref()).await;
+    enrich_episode_media_file_associations(app, event, &mut notification.payload).await;
     enrich_release_from_media_files(&mut notification.payload);
 
     notification
@@ -853,6 +1009,194 @@ async fn resolve_notification_media_files(
     media_files
 }
 
+async fn enrich_episode_media_file_associations(
+    app: &AppUseCase,
+    event: &DomainEvent,
+    payload: &mut NotificationPayload,
+) {
+    let Some(title_id) = event.title_id.as_deref() else {
+        return;
+    };
+
+    let mut episode_ids = BTreeSet::new();
+    if let Some(summary) = payload.episode.as_ref() {
+        episode_ids.extend(summary.episode_ids.iter().cloned());
+    }
+    for episode in &payload.episodes {
+        if let Some(id) = episode.id.as_ref() {
+            episode_ids.insert(id.clone());
+        }
+        episode_ids.extend(episode.episode_ids.iter().cloned());
+    }
+    if episode_ids.is_empty() {
+        return;
+    }
+
+    let episode_id_list = episode_ids.iter().cloned().collect::<Vec<_>>();
+    let scoped_files = match app
+        .services
+        .library
+        .media_files
+        .list_live_media_files_for_episode_ids(title_id, &episode_id_list)
+        .await
+    {
+        Ok(scoped_files) => scoped_files,
+        Err(error) => {
+            warn!(
+                title_id,
+                error = %error,
+                "failed to load notification media file episode associations"
+            );
+            return;
+        }
+    };
+
+    let mut associations: BTreeMap<String, Option<(String, String)>> = BTreeMap::new();
+    for scoped_file in scoped_files {
+        let media_file_id = scoped_file.media_file.id.clone();
+        let media_file_path = scoped_file.media_file.file_path.clone();
+        for episode_id in scoped_file.episode_ids {
+            if !episode_ids.contains(&episode_id) {
+                continue;
+            }
+
+            match associations.get_mut(&episode_id) {
+                Some(Some((existing_file_id, _))) if existing_file_id != &media_file_id => {
+                    associations.insert(episode_id, None);
+                }
+                Some(_) => {}
+                None => {
+                    associations.insert(
+                        episode_id,
+                        Some((media_file_id.clone(), media_file_path.clone())),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(summary) = payload.episode.as_mut() {
+        apply_episode_media_file_association(summary, &associations);
+    }
+    for episode in &mut payload.episodes {
+        apply_episode_media_file_association(episode, &associations);
+    }
+}
+
+fn apply_episode_media_file_association(
+    episode: &mut NotificationEpisodePayload,
+    associations: &BTreeMap<String, Option<(String, String)>>,
+) {
+    let Some((media_file_id, media_file_path)) =
+        notification_episode_media_file_association(episode, associations)
+    else {
+        return;
+    };
+
+    episode.media_file_id = Some(media_file_id.clone());
+    episode.media_file_path = Some(media_file_path.clone());
+}
+
+fn notification_episode_media_file_association<'a>(
+    episode: &NotificationEpisodePayload,
+    associations: &'a BTreeMap<String, Option<(String, String)>>,
+) -> Option<&'a (String, String)> {
+    if let Some(id) = episode.id.as_deref() {
+        match associations.get(id) {
+            Some(Some(association)) => return Some(association),
+            Some(None) => return None,
+            None => {}
+        }
+    }
+
+    let mut selected = None;
+    for episode_id in &episode.episode_ids {
+        match associations.get(episode_id) {
+            Some(Some(association)) => {
+                if selected.is_some_and(|existing| existing != association) {
+                    return None;
+                }
+                selected = Some(association);
+            }
+            Some(None) => return None,
+            None => {}
+        }
+    }
+    selected
+}
+
+#[cfg(test)]
+mod media_file_association_tests {
+    use super::*;
+
+    fn association(file_id: &str, path: &str) -> Option<(String, String)> {
+        Some((file_id.to_string(), path.to_string()))
+    }
+
+    #[test]
+    fn episode_media_file_association_uses_exact_episode_id() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            id: Some("episode-1".to_string()),
+            episode_ids: vec!["episode-1".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id.as_deref(), Some("file-1"));
+        assert_eq!(episode.media_file_path.as_deref(), Some("/show/e1.mkv"));
+    }
+
+    #[test]
+    fn episode_media_file_association_allows_multi_episode_same_file() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1e2.mkv"),
+        );
+        associations.insert(
+            "episode-2".to_string(),
+            association("file-1", "/show/e1e2.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id.as_deref(), Some("file-1"));
+        assert_eq!(episode.media_file_path.as_deref(), Some("/show/e1e2.mkv"));
+    }
+
+    #[test]
+    fn episode_media_file_association_rejects_ambiguous_files() {
+        let mut associations = BTreeMap::new();
+        associations.insert(
+            "episode-1".to_string(),
+            association("file-1", "/show/e1.mkv"),
+        );
+        associations.insert(
+            "episode-2".to_string(),
+            association("file-2", "/show/e2.mkv"),
+        );
+        let mut episode = NotificationEpisodePayload {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            ..NotificationEpisodePayload::default()
+        };
+
+        apply_episode_media_file_association(&mut episode, &associations);
+
+        assert_eq!(episode.media_file_id, None);
+        assert_eq!(episode.media_file_path, None);
+    }
+}
+
 fn enrich_release_from_media_files(payload: &mut NotificationPayload) {
     let Some(release) = payload.release.as_mut() else {
         return;
@@ -883,7 +1227,6 @@ fn title_payload_from_title(title: &Title) -> NotificationTitlePayload {
         overview: title.overview.clone(),
         sort_title: title.sort_title.clone(),
         poster_url: title.poster_url.clone(),
-        banner_url: title.banner_url.clone(),
         background_url: title.background_url.clone(),
         genres: title.genres.clone(),
         tags: title.tags.clone(),
@@ -974,6 +1317,8 @@ fn episode_payload_from_episode(episode: &Episode) -> NotificationEpisodePayload
     NotificationEpisodePayload {
         id: Some(episode.id.clone()),
         episode_ids: vec![episode.id.clone()],
+        media_file_id: None,
+        media_file_path: None,
         display: episode_display(episode),
         collection_id: episode.collection_id.clone(),
         season_number: episode.season_number.clone(),
@@ -1050,10 +1395,13 @@ fn media_file_payload_from_record(
         previous_path: media_file.original_file_path.clone(),
         recycle_bin_path: None,
         size_bytes: Some(media_file.size_bytes),
-        quality: media_file
-            .quality_label
-            .clone()
-            .or_else(|| media_file.resolution.clone()),
+        quality: crate::media::release_labels::quality_from_video_dimensions(
+            media_file.video_width,
+            media_file.video_height,
+        )
+        .map(str::to_string)
+        .or_else(|| media_file.quality_label.clone())
+        .or_else(|| media_file.resolution.clone()),
         release_group: media_file.release_group.clone(),
         scene_name: media_file.scene_name.clone(),
         audio_languages: media_file.audio_languages.clone(),
@@ -1072,11 +1420,10 @@ fn media_file_payload_from_record(
             .audio_codec
             .clone()
             .or_else(|| media_file.audio_codec_parsed.clone()),
-        audio_channels: media_file.audio_channels_parsed.clone().or_else(|| {
-            media_file
-                .audio_channels
-                .map(|channels| channels.to_string())
-        }),
+        audio_channels: media_file
+            .audio_channels
+            .map(|channels| channels.to_string())
+            .or_else(|| media_file.audio_channels_parsed.clone()),
         video_width: media_file.video_width,
         video_height: media_file.video_height,
         video_bit_depth: media_file.video_bit_depth,
@@ -1149,6 +1496,28 @@ mod tests {
             poster_url: Some("https://example.invalid/poster.jpg".to_string()),
             year: Some(2024),
         }
+    }
+
+    fn media_request_test_external_ids() -> Vec<ExternalId> {
+        vec![
+            ExternalId {
+                source: "imdb".to_string(),
+                value: "tt7654321".to_string(),
+            },
+            ExternalId {
+                source: "tvdb".to_string(),
+                value: "456".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn supported_notification_event_types_include_media_request_lifecycle() {
+        let supported = supported_notification_event_types();
+        assert!(supported.contains(&NotificationEventType::MediaRequestSubmitted));
+        assert!(supported.contains(&NotificationEventType::MediaRequestApproved));
+        assert!(supported.contains(&NotificationEventType::MediaRequestRejected));
+        assert!(supported.contains(&NotificationEventType::MediaRequestCanceled));
     }
 
     #[test]
@@ -1430,6 +1799,107 @@ mod tests {
                     reason: Some("provider timeout".to_string()),
                 }),
             },
+            DomainEvent {
+                sequence: 13,
+                event_id: "evt-media-request-submitted".to_string(),
+                occurred_at: Utc::now(),
+                actor_user_id: Some("requester-1".to_string()),
+                title_id: None,
+                facet: Some(MediaFacet::Series),
+                correlation_id: None,
+                causation_id: None,
+                schema_version: 1,
+                stream: scryer_domain::DomainEventStream::Global,
+                payload: DomainEventPayload::MediaRequestSubmitted(
+                    MediaRequestSubmittedEventData {
+                        request_id: "request-1".to_string(),
+                        library_id: "library-series".to_string(),
+                        facet: MediaFacet::Series,
+                        title_name: "Requested Show".to_string(),
+                        external_ids: media_request_test_external_ids(),
+                        poster_url: Some("https://example.invalid/request.jpg".to_string()),
+                        year: Some(2025),
+                        requested_quality_profile_id: Some("quality-1".to_string()),
+                        requested_quality_profile_name: Some("HD".to_string()),
+                        requested_monitor_type: Some("missingAndFutureEpisodes".to_string()),
+                    },
+                ),
+            },
+            DomainEvent {
+                sequence: 14,
+                event_id: "evt-media-request-approved".to_string(),
+                occurred_at: Utc::now(),
+                actor_user_id: Some("admin-1".to_string()),
+                title_id: None,
+                facet: Some(MediaFacet::Series),
+                correlation_id: None,
+                causation_id: None,
+                schema_version: 1,
+                stream: scryer_domain::DomainEventStream::Global,
+                payload: DomainEventPayload::MediaRequestApproved(MediaRequestResolvedEventData {
+                    request_id: "request-1".to_string(),
+                    library_id: "library-series".to_string(),
+                    facet: MediaFacet::Series,
+                    title_name: "Requested Show".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: Some("title-requested-show".to_string()),
+                    requested_quality_profile_id: Some("quality-1".to_string()),
+                    requested_quality_profile_name: Some("HD".to_string()),
+                    requested_monitor_type: Some("missingAndFutureEpisodes".to_string()),
+                    approved_quality_profile_id: Some("quality-2".to_string()),
+                    approved_quality_profile_name: Some("HD Approved".to_string()),
+                }),
+            },
+            DomainEvent {
+                sequence: 15,
+                event_id: "evt-media-request-rejected".to_string(),
+                occurred_at: Utc::now(),
+                actor_user_id: Some("admin-1".to_string()),
+                title_id: None,
+                facet: Some(MediaFacet::Movie),
+                correlation_id: None,
+                causation_id: None,
+                schema_version: 1,
+                stream: scryer_domain::DomainEventStream::Global,
+                payload: DomainEventPayload::MediaRequestRejected(MediaRequestResolvedEventData {
+                    request_id: "request-2".to_string(),
+                    library_id: "library-movie".to_string(),
+                    facet: MediaFacet::Movie,
+                    title_name: "Rejected Movie".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: None,
+                    requested_quality_profile_id: Some("quality-1".to_string()),
+                    requested_quality_profile_name: Some("HD".to_string()),
+                    requested_monitor_type: None,
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                }),
+            },
+            DomainEvent {
+                sequence: 16,
+                event_id: "evt-media-request-canceled".to_string(),
+                occurred_at: Utc::now(),
+                actor_user_id: Some("requester-1".to_string()),
+                title_id: None,
+                facet: Some(MediaFacet::Anime),
+                correlation_id: None,
+                causation_id: None,
+                schema_version: 1,
+                stream: scryer_domain::DomainEventStream::Global,
+                payload: DomainEventPayload::MediaRequestCanceled(MediaRequestResolvedEventData {
+                    request_id: "request-3".to_string(),
+                    library_id: "library-anime".to_string(),
+                    facet: MediaFacet::Anime,
+                    title_name: "Canceled Anime".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: None,
+                    requested_quality_profile_id: Some("quality-1".to_string()),
+                    requested_quality_profile_name: Some("HD".to_string()),
+                    requested_monitor_type: Some("futureEpisodes".to_string()),
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                }),
+            },
         ]
     }
 
@@ -1525,5 +1995,128 @@ mod tests {
         };
         assert!(notification_event_type(&unsupported.payload).is_none());
         assert!(build_notification(&unsupported).is_none());
+    }
+
+    #[tokio::test]
+    async fn media_request_notifications_include_typed_context() {
+        let cases = [
+            (
+                DomainEventPayload::MediaRequestSubmitted(MediaRequestSubmittedEventData {
+                    request_id: "request-submitted".to_string(),
+                    library_id: "library-series".to_string(),
+                    facet: MediaFacet::Series,
+                    title_name: "Requested Show".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    poster_url: Some("https://example.invalid/request.jpg".to_string()),
+                    year: Some(2025),
+                    requested_quality_profile_id: Some("quality-requested".to_string()),
+                    requested_quality_profile_name: Some("Requested HD".to_string()),
+                    requested_monitor_type: Some("missingAndFutureEpisodes".to_string()),
+                }),
+                NotificationEventType::MediaRequestSubmitted,
+                "pending",
+                None,
+            ),
+            (
+                DomainEventPayload::MediaRequestApproved(MediaRequestResolvedEventData {
+                    request_id: "request-approved".to_string(),
+                    library_id: "library-movie".to_string(),
+                    facet: MediaFacet::Movie,
+                    title_name: "Approved Movie".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: Some("title-approved".to_string()),
+                    requested_quality_profile_id: Some("quality-requested".to_string()),
+                    requested_quality_profile_name: Some("Requested HD".to_string()),
+                    requested_monitor_type: None,
+                    approved_quality_profile_id: Some("quality-approved".to_string()),
+                    approved_quality_profile_name: Some("Approved HD".to_string()),
+                }),
+                NotificationEventType::MediaRequestApproved,
+                "approved",
+                Some("title-approved"),
+            ),
+            (
+                DomainEventPayload::MediaRequestRejected(MediaRequestResolvedEventData {
+                    request_id: "request-rejected".to_string(),
+                    library_id: "library-movie".to_string(),
+                    facet: MediaFacet::Movie,
+                    title_name: "Rejected Movie".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: None,
+                    requested_quality_profile_id: Some("quality-requested".to_string()),
+                    requested_quality_profile_name: Some("Requested HD".to_string()),
+                    requested_monitor_type: None,
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                }),
+                NotificationEventType::MediaRequestRejected,
+                "rejected",
+                None,
+            ),
+            (
+                DomainEventPayload::MediaRequestCanceled(MediaRequestResolvedEventData {
+                    request_id: "request-canceled".to_string(),
+                    library_id: "library-anime".to_string(),
+                    facet: MediaFacet::Anime,
+                    title_name: "Canceled Anime".to_string(),
+                    external_ids: media_request_test_external_ids(),
+                    created_title_id: None,
+                    requested_quality_profile_id: Some("quality-requested".to_string()),
+                    requested_quality_profile_name: Some("Requested HD".to_string()),
+                    requested_monitor_type: Some("futureEpisodes".to_string()),
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                }),
+                NotificationEventType::MediaRequestCanceled,
+                "canceled",
+                None,
+            ),
+        ];
+
+        for (payload, expected_event_type, expected_status, expected_created_title_id) in cases {
+            let event = DomainEvent {
+                sequence: 100,
+                event_id: format!("evt-{}", expected_event_type.as_str()),
+                occurred_at: Utc::now(),
+                actor_user_id: Some("actor-1".to_string()),
+                title_id: None,
+                facet: None,
+                correlation_id: None,
+                causation_id: None,
+                schema_version: 1,
+                stream: scryer_domain::DomainEventStream::Global,
+                payload,
+            };
+
+            let built =
+                build_notification(&event).expect("media request notification should build");
+            let (app, _) = bootstrap();
+            let enriched = enrich_notification(&app, &event, built).await;
+            assert_eq!(enriched.payload.event_type, expected_event_type);
+            assert_eq!(
+                enriched
+                    .payload
+                    .actor
+                    .as_ref()
+                    .and_then(|actor| actor.user_id.as_deref()),
+                Some("actor-1")
+            );
+            let title = enriched.payload.title.as_ref().expect("title context");
+            assert_eq!(title.external_ids.imdb_id.as_deref(), Some("tt7654321"));
+            let request = enriched
+                .payload
+                .media_request
+                .as_ref()
+                .expect("media request context");
+            assert_eq!(request.status.as_deref(), Some(expected_status));
+            assert_eq!(
+                request.requested_quality_profile_name.as_deref(),
+                Some("Requested HD")
+            );
+            assert_eq!(
+                request.created_title_id.as_deref(),
+                expected_created_title_id
+            );
+        }
     }
 }

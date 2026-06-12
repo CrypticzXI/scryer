@@ -12,6 +12,7 @@ type UseDeferredWsSubscriptionOptions<TResult> = {
   onNext: (result: TResult) => void;
   onError?: (error: unknown) => void;
   onComplete?: () => void;
+  startDelayMs?: number;
   teardownDelayMs?: number;
 };
 
@@ -39,6 +40,7 @@ export function useDeferredWsSubscription<TResult>({
   onNext,
   onError,
   onComplete,
+  startDelayMs = 250,
   teardownDelayMs = 200,
 }: UseDeferredWsSubscriptionOptions<TResult>) {
   const onStartRef = useRef(onStart);
@@ -107,35 +109,54 @@ export function useDeferredWsSubscription<TResult>({
       activeRequestSignatureRef.current = null;
     }
 
-    const unsubscribe = wsClient.subscribe(requestRef.current, {
-      next(result) {
-        onNextRef.current(result as TResult);
-      },
-      error(error) {
-        onErrorRef.current?.(error);
-      },
-      complete() {
-        if (unsubscribeRef.current === unsubscribe) {
-          unsubscribeRef.current = null;
-          activeRequestSignatureRef.current = null;
-        }
-        onCompleteRef.current?.();
-      },
-    });
+    let startupTimer: ReturnType<typeof setTimeout> | null = null;
+    let unsubscribe: (() => void) | null = null;
 
-    unsubscribeRef.current = unsubscribe;
-    activeRequestSignatureRef.current = requestSignature;
-    onStartRef.current?.();
+    const startSubscription = () => {
+      startupTimer = null;
+      unsubscribe = wsClient.subscribe(requestRef.current, {
+        next(result) {
+          onNextRef.current(result as TResult);
+        },
+        error(error) {
+          onErrorRef.current?.(error);
+        },
+        complete() {
+          if (unsubscribeRef.current === unsubscribe) {
+            unsubscribeRef.current = null;
+            activeRequestSignatureRef.current = null;
+          }
+          onCompleteRef.current?.();
+        },
+      });
+
+      unsubscribeRef.current = unsubscribe;
+      activeRequestSignatureRef.current = requestSignature;
+      onStartRef.current?.();
+    };
+
+    if (startDelayMs > 0) {
+      startupTimer = setTimeout(startSubscription, startDelayMs);
+    } else {
+      startSubscription();
+    }
 
     return () => {
+      if (startupTimer) {
+        clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+      if (!unsubscribe) {
+        return;
+      }
       teardownTimerRef.current = setTimeout(() => {
         teardownTimerRef.current = null;
-        unsubscribe();
+        unsubscribe?.();
         if (unsubscribeRef.current === unsubscribe) {
           unsubscribeRef.current = null;
           activeRequestSignatureRef.current = null;
         }
       }, teardownDelayMs);
     };
-  }, [enabled, requestSignature, teardownDelayMs]);
+  }, [enabled, requestSignature, startDelayMs, teardownDelayMs]);
 }

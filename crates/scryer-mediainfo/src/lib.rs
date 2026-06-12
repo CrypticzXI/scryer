@@ -7,6 +7,7 @@ mod codec;
 mod mkv;
 mod mp4;
 mod probe;
+mod scan;
 mod ts;
 mod types;
 
@@ -36,6 +37,9 @@ impl From<std::io::Error> for MediaInfoError {
 /// Analysis behavior profile for media probing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnalysisProfile {
+    /// Fast bounded metadata pass. This avoids payload/sample deep probes and
+    /// leaves richer confirmation to callers that need it.
+    Fast,
     /// Preserve the richer native analyzer behavior, including bounded deep
     /// scans for metadata such as HDR10+ where cheaper signals justify it.
     DefaultRich,
@@ -54,7 +58,7 @@ pub struct AnalyzeOptions {
 impl Default for AnalyzeOptions {
     fn default() -> Self {
         Self {
-            profile: AnalysisProfile::DefaultRich,
+            profile: AnalysisProfile::Fast,
         }
     }
 }
@@ -150,23 +154,41 @@ pub fn analyze_file_with_options(
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let format = sniff_container_format(file_path).or(match ext.as_str() {
-        "mkv" | "webm" => Some(ContainerFormat::Matroska),
-        "mp4" | "m4v" | "mov" => Some(ContainerFormat::Mp4),
-        "avi" => Some(ContainerFormat::Avi),
-        "ts" | "m2ts" => Some(ContainerFormat::Ts),
-        _ => None,
-    });
+    let format = resolve_container_format(&ext, sniff_container_format(file_path));
 
     let raw = match format {
-        Some(ContainerFormat::Matroska) => mkv::parse_mkv(file_path, options.profile)?,
+        Some(ContainerFormat::Matroska) => {
+            let profile = if options.profile == AnalysisProfile::Fast {
+                AnalysisProfile::DefaultRich
+            } else {
+                options.profile
+            };
+            mkv::parse_mkv(file_path, profile)?
+        }
         Some(ContainerFormat::Mp4) => mp4::parse_mp4(file_path, options.profile)?,
-        Some(ContainerFormat::Avi) => avi::parse_avi(file_path)?,
+        Some(ContainerFormat::Avi) => avi::parse_avi(file_path, options.profile)?,
         Some(ContainerFormat::Ts) => ts::parse_ts(file_path)?,
         None => return Err(MediaInfoError::UnsupportedFormat(ext)),
     };
 
     Ok(build_analysis(raw))
+}
+
+fn resolve_container_format(
+    ext: &str,
+    sniffed: Option<ContainerFormat>,
+) -> Option<ContainerFormat> {
+    sniffed.or_else(|| container_format_from_extension(ext))
+}
+
+fn container_format_from_extension(ext: &str) -> Option<ContainerFormat> {
+    match ext {
+        "mkv" | "webm" => Some(ContainerFormat::Matroska),
+        "mp4" | "m4v" | "mov" => Some(ContainerFormat::Mp4),
+        "avi" => Some(ContainerFormat::Avi),
+        "ts" | "m2ts" => Some(ContainerFormat::Ts),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -237,7 +259,12 @@ fn looks_like_mp4(data: &[u8]) -> bool {
 // ---------------------------------------------------------------------------
 
 fn build_analysis(raw: RawContainer) -> MediaAnalysis {
-    let video_track = raw.tracks.iter().find(|t| t.kind == TrackKind::Video);
+    let video_tracks: Vec<&RawTrack> = raw
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .collect();
+    let video_track = select_primary_video_track(&video_tracks);
     let audio_tracks: Vec<&RawTrack> = raw
         .tracks
         .iter()
@@ -350,7 +377,7 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
         .collect();
 
     // --- Container ---
-    let duration_seconds = raw.duration_seconds.map(|d| d as i32);
+    let duration_seconds = raw.duration_seconds.map(|d| d.round() as i32);
     let num_chapters = raw.num_chapters;
     let container_format = Some(raw.format_name.clone());
 
@@ -382,11 +409,19 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
 }
 
 fn select_primary_audio_track<'a>(audio_tracks: &[&'a RawTrack]) -> Option<&'a RawTrack> {
-    audio_tracks
+    audio_tracks.first().copied()
+}
+
+fn select_primary_video_track<'a>(video_tracks: &[&'a RawTrack]) -> Option<&'a RawTrack> {
+    if video_tracks.len() <= 1 {
+        return video_tracks.first().copied();
+    }
+
+    video_tracks
         .iter()
-        .find(|track| track.default_track)
         .copied()
-        .or_else(|| audio_tracks.first().copied())
+        .find(|track| !matches!(track.codec_name.as_deref(), Some("mjpeg" | "png")))
+        .or_else(|| video_tracks.first().copied())
 }
 
 /// Dispatch to the right codec extractor based on normalized codec name.
@@ -417,7 +452,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn analysis_prefers_default_audio_track_for_primary_fields() {
+    fn analysis_uses_first_audio_track_for_sonarr_primary_fields() {
         let analysis = build_analysis(RawContainer {
             format_name: "matroska".into(),
             duration_seconds: Some(60.0),
@@ -483,16 +518,41 @@ mod tests {
             ],
         });
 
-        assert_eq!(analysis.audio_codec.as_deref(), Some("flac"));
-        assert_eq!(analysis.audio_profile, None);
-        assert_eq!(analysis.audio_channels, Some(6));
-        assert_eq!(analysis.audio_bitrate_kbps, Some(640));
+        assert_eq!(analysis.audio_codec.as_deref(), Some("aac"));
+        assert_eq!(analysis.audio_profile.as_deref(), Some("LC"));
+        assert_eq!(analysis.audio_channels, Some(2));
+        assert_eq!(analysis.audio_bitrate_kbps, Some(128));
+    }
+
+    #[test]
+    fn analysis_skips_motion_image_video_when_multiple_video_streams_exist() {
+        let mut cover = test_track(TrackKind::Video, "mjpeg");
+        cover.width = Some(600);
+        cover.height = Some(900);
+        let mut main = test_track(TrackKind::Video, "h264");
+        main.width = Some(1920);
+        main.height = Some(1080);
+        main.frame_rate_fps = Some(24000.0 / 1001.0);
+
+        let analysis = build_analysis(RawContainer {
+            format_name: "matroska".into(),
+            duration_seconds: Some(60.0),
+            num_chapters: None,
+            tracks: vec![cover, main],
+        });
+
+        assert_eq!(analysis.video_codec.as_deref(), Some("h264"));
+        assert_eq!(analysis.video_width, Some(1920));
+        assert_eq!(analysis.video_height, Some(1080));
     }
 
     #[test]
     fn sniff_container_format_prefers_matroska_magic_over_extension_hint() {
         assert_eq!(
-            sniff_container_format_from_bytes(&[0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0]),
+            resolve_container_format(
+                "mp4",
+                sniff_container_format_from_bytes(&[0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0])
+            ),
             Some(ContainerFormat::Matroska)
         );
     }
@@ -523,5 +583,27 @@ mod tests {
             sniff_container_format_from_bytes(&bytes),
             Some(ContainerFormat::Mp4)
         );
+    }
+
+    fn test_track(kind: TrackKind, codec_name: &str) -> RawTrack {
+        RawTrack {
+            kind,
+            codec_id: codec_name.to_owned(),
+            codec_name: Some(codec_name.to_owned()),
+            audio_profile: None,
+            codec_private: None,
+            width: None,
+            height: None,
+            channels: None,
+            bit_rate_bps: None,
+            language: None,
+            name: None,
+            forced: false,
+            default_track: false,
+            frame_rate_fps: None,
+            color_transfer: None,
+            dovi_config: None,
+            has_hdr10plus: false,
+        }
     }
 }

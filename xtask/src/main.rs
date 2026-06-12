@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -16,9 +15,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tempfile::NamedTempFile;
-use xtask_support::{TaskContext, command_available, ok, run_status, step, warn};
+use xtask_support::{TaskContext, ok, run_status, step, warn};
 
+mod media_fixtures;
 mod profile;
 mod seed;
 
@@ -81,9 +80,10 @@ struct Cli {
 enum Commands {
     Release(ReleaseArgs),
     Builtins(BuiltinsArgs),
+    TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
+    MediaFixtures(media_fixtures::MediaFixturesArgs),
     Sdk(SdkArgs),
-    ValidateTrashGuides,
     Ci(CiArgs),
     Stack(StackArgs),
     Serve(ServeArgs),
@@ -108,6 +108,17 @@ struct ReleaseArgs {
 struct BuiltinsArgs {
     #[command(subcommand)]
     command: BuiltinsCommand,
+}
+
+#[derive(Args)]
+struct TrashGuidesArgs {
+    #[command(subcommand)]
+    command: TrashGuidesCommand,
+}
+
+#[derive(Subcommand)]
+enum TrashGuidesCommand {
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -304,12 +315,15 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Release(args) => delegate_release(&ctx, &args),
         Commands::Builtins(args) => delegate_builtins(&ctx, &args),
+        Commands::TrashGuides(args) => delegate_trash_guides(&ctx, &args),
         Commands::Migrations(args) => delegate_migrations(&ctx, &args),
-        Commands::Sdk(args) => delegate_sdk(&ctx, &args),
-        Commands::ValidateTrashGuides => run_validate_trash_guides(&ctx),
-        Commands::Ci(args) => match args.command {
-            CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
+        Commands::MediaFixtures(args) => match args.command {
+            media_fixtures::MediaFixturesCommand::Generate(args) => {
+                media_fixtures::generate(&ctx, &args)
+            }
         },
+        Commands::Sdk(args) => delegate_sdk(&ctx, &args),
+        Commands::Ci(args) => delegate_ci(&ctx, &args),
         Commands::Stack(args) => match args.command {
             StackCommand::Up(args) => stack_up(&ctx, args),
             StackCommand::Down(args) => stack_down(&ctx, args),
@@ -360,6 +374,13 @@ fn delegate_builtins(ctx: &TaskContext, args: &BuiltinsArgs) -> Result<()> {
     delegate_to_package(ctx, "xtask-release", &forwarded)
 }
 
+fn delegate_trash_guides(ctx: &TaskContext, args: &TrashGuidesArgs) -> Result<()> {
+    let forwarded = match args.command {
+        TrashGuidesCommand::Sync => vec!["sync".to_string()],
+    };
+    delegate_to_package(ctx, "xtask-trash-guides", &forwarded)
+}
+
 fn delegate_sdk(ctx: &TaskContext, args: &SdkArgs) -> Result<()> {
     let mut forwarded = vec!["sdk".to_string()];
     match &args.command {
@@ -368,6 +389,19 @@ fn delegate_sdk(ctx: &TaskContext, args: &SdkArgs) -> Result<()> {
             forwarded.push(release.version.clone());
             if release.dry_run {
                 forwarded.push("--dry-run".to_string());
+            }
+        }
+    }
+    delegate_to_package(ctx, "xtask-release", &forwarded)
+}
+
+fn delegate_ci(ctx: &TaskContext, args: &CiArgs) -> Result<()> {
+    let mut forwarded = vec!["ci".to_string()];
+    match &args.command {
+        CiCommand::Clippy(clippy) => {
+            forwarded.push("clippy".to_string());
+            if clippy.linux_only {
+                forwarded.push("--linux-only".to_string());
             }
         }
     }
@@ -882,6 +916,14 @@ fn serve_encryption_key() -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
+fn dotenv_or_process_env(dotenv_envs: &[(String, String)], key: &str) -> Option<String> {
+    std::env::var(key).ok().or_else(|| {
+        dotenv_envs.iter().find_map(|(dotenv_key, value)| {
+            (dotenv_key == key && !value.trim().is_empty()).then(|| value.clone())
+        })
+    })
+}
+
 fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()> {
     step("Syncing frontend dependencies for Vite dev server");
     let mut install = ctx.command_in("npm", web_dir);
@@ -917,13 +959,17 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     let backend_port = backend_port(&args.bind)?;
     let frontend_port = resolve_frontend_port(args.frontend_port)?;
     let backend_url = format!("http://127.0.0.1:{backend_port}");
-    let frontend_url = format!("http://127.0.0.1:{frontend_port}");
+    let frontend_url = format!("http://localhost:{frontend_port}");
     let vite_use_polling =
         std::env::var("SCRYER_VITE_USE_POLLING").unwrap_or_else(|_| "true".to_string());
     let vite_poll_interval =
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let datastore = prepare_serve_datastore(ctx, &args, mode)?;
     let encryption_key = serve_encryption_key();
+    let webauthn_rp_id = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ID")
+        .unwrap_or_else(|| "localhost".to_string());
+    let webauthn_rp_origin = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ORIGIN")
+        .unwrap_or_else(|| frontend_url.clone());
     let backend_binary = ctx.path("target/debug/scryer");
     let backend_log = PathBuf::from(
         std::env::var("SCRYER_DEV_BACKEND_LOG")
@@ -959,6 +1005,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Vite dev server: {frontend_url}");
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
+    println!("   WebAuthn RP ID: {webauthn_rp_id}");
+    println!("   WebAuthn RP origin: {webauthn_rp_origin}");
     match datastore.kind {
         ServeDatastoreKind::Sqlite => println!("   Datastore: SQLite ({})", datastore.location),
         ServeDatastoreKind::Postgres => {
@@ -990,6 +1038,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
         .env("SCRYER_OPEN_BROWSER", "false")
         .env("SCRYER_WEB_UI_URL", &frontend_url)
+        .env("SCRYER_WEBAUTHN_RP_ID", &webauthn_rp_id)
+        .env("SCRYER_WEBAUTHN_RP_ORIGIN", &webauthn_rp_origin)
         .env("SCRYER_BIND", &args.bind)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
@@ -1147,154 +1197,6 @@ fn signal_process_group(process_id: u32, signal: i32) -> io::Result<()> {
         return Ok(());
     }
     Err(error)
-}
-
-fn run_validate_trash_guides(ctx: &TaskContext) -> Result<()> {
-    let release_stamp = ctx.path(".claude/trash-guides-validation-timestamp");
-    require_command("claude")?;
-
-    let smg_dir = ctx.repo_root.join("../smg");
-    if !smg_dir.is_dir() {
-        bail!(
-            "smg repo not found at {} — required for trash guide scraper",
-            smg_dir.display()
-        );
-    }
-
-    step("Building trash guide scraper");
-    let bin_dir = tempfile::tempdir()?;
-    let bin_path = bin_dir.path().join("scrape-trash-guides");
-    let mut build = ctx.release_command_in("go", &smg_dir);
-    build.args(["build", "-o"]);
-    build.arg(&bin_path);
-    build.arg("./cmd/scrape-trash-guides");
-    run_checked(&mut build)?;
-    if !bin_path.is_file() {
-        bail!(
-            "trash guide scraper build did not produce {}",
-            bin_path.display()
-        );
-    }
-    ok("Trash guide scraper built");
-
-    let output = NamedTempFile::new()?;
-    step("Starting trash guide scraper");
-    let mut command = ctx.command(&bin_path);
-    command.arg("-o").arg(output.path());
-    let mut scraper = command.spawn()?;
-
-    step("Waiting for trash guide scraper");
-    let status = scraper.wait()?;
-    if !status.success() {
-        bail!("Trash guide scraper failed");
-    }
-    let output_size = fs::metadata(output.path())?.len();
-    if output_size == 0 {
-        bail!("Trash guide scraper produced empty output");
-    }
-    ok(format!(
-        "Trash guide scraper complete ({output_size} bytes)"
-    ));
-
-    let prompt_file = ctx.path("scripts/prompts/validate-trash-guides.md");
-    step("Spawning Claude to validate release group data");
-    let mut prompt = fs::read_to_string(&prompt_file)?;
-    prompt.push_str("\n\n<trash-guides-json>\n");
-    prompt.push_str(&fs::read_to_string(output.path())?);
-    prompt.push_str("\n</trash-guides-json>\n");
-
-    let mut claude = ctx.release_command("claude");
-    claude.env("CLAUDECODE", "").arg("-p").arg(prompt).args([
-        "--model",
-        "claude-opus-4-6",
-        "--max-turns",
-        "30",
-        "--allowedTools",
-        "Read,Edit,Write,Glob,Grep,Bash(cargo nextest*),Bash(ls*)",
-    ]);
-    run_checked(&mut claude)?;
-    if let Some(parent) = release_stamp.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(
-        &release_stamp,
-        Utc::now().format("%Y-%m-%dT%H:%M:%S%z").to_string(),
-    )?;
-    ok("Release group validation complete");
-    Ok(())
-}
-
-fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
-    let linux_target = "x86_64-unknown-linux-gnu";
-    let mut rustc = ctx.command("rustc");
-    rustc.arg("-vV");
-    let host_target = run_capture(&mut rustc)?
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .ok_or_else(|| anyhow!("failed to determine host target"))?
-        .trim()
-        .to_string();
-    let linux_image = std::env::var("SCRYER_LINUX_CLIPPY_IMAGE")
-        .unwrap_or_else(|_| "rust:1.95.0-bookworm".to_string());
-    let linux_platform =
-        std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").unwrap_or_else(|_| "linux/arm64".to_string());
-
-    if !args.linux_only {
-        println!("Running cargo clippy for host target: {host_target}");
-        let mut command = ctx.command_in("cargo", &ctx.repo_root);
-        command.args(["clippy", "--workspace", "--", "-D", "warnings"]);
-        run_checked(&mut command)?;
-    }
-
-    if args.linux_only || host_target != linux_target {
-        if command_available("docker")? {
-            println!("Running cargo clippy in Linux container: {linux_image}");
-            let mut command = ctx.command("docker");
-            command.args([
-                "run",
-                "--rm",
-                "--platform",
-                &linux_platform,
-                "-v",
-                &format!("{}:/work", ctx.repo_root.display()),
-                "-w",
-                "/work",
-                "-e",
-                "CARGO_HOME=/tmp/cargo",
-                "-e",
-                "CARGO_TARGET_DIR=/tmp/target",
-                "-e",
-                "CARGO_TERM_COLOR=always",
-                &linux_image,
-                "bash",
-                "-lc",
-                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace --locked -- -D warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else if command_available("x86_64-linux-gnu-gcc")? {
-            println!("Ensuring Linux CI target is installed: {linux_target}");
-            let mut target_add = ctx.command("rustup");
-            target_add.args(["target", "add", linux_target]);
-            run_checked(&mut target_add)?;
-
-            println!("Running cargo clippy for Linux CI target: {linux_target}");
-            let mut command = ctx.command_in("cargo", &ctx.repo_root);
-            command.args([
-                "clippy",
-                "--workspace",
-                "--target",
-                linux_target,
-                "--",
-                "-D",
-                "warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else {
-            bail!("cannot run Linux CI clippy locally; install Docker or x86_64-linux-gnu-gcc");
-        }
-    }
-
-    Ok(())
 }
 
 fn compose_command(ctx: &TaskContext) -> Result<(Vec<String>, PathBuf, String)> {

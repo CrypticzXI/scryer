@@ -1,5 +1,8 @@
 use async_graphql::{Context, Object, Result as GqlResult};
-use scryer_application::NotificationScopeIdUpdate;
+use scryer_application::{
+    NotificationScopeIdUpdate, NotificationSubscriptionTargetCreate,
+    NotificationSubscriptionTargetUpdate,
+};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{from_notification_channel, from_notification_subscription};
@@ -18,11 +21,12 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let channel = app
-            .create_notification_channel(
+            .create_notification_channel_with_media_server_connection_id(
                 &actor,
                 input.name,
                 input.channel_type,
                 input.config_json,
+                input.media_server_connection_id,
                 input.is_enabled.unwrap_or(true),
             )
             .await
@@ -38,11 +42,12 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let channel = app
-            .update_notification_channel(
+            .update_notification_channel_with_media_server_connection_id(
                 &actor,
                 input.id,
                 input.name,
                 input.config_json,
+                input.media_server_connection_id,
                 input.is_enabled,
             )
             .await
@@ -76,13 +81,17 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let sub = app
-            .create_notification_subscription(
+            .create_notification_subscription_for_target(
                 &actor,
-                input.channel_id,
-                input.event_type,
-                input.scope,
-                input.scope_id,
-                input.is_enabled.unwrap_or(true),
+                NotificationSubscriptionTargetCreate {
+                    channel_id: input.channel_id,
+                    target_kind: input.target_kind,
+                    target_id: input.target_id,
+                    event_type: input.event_type,
+                    scope: input.scope,
+                    scope_id: input.scope_id,
+                    is_enabled: input.is_enabled.unwrap_or(true),
+                },
             )
             .await
             .map_err(to_gql_error)?;
@@ -97,16 +106,20 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let sub = app
-            .update_notification_subscription(
+            .update_notification_subscription_target(
                 &actor,
-                input.id,
-                input.event_type,
-                input.scope,
-                input
-                    .scope_id
-                    .map(NotificationScopeIdUpdate::Set)
-                    .unwrap_or(NotificationScopeIdUpdate::NoChange),
-                input.is_enabled,
+                NotificationSubscriptionTargetUpdate {
+                    id: input.id,
+                    target_kind: input.target_kind,
+                    target_id: input.target_id,
+                    event_type: input.event_type,
+                    scope: input.scope,
+                    scope_id: input
+                        .scope_id
+                        .map(NotificationScopeIdUpdate::Set)
+                        .unwrap_or(NotificationScopeIdUpdate::NoChange),
+                    is_enabled: input.is_enabled,
+                },
             )
             .await
             .map_err(to_gql_error)?;

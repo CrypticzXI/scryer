@@ -2,6 +2,7 @@ export const NAVIGATION_BADGES_REFRESH_EVENT = "scryer:navigationBadgesRefresh";
 
 export type NavigationBadgesRefreshDetail = {
   delta?: number;
+  source?: "focus" | "poll";
 };
 
 export function dispatchNavigationBadgesRefresh(

@@ -1,6 +1,8 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, sync::Arc};
 
-use crate::AppResult;
+use crate::{AppResult, ports::SubtitleSyncClient};
+
+pub const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 
 #[derive(Debug, Clone)]
 pub struct SyncResult {
@@ -16,6 +18,7 @@ pub struct SyncResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleTimingFormat {
     Srt,
+    Vtt,
     Ass,
 }
 
@@ -23,6 +26,7 @@ impl SubtitleTimingFormat {
     pub fn label(self) -> &'static str {
         match self {
             Self::Srt => "srt",
+            Self::Vtt => "vtt",
             Self::Ass => "ass/ssa",
         }
     }
@@ -33,9 +37,10 @@ pub enum SyncSkipReason {
     Disabled,
     ForcedSubtitle,
     ScoreAboveThreshold,
+    SubtitleSyncPluginRequired,
     UnsupportedSubtitleFormat,
+    AudioDecodeFailed,
     NotEnoughReferenceSpans,
-    NotEnoughSubtitleSpans,
     WeakAlignment,
     LowAlignmentConsistency,
     OffsetExceedsMaximum,
@@ -48,9 +53,10 @@ impl SyncSkipReason {
             Self::Disabled => "disabled",
             Self::ForcedSubtitle => "forced_subtitle",
             Self::ScoreAboveThreshold => "score_above_threshold",
+            Self::SubtitleSyncPluginRequired => "subtitle_sync_plugin_required",
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
+            Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
-            Self::NotEnoughSubtitleSpans => "not_enough_subtitle_spans",
             Self::WeakAlignment => "weak_alignment",
             Self::LowAlignmentConsistency => "low_alignment_consistency",
             Self::OffsetExceedsMaximum => "offset_exceeds_maximum",
@@ -91,6 +97,25 @@ pub async fn sync_subtitle_with_policy(
     _subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
+    sync_subtitle_with_policy_and_plugin_sync(
+        _video_path,
+        _subtitle_path,
+        policy,
+        None,
+        false,
+        None,
+    )
+    .await
+}
+
+pub async fn sync_subtitle_with_policy_and_plugin_sync(
+    _video_path: &Path,
+    _subtitle_path: &Path,
+    policy: SyncPolicy,
+    _subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
+    _plugin_installed: bool,
+    _reference_subtitle_path: Option<&Path>,
+) -> AppResult<SyncResult> {
     Ok(SyncResult {
         offset_ms: 0,
         applied: false,
@@ -107,7 +132,7 @@ pub async fn sync_subtitle(
     subtitle_path: &Path,
     max_offset_seconds: i64,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy(
+    sync_subtitle_with_policy_and_plugin_sync(
         video_path,
         subtitle_path,
         SyncPolicy {
@@ -117,6 +142,9 @@ pub async fn sync_subtitle(
             threshold: None,
             max_offset_seconds,
         },
+        None,
+        false,
+        None,
     )
     .await
 }

@@ -1,6 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
+
+use core::range::Range;
 
 use mp4parse::{
     AudioCodecSpecific, CodecType, MediaContext, MediaTimeScale, SampleEntry, TrackTimeScale,
@@ -14,6 +16,7 @@ use crate::codec::{
     merge_audio_profile, normalize_codec_name,
 };
 use crate::probe::{ProbeStats, TrackedReader};
+use crate::scan;
 use crate::types::{RawContainer, RawTrack, TrackKind};
 
 const HDR10PLUS_SAMPLE_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
@@ -26,6 +29,7 @@ const MP4_METADATA_OUTPUT_MAX_BYTES: usize = 512 * 1024 * 1024;
 #[derive(Debug)]
 struct PreparedMp4 {
     metadata: Vec<u8>,
+    file_len_hint: u64,
     #[allow(dead_code)]
     stats: ProbeStats,
 }
@@ -55,6 +59,12 @@ struct Mp4ChapterMetadata {
     chapter_track_ids: Vec<u32>,
 }
 
+#[derive(Debug, Default)]
+struct ParsedMp4Metadata {
+    tracks: HashMap<u32, Mp4TrackMetadata>,
+    chapters: Mp4ChapterMetadata,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Mp4BoxHeader {
     name: [u8; 4],
@@ -67,39 +77,27 @@ pub(crate) fn parse_mp4(
     path: &Path,
     profile: AnalysisProfile,
 ) -> Result<RawContainer, MediaInfoError> {
-    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut prepared = prepare_mp4_metadata(path)?;
     sanitize_prepared_mp4_metadata(&mut prepared.metadata);
-    let metadata_by_track = parse_mp4_track_metadata(&prepared.metadata);
+    let parsed_metadata = parse_mp4_metadata(&prepared.metadata);
+    let metadata_by_track = parsed_metadata.tracks;
 
     let mut cursor = Cursor::new(prepared.metadata.as_slice());
     let ctx = mp4parse::read_mp4(&mut cursor)
         .map_err(|e| MediaInfoError::Parse(format!("mp4 parse: {e:?}")))?;
-    let num_chapters = match count_mp4_chapters(&prepared.metadata, &ctx) {
+    let num_chapters = match count_mp4_chapters(&parsed_metadata.chapters, &ctx) {
         0 => None,
         count => Some(count),
     };
 
-    // The movie-level timescale converts track-header durations to seconds.
-    let movie_timescale = ctx.timescale.map(|MediaTimeScale(ts)| ts);
-    let duration_seconds = movie_timescale.and_then(|ts| {
-        if ts == 0 {
-            return None;
-        }
-        ctx.tracks
-            .iter()
-            .filter_map(|t| t.tkhd.as_ref().map(|h| h.duration))
-            .max()
-            .map(|dur| dur as f64 / ts as f64)
-    });
+    let format_duration_seconds = mp4_format_duration_seconds(&ctx);
+    let duration_seconds =
+        sonarr_mp4_duration_seconds(&ctx, &metadata_by_track, format_duration_seconds);
 
     let (mut tracks, seen_track_ids) = build_mp4_tracks(&ctx, &metadata_by_track, duration_seconds);
     append_metadata_only_tracks(&metadata_by_track, &seen_track_ids, &mut tracks);
-    apply_fallback_video_bitrate(file_len, duration_seconds, &mut tracks);
-    scan_mp4_audio_profiles(path, &ctx, &mut tracks);
-    if profile == AnalysisProfile::DefaultRich {
-        scan_mp4_hdr10plus(path, &ctx, &mut tracks);
-    }
+    apply_fallback_video_bitrate(prepared.file_len_hint, duration_seconds, &mut tracks);
+    scan_mp4_sample_probes(path, &ctx, &mut tracks, profile);
 
     let format_name = path
         .extension()
@@ -120,41 +118,141 @@ pub(crate) fn parse_mp4(
     })
 }
 
+fn mp4_format_duration_seconds(ctx: &MediaContext) -> Option<f64> {
+    let movie_timescale = ctx.timescale.map(|MediaTimeScale(ts)| ts)?;
+    if movie_timescale == 0 {
+        return None;
+    }
+    ctx.tracks
+        .iter()
+        .filter_map(|t| t.tkhd.as_ref().map(|h| h.duration))
+        .max()
+        .map(|dur| dur as f64 / movie_timescale as f64)
+}
+
+fn sonarr_mp4_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+    format_duration: Option<f64>,
+) -> Option<f64> {
+    let audio = first_mp4_track_duration_seconds(ctx, metadata_by_track, TrackKind::Audio);
+    let video = primary_mp4_video_duration_seconds(ctx, metadata_by_track);
+    best_sonarr_runtime(audio, video, format_duration)
+}
+
+fn first_mp4_track_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+    kind: TrackKind,
+) -> Option<f64> {
+    ctx.tracks.iter().find_map(|track| {
+        let metadata = track.track_id.and_then(|id| metadata_by_track.get(&id));
+        (track_kind_from_mp4_sources(track, metadata) == Some(kind))
+            .then(|| track_duration_seconds(track))
+            .flatten()
+            .filter(|duration| *duration > 0.0)
+    })
+}
+
+fn primary_mp4_video_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+) -> Option<f64> {
+    let video_tracks: Vec<_> = ctx
+        .tracks
+        .iter()
+        .filter_map(|track| {
+            let metadata = track.track_id.and_then(|id| metadata_by_track.get(&id));
+            (track_kind_from_mp4_sources(track, metadata) == Some(TrackKind::Video))
+                .then_some((track, metadata))
+        })
+        .collect();
+
+    let selected = if video_tracks.len() <= 1 {
+        video_tracks.first().copied()
+    } else {
+        let mut selected = None;
+        for (track, metadata) in &video_tracks {
+            if !matches!(
+                mp4_video_codec_name(track, *metadata).as_deref(),
+                Some("mjpeg" | "png")
+            ) {
+                selected = Some((*track, *metadata));
+                break;
+            }
+        }
+        selected.or_else(|| video_tracks.first().copied())
+    };
+
+    selected
+        .and_then(|(track, _)| track_duration_seconds(track))
+        .filter(|duration| *duration > 0.0)
+}
+
+fn mp4_video_codec_name(
+    track: &mp4parse::Track,
+    metadata: Option<&Mp4TrackMetadata>,
+) -> Option<String> {
+    let codec_id = metadata
+        .and_then(|m| m.sample_entry_fourcc.clone())
+        .or_else(|| {
+            track
+                .stsd
+                .as_ref()
+                .and_then(|stsd| stsd.descriptions.first())
+                .and_then(|entry| match entry {
+                    SampleEntry::Video(video) => video_codec_info(&video.codec_specific)
+                        .0
+                        .or_else(|| Some(codec_type_to_fourcc(video.codec_type))),
+                    _ => None,
+                })
+        })?;
+    normalize_codec_name(&codec_id)
+}
+
+fn best_sonarr_runtime(audio: Option<f64>, video: Option<f64>, format: Option<f64>) -> Option<f64> {
+    if video.unwrap_or_default() > 0.0 {
+        video
+    } else if audio.unwrap_or_default() > 0.0 {
+        audio
+    } else {
+        format.filter(|duration| *duration > 0.0)
+    }
+}
+
 fn prepare_mp4_metadata(path: &Path) -> Result<PreparedMp4, MediaInfoError> {
     let file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
     let mut reader = TrackedReader::new(file);
-    let metadata = prepare_mp4_metadata_from_reader(&mut reader)?;
+    let (metadata, file_len_hint) = prepare_mp4_metadata_from_reader(&mut reader)?;
     Ok(PreparedMp4 {
         metadata,
+        file_len_hint,
         stats: reader.stats(),
     })
 }
 
 fn prepare_mp4_metadata_from_reader<R: Read + Seek>(
     reader: &mut TrackedReader<R>,
-) -> Result<Vec<u8>, MediaInfoError> {
-    let file_len = reader
-        .seek(SeekFrom::End(0))
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-
+) -> Result<(Vec<u8>, u64), MediaInfoError> {
     let mut output = Vec::new();
-    while reader
-        .stream_position()
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?
-        < file_len
-    {
-        let start = reader
-            .stream_position()
-            .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-        let Some(header) = read_box_header(reader, file_len.saturating_sub(start))? else {
+    let mut pos = 0_u64;
+    let mut file_len_hint = 0_u64;
+
+    loop {
+        let start = pos;
+        let Some((header, header_bytes)) = read_top_level_box_header(reader)? else {
             break;
         };
+        pos = pos.saturating_add(header.header_size as u64);
         let keep = should_copy_top_level_box(&header.name);
 
         if keep {
+            if header.size == 0 {
+                output.extend_from_slice(&header_bytes);
+                read_zero_sized_top_level_box(reader, &mut output, &mut pos)?;
+                file_len_hint = file_len_hint.max(pos);
+                break;
+            }
             if header.size > MP4_KEEP_BOX_MAX_BYTES {
                 return Err(MediaInfoError::Parse(format!(
                     "MP4 metadata box {} exceeds parser budget",
@@ -172,28 +270,36 @@ fn prepare_mp4_metadata_from_reader<R: Read + Seek>(
                     "MP4 metadata output exceeds parser budget".into(),
                 ));
             }
-            reader
-                .seek(SeekFrom::Start(start))
-                .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-            let mut buf = vec![0_u8; box_size];
+            output.extend_from_slice(&header_bytes);
+            let payload_size = box_size.saturating_sub(header.header_size);
+            let mut buf = vec![0_u8; payload_size];
             reader
                 .read_exact(&mut buf)
                 .map_err(|e| MediaInfoError::Io(e.to_string()))?;
             output.extend_from_slice(&buf);
+            pos = start.saturating_add(header.size);
         } else if header.size == 0 {
             break;
         } else {
+            let box_end = start.checked_add(header.size).ok_or_else(|| {
+                MediaInfoError::Parse(format!(
+                    "MP4 box {} size overflow",
+                    fourcc_to_string(header.name)
+                ))
+            })?;
             reader
-                .seek(SeekFrom::Start(start + header.size))
+                .seek(SeekFrom::Start(box_end))
                 .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+            pos = box_end;
         }
 
+        file_len_hint = file_len_hint.max(pos);
         if header.size == 0 {
             break;
         }
     }
 
-    Ok(output)
+    Ok((output, file_len_hint))
 }
 
 fn should_copy_top_level_box(name: &[u8; 4]) -> bool {
@@ -204,27 +310,34 @@ fn should_copy_top_level_box(name: &[u8; 4]) -> bool {
 }
 
 fn sanitize_prepared_mp4_metadata(data: &mut Vec<u8>) {
-    sanitize_mp4_box_range(data, 0, data.len());
+    let range = Range {
+        start: 0,
+        end: data.len(),
+    };
+    sanitize_mp4_box_range(data, range);
 }
 
-fn sanitize_mp4_box_range(data: &mut Vec<u8>, start: usize, end: usize) -> usize {
-    let mut pos = start;
-    let mut range_end = end;
+fn sanitize_mp4_box_range(data: &mut Vec<u8>, mut range: Range<usize>) -> usize {
+    if !mp4_box_name_present(&data[range.start..range.end], &[*b"hdlr"]) {
+        return 0;
+    }
+
+    let mut pos = range.start;
     let mut total_delta = 0;
 
-    while pos < range_end {
-        let Some(header) = read_box_header_from_bytes(&data[pos..range_end]) else {
+    while pos < range.end {
+        let Some(header) = read_box_header_from_bytes(&data[pos..range.end]) else {
             break;
         };
         let mut box_size = header.size as usize;
-        if box_size < header.header_size || pos + box_size > range_end {
+        if box_size < header.header_size || pos + box_size > range.end {
             break;
         }
 
         let box_delta = if &header.name == b"hdlr" {
             sanitize_hdlr_box(data, pos, header)
-        } else if let Some((child_start, child_end)) = mp4_child_range(pos, header, box_size) {
-            let child_delta = sanitize_mp4_box_range(data, child_start, child_end);
+        } else if let Some(child_range) = mp4_child_range(pos, header, box_size) {
+            let child_delta = sanitize_mp4_box_range(data, child_range);
             if child_delta > 0 {
                 box_size += child_delta;
                 write_box_size_at(data, pos, header.header_size, box_size as u64);
@@ -240,7 +353,7 @@ fn sanitize_mp4_box_range(data: &mut Vec<u8>, start: usize, end: usize) -> usize
             0
         };
         pos += box_size;
-        range_end += box_delta;
+        range.end += box_delta;
         total_delta += box_delta;
     }
 
@@ -251,14 +364,17 @@ fn mp4_child_range(
     box_start: usize,
     header: Mp4BoxHeader,
     box_size: usize,
-) -> Option<(usize, usize)> {
+) -> Option<Range<usize>> {
     let payload_start = match &header.name {
         b"meta" if box_size >= header.header_size + 4 => box_start + header.header_size + 4,
         b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" | b"tref" | b"moof" | b"traf"
         | b"mfra" => box_start + header.header_size,
         _ => return None,
     };
-    Some((payload_start, box_start + box_size))
+    Some(Range {
+        start: payload_start,
+        end: box_start + box_size,
+    })
 }
 
 fn sanitize_hdlr_box(data: &mut Vec<u8>, box_start: usize, header: Mp4BoxHeader) -> usize {
@@ -552,21 +668,26 @@ fn is_audio_sample_entry(sample_entry: &str) -> bool {
 }
 
 fn is_subtitle_sample_entry(sample_entry: &str) -> bool {
-    matches!(sample_entry, "tx3g" | "wvtt" | "stpp" | "c608")
+    matches!(sample_entry, "text" | "tx3g" | "wvtt" | "stpp" | "c608")
 }
 
-fn parse_mp4_track_metadata(data: &[u8]) -> HashMap<u32, Mp4TrackMetadata> {
-    let mut metadata = HashMap::new();
+fn parse_mp4_metadata(data: &[u8]) -> ParsedMp4Metadata {
+    let mut metadata = ParsedMp4Metadata::default();
+    if !mp4_box_name_present(data, &[*b"moov"]) {
+        return metadata;
+    }
     for_each_mp4_box(data, |header, payload| {
         if &header.name == b"moov" {
-            parse_moov(payload, &mut metadata);
+            parse_moov(payload, &mut metadata.tracks);
+            metadata
+                .chapters
+                .merge(parse_mp4_chapter_metadata_from_moov_payload(payload));
         }
     });
     metadata
 }
 
-fn count_mp4_chapters(data: &[u8], ctx: &MediaContext) -> i32 {
-    let metadata = parse_mp4_chapter_metadata(data);
+fn count_mp4_chapters(metadata: &Mp4ChapterMetadata, ctx: &MediaContext) -> i32 {
     if let Some(count) = metadata.chpl_count {
         return count;
     }
@@ -583,8 +704,12 @@ fn count_mp4_chapters(data: &[u8], ctx: &MediaContext) -> i32 {
         .sum()
 }
 
+#[cfg(test)]
 fn parse_mp4_chapter_metadata(data: &[u8]) -> Mp4ChapterMetadata {
     let mut metadata = Mp4ChapterMetadata::default();
+    if !mp4_box_name_present(data, &[*b"chpl", *b"chap"]) {
+        return metadata;
+    }
     walk_mp4_boxes(
         data,
         MP4_BOX_MAX_DEPTH,
@@ -608,6 +733,47 @@ fn parse_mp4_chapter_metadata(data: &[u8]) -> Mp4ChapterMetadata {
     metadata.chapter_track_ids.sort_unstable();
     metadata.chapter_track_ids.dedup();
     metadata
+}
+
+fn parse_mp4_chapter_metadata_from_moov_payload(data: &[u8]) -> Mp4ChapterMetadata {
+    let mut metadata = Mp4ChapterMetadata::default();
+    if !mp4_box_name_present(data, &[*b"chpl", *b"chap"]) {
+        return metadata;
+    }
+    walk_mp4_boxes(
+        data,
+        MP4_BOX_MAX_DEPTH,
+        |header, payload, _depth| match &header.name {
+            b"udta" | b"trak" | b"tref" => Some(payload),
+            b"meta" => payload.get(4..),
+            _ => None,
+        },
+        |header, payload, _depth| match &header.name {
+            b"chpl" if metadata.chpl_count.is_none() => {
+                metadata.chpl_count = parse_chpl_count(payload);
+            }
+            b"chap" => {
+                metadata
+                    .chapter_track_ids
+                    .extend(parse_chap_track_ids(payload));
+            }
+            _ => {}
+        },
+    );
+    metadata.chapter_track_ids.sort_unstable();
+    metadata.chapter_track_ids.dedup();
+    metadata
+}
+
+impl Mp4ChapterMetadata {
+    fn merge(&mut self, mut other: Self) {
+        if self.chpl_count.is_none() {
+            self.chpl_count = other.chpl_count;
+        }
+        self.chapter_track_ids.append(&mut other.chapter_track_ids);
+        self.chapter_track_ids.sort_unstable();
+        self.chapter_track_ids.dedup();
+    }
 }
 
 fn parse_chpl_count(data: &[u8]) -> Option<i32> {
@@ -783,6 +949,9 @@ impl<'a> BitCursor<'a> {
 }
 
 fn parse_moov(data: &[u8], metadata: &mut HashMap<u32, Mp4TrackMetadata>) {
+    if !mp4_box_name_present(data, &[*b"trak"]) {
+        return;
+    }
     for_each_mp4_box(data, |header, payload| {
         if &header.name == b"trak" {
             let track = parse_trak(payload);
@@ -795,19 +964,24 @@ fn parse_moov(data: &[u8], metadata: &mut HashMap<u32, Mp4TrackMetadata>) {
 
 fn parse_trak(data: &[u8]) -> Mp4TrackMetadata {
     let mut track = Mp4TrackMetadata::default();
-    for_each_mp4_box(data, |header, payload| match &header.name {
-        b"tkhd" => {
-            apply_tkhd_metadata(payload, &mut track);
-        }
-        b"mdia" => parse_mdia(payload, &mut track),
-        b"udta" => parse_udta(payload, &mut track),
-        _ => {}
-    });
+    if mp4_box_name_present(data, &[*b"tkhd", *b"mdia", *b"udta"]) {
+        for_each_mp4_box(data, |header, payload| match &header.name {
+            b"tkhd" => {
+                apply_tkhd_metadata(payload, &mut track);
+            }
+            b"mdia" => parse_mdia(payload, &mut track),
+            b"udta" => parse_udta(payload, &mut track),
+            _ => {}
+        });
+    }
     parse_kind_boxes(data, &mut track);
     track
 }
 
 fn parse_kind_boxes(data: &[u8], track: &mut Mp4TrackMetadata) {
+    if !mp4_box_name_present(data, &[*b"kind"]) {
+        return;
+    }
     walk_mp4_boxes(
         data,
         MP4_BOX_MAX_DEPTH,
@@ -825,6 +999,9 @@ fn parse_kind_boxes(data: &[u8], track: &mut Mp4TrackMetadata) {
 }
 
 fn parse_mdia(data: &[u8], track: &mut Mp4TrackMetadata) {
+    if !mp4_box_name_present(data, &[*b"mdhd", *b"hdlr", *b"minf"]) {
+        return;
+    }
     for_each_mp4_box(data, |header, payload| match &header.name {
         b"mdhd" => {
             track.language = parse_mdhd_language(payload);
@@ -838,6 +1015,9 @@ fn parse_mdia(data: &[u8], track: &mut Mp4TrackMetadata) {
 }
 
 fn parse_udta(data: &[u8], track: &mut Mp4TrackMetadata) {
+    if !mp4_box_name_present(data, &[*b"name"]) {
+        return;
+    }
     for_each_mp4_box(data, |header, payload| {
         if &header.name == b"name" {
             track.name = parse_name_box(payload);
@@ -846,6 +1026,9 @@ fn parse_udta(data: &[u8], track: &mut Mp4TrackMetadata) {
 }
 
 fn parse_minf(data: &[u8], track: &mut Mp4TrackMetadata) {
+    if !mp4_box_name_present(data, &[*b"stbl"]) {
+        return;
+    }
     for_each_mp4_box(data, |header, payload| {
         if &header.name == b"stbl" {
             parse_stbl(payload, track);
@@ -854,6 +1037,9 @@ fn parse_minf(data: &[u8], track: &mut Mp4TrackMetadata) {
 }
 
 fn parse_stbl(data: &[u8], track: &mut Mp4TrackMetadata) {
+    if !mp4_box_name_present(data, &[*b"stsd"]) {
+        return;
+    }
     for_each_mp4_box(data, |header, payload| {
         if &header.name == b"stsd" {
             parse_stsd(payload, track);
@@ -879,28 +1065,37 @@ fn parse_stsd(data: &[u8], track: &mut Mp4TrackMetadata) {
         if is_video_sample_entry(&fourcc) {
             let child_offset = 78;
             if payload.len() >= child_offset {
-                for_each_mp4_box(&payload[child_offset..], |child, child_payload| {
-                    let child_name = fourcc_to_string(child.name);
-                    match child_name.as_str() {
-                        "avcC" | "hvcC" | "av1C" => {
-                            track.codec_private = Some(child_payload.to_vec());
+                let children = &payload[child_offset..];
+                if mp4_box_name_present(
+                    children,
+                    &[*b"avcC", *b"hvcC", *b"av1C", *b"dvcC", *b"dvvC"],
+                ) {
+                    for_each_mp4_box(children, |child, child_payload| {
+                        let child_name = fourcc_to_string(child.name);
+                        match child_name.as_str() {
+                            "avcC" | "hvcC" | "av1C" => {
+                                track.codec_private = Some(child_payload.to_vec());
+                            }
+                            t if MP4_DOVI_TYPES.contains(&t) => {
+                                track.dovi_config = Some(child_payload.to_vec());
+                            }
+                            _ => {}
                         }
-                        t if MP4_DOVI_TYPES.contains(&t) => {
-                            track.dovi_config = Some(child_payload.to_vec());
-                        }
-                        _ => {}
-                    }
-                });
+                    });
+                }
             }
         } else if is_audio_sample_entry(&fourcc)
             && let Some(child_offset) = audio_sample_entry_child_offset(payload)
         {
-            for_each_mp4_box(&payload[child_offset..], |child, child_payload| {
-                let child_name = fourcc_to_string(child.name);
-                if matches!(child_name.as_str(), "dac3" | "dec3") {
-                    track.codec_private = Some(child_payload.to_vec());
-                }
-            });
+            let children = &payload[child_offset..];
+            if mp4_box_name_present(children, &[*b"dac3", *b"dec3"]) {
+                for_each_mp4_box(children, |child, child_payload| {
+                    let child_name = fourcc_to_string(child.name);
+                    if matches!(child_name.as_str(), "dac3" | "dec3") {
+                        track.codec_private = Some(child_payload.to_vec());
+                    }
+                });
+            }
         }
     }
 }
@@ -1002,6 +1197,8 @@ fn decode_mdhd_language(code: u16) -> Option<String> {
     if code < 0x400 {
         return match code {
             0 => Some("eng".to_string()),
+            6 => Some("spa".to_string()),
+            11 => Some("jpn".to_string()),
             _ => None,
         };
     }
@@ -1075,59 +1272,79 @@ fn walk_mp4_boxes<'a, FDescend, FVisit>(
     }
 }
 
-fn read_box_header<R: Read>(
+fn read_top_level_box_header<R: Read>(
     reader: &mut R,
-    available: u64,
-) -> Result<Option<Mp4BoxHeader>, MediaInfoError> {
-    if available < 8 {
-        return Ok(None);
-    }
-
+) -> Result<Option<(Mp4BoxHeader, Vec<u8>)>, MediaInfoError> {
     let mut header = [0_u8; 8];
-    reader
-        .read_exact(&mut header)
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    let mut read = 0;
+    while read < header.len() {
+        let bytes_read = reader
+            .read(&mut header[read..])
+            .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+        if bytes_read == 0 {
+            if read == 0 {
+                return Ok(None);
+            }
+            return Err(MediaInfoError::Parse("truncated MP4 box header".into()));
+        }
+        read += bytes_read;
+    }
 
     let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap()) as u64;
     let name: [u8; 4] = header[4..8].try_into().unwrap();
     let mut size = size32;
     let mut header_size = 8;
+    let mut raw = header.to_vec();
 
     if size32 == 1 {
-        if available < 16 {
-            return Ok(None);
-        }
         let mut extended = [0_u8; 8];
         reader
             .read_exact(&mut extended)
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
         size = u64::from_be_bytes(extended);
         header_size = 16;
-    } else if size32 == 0 {
-        size = available;
+        raw.extend_from_slice(&extended);
     }
 
-    if size < header_size as u64 {
+    if size != 0 && size < header_size as u64 {
         return Err(MediaInfoError::Parse(format!(
             "invalid MP4 box size {} for {}",
             size,
             fourcc_to_string(name)
         )));
     }
-    if size > available {
-        return Err(MediaInfoError::Parse(format!(
-            "MP4 box {} declares {} bytes with only {} bytes remaining",
-            fourcc_to_string(name),
-            size,
-            available
-        )));
-    }
 
-    Ok(Some(Mp4BoxHeader {
-        name,
-        size,
-        header_size,
-    }))
+    Ok(Some((
+        Mp4BoxHeader {
+            name,
+            size,
+            header_size,
+        },
+        raw,
+    )))
+}
+
+fn read_zero_sized_top_level_box<R: Read>(
+    reader: &mut R,
+    output: &mut Vec<u8>,
+    pos: &mut u64,
+) -> Result<(), MediaInfoError> {
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+        if read == 0 {
+            return Ok(());
+        }
+        if output.len().saturating_add(read) > MP4_METADATA_OUTPUT_MAX_BYTES {
+            return Err(MediaInfoError::Parse(
+                "MP4 metadata output exceeds parser budget".into(),
+            ));
+        }
+        output.extend_from_slice(&buf[..read]);
+        *pos = (*pos).saturating_add(read as u64);
+    }
 }
 
 fn read_box_header_from_bytes(data: &[u8]) -> Option<Mp4BoxHeader> {
@@ -1168,6 +1385,10 @@ fn read_be_u32(data: &[u8]) -> Option<u32> {
 
 fn fourcc_to_string(fourcc: [u8; 4]) -> String {
     String::from_utf8_lossy(&fourcc).into_owned()
+}
+
+fn mp4_box_name_present(data: &[u8], names: &[[u8; 4]]) -> bool {
+    scan::find_mp4_box_name_candidate(data, 0, names).is_some()
 }
 
 /// Extract codec identifier and codec-private bytes from a video sample entry.
@@ -1318,8 +1539,59 @@ fn estimate_frame_rate(track: &mp4parse::Track) -> Option<f64> {
     }
 }
 
-/// Scan the first sample of the primary HEVC-like video track for HDR10+ metadata.
-fn scan_mp4_hdr10plus(path: &Path, ctx: &MediaContext, tracks: &mut [ParsedMp4Track]) {
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct Mp4SampleReadKey {
+    offset: u64,
+    size: usize,
+}
+
+fn scan_mp4_sample_probes(
+    path: &Path,
+    ctx: &MediaContext,
+    tracks: &mut [ParsedMp4Track],
+    profile: AnalysisProfile,
+) {
+    if profile == AnalysisProfile::Fast {
+        return;
+    }
+
+    let audio_probe_needed = tracks.iter().any(|track| {
+        track.raw.kind == TrackKind::Audio
+            && matches!(
+                track.raw.codec_name.as_deref(),
+                Some("eac3" | "truehd" | "dts")
+            )
+            && audio_profile_probe_spec(track.raw.codec_name.as_deref()).prefix_bytes > 0
+    });
+    let hdr10plus_probe_needed = profile == AnalysisProfile::DefaultRich
+        && tracks.iter().any(|track| {
+            track.raw.kind == TrackKind::Video
+                && matches!(track.raw.codec_name.as_deref(), Some("hevc"))
+        });
+    if !audio_probe_needed && !hdr10plus_probe_needed {
+        return;
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+    let mut sample_cache = HashMap::new();
+
+    if audio_probe_needed {
+        scan_mp4_audio_profiles_with_cache(&mut file, &mut sample_cache, ctx, tracks);
+    }
+    if hdr10plus_probe_needed {
+        scan_mp4_hdr10plus_with_cache(&mut file, &mut sample_cache, ctx, tracks);
+    }
+}
+
+fn scan_mp4_hdr10plus_with_cache(
+    file: &mut std::fs::File,
+    sample_cache: &mut HashMap<Mp4SampleReadKey, Vec<u8>>,
+    ctx: &MediaContext,
+    tracks: &mut [ParsedMp4Track],
+) {
     let Some(raw_idx) = tracks.iter().position(|track| {
         track.raw.kind == TrackKind::Video
             && matches!(track.raw.codec_name.as_deref(), Some("hevc"))
@@ -1372,29 +1644,21 @@ fn scan_mp4_hdr10plus(path: &Path, ctx: &MediaContext, tracks: &mut [ParsedMp4Tr
         _ => return,
     };
 
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => return,
+    let Some(buf) = read_cached_mp4_range(file, sample_cache, offset, size) else {
+        return;
     };
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return;
-    }
-    let mut buf = vec![0_u8; size];
-    if file.read_exact(&mut buf).is_err() {
-        return;
-    }
 
     if crate::codec::scan_hevc_frame_for_hdr10plus(&buf, nal_length_size) {
         tracks[raw_idx].raw.has_hdr10plus = true;
     }
 }
 
-fn scan_mp4_audio_profiles(path: &Path, ctx: &MediaContext, tracks: &mut [ParsedMp4Track]) {
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => return,
-    };
-
+fn scan_mp4_audio_profiles_with_cache(
+    file: &mut std::fs::File,
+    sample_cache: &mut HashMap<Mp4SampleReadKey, Vec<u8>>,
+    ctx: &MediaContext,
+    tracks: &mut [ParsedMp4Track],
+) {
     for parsed_track in tracks
         .iter_mut()
         .filter(|track| track.raw.kind == TrackKind::Audio)
@@ -1429,9 +1693,13 @@ fn scan_mp4_audio_profiles(path: &Path, ctx: &MediaContext, tracks: &mut [Parsed
         let Some((offset, size)) = first_track_sample_range(mp4_track) else {
             continue;
         };
-        let Some((prefix, suffix)) =
-            read_audio_profile_probe_bytes(&mut file, offset, size as u64, probe_spec)
-        else {
+        let Some((prefix, suffix)) = read_audio_profile_probe_bytes_cached(
+            file,
+            sample_cache,
+            offset,
+            size as u64,
+            probe_spec,
+        ) else {
             continue;
         };
 
@@ -1462,8 +1730,9 @@ fn first_track_sample_range(track: &mp4parse::Track) -> Option<(u64, usize)> {
     (first_size > 0).then_some((first_offset, first_size as usize))
 }
 
-fn read_audio_profile_probe_bytes(
+fn read_audio_profile_probe_bytes_cached(
     file: &mut std::fs::File,
+    sample_cache: &mut HashMap<Mp4SampleReadKey, Vec<u8>>,
     sample_offset: u64,
     sample_size: u64,
     spec: crate::codec::AudioProfileProbeSpec,
@@ -1473,18 +1742,13 @@ fn read_audio_profile_probe_bytes(
         return None;
     }
 
-    file.seek(SeekFrom::Start(sample_offset)).ok()?;
-    let mut prefix = vec![0_u8; prefix_size];
-    file.read_exact(&mut prefix).ok()?;
+    let prefix = read_cached_mp4_range(file, sample_cache, sample_offset, prefix_size)?;
 
     let suffix = if spec.suffix_bytes > 0 {
         let suffix_size = sample_size.min(spec.suffix_bytes as u64) as usize;
         let suffix_offset = sample_offset + sample_size.saturating_sub(suffix_size as u64);
         if suffix_offset >= sample_offset + prefix_size as u64 {
-            file.seek(SeekFrom::Start(suffix_offset)).ok()?;
-            let mut suffix = vec![0_u8; suffix_size];
-            file.read_exact(&mut suffix).ok()?;
-            Some(suffix)
+            read_cached_mp4_range(file, sample_cache, suffix_offset, suffix_size)
         } else {
             None
         }
@@ -1493,6 +1757,24 @@ fn read_audio_profile_probe_bytes(
     };
 
     Some((prefix, suffix))
+}
+
+fn read_cached_mp4_range(
+    file: &mut std::fs::File,
+    sample_cache: &mut HashMap<Mp4SampleReadKey, Vec<u8>>,
+    offset: u64,
+    size: usize,
+) -> Option<Vec<u8>> {
+    let key = Mp4SampleReadKey { offset, size };
+    match sample_cache.entry(key) {
+        Entry::Occupied(entry) => Some(entry.get().clone()),
+        Entry::Vacant(entry) => {
+            file.seek(SeekFrom::Start(offset)).ok()?;
+            let mut bytes = vec![0_u8; size];
+            file.read_exact(&mut bytes).ok()?;
+            Some(entry.insert(bytes).clone())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1557,19 +1839,20 @@ mod tests {
         let mdat_payload = vec![0_u8; 1024 * 1024];
         let mdat = make_box(b"mdat", &mdat_payload);
         let moov = make_box(b"moov", &make_box(b"mvhd", &[0_u8; 32]));
-        let file = [ftyp.clone(), mdat, moov.clone()].concat();
+        let file = [ftyp.clone(), mdat.clone(), moov.clone()].concat();
 
         let mut reader = TrackedReader::new(Cursor::new(file));
-        let metadata = prepare_mp4_metadata_from_reader(&mut reader).unwrap();
+        let (metadata, file_len_hint) = prepare_mp4_metadata_from_reader(&mut reader).unwrap();
         let stats = reader.stats();
 
         assert_eq!(metadata, [ftyp, moov].concat());
+        assert_eq!(file_len_hint, metadata.len() as u64 + mdat.len() as u64);
         assert!(
             stats.bytes_read < 512,
             "unexpected payload read: {:?}",
             stats
         );
-        assert!(stats.seeks >= 3, "expected explicit skipping: {:?}", stats);
+        assert!(stats.seeks >= 1, "expected explicit mdat skip: {:?}", stats);
     }
 
     #[test]
@@ -1730,7 +2013,22 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_runtime_prefers_video_then_audio_then_format_duration() {
+        assert_eq!(
+            best_sonarr_runtime(Some(1920.96), Some(1919.167), Some(1920.96)),
+            Some(1919.167)
+        );
+        assert_eq!(
+            best_sonarr_runtime(Some(1517.0), Some(0.0), Some(1519.0)),
+            Some(1517.0)
+        );
+        assert_eq!(best_sonarr_runtime(None, None, Some(42.0)), Some(42.0));
+    }
+
+    #[test]
     fn decodes_legacy_mdhd_english_language_code() {
         assert_eq!(decode_mdhd_language(0), Some("eng".to_string()));
+        assert_eq!(decode_mdhd_language(6), Some("spa".to_string()));
+        assert_eq!(decode_mdhd_language(11), Some("jpn".to_string()));
     }
 }

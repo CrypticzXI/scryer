@@ -2,6 +2,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { ImportMode } from "@/lib/types/settings";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 const FILLER_POLICY_OPTIONS = [
@@ -12,6 +13,11 @@ const FILLER_POLICY_OPTIONS = [
 const RECAP_POLICY_OPTIONS = [
   { value: "download_all", label: "settings.recapPolicyDownloadAll" },
   { value: "skip_recap", label: "settings.recapPolicySkipRecap" },
+];
+
+const IMPORT_MODE_OPTIONS: { value: ImportMode; label: string }[] = [
+  { value: "hardlink_or_copy", label: "settings.importModeHardlinkCopy" },
+  { value: "move", label: "settings.importModeMove" },
 ];
 
 export function GeneralSettingsPanel({
@@ -31,6 +37,8 @@ export function GeneralSettingsPanel({
   handleNfoWriteChange,
   plexmatchWriteOnImport,
   handlePlexmatchWriteChange,
+  importMode,
+  handleImportModeChange,
 }: {
   activeQualityScopeId: ViewCategoryId;
   mediaSettingsLoading: boolean;
@@ -48,6 +56,8 @@ export function GeneralSettingsPanel({
   handleNfoWriteChange: (checked: boolean) => void;
   plexmatchWriteOnImport: Record<ViewCategoryId, string>;
   handlePlexmatchWriteChange: (checked: boolean) => void;
+  importMode: Record<ViewCategoryId, ImportMode>;
+  handleImportModeChange: (value: ImportMode) => void;
 }) {
   const t = useTranslate();
   const showAnimePolicies = activeQualityScopeId === "anime";
@@ -61,6 +71,30 @@ export function GeneralSettingsPanel({
           <CardTitle>{t("facetSettings.general")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="max-w-md space-y-2">
+            <Label className="text-sm text-card-foreground">
+              {t("settings.importModeLabel")}
+            </Label>
+            <Select
+              value={importMode[activeQualityScopeId]}
+              onValueChange={(value) => handleImportModeChange(value as ImportMode)}
+              disabled={mediaSettingsLoading}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {IMPORT_MODE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {t(option.label)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.importModeDescription")}
+            </p>
+          </div>
           <div>
             <h3 className="text-sm font-semibold text-card-foreground">
               {t("facetSettings.sidecarFiles")}

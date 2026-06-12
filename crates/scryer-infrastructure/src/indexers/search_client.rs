@@ -77,6 +77,21 @@ struct FilterStrategyContext<'a> {
     is_rss_request: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SearchLane {
+    Interactive,
+    BackgroundAuto,
+}
+
+impl SearchLane {
+    fn from_mode(mode: SearchMode) -> Self {
+        match mode {
+            SearchMode::Interactive => Self::Interactive,
+            SearchMode::Auto => Self::BackgroundAuto,
+        }
+    }
+}
+
 #[derive(Default)]
 struct StrategyBatchHealth {
     any_success: bool,
@@ -329,7 +344,7 @@ fn is_romanized_alias(alias: &str) -> bool {
 /// Per-indexer rate limiter tracking the last request time.
 #[derive(Clone)]
 struct IndexerRateLimiter {
-    last_request: Arc<Mutex<HashMap<String, tokio::time::Instant>>>,
+    last_request: Arc<Mutex<HashMap<(String, SearchLane), tokio::time::Instant>>>,
 }
 
 impl IndexerRateLimiter {
@@ -343,11 +358,12 @@ impl IndexerRateLimiter {
     /// When `rate_limit_seconds` is set (from config/plugin), that value wins.
     /// Otherwise the default depends on the search mode:
     ///   - Interactive: 1s (fast for end-user experience)
-    ///   - Auto: 5s (gentle on indexer APIs during background acquisition)
+    ///   - Auto: 1s (keeps background acquisition moving without blocking the
+    ///     interactive lane behind a long default wait)
     async fn acquire(&self, indexer_id: &str, rate_limit_seconds: Option<i64>, mode: SearchMode) {
         let default_secs = match mode {
             SearchMode::Interactive => 1,
-            SearchMode::Auto => 5,
+            SearchMode::Auto => 1,
         };
         let interval_secs = rate_limit_seconds.unwrap_or(default_secs).max(0) as u64;
         if interval_secs == 0 {
@@ -356,20 +372,21 @@ impl IndexerRateLimiter {
 
         let interval = std::time::Duration::from_secs(interval_secs);
         let now = tokio::time::Instant::now();
+        let lane_key = (indexer_id.to_string(), SearchLane::from_mode(mode));
 
         let mut map = self.last_request.lock().await;
-        if let Some(last) = map.get(indexer_id) {
+        if let Some(last) = map.get(&lane_key) {
             let elapsed = now.duration_since(*last);
             if elapsed < interval {
                 let wait = interval - elapsed;
                 drop(map); // Release lock while sleeping
                 tokio::time::sleep(wait).await;
                 let mut map = self.last_request.lock().await;
-                map.insert(indexer_id.to_string(), tokio::time::Instant::now());
+                map.insert(lane_key, tokio::time::Instant::now());
                 return;
             }
         }
-        map.insert(indexer_id.to_string(), now);
+        map.insert(lane_key, now);
     }
 }
 
@@ -496,6 +513,20 @@ impl MultiIndexerSearchClient {
         Err(AppError::Validation(format!(
             "unsupported indexer provider: '{provider}'"
         )))
+    }
+
+    async fn record_indexer_last_error(
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
+        indexer_id: &str,
+        indexer_name: &str,
+    ) {
+        if let Err(error) = indexer_configs.touch_last_error(indexer_id).await {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to update indexer last_error_at"
+            );
+        }
     }
 
     fn is_rss_sync_request(
@@ -969,8 +1000,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             // Skip indexers that can't contribute to this facet.
             // - Indexers with declared facets that don't include the current facet are skipped.
             // - Indexers that have the facet but only for ID-based search (deduplicates_aliases)
-            //   are skipped when none of their supported IDs are available — freetext on
-            //   AnimeTosho for "Lattice Zero" is pointless when there's no anidb_id.
+            //   are skipped when none of their supported IDs are available.
             let has_facet_entry = caps.has_facet(&facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
             let skip_no_facet = !has_facet_entry
@@ -1061,6 +1091,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let rate_limit_seconds = config.rate_limit_seconds;
                     let stats_tracker = self.stats_tracker.clone();
                     let backoff_tracker = self.backoff_tracker.clone();
+                    let indexer_configs = self.indexer_configs.clone();
                     let facet = facet.clone();
                     let should_rate_limit = !pre_acquired_rss_categories;
 
@@ -1102,11 +1133,23 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     Ok(Err(err)) => {
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        Self::record_indexer_last_error(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                        )
+                                        .await;
                                         vec![]
                                     }
                                     Err(_) => {
                                         warn!(indexer = indexer_name.as_str(), "RSS feed fetch timed out");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        Self::record_indexer_last_error(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                        )
+                                        .await;
                                         vec![]
                                     }
                                 }
@@ -1191,6 +1234,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let tagged_aliases_for_indexer = tagged_aliases.clone();
                 let stats_tracker = self.stats_tracker.clone();
                 let backoff_tracker = self.backoff_tracker.clone();
+                let indexer_configs = self.indexer_configs.clone();
                 let client = client.clone();
                 let primary_strategies = primary_strategies.clone();
                 let fallback_strategies = fallback_strategies.clone();
@@ -1264,6 +1308,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     "indexer search failed"
                                 );
                                 stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                Self::record_indexer_last_error(
+                                    &indexer_configs,
+                                    &indexer_id,
+                                    &indexer_name,
+                                )
+                                .await;
 
                                 record_strategy_metrics(
                                     &indexer_name,
@@ -1351,6 +1401,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         "indexer fallback search failed"
                                     );
                                     stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                    Self::record_indexer_last_error(
+                                        &indexer_configs,
+                                        &indexer_id,
+                                        &indexer_name,
+                                    )
+                                    .await;
 
                                     record_strategy_metrics(
                                         &indexer_name,
@@ -1917,6 +1973,45 @@ mod tests {
         }
     }
 
+    struct RecordingTouchIndexerConfigRepository {
+        configs: Vec<IndexerConfig>,
+        touched_ids: StdArc<StdMutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl IndexerConfigRepository for RecordingTouchIndexerConfigRepository {
+        async fn list(&self, _provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>> {
+            Ok(self.configs.clone())
+        }
+
+        async fn get_by_id(&self, _id: &str) -> AppResult<Option<IndexerConfig>> {
+            Ok(None)
+        }
+
+        async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
+            Ok(config)
+        }
+
+        async fn touch_last_error(&self, id: &str) -> AppResult<()> {
+            self.touched_ids
+                .lock()
+                .expect("touched ids mutex")
+                .push(id.to_string());
+            Ok(())
+        }
+
+        async fn update(
+            &self,
+            _update: scryer_application::IndexerConfigUpdate,
+        ) -> AppResult<IndexerConfig> {
+            Err(AppError::Validation("not implemented in test".into()))
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     struct MockIndexerStatsTracker;
 
     impl IndexerStatsTracker for MockIndexerStatsTracker {
@@ -2315,6 +2410,57 @@ mod tests {
             }),
             ..IndexerCapsSnapshot::default()
         }
+    }
+
+    #[tokio::test]
+    async fn indexer_failure_records_last_error_for_config_id() {
+        let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: StdArc::new(StdMutex::new(Vec::new())),
+            responder: StdArc::new(|_| Err(AppError::Repository("upstream status 503".into()))),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(RecordingTouchIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+                touched_ids: touched_ids.clone(),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: true,
+                    search: false,
+                    imdb_search: false,
+                    tvdb_search: false,
+                    anidb_search: false,
+                    supported_ids: HashMap::new(),
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let response = multi
+            .search(
+                String::new(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("RSS failure is isolated to the indexer");
+
+        assert!(response.results.is_empty());
+        assert_eq!(
+            *touched_ids.lock().expect("touched ids mutex"),
+            vec!["idx-1".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -3598,6 +3744,46 @@ mod tests {
         );
 
         assert_eq!(alias.as_deref(), Some("Sora no Vale"));
+    }
+
+    #[tokio::test]
+    async fn indexer_rate_limiter_keeps_interactive_lane_independent_from_auto_lane() {
+        let limiter = IndexerRateLimiter::new();
+
+        limiter.acquire("idx", None, SearchMode::Auto).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            limiter.acquire("idx", None, SearchMode::Interactive),
+        )
+        .await
+        .expect("interactive lane should not wait behind background auto pacing");
+    }
+
+    #[tokio::test]
+    async fn indexer_rate_limiter_uses_shorter_auto_default_interval() {
+        let limiter = IndexerRateLimiter::new();
+
+        limiter.acquire("idx", None, SearchMode::Auto).await;
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                limiter.acquire("idx", None, SearchMode::Auto),
+            )
+            .await
+            .is_err(),
+            "immediate follow-up auto searches should still be paced"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(950)).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            limiter.acquire("idx", None, SearchMode::Auto),
+        )
+        .await
+        .expect("auto lane should become available again after roughly one second");
     }
 
     #[test]

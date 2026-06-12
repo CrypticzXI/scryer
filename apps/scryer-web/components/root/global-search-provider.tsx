@@ -3,11 +3,13 @@ import { useGlobalSearch } from "@/lib/hooks/use-global-search";
 import type { Facet } from "@/lib/types";
 import type { LocaleCode } from "@/lib/i18n";
 import { SearchContext } from "@/lib/context/search-context";
+import type { AuthUser } from "@/lib/hooks/use-auth";
 
 type GlobalSearchProviderProps = {
   activeFacet: Facet;
   queueFacet: Facet;
   uiLanguage: LocaleCode;
+  authenticatedUser: AuthUser;
   children: ReactNode;
 };
 
@@ -15,9 +17,11 @@ export function GlobalSearchProvider({
   activeFacet,
   queueFacet,
   uiLanguage,
+  authenticatedUser,
   children,
 }: GlobalSearchProviderProps) {
   const searchState = useGlobalSearch({
+    authenticatedUser,
     queueFacet,
     uiLanguage,
   });

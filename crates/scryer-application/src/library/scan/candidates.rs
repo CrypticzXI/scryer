@@ -129,6 +129,29 @@ fn find_existing_movie_title_index(
     existing_titles_by_imdb_id: &HashMap<String, usize>,
     existing_titles_by_tmdb_id: &HashMap<String, usize>,
 ) -> Option<usize> {
+    if let Some(identity_hint) = candidate
+        .identity_hint
+        .as_ref()
+        .filter(|hint| hint.is_external_import_hint())
+    {
+        if let Some(tmdb_id) = identity_hint.tmdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_tmdb_id.get(tmdb_id)
+        {
+            return Some(index);
+        }
+        if let Some(imdb_id) = identity_hint.imdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_imdb_id.get(imdb_id)
+        {
+            return Some(index);
+        }
+        if let Some(tvdb_id) = identity_hint.tvdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_tvdb_id.get(tvdb_id)
+        {
+            return Some(index);
+        }
+        return None;
+    }
+
     if let Some(tvdb_id) = candidate
         .nfo_meta
         .as_ref()
@@ -194,6 +217,19 @@ fn find_existing_series_title_index(
     existing_titles_by_name: &HashMap<String, usize>,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
 ) -> Option<usize> {
+    if let Some(identity_hint) = candidate
+        .identity_hint
+        .as_ref()
+        .filter(|hint| hint.is_external_import_hint())
+    {
+        if let Some(tvdb_id) = identity_hint.tvdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_tvdb_id.get(tvdb_id)
+        {
+            return Some(index);
+        }
+        return None;
+    }
+
     if let Some(tvdb_id) = candidate
         .nfo_meta
         .as_ref()
@@ -451,7 +487,7 @@ async fn resolve_movie_scan_candidate(
         )));
     }
 
-    if candidate.query.trim().is_empty() {
+    if !candidate.metadata_lookup_attempted {
         return Ok(MovieCandidateResolution::Skipped);
     }
 
@@ -686,7 +722,7 @@ pub(super) async fn process_series_full_scan_candidate(
         return Ok(None);
     }
 
-    if candidate.query.trim().is_empty() {
+    if !candidate.metadata_lookup_attempted {
         summary.skipped += 1;
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;

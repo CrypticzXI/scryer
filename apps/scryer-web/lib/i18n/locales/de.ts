@@ -1451,7 +1451,7 @@ const de: LocaleDictionary = {
   "profile.passwordUpdated": "Passwort erfolgreich aktualisiert.",
   "profile.externalConnections": "Externe Verbindungen",
   "profile.externalConnectionsPlaceholder":
-    "Plex, Passkeys und andere externe Verbindungen werden hier verfügbar sein.",
+    "Passkeys und externe Kontoverbindungen werden hier verfügbar sein.",
   "auth.loginTitle": "Anmelden",
   "auth.usernamePlaceholder": "Benutzername",
   "auth.passwordPlaceholder": "Passwort",
@@ -1600,6 +1600,12 @@ const de: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Untertitel heruntergeladen",
   "settings.notificationEvent.subtitleSearchFailed":
     "Untertitelsuche fehlgeschlagen",
+  "settings.notificationEvent.mediaRequestSubmitted":
+    "Medienanfrage eingereicht",
+  "settings.notificationEvent.mediaRequestApproved": "Medienanfrage genehmigt",
+  "settings.notificationEvent.mediaRequestRejected": "Medienanfrage abgelehnt",
+  "settings.notificationEvent.mediaRequestCanceled":
+    "Medienanfrage abgebrochen",
   "settings.notificationEvent.healthIssue": "Gesundheitsproblem",
   "settings.notificationEvent.healthRestored": "Gesundheit wiederhergestellt",
   "settings.notificationEvent.applicationUpdate": "Anwendungsaktualisierung",

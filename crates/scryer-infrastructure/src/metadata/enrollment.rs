@@ -7,8 +7,8 @@ use base64::Engine as _;
 use ml_dsa::{Keypair, MlDsa65, SigningKey};
 use scryer_application::SettingsRepository;
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    enrollment_reqwest_client, parse_retry_after,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, parse_retry_after,
+    smg_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -19,7 +19,6 @@ const PQ_CLIENT_FAMILY: &str = "scryer-stable";
 // Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
-const SCRYER_SMG_USER_AGENT: &str = concat!("Scryer-", env!("CARGO_PKG_VERSION"));
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
@@ -138,7 +137,6 @@ pub async fn ensure_enrolled(
     db: &dyn SettingsRepository,
     registration_url: &str,
     registration_secret: &str,
-    ca_cert_override: Option<&str>,
 ) -> Result<EnrollmentState, EnrollmentError> {
     let instance_id = ensure_instance_id(db)
         .await
@@ -172,14 +170,7 @@ pub async fn ensure_enrolled(
         });
     }
 
-    enroll_pq_with_smg(
-        db,
-        &instance_id,
-        registration_url,
-        registration_secret,
-        ca_cert_override,
-    )
-    .await
+    enroll_pq_with_smg(db, &instance_id, registration_url, registration_secret).await
 }
 
 async fn enroll_pq_with_smg(
@@ -187,11 +178,10 @@ async fn enroll_pq_with_smg(
     instance_id: &str,
     registration_url: &str,
     registration_secret: &str,
-    ca_cert_override: Option<&str>,
 ) -> Result<EnrollmentState, EnrollmentError> {
     let challenge_url = derive_registration_endpoint(registration_url, "/api/register-challenge")?;
     let register_key_url = derive_registration_endpoint(registration_url, "/api/register-key")?;
-    let http = enrollment_outbound_http_client(ca_cert_override)?;
+    let http = enrollment_outbound_http_client();
     let challenge_payload = serde_json::json!({
         "client_family": PQ_CLIENT_FAMILY,
         "instance_id": instance_id,
@@ -305,12 +295,11 @@ pub async fn rotate_pq_enrollment(
     current_seed_b64: &str,
     current_key_id: &str,
     registration_url: &str,
-    ca_cert_override: Option<&str>,
 ) -> Result<EnrollmentState, EnrollmentError> {
     let challenge_url =
         derive_registration_endpoint(registration_url, "/api/register-rotate-challenge")?;
     let rotate_url = derive_registration_endpoint(registration_url, "/api/register-rotate")?;
-    let http = enrollment_outbound_http_client(ca_cert_override)?;
+    let http = enrollment_outbound_http_client();
 
     let challenge_response = send_authenticated_pq_registration_request(
         &http,
@@ -542,24 +531,8 @@ pub(crate) fn derive_registration_endpoint(
     Ok(format!("{root}{endpoint_path}"))
 }
 
-fn enrollment_outbound_http_client(
-    ca_cert_override: Option<&str>,
-) -> Result<OutboundHttpClient, EnrollmentError> {
-    let ca_cert_override =
-        match ca_cert_override {
-            Some(ca_pem) => Some(reqwest::Certificate::from_pem(ca_pem.as_bytes()).map_err(
-                |e| EnrollmentError::Other(format!("failed to parse SCRYER_SMG_CA_CERT: {e}")),
-            )?),
-            None => None,
-        };
-    let client =
-        enrollment_reqwest_client(ca_cert_override, SCRYER_SMG_USER_AGENT).map_err(|e| {
-            EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
-        })?;
-    Ok(OutboundHttpClient::new(
-        client,
-        SMG_ENROLLMENT_RATE_LIMITS.clone(),
-    ))
+fn enrollment_outbound_http_client() -> OutboundHttpClient {
+    OutboundHttpClient::new(smg_reqwest_client(), SMG_ENROLLMENT_RATE_LIMITS.clone())
 }
 
 fn enrollment_request_policy(request_label: &'static str) -> RequestPolicy {

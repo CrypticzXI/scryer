@@ -79,8 +79,7 @@ pub(crate) use scan_title_files::{
     file_source_signature_from_metadata, file_source_snapshot_from_library_file,
 };
 use scan_title_files::{
-    TitleScanLayoutSummary, build_title_episode_lookup, classify_title_scan_layout,
-    merge_title_scan_option_tags, resolve_target_episodes_from_lookup,
+    TitleScanLayoutSummary, classify_title_scan_layout, merge_title_scan_option_tags,
     title_media_file_matches_snapshot,
 };
 use scan_title_finalize::finalize_movie_scan_file;
@@ -588,7 +587,8 @@ impl AppUseCase {
         let title_ids: Vec<String> = titles.iter().map(|title| title.id.clone()).collect();
 
         for title in &titles {
-            self.purge_title_logical_dependents(title, false).await?;
+            self.purge_title_logical_dependents(title, false, None)
+                .await?;
         }
 
         if !title_ids.is_empty() {
@@ -747,6 +747,7 @@ impl AppUseCase {
                     facet.clone(),
                     &session_id,
                     LibraryScanMode::Full,
+                    None,
                 )
                 .await
             {
@@ -770,6 +771,16 @@ impl AppUseCase {
         &self,
         actor: &User,
         library_id: &str,
+    ) -> AppResult<LibraryScanSession> {
+        self.trigger_library_scan_by_id_with_hints(actor, library_id, None)
+            .await
+    }
+
+    pub async fn trigger_library_scan_by_id_with_hints(
+        &self,
+        actor: &User,
+        library_id: &str,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<LibraryScanSession> {
         let library = self
             .services
@@ -816,6 +827,7 @@ impl AppUseCase {
                     facet.clone(),
                     &session_id,
                     LibraryScanMode::Full,
+                    scan_hints,
                 )
                 .await;
             match result {
@@ -864,7 +876,7 @@ impl AppUseCase {
         self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
             .await;
         let result = self
-            .run_started_library_scan_session(actor, facet, &session.session_id, mode)
+            .run_started_library_scan_session(actor, facet, &session.session_id, mode, None)
             .await;
 
         if result.is_err() {
@@ -897,6 +909,7 @@ impl AppUseCase {
         facet: MediaFacet,
         session_id: &str,
         mode: LibraryScanMode,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<StartedLibraryScanOutcome> {
         let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
         let library_id = self
@@ -918,6 +931,7 @@ impl AppUseCase {
                 session_id,
                 mode,
                 cancel_token.clone(),
+                scan_hints,
             )
             .await?;
         if library_scan_cancel_requested(cancel_token.as_ref()) {
@@ -990,6 +1004,7 @@ impl AppUseCase {
         session_id: &str,
         mode: LibraryScanMode,
         cancel_token: Option<CancellationToken>,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<LibraryScanSummary> {
         let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
         let mut valid_roots = Vec::new();
@@ -1068,6 +1083,7 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
+                        scan_hints.as_ref(),
                     )
                     .await?
                 }
@@ -1081,6 +1097,11 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
+                        if matches!(facet, MediaFacet::Series) {
+                            scan_hints.as_ref()
+                        } else {
+                            None
+                        },
                     )
                     .await?
                 }
@@ -1205,6 +1226,7 @@ impl AppUseCase {
                 &library_paths,
                 &session.session_id,
                 LibraryScanMode::Additive,
+                None,
                 None,
             )
             .await;

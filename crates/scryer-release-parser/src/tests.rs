@@ -2,10 +2,26 @@ use chrono::NaiveDate;
 
 use crate::enrichment::{enrich_candidate, project_final_metadata};
 use crate::{
-    ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseFamily,
-    ParsedEpisodeReleaseType, ReleaseParseContext, VideoCodec, analyze_release_against_targets,
-    analyze_release_for_target,
+    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ExternalIdSource,
+    ParseFamily, ParsedEpisodeReleaseType, ReleaseParseContext, ReleaseSource, StreamingService,
+    VideoCodec, analyze_release_against_targets, analyze_release_for_target,
 };
+
+fn source_label(source: Option<&ReleaseSource>) -> Option<&str> {
+    source.map(ReleaseSource::as_str)
+}
+
+fn audio_label(codec: Option<&AudioCodec>) -> Option<&str> {
+    codec.map(AudioCodec::as_str)
+}
+
+fn audio_codec_labels(codecs: &[AudioCodec]) -> Vec<&str> {
+    codecs.iter().map(AudioCodec::as_str).collect()
+}
+
+fn streaming_service_label(service: Option<&StreamingService>) -> Option<&str> {
+    service.map(StreamingService::as_str)
+}
 
 fn context(facet_hint: ContextFacetHint, title: &str) -> ReleaseParseContext {
     ReleaseParseContext {
@@ -31,7 +47,10 @@ fn lex_and_parse_standard_episode_release() {
     assert_eq!(candidate.family, ParseFamily::StandardEpisode);
     assert_eq!(candidate.projected.normalized_title, "SHOW NAME");
     assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
-    assert_eq!(candidate.projected.source.as_deref(), Some("WEB-DL"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
     assert_eq!(
         candidate
             .projected
@@ -92,6 +111,39 @@ fn parses_daily_release_with_part_marker() {
         Some(NaiveDate::from_ymd_opt(2026, 4, 22).unwrap())
     );
     assert_eq!(episode.daily_part, Some(2));
+}
+
+#[test]
+fn parser_accepts_unicode_separator_release() {
+    let analysis = analyze_release_for_target(
+        "Show–Name.S01E02.1080p.WEB-DL.H264-Group",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(candidate.projected.normalized_title, "SHOW NAME");
+}
+
+#[test]
+fn parser_preserves_sanitize_hints_for_entities_and_controls() {
+    let analysis = analyze_release_for_target(
+        "AT&amp;T\u{200B}.Show.S01E02.1080p.WEB-DL.H264-Group",
+        &context(ContextFacetHint::Series, "AT and T Show"),
+    );
+
+    assert!(
+        analysis
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "html_entity_decoded")
+    );
+    assert!(
+        analysis
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "zero_width_stripped")
+    );
 }
 
 #[test]
@@ -249,7 +301,10 @@ fn movie_parser_extracts_year_and_source_from_compound_tokens() {
     assert_eq!(candidate.family, ParseFamily::Movie);
     assert_eq!(candidate.projected.normalized_title, "PROTECTOR");
     assert_eq!(candidate.projected.year, Some(2025));
-    assert_eq!(candidate.projected.source.as_deref(), Some("WEBRip"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEBRip")
+    );
 }
 
 #[test]
@@ -268,7 +323,10 @@ fn daily_parser_projects_air_date_year_and_normalizes_web_source() {
 
     assert_eq!(candidate.family, ParseFamily::DailyEpisode);
     assert_eq!(candidate.projected.year, Some(2026));
-    assert_eq!(candidate.projected.source.as_deref(), Some("WEB-DL"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
 }
 
 #[test]
@@ -596,7 +654,10 @@ fn service_tagged_webrip_normalizes_to_webdl() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.source.as_deref(), Some("WEB-DL"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
 }
 
 #[test]
@@ -708,8 +769,8 @@ fn enrichment_extracts_legacy_audio_and_hdr_fields_without_inventing_languages()
     let enrichment = enrich_candidate(&analysis.tokens, candidate, &analysis.raw_input);
     let projected = project_final_metadata(candidate.projected.clone(), &enrichment);
 
-    assert_eq!(projected.audio.as_deref(), Some("DDP"));
-    assert_eq!(projected.audio_codecs, vec!["DDP".to_string()]);
+    assert_eq!(audio_label(projected.audio.as_ref()), Some("DDP"));
+    assert_eq!(audio_codec_labels(&projected.audio_codecs), vec!["DDP"]);
     assert_eq!(projected.audio_channels.as_deref(), Some("5.1"),);
     assert!(projected.is_atmos);
     assert!(projected.is_dolby_vision);
@@ -765,7 +826,7 @@ fn enrichment_extracts_split_dts_x_audio() {
     let analysis = analyze_release_for_target("Movie.2024.2160p.BluRay.DTS-X.7.1.H.265", &target);
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
-    assert_eq!(projected.audio.as_deref(), Some("DTSX"));
+    assert_eq!(audio_label(projected.audio.as_ref()), Some("DTSX"));
     assert_eq!(projected.audio_channels.as_deref(), Some("7.1"));
 }
 
@@ -777,7 +838,7 @@ fn enrichment_extracts_split_eac3_without_matching_title_substrings() {
     );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
-    assert_eq!(projected.audio.as_deref(), Some("EAC3"));
+    assert_eq!(audio_label(projected.audio.as_ref()), Some("EAC3"));
 
     let bleach = analyze_release_for_target(
         "Emberfall 1-366",
@@ -834,8 +895,11 @@ fn enrichment_extracts_short_language_code_inside_metadata_zone() {
     let projected = project_final_metadata(candidate.projected.clone(), &enrichment);
 
     assert_eq!(projected.languages_audio, vec!["tur".to_string()]);
-    assert_eq!(projected.streaming_service.as_deref(), Some("Disney+"));
-    assert_eq!(projected.audio.as_deref(), Some("AAC"));
+    assert_eq!(
+        streaming_service_label(projected.streaming_service.as_ref()),
+        Some("Disney+")
+    );
+    assert_eq!(audio_label(projected.audio.as_ref()), Some("AAC"));
     assert_eq!(projected.audio_channels.as_deref(), Some("2.0"));
 }
 
@@ -948,7 +1012,10 @@ fn split_dvd_rip_source_projects_as_dvd() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.source.as_deref(), Some("DVD"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("DVD")
+    );
 }
 
 #[test]
@@ -1053,7 +1120,10 @@ fn series_facet_with_episode_context_can_recover_absolute_episode() {
 
     assert_eq!(episode.absolute_episode, Some(29));
     assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
-    assert_eq!(candidate.projected.source.as_deref(), Some("WEB-DL"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
 }
 
 #[test]
@@ -1089,7 +1159,7 @@ fn service_tokens_project_to_canonical_service_names() {
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
-        candidate.projected.streaming_service.as_deref(),
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
         Some("Amazon")
     );
 }
@@ -1109,7 +1179,10 @@ fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
         candidate.projected.video_codec.as_ref(),
         Some(&VideoCodec::Vvc)
     );
-    assert_eq!(candidate.projected.audio.as_deref(), Some("OPUS"));
+    assert_eq!(
+        audio_label(candidate.projected.audio.as_ref()),
+        Some("OPUS")
+    );
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
 
@@ -1146,13 +1219,13 @@ fn generic_external_ids_parse_beyond_imdb() {
         projected
             .external_ids
             .iter()
-            .any(|id| { id.source == "tmdb" && id.value == "12345" })
+            .any(|id| { id.source == ExternalIdSource::Tmdb && id.value == "12345" })
     );
     assert!(
         projected
             .external_ids
             .iter()
-            .any(|id| { id.source == "tvdb" && id.value == "67890" })
+            .any(|id| { id.source == ExternalIdSource::Tvdb && id.value == "67890" })
     );
 }
 
@@ -1186,7 +1259,7 @@ fn short_service_alias_can_remain_a_title_word() {
         candidate.projected.video_codec.as_ref(),
         Some(&VideoCodec::Mpeg2)
     );
-    assert_eq!(candidate.projected.audio.as_deref(), Some("MP3"));
+    assert_eq!(audio_label(candidate.projected.audio.as_ref()), Some("MP3"));
 }
 
 #[test]
@@ -1413,7 +1486,10 @@ fn enrichment_extracts_split_dts_ma_audio() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.audio.as_deref(), Some("DTSMA"));
+    assert_eq!(
+        audio_label(candidate.projected.audio.as_ref()),
+        Some("DTSMA")
+    );
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("5.1"));
 }
 
@@ -1428,7 +1504,10 @@ fn enrichment_extracts_fused_dts_hd_audio() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.audio.as_deref(), Some("DTSHD"));
+    assert_eq!(
+        audio_label(candidate.projected.audio.as_ref()),
+        Some("DTSHD")
+    );
 }
 
 #[test]
@@ -1440,7 +1519,7 @@ fn enrichment_extracts_bare_dd_with_split_channels() {
         analyze_release_for_target("askari.2001.amzn.web-dl.dd.2.0.h.264-playweb", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.audio.as_deref(), Some("DD"));
+    assert_eq!(audio_label(candidate.projected.audio.as_ref()), Some("AC3"));
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
 
@@ -1648,7 +1727,10 @@ fn anime_absolute_release_keeps_release_group_and_metadata_boundaries() {
         candidate.projected.release_group.as_deref(),
         Some("Studio Nova")
     );
-    assert_eq!(candidate.projected.source.as_deref(), Some("BluRay"));
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("BluRay")
+    );
     assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
     assert_eq!(
         candidate.projected.video_codec.as_ref(),
@@ -1659,7 +1741,7 @@ fn anime_absolute_release_keeps_release_group_and_metadata_boundaries() {
             .projected
             .audio_codecs
             .iter()
-            .any(|codec| codec == "AAC")
+            .any(|codec| codec.as_str() == "AAC")
     );
 }
 

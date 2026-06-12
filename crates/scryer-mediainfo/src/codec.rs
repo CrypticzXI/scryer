@@ -1,3 +1,4 @@
+use crate::scan;
 use crate::types::RawTrack;
 
 /// Codec profile and bit-depth information extracted from bitstream headers.
@@ -22,10 +23,12 @@ pub(crate) fn normalize_codec_name(codec_id: &str) -> Option<String> {
         "V_MPEG4/ISO/AVC" => "h264",
         "V_MPEGH/ISO/HEVC" => "hevc",
         "V_AV1" => "av1",
+        "V_VP8" => "vp8",
         "V_VP9" => "vp9",
-        "V_MPEG4/ISO/SP" => "mpeg4",
+        "V_MPEG4/ISO/SP" | "V_MPEG4/ISO/ASP" | "V_MPEG4/ISO/AP" => "mpeg4",
         "V_MPEG2" => "mpeg2video",
         "V_MPEG1" => "mpeg1video",
+        "V_MJPEG" => "mjpeg",
         "V_MS/VFW/FOURCC" => return None,
 
         // --- MKV audio ---
@@ -53,12 +56,15 @@ pub(crate) fn normalize_codec_name(codec_id: &str) -> Option<String> {
         "dvh1" | "dvhe" => "hevc",
         "av01" => "av1",
         "vp09" => "vp9",
+        "mp4v" => "mpeg4",
+        "jpeg" | "mjpg" => "mjpeg",
+        "png " => "png",
         "mp4a" => "aac",
         "ac-3" => "ac3",
         "ec-3" => "eac3",
         "fLaC" => "flac",
         "Opus" => "opus",
-        "tx3g" => "mov_text",
+        "text" | "tx3g" => "mov_text",
         "wvtt" => "webvtt",
         "stpp" => "ttml",
 
@@ -1428,6 +1434,10 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
     let data = Bytes::from(codec_private.to_vec());
     if let Ok(config) = AVCDecoderConfigurationRecord::parse(&mut io::Cursor::new(data)) {
         let profile = map_h264_profile(config.profile_indication);
+        let parse_sps = |sps_bytes: &[u8]| {
+            let rbsp = scan::h2645_unescape_rbsp(sps_bytes);
+            Sps::parse(io::Cursor::new(rbsp.as_ref())).ok()
+        };
 
         // Bit depth: prefer the extended_config field (from the AVCC record itself),
         // fall back to parsing the first SPS NAL unit.
@@ -1435,14 +1445,13 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
             Some(ext.bit_depth_luma_minus8 as i32 + 8)
         } else {
             config.sps.first().and_then(|sps_bytes| {
-                Sps::parse_with_emulation_prevention(io::Cursor::new(sps_bytes))
-                    .ok()
+                parse_sps(sps_bytes)
                     .and_then(|sps| sps.ext.map(|ext| ext.bit_depth_luma_minus8 as i32 + 8))
             })
         };
 
         let color_transfer = config.sps.first().and_then(|sps_bytes| {
-            let sps = Sps::parse_with_emulation_prevention(io::Cursor::new(sps_bytes)).ok()?;
+            let sps = parse_sps(sps_bytes)?;
             let transfer = sps.color_config?.transfer_characteristics as u32;
             if transfer > 0 && transfer != 2 {
                 Some(transfer)
@@ -1458,7 +1467,8 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
         };
     }
 
-    let sps = match Sps::parse(io::Cursor::new(codec_private)) {
+    let rbsp = scan::h2645_unescape_rbsp(codec_private);
+    let sps = match Sps::parse(io::Cursor::new(rbsp.as_ref())) {
         Ok(sps) => sps,
         Err(_) => return CodecInfo::default(),
     };
@@ -1648,19 +1658,33 @@ pub(crate) fn hevc_nal_length_size(hvcc: &[u8]) -> usize {
 /// Returns `true` if a registered user data SEI with country_code 0xB5 (USA),
 /// provider_code 0x003C (Samsung), and provider_oriented_code 0x0001 is found.
 pub(crate) fn scan_hevc_frame_for_hdr10plus(frame: &[u8], nal_length_size: usize) -> bool {
+    if !(1..=4).contains(&nal_length_size) {
+        return false;
+    }
+
     let mut offset = 0;
     while offset + nal_length_size <= frame.len() {
+        let Some(candidate) =
+            scan::find_hevc_sei_nal_header_candidate(frame, offset + nal_length_size)
+        else {
+            return false;
+        };
         let nal_len = read_be_length(&frame[offset..], nal_length_size);
         offset += nal_length_size;
         if nal_len == 0 || offset + nal_len > frame.len() {
             break;
         }
+        if candidate.offset >= offset + nal_len {
+            offset += nal_len;
+            continue;
+        }
         let nal_data = &frame[offset..offset + nal_len];
         // HEVC NAL header is 2 bytes. nal_unit_type is bits 1-6 of byte 0.
-        if nal_data.len() >= 3 {
-            let nal_type = (nal_data[0] >> 1) & 0x3F;
+        if nal_data.len() >= 3 && candidate.offset == offset {
+            let nal_type = candidate.nal_type;
             // PREFIX_SEI_NUT = 39, SUFFIX_SEI_NUT = 40
-            if (nal_type == 39 || nal_type == 40) && check_sei_for_hdr10plus(&nal_data[2..]) {
+            let rbsp = scan::h2645_unescape_rbsp(&nal_data[2..]);
+            if (nal_type == 39 || nal_type == 40) && check_sei_for_hdr10plus(rbsp.as_ref()) {
                 return true;
             }
         }
@@ -1726,13 +1750,7 @@ fn check_sei_for_hdr10plus(sei_rbsp: &[u8]) -> bool {
 
 /// Check raw ITU-T T.35 payload bytes for HDR10+ metadata.
 pub(crate) fn scan_itu_t35_payload_for_hdr10plus(payload: &[u8]) -> bool {
-    payload.len() >= 6
-        && payload[0] == 0xB5
-        && payload[1] == 0x00
-        && payload[2] == 0x3C
-        && payload[3] == 0x00
-        && payload[4] == 0x01
-        && payload[5] == 0x04
+    scan::find_hdr10plus_itu_t35_candidate(payload, 0) == Some(0)
 }
 
 /// Maps an H.264 profile_idc value to a human-readable profile name.
@@ -1803,6 +1821,21 @@ mod tests {
         fn finish(self) -> Vec<u8> {
             self.bytes
         }
+    }
+
+    #[test]
+    fn hevc_hdr10plus_scan_unescapes_sei_rbsp() {
+        let mut sei_rbsp = vec![0x00, 0x00, 0x03, 0x04, 0x06];
+        sei_rbsp.extend_from_slice(&[0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04]);
+        assert!(!check_sei_for_hdr10plus(&sei_rbsp));
+
+        let nal_len = 2 + sei_rbsp.len();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(nal_len as u16).to_be_bytes());
+        frame.extend_from_slice(&[0x4E, 0x01]);
+        frame.extend_from_slice(&sei_rbsp);
+
+        assert!(scan_hevc_frame_for_hdr10plus(&frame, 2));
     }
 
     #[test]

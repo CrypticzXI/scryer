@@ -4,7 +4,7 @@ use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
     IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
-    LibrarySettings, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
+    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
@@ -16,7 +16,7 @@ use scryer_application::{
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
     DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
-    PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
+    MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
     TitleHistoryRecord, User,
 };
 use scryer_rules;
@@ -136,8 +136,16 @@ pub fn from_quality_profile_criteria(
         quality_tiers: criteria.quality_tiers,
         archival_quality: criteria.archival_quality,
         allow_unknown_quality: criteria.allow_unknown_quality,
-        source_allowlist: criteria.source_allowlist,
-        source_blocklist: criteria.source_blocklist,
+        source_allowlist: criteria
+            .source_allowlist
+            .into_iter()
+            .map(|source| source.to_string())
+            .collect(),
+        source_blocklist: criteria
+            .source_blocklist
+            .into_iter()
+            .map(|source| source.to_string())
+            .collect(),
         video_codec_allowlist: criteria
             .video_codec_allowlist
             .into_iter()
@@ -148,8 +156,16 @@ pub fn from_quality_profile_criteria(
             .into_iter()
             .map(|codec| codec.to_string())
             .collect(),
-        audio_codec_allowlist: criteria.audio_codec_allowlist,
-        audio_codec_blocklist: criteria.audio_codec_blocklist,
+        audio_codec_allowlist: criteria
+            .audio_codec_allowlist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
+        audio_codec_blocklist: criteria
+            .audio_codec_blocklist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
         dolby_vision_allowed: criteria.dolby_vision_allowed,
         detected_hdr_allowed: criteria.detected_hdr_allowed,
         prefer_remux: criteria.prefer_remux,
@@ -215,6 +231,9 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         required_audio_languages: settings.required_audio_languages,
         quality_profile_id_override: settings.quality_profile_id_override,
         quality_profile_id: settings.quality_profile_id,
+        request_quality_profile_ids_override: settings.request_quality_profile_ids_override,
+        request_quality_profile_ids: settings.request_quality_profile_ids,
+        request_quality_profile_default_id: settings.request_quality_profile_default_id,
         scoring_persona_override: settings
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
@@ -233,6 +252,10 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import_override: settings.plexmatch_write_on_import_override,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
+        import_mode_override: settings
+            .import_mode_override
+            .map(|mode| mode.as_str().to_string()),
+        import_mode: settings.import_mode.as_str().to_string(),
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()
@@ -309,6 +332,7 @@ pub fn from_media_settings(
         monitor_filler_movies: settings.monitor_filler_movies,
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
+        import_mode: settings.import_mode.as_str().to_string(),
     }
 }
 
@@ -351,6 +375,29 @@ pub fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
         typed_confirmation_prompt: preview.typed_confirmation_prompt,
         target_label: preview.target_label,
         sample_paths: preview.sample_paths,
+    }
+}
+
+pub fn from_delete_titles_preview(
+    preview: scryer_application::DeleteTitlesPreview,
+) -> DeleteTitlesPreviewPayload {
+    let failed_count = preview
+        .items
+        .iter()
+        .filter(|item| item.error.is_some())
+        .count() as i32;
+    DeleteTitlesPreviewPayload {
+        preview: from_delete_preview(preview.preview),
+        items: preview
+            .items
+            .into_iter()
+            .map(|item| DeleteTitlePreviewResultPayload {
+                title_id: item.title_id,
+                preview: item.preview.map(from_delete_preview),
+                error: item.error,
+            })
+            .collect(),
+        failed_count,
     }
 }
 
@@ -490,10 +537,10 @@ pub fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayloa
         languages_subtitles: result.languages_subtitles,
         year: result.year,
         quality: result.quality,
-        source: result.source,
+        source: result.source.map(|source| source.to_string()),
         video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
-        audio: result.audio,
+        audio: result.audio.map(|codec| codec.to_string()),
         audio_channels: result.audio_channels,
         is_dual_audio: result.is_dual_audio,
         is_atmos: result.is_atmos,
@@ -811,6 +858,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         attention_required: item.attention_required,
         attention_reason: item.attention_reason,
         download_client_item_id: item.download_client_item_id,
+        download_id: item.download_id,
         import_status: item.import_status.map(ImportStatusValue::from_domain),
         import_error_code: item
             .import_error_code
@@ -879,8 +927,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         overview: title.overview,
         poster_url: title.poster_url,
         poster_source_url: title.poster_source_url,
-        banner_url: title.banner_url,
-        banner_source_url: title.banner_source_url,
         background_url: title.background_url,
         background_source_url: title.background_source_url,
         sort_title: title.sort_title,
@@ -916,6 +962,54 @@ pub fn from_title(title: Title) -> TitlePayload {
     }
 }
 
+pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
+    MediaRequestPayload {
+        id: request.id,
+        library_id: request.library_id,
+        facet: MediaFacetValue::from_domain(request.facet),
+        status: MediaRequestStatusValue::from_domain(request.status),
+        identity_fingerprint: request.identity_fingerprint,
+        title: request.title,
+        sort_title: request.sort_title,
+        slug: request.slug,
+        poster_url: request.poster_url,
+        year: request.year,
+        overview: request.overview,
+        runtime_minutes: request.runtime_minutes,
+        language: request.language,
+        content_status: request.content_status,
+        requested_quality_profile_id: request.requested_quality_profile_id,
+        requested_quality_profile_name: request.requested_quality_profile_name,
+        requested_monitor_type: request.requested_monitor_type,
+        resolved_by_user_id: request.resolved_by_user_id,
+        resolved_at: request.resolved_at.map(|value| value.to_rfc3339()),
+        created_title_id: request.created_title_id,
+        approved_quality_profile_id: request.approved_quality_profile_id,
+        approved_quality_profile_name: request.approved_quality_profile_name,
+        external_ids: request
+            .external_ids
+            .into_iter()
+            .map(|id| ExternalIdPayload {
+                source: id.source,
+                value: id.value,
+            })
+            .collect(),
+        requesters: request
+            .requesters
+            .into_iter()
+            .map(|requester| MediaRequestRequesterPayload {
+                user_id: requester.user_id,
+                username: requester.username,
+                avatar_url: requester.avatar_url,
+                requested_at: requester.requested_at.to_rfc3339(),
+            })
+            .collect(),
+        created_by_user_id: request.created_by_user_id,
+        created_at: request.created_at.to_rfc3339(),
+        updated_at: request.updated_at.to_rfc3339(),
+    }
+}
+
 pub fn from_library(library: Library) -> LibraryPayload {
     LibraryPayload {
         id: library.id,
@@ -947,6 +1041,14 @@ pub fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryScanSumm
 
 pub fn from_pending_import_counts(counts: PendingImportCounts) -> PendingImportCountsPayload {
     PendingImportCountsPayload {
+        movie: counts.movie as i32,
+        series: counts.series as i32,
+        anime: counts.anime as i32,
+    }
+}
+
+pub fn from_media_request_counts(counts: MediaRequestCounts) -> MediaRequestCountsPayload {
+    MediaRequestCountsPayload {
         movie: counts.movie as i32,
         series: counts.series as i32,
         anime: counts.anime as i32,
@@ -1257,6 +1359,7 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         is_recap: episode.is_recap,
         absolute_number: episode.absolute_number,
         tvdb_id: episode.tvdb_id,
+        image_url: episode.image_url,
         monitored: episode.monitored,
         created_at: episode.created_at.to_rfc3339(),
     }
@@ -1350,9 +1453,18 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
 }
 
 pub fn from_user(user: User) -> UserPayload {
+    from_user_with_auth_factor_status(user, scryer_application::UserAuthFactorStatus::default())
+}
+
+pub fn from_user_with_auth_factor_status(
+    user: User,
+    auth_factor_status: scryer_application::UserAuthFactorStatus,
+) -> UserPayload {
     let User {
         id,
         username,
+        password_hash,
+        account_kind,
         authorization,
         ..
     } = user;
@@ -1370,6 +1482,7 @@ pub fn from_user(user: User) -> UserPayload {
             |(library_id, permissions)| UserLibraryPermissionGrantPayload {
                 library_id,
                 permissions: permissions
+                    .with_request_shadowing()
                     .to_permissions()
                     .into_iter()
                     .map(LibraryPermissionValue::from_domain)
@@ -1382,8 +1495,99 @@ pub fn from_user(user: User) -> UserPayload {
     UserPayload {
         id,
         username,
+        has_password: password_hash.is_some(),
+        has_mfa: auth_factor_status.has_mfa,
+        has_passkey: auth_factor_status.has_passkey,
+        account_kind: UserAccountKindValue::from_domain(account_kind),
         app_permissions,
         library_permissions,
+    }
+}
+
+pub fn from_linked_account(account: scryer_domain::UserExternalAccount) -> LinkedAccountPayload {
+    LinkedAccountPayload {
+        id: account.id,
+        user_id: account.user_id,
+        provider: ExternalAccountProviderValue::from_domain(account.provider),
+        connection_id: account.connection_id,
+        external_user_id: account.external_user_id,
+        username: account.username,
+        display_name: account.display_name,
+        avatar_url: account.avatar_url,
+        status: ExternalAccountStatusValue::from_domain(account.status),
+        verified_at: account.verified_at.map(|value| value.to_rfc3339()),
+        last_login_at: account.last_login_at.map(|value| value.to_rfc3339()),
+        created_at: account.created_at.to_rfc3339(),
+        updated_at: account.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_media_server_connection(
+    connection: scryer_domain::MediaServerConnection,
+) -> MediaServerConnectionPayload {
+    let api_key_present = connection.api_key_present();
+    let machine_id_present = connection.machine_id.is_some();
+    MediaServerConnectionPayload {
+        id: connection.id,
+        provider: MediaServerProviderValue::from_domain(connection.provider),
+        display_name: connection.display_name,
+        base_url: connection.base_url,
+        enabled: connection.enabled,
+        login_enabled: connection.login_enabled,
+        linking_enabled: connection.linking_enabled,
+        auto_add_enabled: connection.auto_add_enabled,
+        default_app_permissions: connection
+            .default_app_permissions
+            .to_permissions()
+            .into_iter()
+            .map(AppPermissionValue::from_domain)
+            .collect(),
+        default_library_grants: connection
+            .default_library_grants
+            .into_iter()
+            .map(|grant| MediaServerDefaultLibraryGrantPayload {
+                library_id: grant.library_id,
+                permissions: grant
+                    .permissions
+                    .with_request_shadowing()
+                    .to_permissions()
+                    .into_iter()
+                    .map(LibraryPermissionValue::from_domain)
+                    .collect(),
+            })
+            .collect(),
+        machine_id_present,
+        api_key_present,
+        path_mappings: connection
+            .path_mappings
+            .into_iter()
+            .map(|mapping| MediaServerPathMappingPayload {
+                source_path: mapping.source_path,
+                destination_path: mapping.destination_path,
+            })
+            .collect(),
+        created_at: connection.created_at.to_rfc3339(),
+        updated_at: connection.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_jellyfin_server_user(
+    user: scryer_application::JellyfinServerUser,
+) -> JellyfinServerUserPayload {
+    JellyfinServerUserPayload {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+    }
+}
+
+pub fn from_plex_server_discovery(
+    server: scryer_application::PlexServerDiscovery,
+) -> PlexServerDiscoveryPayload {
+    PlexServerDiscoveryPayload {
+        id: server.id,
+        name: server.name,
     }
 }
 
@@ -1648,12 +1852,14 @@ pub fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
         official: p.official,
         publisher: p.publisher,
         support_tier: support_tier_label(p.support_tier),
+        status: p.status,
         docs_url: p.docs_url,
         source_repo: p.source_repo,
         builtin: p.builtin,
         source_url: p.source_url,
         source_kind: p.source_kind,
         blocked_reason: p.blocked_reason,
+        bytes: p.bytes.and_then(|value| i64::try_from(value).ok()),
         is_installed: p.is_installed,
         is_enabled: p.is_enabled,
         installed_version: p.installed_version,
@@ -1775,6 +1981,7 @@ pub fn from_notification_channel(
         name: ch.name,
         channel_type: ch.channel_type.as_str().to_string(),
         config_json: ch.config_json,
+        media_server_connection_id: ch.media_server_connection_id,
         is_enabled: ch.is_enabled,
         created_at: ch.created_at.to_rfc3339(),
         updated_at: ch.updated_at.to_rfc3339(),
@@ -1787,12 +1994,30 @@ pub fn from_notification_subscription(
     NotificationSubscriptionPayload {
         id: sub.id,
         channel_id: sub.channel_id,
+        target_kind: sub.target_kind.as_str().to_string(),
+        target_id: sub.target_id,
         event_type: sub.event_type.as_str().to_string(),
         scope: sub.scope,
         scope_id: sub.scope_id,
         is_enabled: sub.is_enabled,
         created_at: sub.created_at.to_rfc3339(),
         updated_at: sub.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_notification_target(
+    target: scryer_domain::NotificationTarget,
+) -> NotificationTargetPayload {
+    NotificationTargetPayload {
+        id: target.id,
+        target_kind: target.target_kind.as_str().to_string(),
+        name: target.name,
+        provider_type: target.provider_type,
+        media_server_provider: target
+            .media_server_provider
+            .map(MediaServerProviderValue::from_domain),
+        media_server_connection_id: target.media_server_connection_id,
+        is_enabled: target.is_enabled,
     }
 }
 
@@ -1845,6 +2070,7 @@ pub fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationP
         source_kind: match inst.source_kind {
             scryer_domain::PluginSourceKind::Bundled => "bundled".to_string(),
             scryer_domain::PluginSourceKind::Downloaded => "downloaded".to_string(),
+            scryer_domain::PluginSourceKind::Community => "community".to_string(),
             scryer_domain::PluginSourceKind::Manual => "manual".to_string(),
         },
         source_url: inst.source_url,
@@ -1867,6 +2093,7 @@ pub fn from_plugin_catalog_status(status: PluginCatalogStatus) -> PluginCatalogS
         last_checked_at: status.last_checked_at,
         outage_message: status.outage_message,
         blocked_actions: status.blocked_actions,
+        restore_warnings: status.restore_warnings,
         last_error: status.last_error,
     }
 }
@@ -2022,6 +2249,7 @@ mod tests {
             client_type: "weaver".to_string(),
             client_id: String::new(),
             download_client_item_id: "10495".to_string(),
+            download_id: None,
             name: "10495".to_string(),
             dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
             category: Some("anime".to_string()),
@@ -2034,6 +2262,7 @@ mod tests {
             source_client_id: None,
             source_system: "weaver".to_string(),
             source_ref: "10495".to_string(),
+            download_id: None,
             import_type: ImportType::SeriesDownload,
             status: ImportStatus::Completed,
             payload_json: serde_json::to_string(&payload).expect("serialize completed download"),

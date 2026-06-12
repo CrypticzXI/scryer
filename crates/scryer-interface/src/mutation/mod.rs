@@ -5,6 +5,7 @@ mod downloads;
 mod external_import;
 mod jobs;
 mod library;
+mod media_requests;
 mod notifications;
 mod plugins;
 mod post_processing;
@@ -28,6 +29,7 @@ pub struct MutationRoot(
     SettingsMutations,
     users::UserMutations,
     library::LibraryMutations,
+    media_requests::MediaRequestMutations,
     wanted::WantedMutations,
     rules::RulesMutations,
     plugins::PluginMutations,

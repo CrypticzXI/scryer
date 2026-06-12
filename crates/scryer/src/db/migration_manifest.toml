@@ -256,6 +256,92 @@ file = "postgres/migrations/0124_video_codec_string_canonicalization.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 125
+description = "0.16 release rollup"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0125_0_16_release_rollup_pre_notification_target_hook.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0125_0_16_release_rollup_pre_notification_target_hook.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_jellyfin_notification_channels_to_media_server_targets"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0125_0_16_release_rollup_post_notification_target_hook.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0125_0_16_release_rollup_post_notification_target_hook.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 126
+description = "0.16 release rollup download identity"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0126_0_16_release_rollup_download_identity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0126_0_16_release_rollup_download_identity.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 127
+description = "active import download identity unique"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0127_active_import_download_identity_unique.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0127_active_import_download_identity_unique.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 128
+description = "download identity state client scope"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0128_download_identity_state_client_scope.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0128_download_identity_state_client_scope.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

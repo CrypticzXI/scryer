@@ -78,6 +78,7 @@ type ActivityViewState = {
   requestManualImport: (item: DownloadQueueItem) => Promise<void>;
   requestAssignTitle: (item: DownloadQueueItem) => Promise<void>;
   requestIgnore: (item: DownloadQueueItem) => Promise<void>;
+  requestMarkFailed: (item: DownloadQueueItem, skipReacquire: boolean) => Promise<void>;
   requestIgnoreItems: (items: DownloadQueueItem[]) => Promise<void>;
   requestPause: (item: DownloadQueueItem) => Promise<void>;
   requestResume: (item: DownloadQueueItem) => Promise<void>;
@@ -292,6 +293,7 @@ type QueueRowPresentation = {
   canResume: boolean;
   canAssignTitle: boolean;
   canIgnore: boolean;
+  canMarkFailed: boolean;
   canInteractiveManualImport: boolean;
   canDirectManualImport: boolean;
 };
@@ -340,6 +342,12 @@ function deriveQueueRowPresentation(
     trackedStateKey === "import_blocked" &&
     displayStateKey !== "importing" &&
     displayStateKey !== "removing";
+  const canMarkFailed =
+    (trackedStateKey === "import_blocked" ||
+      trackedStateKey === "import_pending" ||
+      trackedStateKey === "failed_pending") &&
+    displayStateKey !== "importing" &&
+    displayStateKey !== "removing";
   const canInteractiveManualImport =
     Boolean(queueItem.titleId) &&
     (queueItem.facet === "series" || queueItem.facet === "anime") &&
@@ -377,6 +385,7 @@ function deriveQueueRowPresentation(
     canResume: stateKey === "paused",
     canAssignTitle,
     canIgnore,
+    canMarkFailed,
     canInteractiveManualImport,
     canDirectManualImport,
   };
@@ -707,6 +716,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     requestManualImport,
     requestAssignTitle,
     requestIgnore,
+    requestMarkFailed,
     requestIgnoreItems,
     requestPause,
     requestResume,
@@ -1409,6 +1419,56 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   <span>{t("queue.ignore")}</span>
                 </Button>
               )}
+              {row.canMarkFailed && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (isActionLoading || isRowBlocked) {
+                      return;
+                    }
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
+                    void requestMarkFailed(queueItem, false).finally(() => {
+                      setRowBusy(rowId, false);
+                      setActionLoadingId((current) =>
+                        current === rowId ? null : current,
+                      );
+                    });
+                  }}
+                >
+                  <CircleAlert className="h-4 w-4" />
+                  <span>{t("queue.markFailedSearchAgain")}</span>
+                </Button>
+              )}
+              {row.canMarkFailed && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className={`flex-1 ${rowActionVisualClass}`}
+                  disabled={isRowFullyBusy}
+                  onClick={() => {
+                    if (isActionLoading || isRowBlocked) {
+                      return;
+                    }
+                    setActionLoadingId(rowId);
+                    setRowBusy(rowId, true);
+                    void requestMarkFailed(queueItem, true).finally(() => {
+                      setRowBusy(rowId, false);
+                      setActionLoadingId((current) =>
+                        current === rowId ? null : current,
+                      );
+                    });
+                  }}
+                >
+                  <XCircle className="h-4 w-4" />
+                  <span>{t("queue.markFailedOnly")}</span>
+                </Button>
+              )}
               <Button
                 type="button"
                 size="sm"
@@ -1680,6 +1740,58 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       }}
                     >
                       <CircleOff className="h-5 w-5" />
+                    </Button>
+                  )}
+                  {row.canMarkFailed && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-orange-500/50 bg-orange-600/15 text-orange-200 hover:bg-orange-600/25 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={t("queue.markFailedSearchAgain")}
+                      aria-label={t("queue.markFailedSearchAgain")}
+                      onClick={() => {
+                        if (isActionLoading || isRowBlocked) {
+                          return;
+                        }
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
+                        void requestMarkFailed(queueItem, false).finally(() => {
+                          setRowBusy(rowId, false);
+                          setActionLoadingId((current) =>
+                            current === rowId ? null : current,
+                          );
+                        });
+                      }}
+                    >
+                      <CircleAlert className="h-5 w-5" />
+                    </Button>
+                  )}
+                  {row.canMarkFailed && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-200 hover:bg-rose-600/25 ${rowActionVisualClass}`}
+                      disabled={isRowFullyBusy}
+                      title={t("queue.markFailedOnly")}
+                      aria-label={t("queue.markFailedOnly")}
+                      onClick={() => {
+                        if (isActionLoading || isRowBlocked) {
+                          return;
+                        }
+                        setActionLoadingId(rowId);
+                        setRowBusy(rowId, true);
+                        void requestMarkFailed(queueItem, true).finally(() => {
+                          setRowBusy(rowId, false);
+                          setActionLoadingId((current) =>
+                            current === rowId ? null : current,
+                          );
+                        });
+                      }}
+                    >
+                      <XCircle className="h-5 w-5" />
                     </Button>
                   )}
                   <Button

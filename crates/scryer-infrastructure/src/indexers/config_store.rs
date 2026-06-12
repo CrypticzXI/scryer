@@ -209,21 +209,21 @@ impl IndexerConfigRepository for IndexerConfigStore {
         .await
     }
 
-    async fn touch_last_error(&self, provider_type: &str) -> AppResult<()> {
-        let provider_type = provider_type.to_string();
+    async fn touch_last_error(&self, id: &str) -> AppResult<()> {
+        let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "touch_indexer_last_error", move |tx| {
-            let provider_type = provider_type.clone();
+            let id = id.clone();
             Box::pin(async move {
                 let now = Utc::now();
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "UPDATE indexers
                      SET last_error_at = {}, updated_at = {}
-                     WHERE provider_type = {}",
+                     WHERE id = {}",
                     &[
                         SqlArg::Timestamp(now),
                         SqlArg::Timestamp(now),
-                        SqlArg::Text(provider_type),
+                        SqlArg::Text(id),
                     ],
                 )
                 .await?;

@@ -24,6 +24,10 @@ pub(crate) fn is_all_clients_failed_error(err: &AppError) -> bool {
     matches!(err, AppError::Repository(msg) if msg.contains("all prioritized download clients failed"))
 }
 
+pub(crate) fn is_download_submit_unavailable_error(err: &AppError) -> bool {
+    err.is_download_submit_unavailable() || is_all_clients_failed_error(err)
+}
+
 pub(crate) fn should_research_failed_grab(item: &WantedItem, now: &DateTime<Utc>) -> bool {
     !is_old_failed_grab_title(item, now)
         && is_last_search_stale(item.last_search_at.as_deref(), now)
@@ -101,6 +105,14 @@ impl AppUseCase {
         category_hint: Option<&str>,
     ) -> ResolvedUpgradeContext {
         let category = upgrade_context_category(title, category_hint);
+        let grabbed_release = if grabbed_release
+            .map(str::trim)
+            .is_some_and(|value| value.is_empty())
+        {
+            None
+        } else {
+            grabbed_release
+        };
         let profile = self
             .resolve_quality_profile(QualityProfileLookup {
                 title_tags: &title.tags,
@@ -152,8 +164,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,

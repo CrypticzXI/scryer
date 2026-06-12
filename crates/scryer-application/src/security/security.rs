@@ -1,18 +1,26 @@
+use std::time::{Duration as StdDuration, Instant};
+
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use aws_lc_rs::hmac;
+use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 
 use super::*;
 use crate::services::AppAssembly;
+use crate::services::RuntimeFeature;
 use crate::types::{
-    BackupDownloadTicket, BackupDownloadTokenClaims, JwtLibraryPermissionClaim,
+    AuthenticatedTokenClaims, BackupDownloadTicket, BackupDownloadTokenClaims,
+    JwtLibraryPermissionClaim, JwtSessionScope, LoginFailureTimingClass,
     ReleaseCandidateTokenClaims,
 };
+
+const DUMMY_LOGIN_PASSWORD_HASH: &str = "v2$$argon2id$v=19$m=19456,t=2,p=1$zyGbHzPhFQTT8+t6oz3ZNw$CtJ2dcsWSe1CCV4O30Gm9zPD/03F7MfEIMDvBvjc/ig";
 
 impl AppUseCase {
     const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
     const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
+    const MFA_ENROLLMENT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
@@ -45,6 +53,15 @@ impl AppUseCase {
         auth: JwtAuthConfig,
         facet_registry: Arc<FacetRegistry>,
     ) -> Self {
+        Self::new_with_webauthn(assembly, auth, facet_registry, None)
+    }
+
+    pub fn new_with_webauthn(
+        assembly: AppAssembly,
+        auth: JwtAuthConfig,
+        facet_registry: Arc<FacetRegistry>,
+        webauthn: Option<Arc<webauthn_rs::Webauthn>>,
+    ) -> Self {
         Self {
             services: assembly.services,
             runtime: assembly.runtime,
@@ -54,11 +71,12 @@ impl AppUseCase {
             jwt_signing_keys: Arc::new(RwLock::new(HashMap::new())),
             jwt_signing_keys_loaded: Arc::new(OnceCell::new()),
             jwt_signing_keys_seed_lock: Arc::new(Mutex::new(())),
+            webauthn: webauthn.map(RuntimeFeature::enabled).unwrap_or_default(),
         }
     }
 
     pub(crate) fn hash_password(&self, password: &str) -> AppResult<String> {
-        if password.trim().is_empty() {
+        if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
 
@@ -69,6 +87,91 @@ impl AppUseCase {
             .map_err(|err| AppError::Repository(format!("password hashing failed: {err}")))?
             .to_string();
         Ok(format!("v2${phc_string}"))
+    }
+
+    pub(crate) fn normalize_local_username(username: &str) -> &str {
+        username.trim()
+    }
+
+    fn dummy_login_password_hash() -> &'static str {
+        DUMMY_LOGIN_PASSWORD_HASH
+    }
+
+    fn verify_dummy_login_password(&self, password: &str) {
+        let _ = self.validate_password(password, Self::dummy_login_password_hash());
+    }
+
+    fn login_failure_delay_range_ms(class: LoginFailureTimingClass) -> (u64, u64) {
+        match class {
+            LoginFailureTimingClass::PasswordBackedLocal => (400, 700),
+            LoginFailureTimingClass::FastMasked => (500, 800),
+        }
+    }
+
+    pub fn login_failure_delay_target_for_random(
+        class: LoginFailureTimingClass,
+        random: u64,
+    ) -> StdDuration {
+        let (min_ms, max_ms) = Self::login_failure_delay_range_ms(class);
+        let span_ms = max_ms - min_ms;
+        StdDuration::from_millis(min_ms + (random % (span_ms + 1)))
+    }
+
+    pub fn login_failure_remaining_delay_for_elapsed(
+        class: LoginFailureTimingClass,
+        random: u64,
+        elapsed: StdDuration,
+    ) -> Option<StdDuration> {
+        let target = Self::login_failure_delay_target_for_random(class, random);
+        target
+            .checked_sub(elapsed)
+            .filter(|duration| !duration.is_zero())
+    }
+
+    fn login_failure_random() -> u64 {
+        let rng = SystemRandom::new();
+        let mut bytes = [0_u8; 8];
+        if rng.fill(&mut bytes).is_err() {
+            return 0;
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    pub async fn apply_login_failure_timing(class: LoginFailureTimingClass, started_at: Instant) {
+        let random = Self::login_failure_random();
+        if let Some(remaining) =
+            Self::login_failure_remaining_delay_for_elapsed(class, random, started_at.elapsed())
+        {
+            tokio::time::sleep(remaining).await;
+        }
+    }
+
+    pub(crate) async fn password_min_length(&self) -> AppResult<i32> {
+        Ok(self
+            .read_setting_i64_value(PASSWORD_MIN_LENGTH_KEY, None)
+            .await?
+            .unwrap_or(PASSWORD_MIN_LENGTH_MIN)
+            .max(PASSWORD_MIN_LENGTH_MIN) as i32)
+    }
+
+    pub(crate) async fn validate_new_local_password(&self, password: &str) -> AppResult<()> {
+        let min_length = self.password_min_length().await?;
+        if password.chars().count() < min_length as usize {
+            return Err(AppError::Validation(format!(
+                "password must be at least {min_length} characters"
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
+        let admin = self.find_or_create_default_user().await?;
+        let Some(password_hash) = admin.password_hash.as_deref() else {
+            return Ok(true);
+        };
+
+        self.validate_password("admin", password_hash)
     }
 
     pub(crate) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
@@ -150,8 +253,28 @@ impl AppUseCase {
         sha256_hex(format!("app\n{app_claims}\nlibrary\n{library_claims}"))
     }
 
+    async fn auth_session_fingerprint(
+        &self,
+        user_id: &str,
+        authorization_fingerprint: String,
+    ) -> AppResult<String> {
+        let Some(auth_session_version) = self
+            .services
+            .identity
+            .users
+            .auth_session_version(user_id)
+            .await?
+        else {
+            return Ok(authorization_fingerprint);
+        };
+
+        Ok(format!(
+            "{authorization_fingerprint}\nauth_session:{auth_session_version}"
+        ))
+    }
+
     /// Derive a per-user JWT signing key:
-    /// HMAC-SHA256(key=salt, msg="{password_hash}\n{authorization_fingerprint}").
+    /// HMAC-SHA256(key=salt, msg="{password_hash}\n{authorization_and_session_fingerprint}").
     ///
     /// The salt is the registration secret baked into the binary, so an offline
     /// DB dump alone cannot forge tokens.
@@ -176,16 +299,31 @@ impl AppUseCase {
         Ok(user)
     }
 
-    async fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
-        let Some(password_hash) = user.password_hash.as_deref() else {
-            return Ok(None);
-        };
-        let user = self.user_with_authorization(user).await?;
+    pub async fn load_user_for_auth_payload(&self, user: &User) -> AppResult<User> {
+        let mut user = self
+            .services
+            .identity
+            .users
+            .get_by_id(&user.id)
+            .await?
+            .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))?;
+        user.authorization = self.load_user_authorization(&user).await?;
+        Ok(user)
+    }
 
-        Ok(Some(self.derive_jwt_key(
-            password_hash,
-            &Self::authorization_fingerprint(&user),
-        )))
+    async fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
+        let user = self.user_with_authorization(user).await?;
+        let signing_seed = user
+            .password_hash
+            .clone()
+            .unwrap_or_else(|| format!("federated:{}", user.id));
+
+        let authorization_fingerprint = self
+            .auth_session_fingerprint(&user.id, Self::authorization_fingerprint(&user))
+            .await?;
+        Ok(Some(
+            self.derive_jwt_key(&signing_seed, &authorization_fingerprint),
+        ))
     }
 
     async fn write_cached_jwt_signing_key(&self, user: &User, evict_first: bool) -> AppResult<()> {
@@ -247,16 +385,62 @@ impl AppUseCase {
         self.auth.access_ttl_seconds as i64
     }
 
+    pub fn mfa_enrollment_token_lifetime(&self) -> i64 {
+        Self::MFA_ENROLLMENT_TOKEN_TTL_SECONDS
+    }
+
+    pub fn mfa_freshness_verified_until(&self) -> chrono::DateTime<Utc> {
+        Utc::now() + Duration::minutes(super::totp::MFA_FRESHNESS_TTL_MINUTES)
+    }
+
     pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
-        let password_hash = actor
+        self.issue_access_token_with_mfa(actor, None, None).await
+    }
+
+    pub async fn issue_access_token_with_mfa(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_and_scope(
+            actor,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            JwtSessionScope::Full,
+            self.token_lifetime(),
+        )
+        .await
+    }
+
+    pub async fn issue_mfa_enrollment_token(&self, actor: &User) -> AppResult<String> {
+        self.issue_access_token_with_mfa_and_scope(
+            actor,
+            None,
+            None,
+            JwtSessionScope::MfaEnrollment,
+            self.mfa_enrollment_token_lifetime(),
+        )
+        .await
+    }
+
+    async fn issue_access_token_with_mfa_and_scope(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        auth_scope: JwtSessionScope,
+        ttl_seconds: i64,
+    ) -> AppResult<String> {
+        let actor = self.load_user_for_auth_payload(actor).await?;
+        let signing_seed = actor
             .password_hash
-            .as_deref()
-            .ok_or_else(|| AppError::Unauthorized("cannot issue token: no password hash".into()))?;
-        let actor = self.user_with_authorization(actor).await?;
+            .clone()
+            .unwrap_or_else(|| format!("federated:{}", actor.id));
 
         let now = Utc::now();
         let iat = now.timestamp();
-        let exp = (now + Duration::seconds(self.token_lifetime())).timestamp();
+        let exp = (now + Duration::seconds(ttl_seconds)).timestamp();
 
         let app_permissions = Self::canonical_app_permission_claims(&actor);
         let library_permissions = Self::canonical_library_permission_claims(&actor);
@@ -269,11 +453,16 @@ impl AppUseCase {
             username: actor.username.clone(),
             app_permissions,
             library_permissions,
+            mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
+            mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
+            auth_scope,
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-        let signing_key =
-            self.derive_jwt_key(password_hash, &Self::authorization_fingerprint(&actor));
+        let authorization_fingerprint = self
+            .auth_session_fingerprint(&actor.id, Self::authorization_fingerprint(&actor))
+            .await?;
+        let signing_key = self.derive_jwt_key(&signing_seed, &authorization_fingerprint);
         let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
 
         let token = jsonwebtoken::encode(&header, &claims, &key)
@@ -632,6 +821,15 @@ impl AppUseCase {
     }
 
     pub async fn authenticate_token(&self, token: &str) -> AppResult<User> {
+        self.authenticate_token_with_claims(token)
+            .await
+            .map(|(user, _)| user)
+    }
+
+    pub async fn authenticate_token_with_claims(
+        &self,
+        token: &str,
+    ) -> AppResult<(User, AuthenticatedTokenClaims)> {
         // Decode claims without signature verification to extract the subject (user ID).
         let unverified = jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(token)
             .map_err(|err| AppError::Unauthorized(format!("malformed token: {err}")))?;
@@ -663,7 +861,14 @@ impl AppUseCase {
             .await?
             .map(|mut user| {
                 user.password_hash = None;
-                user
+                (
+                    user,
+                    AuthenticatedTokenClaims {
+                        mfa_verified_until: claims.mfa_verified_until,
+                        mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
+                        session_scope: claims.auth_scope,
+                    },
+                )
             })
             .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
     }
@@ -673,29 +878,43 @@ impl AppUseCase {
         username: &str,
         password: &str,
     ) -> AppResult<User> {
-        let username = username.trim();
+        let started_at = Instant::now();
+        let username = Self::normalize_local_username(username);
         if username.is_empty() {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
             return Err(AppError::Validation("username is required".into()));
         }
-        let password = password.trim();
         if password.is_empty() {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
             return Err(AppError::Validation("password is required".into()));
         }
 
-        let user = self
+        let Some(user) = self
             .services
             .identity
             .users
             .get_by_username(username)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("user {username} not found")))?;
+        else {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
+            return Err(AppError::NotFound(format!("user {username} not found")));
+        };
 
-        let password_hash = user
-            .password_hash
-            .as_ref()
-            .ok_or_else(|| AppError::Unauthorized("credentials unavailable".into()))?;
+        let Some(password_hash) = user.password_hash.as_ref() else {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        };
 
         if !self.validate_password(password, password_hash)? {
+            Self::apply_login_failure_timing(
+                LoginFailureTimingClass::PasswordBackedLocal,
+                started_at,
+            )
+            .await;
             return Err(AppError::Unauthorized("invalid credentials".into()));
         }
 

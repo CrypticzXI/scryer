@@ -12,6 +12,7 @@ import {
   buildDeleteDownloadBatchMutation,
   buildIgnoreTrackedDownloadBatchMutation,
   ignoreTrackedDownloadMutation,
+  markTrackedDownloadFailedMutation,
   queueManualImportMutation,
   pauseDownloadMutation,
   resumeDownloadMutation,
@@ -126,6 +127,7 @@ export const ActivityContainer = memo(function ActivityContainer({
   const [, executeQueueManualImport] = useMutation(queueManualImportMutation);
   const [, executeAssignTrackedDownloadTitle] = useMutation(assignTrackedDownloadTitleMutation);
   const [, executeIgnoreTrackedDownload] = useMutation(ignoreTrackedDownloadMutation);
+  const [, executeMarkTrackedDownloadFailed] = useMutation(markTrackedDownloadFailedMutation);
   const [, executePauseDownload] = useMutation(pauseDownloadMutation);
   const [, executeResumeDownload] = useMutation(resumeDownloadMutation);
   const [, executeDeleteDownload] = useMutation(deleteDownloadMutation);
@@ -489,6 +491,29 @@ export const ActivityContainer = memo(function ActivityContainer({
     [executeIgnoreTrackedDownload, refreshVisibleTab, setGlobalStatus, t],
   );
 
+  const requestMarkFailed = useCallback(
+    async (item: DownloadQueueItem, skipReacquire: boolean) => {
+      const result = await executeMarkTrackedDownloadFailed({
+        input: {
+          clientId: item.clientId,
+          clientType: item.clientType,
+          downloadClientItemId: item.downloadClientItemId,
+          skipReacquire,
+        },
+      });
+      if (result.error) {
+        const message = result.error.message ?? t("queue.markFailedFailed");
+        setGlobalStatus(message);
+        throw result.error;
+      }
+      setGlobalStatus(
+        skipReacquire ? t("queue.markFailedOnlySuccess") : t("queue.markFailedSearchSuccess"),
+      );
+      await refreshVisibleTab();
+    },
+    [executeMarkTrackedDownloadFailed, refreshVisibleTab, setGlobalStatus, t],
+  );
+
   const requestIgnoreItems = useCallback(
     async (items: DownloadQueueItem[]) => {
       const targets = uniqueQueueItems(items);
@@ -686,6 +711,7 @@ export const ActivityContainer = memo(function ActivityContainer({
             setAssignTitleItem(item);
           },
           requestIgnore,
+          requestMarkFailed,
           requestIgnoreItems,
           requestPause,
           requestResume,

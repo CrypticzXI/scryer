@@ -832,8 +832,6 @@ mod tests {
             ),
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,
@@ -876,6 +874,7 @@ mod tests {
             absolute_number: None,
             overview: Some("A high school chemistry teacher gets a diagnosis.".into()),
             tvdb_id: Some("349232".into()),
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         }
@@ -922,20 +921,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_id_imdb() {
+        let nfo = "<movie><id>tt1234567</id></movie>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
+        assert_eq!(meta.tvdb_id, None);
+    }
+
+    #[test]
     fn parse_jellyfin_id_attributes() {
         let nfo = r#"<movie><id TMDB="2502" TVDB="842" IMDB="tt0372183">ignored</id></movie>"#;
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tmdb_id, Some("2502".into()));
         assert_eq!(meta.tvdb_id, Some("842".into()));
         assert_eq!(meta.imdb_id, Some("tt0372183".into()));
-    }
-
-    #[test]
-    fn parse_legacy_id_imdb() {
-        let nfo = "<movie><id>tt1234567</id></movie>";
-        let meta = parse_nfo(nfo);
-        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
-        assert_eq!(meta.tvdb_id, None);
     }
 
     #[test]
@@ -952,6 +951,25 @@ mod tests {
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tmdb_id, None);
         assert_eq!(meta.tvdb_id, None);
+    }
+
+    #[test]
+    fn parse_episode_details_ids_are_not_title_identity() {
+        let nfo = r#"<episodedetails>
+  <title>Pilot</title>
+  <uniqueid type="tvdb" default="true">349232</uniqueid>
+  <uniqueid type="imdb">tt0959621</uniqueid>
+  <uniqueid type="tmdb">62085</uniqueid>
+  <tvdbid>349232</tvdbid>
+  <imdbid>tt0959621</imdbid>
+  <tmdbid>62085</tmdbid>
+  <id TVDB="349232" IMDB="tt0959621" TMDB="62085">349232</id>
+</episodedetails>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.title, Some("Pilot".into()));
+        assert_eq!(meta.tvdb_id, None);
+        assert_eq!(meta.imdb_id, None);
+        assert_eq!(meta.tmdb_id, None);
     }
 
     #[test]
@@ -1203,25 +1221,6 @@ Pattern: Bonus/Bonus {sp,1-3,+4}.mp4
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tvdb_id, None);
         assert_eq!(meta.title, Some("Pilot".into()));
-    }
-
-    #[test]
-    fn parse_episode_details_ids_are_not_title_identity() {
-        let nfo = r#"<episodedetails>
-  <title>Pilot</title>
-  <uniqueid type="tvdb" default="true">349232</uniqueid>
-  <uniqueid type="imdb">tt0959621</uniqueid>
-  <uniqueid type="tmdb">62085</uniqueid>
-  <tvdbid>349232</tvdbid>
-  <imdbid>tt0959621</imdbid>
-  <tmdbid>62085</tmdbid>
-  <id TVDB="349232" IMDB="tt0959621" TMDB="62085">349232</id>
-</episodedetails>"#;
-        let meta = parse_nfo(nfo);
-        assert_eq!(meta.title, Some("Pilot".into()));
-        assert_eq!(meta.tvdb_id, None);
-        assert_eq!(meta.imdb_id, None);
-        assert_eq!(meta.tmdb_id, None);
     }
 
     #[test]

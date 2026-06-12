@@ -42,7 +42,8 @@
             "is_recap": false,
             "language": "eng",
             "overview": "The team assembles.",
-            "absolute_number": "1"
+            "absolute_number": "1",
+            "image_url": "https://image.tmdb.org/t/p/original/pilot.jpg"
           },
           {
             "tvdb_id": 2000002,
@@ -55,7 +56,8 @@
             "is_recap": false,
             "language": "eng",
             "overview": "Systems are tested under pressure.",
-            "absolute_number": "2"
+            "absolute_number": "2",
+            "image_url": ""
           },
           {
             "tvdb_id": 2000003,
@@ -68,7 +70,8 @@
             "is_recap": false,
             "language": "eng",
             "overview": "Old bugs resurface.",
-            "absolute_number": "3"
+            "absolute_number": "3",
+            "image_url": "not-a-url"
           }
         ],
         "anime_mappings": []

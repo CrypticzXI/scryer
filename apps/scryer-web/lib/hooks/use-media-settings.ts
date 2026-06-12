@@ -11,6 +11,7 @@ import { mediaSettingsInitQuery } from "@/lib/graphql/queries";
 import {
   DEFAULT_MOVIE_LIBRARY_PATH,
   DEFAULT_SERIES_LIBRARY_PATH,
+  IMPORT_MODE_KEY,
   NFO_WRITE_ON_IMPORT_ANIME_KEY,
   NFO_WRITE_ON_IMPORT_MOVIE_KEY,
   NFO_WRITE_ON_IMPORT_SERIES_KEY,
@@ -48,7 +49,7 @@ import type {
   QualityProfileSettingsPayload,
   ViewCategoryId,
 } from "@/lib/types/quality-profiles";
-import type { MediaSettings } from "@/lib/types/settings";
+import type { ImportMode, MediaSettings } from "@/lib/types/settings";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 
@@ -118,6 +119,10 @@ export type UseMediaSettingsResult = {
   plexmatchWriteOnImport: Record<ViewCategoryId, string>;
   setPlexmatchWriteOnImport: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, string>>
+  >;
+  importMode: Record<ViewCategoryId, ImportMode>;
+  setImportMode: React.Dispatch<
+    React.SetStateAction<Record<ViewCategoryId, ImportMode>>
   >;
   saveSetting: (scope: string, scopeId: string | undefined, keyName: string, value: string) => void;
   saveCategoryQualityProfileOverride: (value: string) => Promise<void> | void;
@@ -271,6 +276,11 @@ export function useMediaSettings({
     series: "false",
     anime: "false",
   });
+  const [importMode, setImportMode] = React.useState<Record<ViewCategoryId, ImportMode>>({
+    movie: "hardlink_or_copy",
+    series: "hardlink_or_copy",
+    anime: "hardlink_or_copy",
+  });
   const [plexmatchWriteOnImport, setPlexmatchWriteOnImport] = React.useState<
     Record<ViewCategoryId, string>
   >({
@@ -355,6 +365,12 @@ export function useMediaSettings({
         case PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY:
           input = { scope: "anime", plexmatchWriteOnImport: boolValue };
           break;
+        case IMPORT_MODE_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            importMode: value,
+          };
+          break;
         default:
           break;
       }
@@ -370,7 +386,7 @@ export function useMediaSettings({
           if (error) setGlobalStatus(error.message);
         });
     },
-    [client, setGlobalStatus],
+    [activeQualityScopeId, client, setGlobalStatus],
   );
 
   const normalizeQualityProfiles = React.useCallback(
@@ -621,6 +637,14 @@ export function useMediaSettings({
             );
           });
         }
+
+        setImportMode((previous) => {
+          const nextMode: ImportMode =
+            mediaSettings.importMode === "move" ? "move" : "hardlink_or_copy";
+          return previous[mediaSettingsScopeId] === nextMode
+            ? previous
+            : { ...previous, [mediaSettingsScopeId]: nextMode };
+        });
       }
     },
     [
@@ -1058,6 +1082,7 @@ export function useMediaSettings({
         NFO_WRITE_ON_IMPORT_ANIME_KEY,
         PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
         PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
+        IMPORT_MODE_KEY,
         ...FACET_REGISTRY.map((f) => f.rootFoldersKey),
         ...FACET_REGISTRY.map((f) => f.folderSettingKey),
       ]),
@@ -1115,6 +1140,8 @@ export function useMediaSettings({
     setNfoWriteOnImport,
     plexmatchWriteOnImport,
     setPlexmatchWriteOnImport,
+    importMode,
+    setImportMode,
     saveSetting,
     saveCategoryQualityProfileOverride,
     saveCategoryScoringPersonaOverride,

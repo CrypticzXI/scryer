@@ -1,9 +1,33 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
+use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug)]
+pub struct TitleArtworkUrlUpdate {
+    pub title_id: String,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleDeletePreviewInfo {
+    pub title_id: String,
+    pub library_id: String,
+    pub title_name: String,
+    pub facet: MediaFacet,
+    pub folder_path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EpisodeImageUrlUpdate {
+    pub episode_id: String,
+    pub image_url: Option<String>,
+}
 
 #[async_trait]
 pub trait TitleRepository: Send + Sync {
@@ -15,6 +39,20 @@ pub trait TitleRepository: Send + Sync {
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         self.list(facet, query).await
+    }
+    async fn list_delete_preview_info(&self) -> AppResult<Vec<TitleDeletePreviewInfo>> {
+        Ok(self
+            .list_without_external_ids(None, None)
+            .await?
+            .into_iter()
+            .map(|title| TitleDeletePreviewInfo {
+                title_id: title.id,
+                library_id: title.library_id,
+                title_name: title.name,
+                facet: title.facet,
+                folder_path: title.folder_path,
+            })
+            .collect())
     }
     async fn list_for_libraries(
         &self,
@@ -148,6 +186,30 @@ pub trait TitleRepository: Send + Sync {
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()>;
     async fn clear_folder_path(&self, id: &str) -> AppResult<()>;
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64>;
+    async fn list_page_after_id(
+        &self,
+        after_id: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<Title>> {
+        let mut titles = self.list(None, None).await?;
+        titles.sort_by(|left, right| left.id.cmp(&right.id));
+        let filtered = titles
+            .into_iter()
+            .filter(|title| {
+                after_id
+                    .as_ref()
+                    .is_none_or(|after_id| title.id.as_str() > after_id.as_str())
+            })
+            .take(limit)
+            .collect();
+        Ok(filtered)
+    }
+    async fn update_title_artwork_urls(
+        &self,
+        _updates: &[TitleArtworkUrlUpdate],
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]
@@ -175,28 +237,119 @@ pub trait LibraryRepository: Send + Sync {
     async fn title_library_id(&self, title_id: &str) -> AppResult<Option<String>>;
 }
 
+#[derive(Clone, Debug)]
+pub struct NewMediaRequest {
+    pub id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub identity_fingerprint: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub external_ids: Vec<ExternalId>,
+    pub created_by_user_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestResolution {
+    pub status: scryer_domain::MediaRequestStatus,
+    pub resolved_by_user_id: String,
+    pub resolved_at: chrono::DateTime<chrono::Utc>,
+    pub created_title_id: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
+    pub event: NewDomainEvent,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestSubmissionResult {
+    pub request: MediaRequest,
+    pub event: DomainEvent,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestResolutionResult {
+    pub updated: u64,
+    pub event: Option<DomainEvent>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestUpdateResult {
+    pub request: MediaRequest,
+    pub event: DomainEvent,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MediaRequestQuery {
+    pub facet: Option<MediaFacet>,
+    pub library_ids: Option<Vec<String>>,
+    pub status: Option<scryer_domain::MediaRequestStatus>,
+    pub requester_user_id: Option<String>,
+}
+
+#[async_trait]
+pub trait MediaRequestRepository: Send + Sync {
+    async fn submit(
+        &self,
+        request: NewMediaRequest,
+        requester: &User,
+        submitted_event: NewDomainEvent,
+    ) -> AppResult<MediaRequestSubmissionResult>;
+
+    async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>>;
+
+    async fn resolve_pending_overlapping(
+        &self,
+        request: &MediaRequest,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<MediaRequestResolutionResult>;
+
+    async fn resolve_pending(
+        &self,
+        request_id: &str,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<MediaRequestResolutionResult>;
+
+    async fn update_pending_request_preferences(
+        &self,
+        request_id: &str,
+        requested_quality_profile_id: String,
+        requested_quality_profile_name: String,
+        requested_monitor_type: Option<String>,
+        updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequestUpdateResult>;
+
+    async fn count_pending_by_facet(&self, library_ids: &[String])
+    -> AppResult<MediaRequestCounts>;
+
+    async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>>;
+}
+
 #[async_trait]
 pub trait TitleImageRepository: Send + Sync {
-    async fn list_titles_requiring_image_refresh(
+    async fn list_title_image_refresh_work(
         &self,
-        kind: TitleImageKind,
         limit: usize,
+        skipped: &[TitleImageSyncTask],
     ) -> AppResult<Vec<TitleImageSyncTask>>;
 
     async fn clear_title_image_cache(&self) -> AppResult<()>;
 
-    async fn replace_title_image(
+    async fn upsert_title_image_source_result(
         &self,
         title_id: &str,
-        replacement: TitleImageReplacement,
-    ) -> AppResult<()>;
-
-    async fn replace_title_image_and_append_event(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-        event: NewDomainEvent,
-    ) -> AppResult<DomainEvent>;
+        result: TitleImageSourceResult,
+        event: Option<NewDomainEvent>,
+    ) -> AppResult<Option<DomainEvent>>;
 
     async fn get_title_image_blob(
         &self,
@@ -212,7 +365,8 @@ pub trait TitleImageProcessor: Send + Sync {
         &self,
         kind: TitleImageKind,
         source_url: &str,
-    ) -> AppResult<TitleImageReplacement>;
+        variants: Vec<TitleImageVariantSpec>,
+    ) -> AppResult<TitleImageSourceResult>;
 }
 
 #[async_trait]
@@ -277,6 +431,12 @@ pub trait ShowRepository: Send + Sync {
         monitored: bool,
     ) -> AppResult<()>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
+    async fn update_episode_image_urls(
+        &self,
+        _updates: &[EpisodeImageUrlUpdate],
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
         &self,
@@ -312,8 +472,220 @@ pub trait UserRepository: Send + Sync {
     async fn create(&self, user: User) -> AppResult<User>;
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
+    async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedExternalIdentity {
+    pub provider: scryer_domain::ExternalAccountProvider,
+    pub connection_id: String,
+    pub external_user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlexServerDiscovery {
+    pub id: String,
+    pub name: String,
+}
+
+#[async_trait]
+pub trait UserExternalAccountRepository: Send + Sync {
+    async fn create(
+        &self,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount>;
+    async fn list_by_user_id(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<scryer_domain::UserExternalAccount>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn get_by_provider_identity(
+        &self,
+        provider: scryer_domain::ExternalAccountProvider,
+        connection_id: &str,
+        external_user_id: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn get_pending_claim_by_provider_username(
+        &self,
+        provider: scryer_domain::ExternalAccountProvider,
+        connection_id: &str,
+        username: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn update(
+        &self,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount>;
+    async fn create_auto_added_user_with_account(
+        &self,
+        user: scryer_domain::User,
+        app_permissions: scryer_domain::AppPermissionMask,
+        library_grants: Vec<scryer_domain::LibraryGrant>,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<(scryer_domain::User, scryer_domain::UserExternalAccount)>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait MediaServerConnectionRepository: Send + Sync {
+    async fn list(
+        &self,
+        provider: Option<scryer_domain::MediaServerProvider>,
+    ) -> AppResult<Vec<scryer_domain::MediaServerConnection>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::MediaServerConnection>>;
+    async fn create(
+        &self,
+        connection: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn update(
+        &self,
+        connection: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
+    async fn has_external_accounts(&self, id: &str) -> AppResult<bool>;
+    async fn has_notification_channels(&self, id: &str) -> AppResult<bool>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JellyfinServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[async_trait]
+pub trait ExternalIdentityVerifier: Send + Sync {
+    async fn verify_plex(
+        &self,
+        connection_id: &str,
+        machine_id: Option<&str>,
+        plex_auth_token: &str,
+    ) -> AppResult<VerifiedExternalIdentity>;
+
+    async fn discover_plex_servers(
+        &self,
+        plex_auth_token: &str,
+    ) -> AppResult<Vec<PlexServerDiscovery>>;
+
+    async fn verify_jellyfin(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<VerifiedExternalIdentity>;
+
+    async fn test_jellyfin_connection(&self, base_url: &str) -> AppResult<()>;
+    async fn test_jellyfin_api_key(&self, base_url: &str, api_key: &str) -> AppResult<()>;
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<String>;
+    async fn list_jellyfin_users(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<JellyfinServerUser>>;
+}
+
+#[async_trait]
+pub trait WebauthnRepository: Send + Sync {
+    async fn list_credentials_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<WebauthnCredentialRecord>>;
+    async fn get_credential_by_id_for_user(
+        &self,
+        credential_record_id: &str,
+        user_id: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
+    async fn get_credential_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
+    async fn create_credential(
+        &self,
+        credential: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord>;
+    async fn update_credential(
+        &self,
+        credential: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord>;
+    async fn update_credential_if_current(
+        &self,
+        credential: WebauthnCredentialRecord,
+        expected_credential_json: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
+    async fn delete_credential_for_user(
+        &self,
+        credential_record_id: &str,
+        user_id: &str,
+    ) -> AppResult<()>;
+    async fn create_challenge(
+        &self,
+        challenge: WebauthnChallengeRecord,
+    ) -> AppResult<WebauthnChallengeRecord>;
+    async fn get_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
+    async fn take_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
+    async fn delete_challenge(&self, id: &str) -> AppResult<()>;
+    async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
+}
+
+#[async_trait]
+pub trait TotpRepository: Send + Sync {
+    async fn get_credential_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Option<TotpCredentialRecord>>;
+    async fn upsert_credential(
+        &self,
+        credential: TotpCredentialRecord,
+    ) -> AppResult<TotpCredentialRecord>;
+    async fn delete_credential_for_user(&self, user_id: &str) -> AppResult<()>;
+    async fn create_enrollment_challenge(
+        &self,
+        challenge: TotpEnrollmentChallengeRecord,
+    ) -> AppResult<TotpEnrollmentChallengeRecord>;
+    async fn get_enrollment_challenge(
+        &self,
+        id: &str,
+        user_id: &str,
+    ) -> AppResult<Option<TotpEnrollmentChallengeRecord>>;
+    async fn delete_enrollment_challenge(&self, id: &str, user_id: &str) -> AppResult<()>;
+    async fn delete_enrollment_challenges_for_user(&self, user_id: &str) -> AppResult<u64>;
+    async fn delete_expired_enrollment_challenges(&self, now: &str) -> AppResult<u64>;
+    async fn reset_user_mfa_and_invalidate_sessions(
+        &self,
+        user_id: &str,
+        auth_session_version: &str,
+    ) -> AppResult<()>;
+    async fn replace_recovery_codes(
+        &self,
+        user_id: &str,
+        codes: Vec<TotpRecoveryCodeRecord>,
+    ) -> AppResult<()>;
+    async fn list_recovery_codes_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<TotpRecoveryCodeRecord>>;
+    async fn mark_recovery_code_used(
+        &self,
+        id: &str,
+        user_id: &str,
+        used_at: &str,
+    ) -> AppResult<()>;
+    async fn record_failed_attempt(&self, attempt: TotpFailedAttemptRecord) -> AppResult<()>;
+    async fn count_failed_attempts_since(&self, user_id: &str, since: &str) -> AppResult<i64>;
+    async fn clear_failed_attempts(&self, user_id: &str) -> AppResult<u64>;
 }
 
 #[async_trait]
@@ -350,7 +722,7 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn list(&self, provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
-    async fn touch_last_error(&self, provider_type: &str) -> AppResult<()>;
+    async fn touch_last_error(&self, id: &str) -> AppResult<()>;
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
@@ -556,10 +928,77 @@ pub trait AcquisitionStateRepository: Send + Sync {
 pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
 
+    async fn record_submission_identity(
+        &self,
+        _identity: &DownloadSourceIdentity,
+        _submission_identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_submission_with_identity(
+        &self,
+        submission: DownloadSubmission,
+        submission_identity: DownloadSubmissionIdentity,
+    ) -> AppResult<()> {
+        let identity = DownloadSourceIdentity::from_submission(&submission);
+        self.record_submission(submission).await?;
+        self.record_submission_identity(&identity, &submission_identity)
+            .await
+    }
+
     async fn find_by_client_item_id(
         &self,
         identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<DownloadSubmission>>;
+
+    async fn find_by_download_id(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(self
+            .list_by_download_id(client_id, client_type, download_id)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    async fn list_by_download_id(
+        &self,
+        _client_id: Option<&str>,
+        _client_type: &str,
+        _download_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_submission_identity(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionIdentity>> {
+        Ok(None)
+    }
+
+    async fn record_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+        _tracked_state: &str,
+        _reason: Option<&str>,
+        _detail: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
 
     async fn list_for_client_items(
         &self,
@@ -616,6 +1055,13 @@ pub trait JobRunRepository: Send + Sync {
     async fn list_job_runs(
         &self,
         job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>>;
+
+    async fn list_job_runs_for_actor(
+        &self,
+        job_key: Option<JobKey>,
+        actor_user_id: &str,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>>;
 
@@ -700,6 +1146,17 @@ pub trait ImportRepository: Send + Sync {
         payload_json: String,
     ) -> AppResult<String>;
 
+    async fn queue_import_request_with_identity(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        _submission_identity: Option<DownloadSubmissionIdentity>,
+    ) -> AppResult<String> {
+        self.queue_import_request(source_identity, import_type, payload_json)
+            .await
+    }
+
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
 
     async fn update_import_status(
@@ -730,6 +1187,14 @@ pub trait ImportRepository: Send + Sync {
     ) -> AppResult<Vec<ImportRecord>>;
 
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
+
+    async fn is_already_imported_by_download_id(
+        &self,
+        _source_identity: &DownloadSourceIdentity,
+        _identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
 }
@@ -815,7 +1280,18 @@ pub trait WorkflowOperationRepository: Send + Sync {
 
 #[async_trait]
 pub trait FileImporter: Send + Sync {
-    async fn import_file(&self, source: &Path, dest: &Path) -> AppResult<ImportFileResult>;
+    async fn import_file(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+    ) -> AppResult<ImportFileResult>;
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        guard: scryer_domain::ImportSourceCleanupGuard,
+        final_dest_path: &Path,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -1001,7 +1477,11 @@ pub trait WantedItemRepository: Send + Sync {
             last_search_at: last_search_at.map(str::to_string),
             search_count: wanted.search_count,
             current_score: current_score.or(wanted.current_score),
-            grabbed_release: wanted.grabbed_release,
+            grabbed_release: if current_score.is_some() {
+                None
+            } else {
+                wanted.grabbed_release
+            },
         })
         .await?;
 
@@ -1140,6 +1620,17 @@ pub trait PendingReleaseRepository: Send + Sync {
 pub trait BlocklistRepository: Send + Sync {
     async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String>;
 
+    async fn add_failed_download_if_absent(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
+        if self
+            .has_recorded_download_failure(&entry.title_id, entry.source_title.as_deref())
+            .await?
+        {
+            return Ok(false);
+        }
+        self.add(entry).await?;
+        Ok(true)
+    }
+
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>>;
 
     async fn list_all(&self, limit: usize, offset: usize) -> AppResult<(Vec<BlocklistEntry>, i64)>;
@@ -1248,6 +1739,7 @@ pub trait PluginInstallationRepository: Send + Sync {
         provider_type: &str,
     ) -> AppResult<()>;
     async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()>;
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()>;
     async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>>;
     async fn get_plugin_catalog_source(
         &self,
@@ -1522,7 +2014,6 @@ pub struct NotificationTitlePayload {
     pub overview: Option<String>,
     pub sort_title: Option<String>,
     pub poster_url: Option<String>,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
@@ -1536,6 +2027,8 @@ pub struct NotificationTitlePayload {
 pub struct NotificationEpisodePayload {
     pub id: Option<String>,
     pub episode_ids: Vec<String>,
+    pub media_file_id: Option<String>,
+    pub media_file_path: Option<String>,
     pub display: Option<String>,
     pub collection_id: Option<String>,
     pub season_number: Option<String>,
@@ -1662,6 +2155,20 @@ pub struct NotificationManualInteractionPayload {
     pub link: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationMediaRequestPayload {
+    pub request_id: Option<String>,
+    pub library_id: Option<String>,
+    pub status: Option<String>,
+    pub facet: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
+    pub created_title_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationPayload {
     pub schema_version: u32,
@@ -1686,6 +2193,7 @@ pub struct NotificationPayload {
     pub media_files: Vec<NotificationMediaFilePayload>,
     pub application_update: Option<NotificationApplicationUpdatePayload>,
     pub manual_interaction: Option<NotificationManualInteractionPayload>,
+    pub media_request: Option<NotificationMediaRequestPayload>,
 }
 
 #[async_trait]
@@ -1710,6 +2218,32 @@ pub trait SubtitleProviderClient: Send + Sync {
         ))
     }
     fn name(&self) -> &str;
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleSyncReferenceSubtitle {
+    pub content: Vec<u8>,
+    pub format: String,
+    pub file_name: Option<String>,
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleSyncJob {
+    pub input_path: PathBuf,
+    pub subtitle_content: Vec<u8>,
+    pub subtitle_format: String,
+    pub subtitle_file_name: Option<String>,
+    pub subtitle_encoding_hint: Option<String>,
+    pub reference_subtitle: Option<SubtitleSyncReferenceSubtitle>,
+    pub max_offset_seconds: i64,
+    pub sync_options: SubtitleSyncOptions,
+    pub expected_codec: Option<SubtitleSyncAudioCodec>,
+}
+
+#[async_trait]
+pub trait SubtitleSyncClient: Send + Sync {
+    async fn align_subtitle(&self, job: SubtitleSyncJob) -> AppResult<SubtitleSyncAlignResponse>;
 }
 
 pub trait NotificationPluginProvider: Send + Sync {
@@ -1781,6 +2315,9 @@ pub trait SubtitlePluginProvider: Send + Sync {
         config: &scryer_domain::SubtitleProviderConfig,
         host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>>;
+    fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
+        None
+    }
     fn available_provider_types(&self) -> Vec<String>;
     fn builtin_provider_types(&self) -> Vec<String> {
         vec![]
@@ -1856,6 +2393,11 @@ pub trait NotificationSubscriptionRepository: Send + Sync {
     async fn list_subscriptions_for_channel(
         &self,
         channel_id: &str,
+    ) -> AppResult<Vec<scryer_domain::NotificationSubscription>>;
+    async fn list_subscriptions_for_target(
+        &self,
+        target_kind: scryer_domain::NotificationTargetKind,
+        target_id: &str,
     ) -> AppResult<Vec<scryer_domain::NotificationSubscription>>;
     async fn list_subscriptions_for_event(
         &self,

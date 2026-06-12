@@ -1,5 +1,8 @@
 export type StatusToastKind = "success" | "error" | "warning";
 
+const RENAME_APPLY_COMPLETE_PATTERN =
+  /\brename apply complete:\s*(\d+)\s+applied,\s*(\d+)\s+skipped,\s*(\d+)\s+failed\b/i;
+
 const NO_TOAST_PATTERNS: RegExp[] = [
   /^ready\.?$/i,
   /\bsearching\b/i,
@@ -70,6 +73,19 @@ export function classifyStatusToastLevel(message: string): StatusToastKind | nul
   const normalized = message.trim().toLowerCase();
   if (!normalized) {
     return null;
+  }
+
+  const renameApplyMatch = normalized.match(RENAME_APPLY_COMPLETE_PATTERN);
+  if (renameApplyMatch) {
+    const skipped = Number.parseInt(renameApplyMatch[2] ?? "0", 10);
+    const failed = Number.parseInt(renameApplyMatch[3] ?? "0", 10);
+    if (failed > 0) {
+      return "error";
+    }
+    if (skipped > 0) {
+      return "warning";
+    }
+    return "success";
   }
 
   if (NO_TOAST_PATTERNS.some((pattern) => pattern.test(normalized))) {

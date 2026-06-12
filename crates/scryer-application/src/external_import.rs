@@ -47,6 +47,8 @@ pub struct DetectedProwlarrIndexer {
 pub struct ArrMovie {
     pub id: i64,
     pub root_folder_path: String,
+    pub path: Option<String>,
+    pub file_path: Option<String>,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
@@ -68,6 +70,7 @@ pub struct ArrSeriesStatistics {
 pub struct ArrSeries {
     pub id: i64,
     pub root_folder_path: String,
+    pub path: Option<String>,
     pub tvdb_id: Option<String>,
     pub monitored: bool,
     pub seasons: Vec<ArrSeriesSeason>,
@@ -81,6 +84,7 @@ pub struct ArrEpisode {
     pub tvdb_id: Option<String>,
     pub season_number: i32,
     pub episode_number: i32,
+    pub file_path: Option<String>,
     pub monitored: bool,
 }
 
@@ -374,9 +378,12 @@ impl ExternalArrClient {
                     return None;
                 }
 
+                let path = value_trimmed_string(item.get("path"));
                 Some(ArrMovie {
                     id,
                     root_folder_path,
+                    file_path: arr_nested_file_path(item.get("movieFile"), path.as_deref()),
+                    path,
                     tmdb_id: value_str_or_number(item.get("tmdbId")),
                     imdb_id: item
                         .get("imdbId")
@@ -439,6 +446,12 @@ impl ExternalArrClient {
                 Some(ArrSeries {
                     id,
                     root_folder_path,
+                    path: item
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     tvdb_id: value_str_or_number(item.get("tvdbId")),
                     monitored: item
                         .get("monitored")
@@ -461,10 +474,15 @@ impl ExternalArrClient {
             .collect())
     }
 
-    pub async fn list_episodes_for_series(&self, series_id: i64) -> AppResult<Vec<ArrEpisode>> {
-        let json = self
-            .api_get(&format!("episode?seriesId={series_id}"))
-            .await?;
+    pub async fn list_episodes_for_series(
+        &self,
+        series_id: i64,
+        series_path: Option<&str>,
+    ) -> AppResult<Vec<ArrEpisode>> {
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let path = sonarr_episode_list_path(series_id, &api_prefix);
+        let json = self.api_get_with_prefix(&api_prefix, &path).await?;
         let arr = json
             .as_array()
             .ok_or_else(|| AppError::Repository("episode response was not an array".into()))?;
@@ -490,6 +508,7 @@ impl ExternalArrClient {
                     tvdb_id: value_str_or_number(item.get("tvdbId")),
                     season_number,
                     episode_number,
+                    file_path: arr_nested_file_path(item.get("episodeFile"), series_path),
                     monitored: item
                         .get("monitored")
                         .and_then(Value::as_bool)
@@ -652,21 +671,16 @@ pub fn map_download_client_type(implementation: &str) -> Option<&'static str> {
 
 /// Map the Sonarr/Radarr indexer implementation to a Scryer provider type.
 ///
-/// For Newznab indexers, checks the base URL to identify known services that have
-/// native Scryer plugins (e.g. NZBGeek, AnimeTosho) rather than falling back to
-/// the generic newznab plugin.
+/// This intentionally maps Arr's *nab families to Scryer's generic *nab
+/// plugins only. Provider-specific plugin matching is deferred until catalog
+/// metadata can drive it.
 pub fn map_indexer_provider_type(
     implementation: &str,
-    fields: &HashMap<String, Value>,
+    _fields: &HashMap<String, Value>,
 ) -> Option<&'static str> {
-    let native_provider = known_native_indexer_provider_type(
-        field_str(fields, "baseUrl"),
-        field_str(fields, "apiPath"),
-    );
-
     match implementation.trim().to_ascii_lowercase().as_str() {
-        "newznab" => native_provider.or(Some("newznab")),
-        "torznab" => None,
+        "newznab" => Some("newznab"),
+        "torznab" => Some("torznab"),
         _ => None,
     }
 }
@@ -690,6 +704,27 @@ pub fn detect_prowlarr_proxy_indexer(indexer: &ArrIndexer) -> Option<DetectedPro
     })
 }
 
+pub fn detect_linked_prowlarr_proxy_indexer(
+    indexer: &ArrIndexer,
+    linked_prowlarr_base_url: &str,
+) -> Option<DetectedProwlarrIndexer> {
+    let implementation = indexer.implementation.trim().to_ascii_lowercase();
+    if implementation != "newznab" && implementation != "torznab" {
+        return None;
+    }
+
+    let base_url = prowlarr_parent_base_url(&field_str(&indexer.fields, "baseUrl")?)?;
+    if !same_base_url(&base_url, linked_prowlarr_base_url) {
+        return None;
+    }
+
+    Some(DetectedProwlarrIndexer {
+        base_url,
+        api_key: field_str_sensitive(&indexer.fields, "apiKey"),
+        child_name: indexer.name.clone(),
+    })
+}
+
 pub fn should_skip_imported_indexer(indexer: &ArrIndexer) -> bool {
     let implementation = indexer.implementation.trim().to_ascii_lowercase();
     if implementation != "newznab" && implementation != "torznab" {
@@ -701,6 +736,8 @@ pub fn should_skip_imported_indexer(indexer: &ArrIndexer) -> bool {
     };
 
     let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    // Dead-service tombstone: legacy Arr installs may still contain these
+    // indexers, but Scryer should not import or auto-install anything for them.
     normalized.contains("animetosho.org") || normalized.contains("feed.animetosho.org")
 }
 
@@ -722,21 +759,10 @@ fn prowlarr_parent_base_url(base_url: &str) -> Option<String> {
     Some(url.as_str().trim_end_matches('/').to_string())
 }
 
-fn known_native_indexer_provider_type(
-    base_url: Option<String>,
-    api_path: Option<String>,
-) -> Option<&'static str> {
-    let endpoint = format!(
-        "{} {}",
-        base_url.unwrap_or_default().to_lowercase(),
-        api_path.unwrap_or_default().to_lowercase()
-    );
-
-    if endpoint.contains("nzbgeek.info") {
-        Some("nzbgeek")
-    } else {
-        None
-    }
+fn same_base_url(left: &str, right: &str) -> bool {
+    left.trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(right.trim().trim_end_matches('/'))
 }
 
 /// Supported Sonarr v4+ / Radarr v6+ builds replace sensitive field values with this placeholder
@@ -791,6 +817,38 @@ fn value_str_or_number(value: Option<&Value>) -> Option<String> {
     })
 }
 
+fn value_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn arr_nested_file_path(value: Option<&Value>, parent_path: Option<&str>) -> Option<String> {
+    let object = value.and_then(Value::as_object)?;
+    value_trimmed_string(object.get("path")).or_else(|| {
+        let relative = value_trimmed_string(object.get("relativePath"))?;
+        Some(join_arr_relative_path(parent_path?, &relative))
+    })
+}
+
+fn join_arr_relative_path(parent_path: &str, relative_path: &str) -> String {
+    format!(
+        "{}/{}",
+        parent_path.trim().trim_end_matches(['/', '\\']),
+        relative_path.trim().trim_start_matches(['/', '\\'])
+    )
+}
+
+fn sonarr_episode_list_path(series_id: i64, api_prefix: &str) -> String {
+    if api_prefix.trim().eq_ignore_ascii_case("v5") {
+        format!("episode?seriesId={series_id}&includeSubresources=EpisodeFile")
+    } else {
+        format!("episode?seriesId={series_id}&includeEpisodeFile=true")
+    }
+}
+
 fn value_i32(value: Option<&Value>) -> Option<i32> {
     value
         .and_then(Value::as_i64)
@@ -815,8 +873,9 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        ArrIndexer, ExternalArrApiBucket, detect_prowlarr_proxy_indexer, map_download_client_type,
-        map_indexer_provider_type, should_skip_imported_indexer,
+        ArrIndexer, ExternalArrApiBucket, detect_linked_prowlarr_proxy_indexer,
+        detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
+        should_skip_imported_indexer, sonarr_episode_list_path,
     };
 
     #[test]
@@ -837,6 +896,22 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_episode_list_path_uses_legacy_include_flag_before_v5() {
+        assert_eq!(
+            sonarr_episode_list_path(42, "v4"),
+            "episode?seriesId=42&includeEpisodeFile=true"
+        );
+    }
+
+    #[test]
+    fn sonarr_episode_list_path_uses_v5_subresource_parameter() {
+        assert_eq!(
+            sonarr_episode_list_path(42, "v5"),
+            "episode?seriesId=42&includeSubresources=EpisodeFile"
+        );
+    }
+
+    #[test]
     fn radarr_v6_bucket_accepts_matching_major_version() {
         ExternalArrApiBucket::RadarrV6
             .validate_status("Radarr", "6.0.1.0")
@@ -851,13 +926,23 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_provider_type_does_not_map_animetosho_for_newznab() {
+    fn map_indexer_provider_type_maps_newznab_presets_to_generic_provider() {
         assert_eq!(
             map_indexer_provider_type(
                 "Newznab",
                 &HashMap::from([(
                     "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
+                    Value::String("https://api.nzbgeek.info".into()),
+                )]),
+            ),
+            Some("newznab")
+        );
+        assert_eq!(
+            map_indexer_provider_type(
+                "Newznab",
+                &HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://api.dognzb.cr".into()),
                 )]),
             ),
             Some("newznab")
@@ -865,21 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_provider_type_does_not_map_animetosho_for_torznab() {
-        assert_eq!(
-            map_indexer_provider_type(
-                "Torznab",
-                &HashMap::from([(
-                    "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
-                )]),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn map_indexer_provider_type_keeps_generic_torznab_unsupported() {
+    fn map_indexer_provider_type_maps_torznab_to_generic_provider() {
         assert_eq!(
             map_indexer_provider_type(
                 "Torznab",
@@ -888,6 +959,14 @@ mod tests {
                     Value::String("https://torznab.example.com".into()),
                 )]),
             ),
+            Some("torznab")
+        );
+    }
+
+    #[test]
+    fn map_indexer_provider_type_keeps_unknown_implementation_unsupported() {
+        assert_eq!(
+            map_indexer_provider_type("TorrentRss", &HashMap::new()),
             None
         );
     }
@@ -901,6 +980,15 @@ mod tests {
             fields: HashMap::from([(
                 "baseUrl".into(),
                 Value::String("https://feed.animetosho.org".into()),
+            )]),
+        }));
+        assert!(should_skip_imported_indexer(&ArrIndexer {
+            id: 2,
+            name: "AnimeTosho".into(),
+            implementation: "Newznab".into(),
+            fields: HashMap::from([(
+                "baseUrl".into(),
+                Value::String("https://animetosho.org".into()),
             )]),
         }));
     }
@@ -958,6 +1046,30 @@ mod tests {
 
         assert_eq!(detected.base_url, "http://prowlarr.local");
         assert_eq!(detected.api_key, None);
+    }
+
+    #[test]
+    fn detects_linked_prowlarr_proxy_indexer_without_api_path() {
+        let detected = detect_linked_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([
+                    (
+                        "baseUrl".into(),
+                        Value::String("https://media.example.test/prowlarr/98765".into()),
+                    ),
+                    ("apiKey".into(), Value::String("secret".into())),
+                ]),
+            },
+            "https://media.example.test/prowlarr",
+        )
+        .expect("linked prowlarr proxy indexer");
+
+        assert_eq!(detected.base_url, "https://media.example.test/prowlarr");
+        assert_eq!(detected.api_key.as_deref(), Some("secret"));
+        assert_eq!(detected.child_name, "Torrent Child");
     }
 
     #[test]
