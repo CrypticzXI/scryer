@@ -3011,6 +3011,95 @@ async fn install_builtin_rejected() {
 }
 
 #[tokio::test]
+async fn nzbgeek_catalog_migration_uses_newest_compatible_catalog_release() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = serde_json::json!({
+        "plugins": [{
+            "id": "nzbgeek",
+            "name": "NZBGeek",
+            "description": "NZBGeek indexer",
+            "plugin_type": "indexer",
+            "provider_type": "nzbgeek",
+            "official": true,
+            "releases": [
+                {
+                    "version": "0.2.10",
+                    "wasm_url": "https://example.com/nzbgeek-0.2.10.wasm"
+                },
+                {
+                    "version": "0.3.0",
+                    "wasm_url": "https://example.com/nzbgeek-0.3.0.wasm"
+                }
+            ]
+        }]
+    })
+    .to_string();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
+
+    let plugins = h.app.list_available_plugins(&admin()).await.unwrap();
+    let nzbgeek = plugins
+        .iter()
+        .find(|plugin| plugin.id == "nzbgeek")
+        .expect("nzbgeek registry entry");
+
+    assert_eq!(nzbgeek.version, "0.3.0");
+    assert!(nzbgeek.official);
+    assert_eq!(nzbgeek.bytes, Some(4));
+}
+
+#[tokio::test]
+async fn nzbgeek_catalog_migration_converts_legacy_builtin_to_downloaded_installation() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut legacy = make_installation("nzbgeek", "0.2.10", true, true);
+    legacy.sdk_version = "1.6.0".to_string();
+    legacy.sdk_constraint = ">=1.6.0, <1.7.0".to_string();
+
+    let mut runtime_plugin = make_runtime_plugin_load("nzbgeek", "indexer", "nzbgeek");
+    runtime_plugin.descriptor.version = "0.3.0".to_string();
+    let runtime_wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&runtime_wasm_bytes, runtime_plugin.descriptor);
+    let mut prepared =
+        prepared_catalog_plugin_install_fixture("nzbgeek", "indexer", "nzbgeek", runtime_wasm_bytes);
+    prepared.release.version = "0.3.0".to_string();
+    let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
+    let validated = h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+        .unwrap();
+
+    let (updated, runtime_plugin) = validated.into_updated_installation(legacy).unwrap();
+    h.plugin_repo
+        .update_plugin_installation(&updated, Some(&persisted_wasm_bytes))
+        .await
+        .unwrap();
+
+    assert_eq!(updated.plugin_id, "nzbgeek");
+    assert_eq!(updated.version, "0.3.0");
+    assert!(!updated.is_builtin);
+    assert!(updated.is_enabled);
+    assert_eq!(updated.source_kind, PluginSourceKind::Downloaded);
+    assert_eq!(updated.support_tier, PluginSupportTier::Official);
+    assert_eq!(updated.sdk_version, scryer_plugin_sdk::SDK_VERSION);
+    assert_eq!(updated.sdk_constraint, scryer_plugin_sdk::current_sdk_constraint());
+    assert_eq!(runtime_plugin.wasm_bytes, vec![1, 2, 3, 4]);
+    assert!(updated.descriptor_json.is_some());
+
+    let payload = h
+        .plugin_repo
+        .get_plugin_installation_wasm_payload("nzbgeek")
+        .await
+        .unwrap()
+        .expect("persisted nzbgeek payload");
+    assert_eq!(payload.bytes, persisted_wasm_bytes);
+    assert_eq!(payload.encoding, PluginWasmEncoding::Zstd);
+}
+
+#[tokio::test]
 async fn install_no_wasm_url() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[catalog_entry("alpha", "1.0.0", false, None)]);

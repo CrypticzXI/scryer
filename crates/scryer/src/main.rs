@@ -1831,28 +1831,101 @@ fn runtime_installation_is_host_blocked(installation: &scryer_domain::PluginInst
     )
 }
 
-fn runtime_installation_sdk_contract_is_host_compatible(
+#[derive(Debug)]
+struct RuntimePluginSdkContractFailure {
+    plugin_id: String,
+    version: String,
+    sdk_version: String,
+    sdk_constraint: String,
+    error: String,
+}
+
+type RuntimePluginLoadInput = (
+    scryer_domain::PluginInstallation,
+    Option<scryer_domain::PersistedPluginWasmPayload>,
+);
+type RuntimePluginLoadCandidate = (
+    scryer_domain::PluginInstallation,
+    scryer_domain::PersistedPluginWasmPayload,
+);
+
+fn runtime_installation_sdk_contract_failure(
     installation: &scryer_domain::PluginInstallation,
-) -> bool {
-    match scryer_plugins::validate_sdk_contract(
+) -> Option<RuntimePluginSdkContractFailure> {
+    scryer_plugins::validate_sdk_contract(
         installation.plugin_id.as_str(),
         installation.sdk_version.as_str(),
         installation.sdk_constraint.as_str(),
         scryer_plugins::SDK_VERSION,
-    ) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!(
-                plugin_id = installation.plugin_id.as_str(),
-                version = installation.version.as_str(),
-                sdk_version = installation.sdk_version.as_str(),
-                sdk_constraint = installation.sdk_constraint.as_str(),
-                error = %error,
-                "skipping installed plugin with incompatible sdk contract"
-            );
-            false
+    )
+    .err()
+    .map(|error| RuntimePluginSdkContractFailure {
+        plugin_id: installation.plugin_id.clone(),
+        version: installation.version.clone(),
+        sdk_version: installation.sdk_version.clone(),
+        sdk_constraint: installation.sdk_constraint.clone(),
+        error: error.to_string(),
+    })
+}
+
+fn log_runtime_plugin_sdk_contract_failures(failures: &[RuntimePluginSdkContractFailure]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let plugin_ids = failures
+        .iter()
+        .map(|failure| failure.plugin_id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::warn!(
+        plugin_count = failures.len(),
+        plugin_ids = %plugin_ids,
+        "skipping installed plugins with incompatible sdk contracts; upgrade them from Plugins"
+    );
+    for failure in failures {
+        tracing::debug!(
+            plugin_id = failure.plugin_id.as_str(),
+            version = failure.version.as_str(),
+            sdk_version = failure.sdk_version.as_str(),
+            sdk_constraint = failure.sdk_constraint.as_str(),
+            error = failure.error.as_str(),
+            "installed plugin sdk contract is incompatible with this host"
+        );
+    }
+}
+
+fn collect_runtime_plugin_load_candidates(
+    enabled_plugins: Vec<RuntimePluginLoadInput>,
+) -> (
+    Vec<RuntimePluginLoadCandidate>,
+    Vec<RuntimePluginSdkContractFailure>,
+) {
+    let mut pending_plugins = Vec::new();
+    let mut sdk_contract_failures = Vec::new();
+
+    for (installation, payload) in enabled_plugins {
+        if !matches!(
+            installation.source_kind,
+            scryer_domain::PluginSourceKind::Downloaded
+                | scryer_domain::PluginSourceKind::Community
+                | scryer_domain::PluginSourceKind::Manual
+        ) {
+            continue;
+        }
+        if let Some(failure) = runtime_installation_sdk_contract_failure(&installation) {
+            sdk_contract_failures.push(failure);
+            continue;
+        }
+        if runtime_installation_is_host_blocked(&installation) {
+            continue;
+        }
+        if let Some(payload) = payload {
+            pending_plugins.push((installation, payload));
         }
     }
+
+    (pending_plugins, sdk_contract_failures)
 }
 
 async fn load_runtime_external_plugin_entry(
@@ -1881,26 +1954,10 @@ async fn load_runtime_plugin_state(
         .await
         .map_err(|error| error.to_string())?;
     let mut runtime_plugins = Vec::new();
-    let mut pending_plugins = enabled_plugins
-        .into_iter()
-        .filter_map(|(installation, payload)| {
-            if !matches!(
-                installation.source_kind,
-                scryer_domain::PluginSourceKind::Downloaded
-                    | scryer_domain::PluginSourceKind::Community
-                    | scryer_domain::PluginSourceKind::Manual
-            ) {
-                return None;
-            }
-            if !runtime_installation_sdk_contract_is_host_compatible(&installation) {
-                return None;
-            }
-            if runtime_installation_is_host_blocked(&installation) {
-                return None;
-            }
-
-            payload.map(|payload| (installation, payload))
-        });
+    let (pending_plugins, sdk_contract_failures) =
+        collect_runtime_plugin_load_candidates(enabled_plugins);
+    log_runtime_plugin_sdk_contract_failures(&sdk_contract_failures);
+    let mut pending_plugins = pending_plugins.into_iter();
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..RUNTIME_PLUGIN_LOAD_CONCURRENCY {
         let Some((installation, payload)) = pending_plugins.next() else {
@@ -2168,7 +2225,8 @@ async fn seed_builtin_plugin_installations(
 mod tests {
     use super::{
         AuthModeConfig, SelfRestartController, bootstrap_plugin_installations,
-        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts, title_image_handler,
+        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2357,6 +2415,69 @@ mod tests {
             installation.source_kind,
             scryer_domain::PluginSourceKind::Bundled
         );
+    }
+
+    #[test]
+    fn runtime_plugin_load_candidates_collect_sdk_contract_failures() {
+        fn installation(
+            plugin_id: &str,
+            sdk_version: &str,
+            sdk_constraint: &str,
+        ) -> scryer_domain::PluginInstallation {
+            let now = Utc::now();
+            scryer_domain::PluginInstallation {
+                id: scryer_domain::Id::new().0,
+                plugin_id: plugin_id.to_string(),
+                name: plugin_id.to_string(),
+                description: plugin_id.to_string(),
+                version: "0.1.0".to_string(),
+                sdk_version: sdk_version.to_string(),
+                sdk_constraint: sdk_constraint.to_string(),
+                scryer_constraint: None,
+                plugin_type: "notification".to_string(),
+                provider_type: plugin_id.to_string(),
+                source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                is_enabled: true,
+                is_builtin: false,
+                wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+                wasm_digest_algo: None,
+                source_url: Some(format!("https://example.com/{plugin_id}.wasm")),
+                support_tier: scryer_domain::PluginSupportTier::Official,
+                publisher: Some("scryer".to_string()),
+                docs_url: None,
+                source_repo: None,
+                manifest_url: None,
+                wasm_digest: None,
+                artifact_digest: None,
+                descriptor_json: None,
+                installed_at: now,
+                updated_at: now,
+            }
+        }
+
+        let payload = scryer_domain::PersistedPluginWasmPayload {
+            encoding: scryer_domain::PluginWasmEncoding::Identity,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let (pending, failures) = collect_runtime_plugin_load_candidates(vec![
+            (
+                installation("legacy-email", "1.6.0", ">=1.6.0, <1.7.0"),
+                Some(payload.clone()),
+            ),
+            (
+                installation(
+                    "current-email",
+                    scryer_plugins::SDK_VERSION,
+                    &scryer_plugins::sdk_constraint_or_legacy(scryer_plugins::SDK_VERSION, ""),
+                ),
+                Some(payload),
+            ),
+        ]);
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.plugin_id, "current-email");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].plugin_id, "legacy-email");
     }
 
     #[tokio::test]

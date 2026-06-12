@@ -32,6 +32,7 @@ use serde_json::{Value, json};
 use crate::{
     normalize_env_option, normalize_env_option_with_legacy,
     startup_migrations::_0002_enhanced_subsync_plugin_016::ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY,
+    startup_migrations::_0003_title_image_artwork_url_refresh::TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY,
 };
 
 pub(crate) const SETTINGS_CATEGORY_SERVICE: &str = "service";
@@ -896,6 +897,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             default_value_json: "\"none\"",
             is_sensitive: false,
         },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
     ]
 }
 
@@ -1007,6 +1016,18 @@ mod tests {
             seed.scope == SETTINGS_SCOPE_SYSTEM
                 && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
                 && seed.data_type == "bool"
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_title_image_artwork_url_refresh_state() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.category == SETTINGS_CATEGORY_MEDIA
+                && seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"none\""
+                && !seed.is_sensitive
         }));
     }
 
