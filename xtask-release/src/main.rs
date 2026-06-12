@@ -89,6 +89,23 @@ const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_MACOS_HOME_PATH_COMPONENTS: &[&str] = &[
+    "Applications",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+    "bin",
+    "code",
+    "dev",
+    "src",
+    "work",
+    "workspace",
+];
 const RELEASE_SIBLING_E2E_TOKENS: &[&str] = &["../e2e/", "..\\e2e\\"];
 const RELEASE_LOCAL_PATH_ALLOWLIST_PREFIXES: &[&str] = &[".github/workflows/"];
 const RELEASE_LOCAL_PATH_ALLOWLIST_FILES: &[&str] = &[
@@ -791,9 +808,7 @@ fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
             continue;
         }
 
-        if RELEASE_LOCAL_PATH_TOKENS
-            .iter()
-            .any(|token| line.contains(token))
+        if release_hygiene_line_has_local_path_token(line)
             && !release_hygiene_path_is_allowlisted(
                 &path_text,
                 RELEASE_LOCAL_PATH_ALLOWLIST_PREFIXES,
@@ -823,6 +838,23 @@ fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
     }
 
     violations
+}
+
+fn release_hygiene_line_has_local_path_token(line: &str) -> bool {
+    RELEASE_LOCAL_PATH_TOKENS.iter().any(|token| {
+        if *token == "/Users/" {
+            line.split(token).skip(1).any(|tail| {
+                tail.split_once('/').is_some_and(|(_, after_user)| {
+                    let Some((component, _)) = after_user.split_once('/') else {
+                        return false;
+                    };
+                    RELEASE_MACOS_HOME_PATH_COMPONENTS.contains(&component)
+                })
+            })
+        } else {
+            line.contains(token)
+        }
+    })
 }
 
 fn release_hygiene_path_is_allowlisted(
@@ -1989,7 +2021,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
         )
     })?;
     require_blake3_bytes("builtin wasm", &manifest.wasm_digest, &wasm_bytes)?;
-    let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+    let mut descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
         bail!(
@@ -2006,6 +2038,8 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
             manifest.version
         );
     }
+    descriptor.sdk_version = scryer_plugin_sdk::SDK_VERSION.to_string();
+    descriptor.sdk_constraint = scryer_plugin_sdk::current_sdk_constraint();
 
     let paths = builtin_asset_paths(ctx, spec);
     for path in [&paths.wasm, &paths.descriptor_json, &paths.description] {
@@ -3593,6 +3627,19 @@ mod tests {
                     .to_string()
             ]
         );
+    }
+
+    #[test]
+    fn release_hygiene_allows_users_api_routes() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-infrastructure/src/security/external_identity.rs"),
+            r#"
+                .and(path("/Users/AuthenticateByName"))
+                let avatar = format!("{}/Users/jf-user/Images/Primary?tag=tag", server.uri());
+            "#,
+        );
+
+        assert!(violations.is_empty());
     }
 
     #[test]
