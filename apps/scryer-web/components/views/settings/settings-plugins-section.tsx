@@ -40,6 +40,7 @@ export type RegistryPluginRecord = {
   official: boolean;
   publisher?: string | null;
   supportTier?: string | null;
+  status?: string | null;
   docsUrl?: string | null;
   sourceRepo?: string | null;
   builtin: boolean;
@@ -488,6 +489,11 @@ function PluginTable({
                     {plugin.supportTier === "unverified" && (
                       <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
                         {t("settings.pluginUnverified")}
+                      </span>
+                    )}
+                    {plugin.status === "beta" && (
+                      <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-xs text-yellow-300">
+                        {t("settings.pluginBeta")}
                       </span>
                     )}
                     {isDownloadedBuiltinOverride(plugin) && (

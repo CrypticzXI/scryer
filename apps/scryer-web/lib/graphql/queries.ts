@@ -2226,6 +2226,7 @@ export const pluginsQuery = `query Plugins {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin

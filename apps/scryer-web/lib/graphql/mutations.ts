@@ -1284,6 +1284,7 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin
@@ -1312,6 +1313,7 @@ export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
     official
     publisher
     supportTier
+    status
     docsUrl
     sourceRepo
     builtin
@@ -1454,6 +1456,7 @@ export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo
       official
       publisher
       supportTier
+      status
       docsUrl
       sourceRepo
       builtin

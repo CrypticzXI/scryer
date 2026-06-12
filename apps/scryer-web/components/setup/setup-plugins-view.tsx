@@ -279,7 +279,14 @@ export function SetupPluginsView({
                         >
                           <TableCell className="min-w-[260px]">
                             <div className="space-y-1">
-                              <span className="font-medium">{plugin.name}</span>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium">{plugin.name}</span>
+                                {plugin.status === "beta" && (
+                                  <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-xs text-yellow-300">
+                                    {t("settings.pluginBeta")}
+                                  </span>
+                                )}
+                              </div>
                               <p className="whitespace-normal break-words text-xs text-muted-foreground">
                                 {plugin.description}
                               </p>
