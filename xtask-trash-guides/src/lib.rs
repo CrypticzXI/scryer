@@ -392,7 +392,7 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
         distilled.blocked_title_rules.len()
     ));
 
-    let synced_at = Utc::now().to_rfc3339();
+    let synced_at = Utc::now().format("%Y-%m-%d").to_string();
 
     step("Writing generated outputs");
     let quality_output = ctx.path(QUALITY_OUTPUT);
