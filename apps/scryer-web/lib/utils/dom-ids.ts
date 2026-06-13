@@ -129,6 +129,10 @@ export function seriesOverviewSeasonMonitorId(collectionId: string): string {
   return selectorId("series-overview-season-monitor", collectionId);
 }
 
+export function seriesOverviewSeasonSectionId(collectionId: string): string {
+  return selectorId("series-overview-season-section", collectionId);
+}
+
 export function seriesOverviewSeasonSearchId(collectionId: string): string {
   return selectorId("series-overview-season-search", collectionId);
 }

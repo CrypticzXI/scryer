@@ -42,6 +42,7 @@ export function TitleSettingsPanel({
   title,
   qualityProfiles,
   defaultRootFolder,
+  renameEnabled,
   rootFolders,
   onUpdateTitleOptions,
   onOpenFixMatch,
@@ -50,6 +51,7 @@ export function TitleSettingsPanel({
   title: TitleDetail;
   qualityProfiles: { id: string; name: string }[];
   defaultRootFolder: string;
+  renameEnabled: boolean;
   rootFolders: { path: string; isDefault: boolean }[];
   onUpdateTitleOptions: (options: TitleOptionUpdates) => Promise<void>;
   onOpenFixMatch?: () => void;
@@ -65,6 +67,12 @@ export function TitleSettingsPanel({
   const [renamePreviewing, setRenamePreviewing] = React.useState(false);
   const [renameApplying, setRenameApplying] = React.useState(false);
   const [audioSaving, setAudioSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!renameEnabled) {
+      setRenamePlan(null);
+    }
+  }, [renameEnabled]);
 
   const handleRequiredAudioChange = async (languages: string[]) => {
     setAudioSaving(true);
@@ -401,31 +409,33 @@ export function TitleSettingsPanel({
         </div>
       ) : null}
 
-      <div className={`${onOpenFixMatch ? "mt-3" : "mt-5"} rounded-lg border border-border/70 bg-muted/20 px-3 py-3`}>
-        <div className="flex justify-end">
-          <Button
-            id="series-overview-rename-preview"
-            type="button"
-            variant="primary"
-            size="sm"
-            className="shrink-0"
-            onClick={() => void handlePreviewRename()}
-            disabled={saving || renamePreviewing || renameApplying}
-          >
-            {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
-          </Button>
-        </div>
+      {renameEnabled ? (
+        <div className={`${onOpenFixMatch ? "mt-3" : "mt-5"} rounded-lg border border-border/70 bg-muted/20 px-3 py-3`}>
+          <div className="flex justify-end">
+            <Button
+              id="series-overview-rename-preview"
+              type="button"
+              variant="primary"
+              size="sm"
+              className="shrink-0"
+              onClick={() => void handlePreviewRename()}
+              disabled={saving || renamePreviewing || renameApplying}
+            >
+              {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
+            </Button>
+          </div>
 
-        {renamePlan ? (
-          <MediaRenamePlanPanel
-            plan={renamePlan}
-            applying={renameApplying}
-            applyDisabled={renameApplying || renamePreviewing || renamePlan.renamable === 0}
-            applyButtonId="series-overview-rename-apply"
-            onApply={() => void handleApplyRename()}
-          />
-        ) : null}
-      </div>
+          {renamePlan ? (
+            <MediaRenamePlanPanel
+              plan={renamePlan}
+              applying={renameApplying}
+              applyDisabled={renameApplying || renamePreviewing || renamePlan.renamable === 0}
+              applyButtonId="series-overview-rename-apply"
+              onApply={() => void handleApplyRename()}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

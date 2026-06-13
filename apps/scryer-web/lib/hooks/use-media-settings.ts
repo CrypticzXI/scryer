@@ -20,6 +20,7 @@ import {
   QUALITY_PROFILE_CATALOG_KEY,
   QUALITY_PROFILE_ID_KEY,
   QUALITY_PROFILE_INHERIT_VALUE,
+  RENAME_ENABLED_KEY,
   SCORING_PERSONA_KEY,
   QUALITY_PROFILE_SCOPE_IDS,
 } from "@/lib/constants/settings";
@@ -82,6 +83,10 @@ export type UseMediaSettingsResult = {
   >;
   categoryRenameTemplates: Record<ViewCategoryId, string>;
   setCategoryRenameTemplates: React.Dispatch<
+    React.SetStateAction<Record<ViewCategoryId, string>>
+  >;
+  categoryRenameEnabled: Record<ViewCategoryId, string>;
+  setCategoryRenameEnabled: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, string>>
   >;
   categoryRenameCollisionPolicies: Record<ViewCategoryId, string>;
@@ -221,6 +226,13 @@ export function useMediaSettings({
     movie: DEFAULT_RENAME_TEMPLATE,
     series: DEFAULT_RENAME_TEMPLATE,
     anime: DEFAULT_RENAME_TEMPLATE,
+  });
+  const [categoryRenameEnabled, setCategoryRenameEnabled] = React.useState<
+    Record<ViewCategoryId, string>
+  >({
+    movie: "true",
+    series: "true",
+    anime: "true",
   });
   const [categoryRenameCollisionPolicies, setCategoryRenameCollisionPolicies] =
     React.useState<Record<ViewCategoryId, string>>({
@@ -364,6 +376,12 @@ export function useMediaSettings({
           break;
         case PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY:
           input = { scope: "anime", plexmatchWriteOnImport: boolValue };
+          break;
+        case RENAME_ENABLED_KEY:
+          input = {
+            scope: (_scopeId ?? activeQualityScopeId) as ViewCategoryId,
+            renameEnabled: boolValue,
+          };
           break;
         case IMPORT_MODE_KEY:
           input = {
@@ -560,6 +578,14 @@ export function useMediaSettings({
             previous,
             mediaSettingsScopeId,
             nextTemplate,
+          );
+        });
+        setCategoryRenameEnabled((previous) => {
+          const nextValue = mediaSettings.renameEnabled === false ? "false" : "true";
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextValue,
           );
         });
 
@@ -907,6 +933,8 @@ export function useMediaSettings({
       event.preventDefault();
       const folderTemplate =
         categoryFolderTemplates[activeQualityScopeId].trim();
+      const renameEnabled =
+        categoryRenameEnabled[activeQualityScopeId] !== "false";
       const renameTemplate =
         categoryRenameTemplates[activeQualityScopeId].trim();
       const renameCollisionPolicy = normalizeRenameCollisionPolicy(
@@ -915,12 +943,19 @@ export function useMediaSettings({
       const renameMissingMetadataPolicy = normalizeRenameMissingMetadataPolicy(
         categoryRenameMissingMetadataPolicies[activeQualityScopeId],
       );
+      const renameConfigInput = renameEnabled
+        ? {
+            renameTemplate,
+            renameCollisionPolicy,
+            renameMissingMetadataPolicy,
+          }
+        : {};
 
       if (!folderTemplate) {
         setGlobalStatus(t("settings.folderTemplateRequired"));
         return;
       }
-      if (!renameTemplate) {
+      if (renameEnabled && !renameTemplate) {
         setGlobalStatus(t("settings.renameTemplateRequired"));
         return;
       }
@@ -935,9 +970,8 @@ export function useMediaSettings({
               requiredAudioLanguages:
                 categoryRequiredAudioLanguages[activeQualityScopeId] ?? [],
               folderTemplate,
-              renameTemplate,
-              renameCollisionPolicy,
-              renameMissingMetadataPolicy,
+              renameEnabled,
+              ...renameConfigInput,
               nfoWriteOnImport: nfoWriteOnImport[activeQualityScopeId] === "true",
               ...(activeQualityScopeId === "anime"
                 ? {
@@ -990,6 +1024,7 @@ export function useMediaSettings({
       categoryMonitorFillerMovies,
       categoryMonitorSpecials,
       categoryRenameCollisionPolicies,
+      categoryRenameEnabled,
       categoryRenameMissingMetadataPolicies,
       categoryRenameTemplates,
       nfoWriteOnImport,
@@ -1058,6 +1093,7 @@ export function useMediaSettings({
         QUALITY_PROFILE_ID_KEY,
         SCORING_PERSONA_KEY,
         "audio.required_languages",
+        RENAME_ENABLED_KEY,
         "rename.template",
         "rename.template.movie.global",
         "rename.template.series.global",
@@ -1122,6 +1158,8 @@ export function useMediaSettings({
     setCategoryFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
+    categoryRenameEnabled,
+    setCategoryRenameEnabled,
     categoryRenameCollisionPolicies,
     setCategoryRenameCollisionPolicies,
     categoryRenameMissingMetadataPolicies,

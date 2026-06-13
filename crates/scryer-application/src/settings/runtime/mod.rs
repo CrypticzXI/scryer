@@ -1,4 +1,4 @@
-use super::keys::default_indexer_routing_categories_for_scope;
+use super::keys::{RENAME_ENABLED_KEY, default_indexer_routing_categories_for_scope};
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;

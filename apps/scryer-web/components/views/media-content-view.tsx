@@ -141,6 +141,10 @@ export function MediaContentView({
     setCategoryRenameTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    categoryRenameEnabled: Record<ViewCategoryId, string>;
+    setCategoryRenameEnabled: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
     categoryRenameCollisionPolicies: Record<ViewCategoryId, string>;
     setCategoryRenameCollisionPolicies: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -305,6 +309,8 @@ export function MediaContentView({
     setCategoryFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
+    categoryRenameEnabled,
+    setCategoryRenameEnabled,
     categoryRenameCollisionPolicies,
     setCategoryRenameCollisionPolicies,
     categoryRenameMissingMetadataPolicies,
@@ -686,6 +692,13 @@ export function MediaContentView({
           handleFolderTemplateChange={handleFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}
           handleRenameTemplateChange={handleRenameTemplateChange}
+          categoryRenameEnabled={categoryRenameEnabled}
+          handleRenameEnabledChange={(checked) =>
+            setCategoryRenameEnabled((previous) => ({
+              ...previous,
+              [activeQualityScopeId]: checked ? "true" : "false",
+            }))
+          }
           categoryRenameCollisionPolicies={categoryRenameCollisionPolicies}
           handleRenameCollisionPolicyChange={handleRenameCollisionPolicyChange}
           categoryRenameMissingMetadataPolicies={categoryRenameMissingMetadataPolicies}

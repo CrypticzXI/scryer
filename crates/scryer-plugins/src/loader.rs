@@ -3133,6 +3133,7 @@ mod tests {
             _ids: std::collections::HashMap<String, String>,
             _category: Option<String>,
             _facet: Option<String>,
+            _id_search_facet: Option<String>,
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<scryer_application::IndexerRoutingPlan>,
             _mode: scryer_application::SearchMode,

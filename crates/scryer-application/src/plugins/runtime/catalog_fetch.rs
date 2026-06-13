@@ -393,7 +393,8 @@ fn catalog_resolution_is_first_party(resolved: &CatalogPluginResolution) -> bool
     resolved.source_kind == PluginSourceKind::Downloaded
         && resolved.effective_support_tier == PluginSupportTier::Official
 }
-const DEFAULT_CATALOG_URL: &str = "https://cdn.scryer.media/catalog/v3/catalog-v3.redirect.json";
+const DEFAULT_CATALOG_URL: &str =
+    "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.json";
 const FALLBACK_CATALOG_URL: &str = "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv3/catalog-v3.redirect.json";
 const CATALOG_URL_ENV: &str = "SCRYER_PLUGIN_CATALOG_URL";
 const CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog";
@@ -560,6 +561,68 @@ impl AppUseCase {
                 Ok(None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::var_os(CATALOG_URL_ENV),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                // SAFETY: this test serializes access to the process environment with ENV_LOCK.
+                Some(value) => unsafe { std::env::set_var(CATALOG_URL_ENV, value) },
+                // SAFETY: this test serializes access to the process environment with ENV_LOCK.
+                None => unsafe { std::env::remove_var(CATALOG_URL_ENV) },
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_catalog_url_uses_canonical_default_and_env_override() {
+        let _lock = ENV_LOCK.lock().expect("lock catalog url env");
+        let _guard = EnvGuard::new();
+
+        // SAFETY: this test serializes access to the process environment with ENV_LOCK.
+        unsafe { std::env::remove_var(CATALOG_URL_ENV) };
+        assert_eq!(
+            plugin_catalog_url(),
+            "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.json"
+        );
+
+        // SAFETY: this test serializes access to the process environment with ENV_LOCK.
+        unsafe { std::env::set_var(CATALOG_URL_ENV, "   ") };
+        assert_eq!(
+            plugin_catalog_url(),
+            "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.json"
+        );
+
+        // SAFETY: this test serializes access to the process environment with ENV_LOCK.
+        unsafe {
+            std::env::set_var(
+                CATALOG_URL_ENV,
+                " https://example.test/catalog-v3.redirect.json ",
+            )
+        };
+        assert_eq!(
+            plugin_catalog_url(),
+            "https://example.test/catalog-v3.redirect.json"
+        );
     }
 }
 impl AppUseCase {

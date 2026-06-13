@@ -888,6 +888,7 @@ fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
 
 pub(crate) struct ImportPathSettings {
     pub(crate) media_root: String,
+    pub(crate) rename_enabled: bool,
     pub(crate) rename_template: String,
     pub(crate) folder_template: String,
 }
@@ -906,6 +907,18 @@ async fn persist_title_folder_path_if_missing(app: &AppUseCase, title: &Title, f
         .titles
         .set_folder_path(&title.id, &path_to_stored_string(folder_path))
         .await;
+}
+pub(crate) fn preserved_import_filename(source_path: &Path) -> String {
+    let raw = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("untitled");
+    let sanitized = sanitize_filesystem_component(raw);
+    if sanitized.is_empty() {
+        "untitled".to_string()
+    } else {
+        sanitized
+    }
 }
 #[cfg(test)]
 fn sanitized_title_folder_component(raw: &str) -> String {

@@ -310,6 +310,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   >({});
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_SERIES_LIBRARY_PATH);
+  const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [rootFolders, setRootFolders] = React.useState<{ path: string; isDefault: boolean }[]>([]);
   const [mediaFilesByEpisode, setMediaFilesByEpisode] = React.useState<
     Record<string, EpisodeMediaFile[]>
@@ -645,6 +646,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         );
         const folder = (data.mediaSettings?.libraryPath ?? "").trim();
         if (folder) setDefaultRootFolder(folder);
+        setRenameEnabled(data.mediaSettings?.renameEnabled !== false);
         if (Array.isArray(data.mediaSettings?.rootFolders)) {
           setRootFolders(data.mediaSettings.rootFolders);
         }
@@ -1147,6 +1149,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         qualityProfiles={qualityProfiles}
         defaultRootFolder={defaultRootFolder}
+        renameEnabled={renameEnabled}
         rootFolders={rootFolders}
         onUpdateTitleOptions={handleUpdateTitleOptions}
         completedDownloads={completedDownloads}

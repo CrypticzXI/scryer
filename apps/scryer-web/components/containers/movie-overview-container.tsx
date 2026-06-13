@@ -251,6 +251,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [interactiveSearchAttempted, setInteractiveSearchAttempted] = React.useState(false);
   const [searching, setSearching] = React.useState(false);
   const [renamePlan, setRenamePlan] = React.useState<MediaRenamePlan | null>(null);
+  const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [renamePreviewing, setRenamePreviewing] = React.useState(false);
   const [renameApplying, setRenameApplying] = React.useState(false);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
@@ -520,6 +521,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         );
         const folder = (data.mediaSettings?.libraryPath ?? "").trim();
         if (folder) setDefaultRootFolder(folder);
+        setRenameEnabled(data.mediaSettings?.renameEnabled !== false);
       } catch {
         // Settings fetch is best-effort
       }
@@ -1076,6 +1078,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         hasDownloadClients={hasDownloadClients}
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         renamePlan={renamePlan}
+        renameEnabled={renameEnabled}
         renamePreviewing={renamePreviewing}
         renameApplying={renameApplying}
         interactiveSearchAttempted={interactiveSearchAttempted}

@@ -624,7 +624,9 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
         &title,
         &rescored,
         "mkv",
+        std::path::Path::new("/downloads/obfuscated.release.name.mkv"),
         std::path::Path::new("/library/Test Show"),
+        true,
         "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
         8,
         "7",
@@ -636,6 +638,33 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
     assert_eq!(
         dest_path,
         std::path::PathBuf::from("/library/Test Show/Season 08/Test Show - S08E07 - 1080p.mkv")
+    );
+}
+
+#[test]
+fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
+    let mut title = test_title(MediaFacet::Series);
+    title.name = "Test Show".to_string();
+    let parsed = crate::parse_release_metadata("obfuscated.release.name");
+
+    let dest_path = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        std::path::Path::new("/downloads/Obfuscated.Source.Name.mkv"),
+        std::path::Path::new("/library/Test Show"),
+        false,
+        "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        8,
+        "7",
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(
+        dest_path,
+        std::path::PathBuf::from("/library/Test Show/Season 08/Obfuscated.Source.Name.mkv")
     );
 }
 

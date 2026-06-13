@@ -843,7 +843,7 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(())
     }
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
         primary_file_id: &str,
@@ -866,7 +866,7 @@ impl MediaFileRepository for MockMediaFileRepo {
         }
         if updated != additional_ids.len() + 1 {
             return Err(AppError::NotFound(format!(
-                "movie media files for title {title_id}"
+                "media files for title {title_id}"
             )));
         }
         Ok(())
@@ -2340,6 +2340,7 @@ impl IndexerClient for MockIndexerClient {
         ids: std::collections::HashMap<String, String>,
         category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2464,6 +2465,7 @@ impl IndexerClient for TrackingIndexerClient {
         _ids: std::collections::HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2547,6 +2549,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _ids: std::collections::HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2611,6 +2614,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         _ids: std::collections::HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2670,7 +2674,11 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RecordedSearchCall {
+    query: String,
+    ids: std::collections::HashMap<String, String>,
+    category: Option<String>,
     facet: Option<String>,
+    id_search_facet: Option<String>,
     newznab_categories: Option<Vec<String>>,
 }
 
@@ -2706,10 +2714,11 @@ struct RecordingStructuredQueryIndexerClient {
 impl IndexerClient for RecordingCategoriesIndexerClient {
     async fn search(
         &self,
-        _query: String,
-        _ids: std::collections::HashMap<String, String>,
-        _category: Option<String>,
+        query: String,
+        ids: std::collections::HashMap<String, String>,
+        category: Option<String>,
         facet: Option<String>,
+        id_search_facet: Option<String>,
         newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2719,7 +2728,11 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         _tagged_aliases: Vec<TaggedAlias>,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedSearchCall {
+            query,
+            ids,
+            category,
             facet,
+            id_search_facet,
             newznab_categories,
         });
 
@@ -2766,6 +2779,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         _ids: std::collections::HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -2812,6 +2826,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _ids: std::collections::HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
@@ -9643,6 +9658,7 @@ fn empty_update_media_settings_with_roots(
         root_folders: Some(root_folders),
         required_audio_languages: None,
         folder_template: None,
+        rename_enabled: None,
         rename_template: None,
         rename_collision_policy: None,
         rename_missing_metadata_policy: None,
@@ -9663,6 +9679,7 @@ fn empty_update_media_settings() -> UpdateMediaSettings {
         root_folders: None,
         required_audio_languages: None,
         folder_template: None,
+        rename_enabled: None,
         rename_template: None,
         rename_collision_policy: None,
         rename_missing_metadata_policy: None,
@@ -9919,6 +9936,249 @@ async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_ad
     );
     assert_eq!(
         media_file_role_for_path(&files, small_path.as_path()),
+        MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn series_title_scan_imports_episode_file_as_primary() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Fresh Show (2026)");
+    std::fs::create_dir(&title_dir).expect("create series folder");
+    let episode_path = title_dir.join("Fresh Show - 1x01 - Pilot WEBDL-1080p.mkv");
+    std::fs::write(&episode_path, vec![0_u8; 128]).expect("write episode file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(build_test_library_files(&[episode_path.as_path()]))
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items,
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile series root");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fresh Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2026),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, title_dir.to_string_lossy().as_ref())
+        .await
+        .expect("set series folder path");
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Pilot".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(420),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan series title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        media_file_role_for_path(&files, episode_path.as_path()),
+        MediaFileRole::Primary
+    );
+}
+
+#[tokio::test]
+async fn series_title_scan_marks_duplicate_episode_files_as_additional() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Fresh Show (2026)");
+    std::fs::create_dir(&title_dir).expect("create series folder");
+    let small_episode_path = title_dir.join("Fresh Show - 1x01 - Pilot WEBDL-720p.mkv");
+    let large_episode_path = title_dir.join("Fresh Show - 1x01 - Pilot WEBDL-1080p.mkv");
+    std::fs::write(&small_episode_path, vec![0_u8; 128]).expect("write smaller episode file");
+    std::fs::write(&large_episode_path, vec![0_u8; 512]).expect("write larger episode file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(build_test_library_files(&[
+            small_episode_path.as_path(),
+            large_episode_path.as_path(),
+        ]))
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items,
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile series root");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fresh Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2026),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, title_dir.to_string_lossy().as_ref())
+        .await
+        .expect("set series folder path");
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Pilot".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(420),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan series title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 2);
+    assert_eq!(
+        files.iter().filter(|file| file.role.is_primary()).count(),
+        1
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, large_episode_path.as_path()),
+        MediaFileRole::Primary
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, small_episode_path.as_path()),
         MediaFileRole::Additional
     );
 }
@@ -14681,11 +14941,11 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
-    let title = app
+    let mut title = app
         .add_title(
             &user,
             NewTitle {
-                name: "Wrong Show".into(),
+                name: "Demon Slayer".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -14696,18 +14956,23 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         )
         .await
         .expect("create anime title");
+    title.aliases = vec!["Kimetsu no Yaiba".to_string()];
 
+    let mut link_input = test_series_movie_link(
+        &title.id,
+        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        Some(2020),
+        Some("tt11032374"),
+        Some("12345"),
+    );
+    link_input.movie.tmdb_id = Some("635302".to_string());
+    link_input.movie.anidb_id = Some("15400".to_string());
+    link_input.movie.mal_id = Some("40456".to_string());
     let link = app
         .services
         .catalog
         .shows
-        .upsert_series_movie_link(test_series_movie_link(
-            &title.id,
-            "Mugen Train",
-            Some(2020),
-            Some("tt11032374"),
-            Some("12345"),
-        ))
+        .upsert_series_movie_link(link_input)
         .await
         .expect("create series movie link");
 
@@ -14716,17 +14981,193 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         .await
         .expect("resolve series movie subject");
 
-    assert_eq!(search_title.name, "Mugen Train");
+    assert_eq!(
+        search_title.name,
+        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train"
+    );
     assert_eq!(search_title.year, Some(2020));
     assert_eq!(search_title.imdb_id.as_deref(), Some("tt11032374"));
-    assert_eq!(subject.queries, vec!["Mugen Train 2020".to_string()]);
+    assert_eq!(subject.queries.len(), 1);
+    assert!(
+        subject.queries[0]
+            .to_ascii_lowercase()
+            .contains("mugen train"),
+        "unexpected queries: {:?}",
+        subject.queries
+    );
+    assert!(subject.queries[0].contains("2020"));
+    assert!(
+        search_title
+            .aliases
+            .iter()
+            .any(|alias| alias.to_ascii_lowercase().contains("mugen train"))
+    );
+    assert!(
+        search_title
+            .tagged_aliases
+            .iter()
+            .any(|alias| alias.name.contains("The Movie: Mugen Train"))
+    );
+    assert_eq!(subject.category, "movie");
+    assert_eq!(subject.owner_facet, MediaFacet::Anime);
+    assert_eq!(subject.search_facet, MediaFacet::Movie);
+    assert_eq!(subject.id_search_facet, Some(MediaFacet::Movie));
+    assert_eq!(
+        subject.newznab_categories,
+        vec!["2000".to_string(), "5070".to_string()]
+    );
     assert_eq!(subject.tvdb_id.as_deref(), Some("12345"));
+    assert_eq!(subject.tmdb_id.as_deref(), Some("635302"));
+    assert_eq!(subject.anidb_id.as_deref(), Some("15400"));
+    assert_eq!(subject.mal_id.as_deref(), Some("40456"));
     assert_eq!(subject.imdb_id.as_deref(), Some("tt11032374"));
     assert_eq!(
         subject.submission_scope,
         SubmissionScope::SeriesMovie {
             series_movie_link_id: link.id,
         }
+    );
+}
+
+#[tokio::test]
+async fn resolve_release_search_subject_for_series_owned_movie_keeps_movie_search_shape() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
+        "Series.Movie.2021.1080p.WEB-DL",
+    ));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Example Series".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+
+    let link_input = test_series_movie_link(
+        &title.id,
+        "Example Series: The Movie",
+        Some(2021),
+        Some("tt12345678"),
+        None,
+    );
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(link_input)
+        .await
+        .expect("create series movie link");
+
+    let (_search_title, subject) = app
+        .resolve_release_search_subject_for_series_movie(&title, &link)
+        .await
+        .expect("resolve series-owned movie subject");
+
+    assert_eq!(subject.category, "movie");
+    assert_eq!(subject.owner_facet, MediaFacet::Series);
+    assert_eq!(subject.search_facet, MediaFacet::Movie);
+    assert_eq!(subject.id_search_facet, Some(MediaFacet::Movie));
+    assert_eq!(subject.newznab_categories, vec!["2000".to_string()]);
+}
+
+#[tokio::test]
+async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_title_release() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingCategoriesIndexerClient::new(
+        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+    ));
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Demon Slayer".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    let mut link_input = test_series_movie_link(
+        &title.id,
+        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        Some(2020),
+        Some("tt11032374"),
+        Some("12345"),
+    );
+    link_input.movie.tmdb_id = Some("635302".to_string());
+    link_input.movie.anidb_id = Some("15400".to_string());
+    link_input.movie.mal_id = Some("40456".to_string());
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(link_input)
+        .await
+        .expect("create series movie link");
+
+    let results = app
+        .search_indexers_for_series_movie(&user, title.id.clone(), link.id.clone())
+        .await
+        .expect("series movie search should succeed");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].title,
+        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL"
+    );
+
+    let calls = recording_client.calls.lock().await.clone();
+    let facets = calls
+        .iter()
+        .filter_map(|call| call.facet.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(facets, HashSet::from(["movie".to_string()]));
+    assert!(calls.iter().all(|call| {
+        call.id_search_facet.as_deref() == Some("movie")
+            && call.newznab_categories.as_deref()
+                == Some(["5070".to_string(), "2000".to_string()].as_slice())
+    }));
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.category.as_deref() == Some("movie"))
+    );
+    assert!(calls.iter().all(|call| {
+        call.ids.get("imdb_id").map(String::as_str) == Some("tt11032374")
+            && call.ids.get("tmdb_id").map(String::as_str) == Some("635302")
+            && call.ids.get("tvdb_id").map(String::as_str) == Some("12345")
+            && call.ids.get("anidb_id").map(String::as_str) == Some("15400")
+            && call.ids.get("mal_id").map(String::as_str) == Some("40456")
+    }));
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.query.to_ascii_lowercase().contains("mugen train 2020"))
     );
 }
 
@@ -20981,6 +21422,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             _ids: std::collections::HashMap<String, String>,
             _category: Option<String>,
             _facet: Option<String>,
+            _id_search_facet: Option<String>,
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,

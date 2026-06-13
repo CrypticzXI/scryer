@@ -322,6 +322,7 @@ pub fn from_media_settings(
             .collect(),
         required_audio_languages: settings.required_audio_languages,
         folder_template: settings.folder_template,
+        rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
         rename_collision_policy: settings.rename_collision_policy,
         rename_missing_metadata_policy: settings.rename_missing_metadata_policy,

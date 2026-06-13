@@ -37,6 +37,7 @@ import {
   initialEpisodePanelState,
 } from "./episode-panel-reducer";
 import {
+  buildSeriesTimelineItems,
   sortDbCollections,
   findLatestSeasonKey,
   episodeSortValue,
@@ -46,7 +47,7 @@ import {
 import { OverviewControlPanel } from "../overview-control-panel";
 import { OverviewBackLink } from "../overview-back-link";
 import { TitleSettingsPanel } from "./title-settings-panel";
-import { SeasonSection } from "./season-section";
+import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
@@ -118,7 +119,6 @@ const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
 const malLogoUrl = `${import.meta.env.BASE_URL}media-sites/mal.svg`;
 const anilistLogoUrl = `${import.meta.env.BASE_URL}media-sites/anilist.svg`;
 const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
-const STANDALONE_SERIES_MOVIE_KEY = "s-__series_movies__";
 
 type Props = {
   canManageTitle: boolean;
@@ -148,6 +148,7 @@ type Props = {
   onAutoSearchSeriesMovie?: (link: SeriesMovieLink) => Promise<void> | void;
   qualityProfiles?: { id: string; name: string }[];
   defaultRootFolder?: string;
+  renameEnabled?: boolean;
   rootFolders?: { path: string; isDefault: boolean }[];
   onUpdateTitleOptions?: (options: TitleOptionUpdates) => Promise<void>;
   completedDownloads?: DownloadQueueItem[];
@@ -196,6 +197,7 @@ export function SeriesOverviewView({
   onAutoSearchSeriesMovie,
   qualityProfiles,
   defaultRootFolder,
+  renameEnabled,
   rootFolders,
   onUpdateTitleOptions,
   completedDownloads,
@@ -244,45 +246,10 @@ export function SeriesOverviewView({
     [emptyEpisodes, episodesByCollection, sortedCollections],
   );
 
-  const seriesMovieLinkIdsRenderedInCollections = React.useMemo(() => {
-    const rendered = new Set<string>();
-    for (const collection of sortedCollections) {
-      if (!isSpecialsCollection(collection)) {
-        continue;
-      }
-      const episodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
-      for (const link of seriesMovieLinks) {
-        if (
-          !link.linkedEpisodeId
-          || episodes.some((episode) => episode.id === link.linkedEpisodeId)
-        ) {
-          rendered.add(link.id);
-        }
-      }
-    }
-    return rendered;
-  }, [emptyEpisodes, seriesMovieLinks, sortedCollections, sortedEpisodesByCollection]);
-
-  const standaloneSeriesMovieLinks = React.useMemo(
-    () => seriesMovieLinks.filter((link) => !seriesMovieLinkIdsRenderedInCollections.has(link.id)),
-    [seriesMovieLinkIdsRenderedInCollections, seriesMovieLinks],
+  const timelineItems = React.useMemo(
+    () => buildSeriesTimelineItems(sortedCollections, seriesMovieLinks),
+    [seriesMovieLinks, sortedCollections],
   );
-
-  const standaloneSeriesMovieCollection = React.useMemo<TitleCollection>(() => ({
-    id: "__series_movies__",
-    titleId: title?.id ?? "",
-    collectionType: "series_movies",
-    collectionIndex: "",
-    label: t("label.movies"),
-    orderedPath: null,
-    narrativeOrder: null,
-    fileSizeBytes: null,
-    firstEpisodeNumber: null,
-    lastEpisodeNumber: null,
-    monitored: true,
-    episodes: [],
-    createdAt: title?.createdAt ?? "",
-  }), [t, title?.createdAt, title?.id]);
 
   const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = React.useState(false);
@@ -379,18 +346,13 @@ export function SeriesOverviewView({
       }
     }
 
-    if (latestKey || standaloneSeriesMovieLinks.length > 0) {
+    if (latestKey) {
       initializedRef.current = true;
       const nextExpanded = new Set<string>();
-      if (latestKey) {
-        nextExpanded.add(latestKey);
-      }
-      if (standaloneSeriesMovieLinks.length > 0) {
-        nextExpanded.add(STANDALONE_SERIES_MOVIE_KEY);
-      }
+      nextExpanded.add(latestKey);
       setExpandedKeys(nextExpanded);
     }
-  }, [latestKey, initialEpisodeId, episodesByCollection, standaloneSeriesMovieLinks.length]);
+  }, [latestKey, initialEpisodeId, episodesByCollection]);
 
   const toggleKey = React.useCallback((key: string) => {
     setExpandedKeys((prev) => {
@@ -923,6 +885,7 @@ export function SeriesOverviewView({
                 title={title}
                 qualityProfiles={qualityProfiles}
                 defaultRootFolder={defaultRootFolder}
+                renameEnabled={renameEnabled !== false}
                 rootFolders={rootFolders ?? []}
                 onUpdateTitleOptions={onUpdateTitleOptions}
                 onTitleChanged={onTitleChanged}
@@ -955,34 +918,45 @@ export function SeriesOverviewView({
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {sortedCollections.length > 0 || standaloneSeriesMovieLinks.length > 0 ? (
+            {timelineItems.length > 0 ? (
               <>
-              {sortedCollections.map((collection) => {
-                const key = `s-${collection.id}`;
-                const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
-                const collectionSeriesMovieLinks = isSpecialsCollection(collection)
-                  ? seriesMovieLinks.filter((link) => {
-                      if (!link.linkedEpisodeId) return true;
-                      return sortedEpisodes.some((episode) => episode.id === link.linkedEpisodeId);
-                    })
-                  : [];
+              {timelineItems.map((item) => {
+                if (item.kind === "seriesMovie") {
+                  return (
+                    <SeriesMovieTimelineSection
+                      key={item.key}
+                      link={item.link}
+                      mediaFilesByEpisode={mediaFilesByEpisode}
+                      mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
+                      seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
+                      seriesMovieSearchLoadingByLink={seriesMovieSearchLoadingByLink}
+                      seriesMovieSearchAttemptedByLink={seriesMovieSearchAttemptedByLink}
+                      searchBlockedBySeriesMovie={searchBlockedBySeriesMovie}
+                      onRunSeriesMovieSearch={canManageTitle ? handleRunSeriesMovieSearch : undefined}
+                      onQueueFromSeriesMovieSearch={canManageTitle ? handleQueueFromSeriesMovieSearch : undefined}
+                      onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
+                      autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
+                    />
+                  );
+                }
 
-                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0 && collectionSeriesMovieLinks.length === 0) {
+                const { collection } = item;
+                const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
+
+                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0) {
                   return null;
                 }
 
                 return (
                   <SeasonSection
-                    key={key}
+                    key={item.key}
                     collection={collection}
                     episodes={sortedEpisodes}
-                    seriesMovieLinks={collectionSeriesMovieLinks}
                     facet={title.facet}
-                    expanded={expandedKeys.has(key)}
-                    onToggle={() => toggleKey(key)}
+                    expanded={expandedKeys.has(item.key)}
+                    onToggle={() => toggleKey(item.key)}
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
-                    mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
@@ -1022,64 +996,9 @@ export function SeriesOverviewView({
                     searchBlocked={searchBlockedByCollection[collection.id] === true}
                     onQueueFromSeasonSearch={canManageTitle ? onQueueFromSeasonSearch : undefined}
                     onDeleteFile={canManageTitle ? onDeleteFile : undefined}
-                    seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
-                    seriesMovieSearchLoadingByLink={seriesMovieSearchLoadingByLink}
-                    seriesMovieSearchAttemptedByLink={seriesMovieSearchAttemptedByLink}
-                    searchBlockedBySeriesMovie={searchBlockedBySeriesMovie}
-                    onRunSeriesMovieSearch={canManageTitle ? handleRunSeriesMovieSearch : undefined}
-                    onQueueFromSeriesMovieSearch={canManageTitle ? handleQueueFromSeriesMovieSearch : undefined}
-                    onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
-                    autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
                   />
                 );
               })}
-              {standaloneSeriesMovieLinks.length > 0 ? (
-                <SeasonSection
-                  key={STANDALONE_SERIES_MOVIE_KEY}
-                  collection={standaloneSeriesMovieCollection}
-                  episodes={emptyEpisodes}
-                  seriesMovieLinks={standaloneSeriesMovieLinks}
-                  facet={title.facet}
-                  expanded={expandedKeys.has(STANDALONE_SERIES_MOVIE_KEY)}
-                  onToggle={() => toggleKey(STANDALONE_SERIES_MOVIE_KEY)}
-                  initiallyOpenEpisodeId={initialEpisodeId}
-                  mediaFilesByEpisode={mediaFilesByEpisode}
-                  mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
-                  downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
-                  subtitleDownloads={subtitleDownloads}
-                  onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
-                  releaseBlocklistEntries={releaseBlocklistEntries}
-                  clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
-                  onClearReleaseBlocklistEntry={
-                    canManageTitle ? onClearReleaseBlocklistEntry : undefined
-                  }
-                  searchResultsByEpisode={episodePanel.searchResultsByEpisode}
-                  searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
-                  searchBlockedByEpisode={searchBlockedByEpisode}
-                  autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}
-                  onRunEpisodeSearch={canManageTitle ? handleRunEpisodeSearch : undefined}
-                  onOpenEpisodeHistory={canManageTitle ? handleOpenEpisodeHistory : undefined}
-                  onQueueFromEpisodeSearch={canManageTitle ? handleQueueFromEpisodeSearch : undefined}
-                  onQueueAdditionalFromEpisodeSearch={
-                    canManageTitle ? handleQueueAdditionalFromEpisodeSearch : undefined
-                  }
-                  onAutoSearchEpisode={canManageTitle ? handleAutoSearchEpisode : undefined}
-                  seasonSearchResults={undefined}
-                  seasonSearchLoading={false}
-                  onRunSeasonSearch={undefined}
-                  searchBlocked={false}
-                  onQueueFromSeasonSearch={undefined}
-                  onDeleteFile={canManageTitle ? onDeleteFile : undefined}
-                  seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
-                  seriesMovieSearchLoadingByLink={seriesMovieSearchLoadingByLink}
-                  seriesMovieSearchAttemptedByLink={seriesMovieSearchAttemptedByLink}
-                  searchBlockedBySeriesMovie={searchBlockedBySeriesMovie}
-                  onRunSeriesMovieSearch={canManageTitle ? handleRunSeriesMovieSearch : undefined}
-                  onQueueFromSeriesMovieSearch={canManageTitle ? handleQueueFromSeriesMovieSearch : undefined}
-                  onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
-                  autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
-                />
-              ) : null}
               </>
             ) : (
               <p className="text-sm text-muted-foreground">

@@ -263,7 +263,7 @@ impl DownloadClientSnapshot {
                 }
             }
             if !failed_by_download_id.is_empty() {
-                info!(
+                debug!(
                     failed_count = failed_by_download_id.len(),
                     "download client snapshot: failed history items"
                 );

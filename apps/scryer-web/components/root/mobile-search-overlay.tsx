@@ -22,7 +22,6 @@ import {
   globalSearchConfigureAddId,
   globalSearchMetadataResultId,
 } from "@/lib/utils/dom-ids";
-import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
 import { RequestMediaDialog } from "@/components/root/request-media-dialog";
@@ -257,18 +256,14 @@ export function MobileSearchOverlay({
         >
           <div className="flex min-h-[44px] items-center gap-3">
             <div className="h-16 w-11 flex-none overflow-hidden rounded-md border border-border bg-muted">
-              {posterUrl ? (
-                <TitlePoster
-                  src={posterUrl}
-                  alt={t("media.posterAlt", { name: result.name })}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
-                  {t("label.noArt")}
-                </div>
-              )}
+              <TitlePosterSlot
+                src={posterUrl}
+                alt={t("media.posterAlt", { name: result.name })}
+                className="h-full w-full object-cover"
+                placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                emptyLabel={t("label.noArt")}
+                loading="lazy"
+              />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">{result.name}</p>

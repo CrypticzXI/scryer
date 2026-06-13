@@ -63,6 +63,7 @@ async fn import_series_download(
 ) -> AppResult<ImportResult> {
     let ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     } = resolve_import_paths(app, title).await?;
@@ -95,6 +96,7 @@ async fn import_series_download(
             actor,
             title,
             import_id,
+            rename_enabled,
             &rename_template,
             &full_folder_path,
             completed,
@@ -536,6 +538,7 @@ async fn import_single_episode_file(
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
+    rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
     completed: &CompletedDownload,
@@ -613,6 +616,7 @@ async fn import_single_episode_file(
         app,
         actor,
         title,
+        rename_enabled,
         rename_template,
         title_folder_path,
         source_video,
@@ -782,6 +786,7 @@ pub(crate) async fn resolve_import_paths(
         .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
         .unwrap_or(default_root);
 
+    let rename_enabled = app.resolve_rename_enabled(&title.facet).await?;
     let rename_template = app
         .read_setting_string_value_for_scope(
             super::SETTINGS_SCOPE_SYSTEM,
@@ -810,6 +815,7 @@ pub(crate) async fn resolve_import_paths(
 
     Ok(ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     })
@@ -830,7 +836,9 @@ pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,
     ext: &str,
+    source_path: &Path,
     title_folder_path: &Path,
+    rename_enabled: bool,
     rename_template: &str,
     season_num: u32,
     ep_num_str: &str,
@@ -853,7 +861,11 @@ pub(crate) fn episode_import_dest_path(
     if let Some(q) = quality_override {
         tokens.insert("quality".to_string(), q.to_string());
     }
-    let rendered = render_rename_template(rename_template, &tokens);
+    let rendered = if rename_enabled {
+        render_rename_template(rename_template, &tokens)
+    } else {
+        preserved_import_filename(source_path)
+    };
     if use_season_folders(title) {
         let season_folder = format!("Season {:02}", season_num);
         title_folder_path.join(&season_folder).join(&rendered)

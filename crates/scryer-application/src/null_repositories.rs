@@ -308,7 +308,7 @@ impl MediaFileRepository for NullMediaFileRepository {
         ))
     }
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         _title_id: &str,
         _primary_file_id: &str,
@@ -2240,6 +2240,7 @@ pub mod test_nulls {
             &self,
             _: String,
             _: std::collections::HashMap<String, String>,
+            _: Option<String>,
             _: Option<String>,
             _: Option<String>,
             _: Option<Vec<String>>,

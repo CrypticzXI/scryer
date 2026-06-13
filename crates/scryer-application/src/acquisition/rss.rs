@@ -321,6 +321,7 @@ impl AppUseCase {
                 HashMap::new(),
                 None, // no category filter
                 None, // no facet hint
+                None, // no ID-search facet override
                 rss_categories,
                 None, // no routing filter
                 SearchMode::Auto,

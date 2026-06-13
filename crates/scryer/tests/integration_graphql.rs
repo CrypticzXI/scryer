@@ -363,14 +363,14 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.update_media_file_path(file_id, file_path).await
     }
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
         primary_file_id: &str,
         additional_file_ids: &[String],
     ) -> AppResult<()> {
         self.inner
-            .set_movie_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
             .await
     }
 
@@ -851,6 +851,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 key_name: "rename.template".into(),
                 data_type: "string".into(),
                 default_value_json: "null".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "rename.enabled".into(),
+                data_type: "boolean".into(),
+                default_value_json: "true".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -3385,6 +3394,7 @@ async fn graphql_typed_media_settings_round_trip() {
             rootFolders { path isDefault }
             requiredAudioLanguages
             folderTemplate
+            renameEnabled
             renameTemplate
             renameCollisionPolicy
             renameMissingMetadataPolicy
@@ -3407,6 +3417,7 @@ async fn graphql_typed_media_settings_round_trip() {
             ],
             "requiredAudioLanguages": ["eng", "jpn"],
             "folderTemplate": "{title} ({year})",
+            "renameEnabled": false,
             "renameTemplate": "{title} [{quality}].{ext}",
             "renameCollisionPolicy": "replace_if_better",
             "renameMissingMetadataPolicy": "skip",
@@ -3431,6 +3442,7 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(updated["requiredAudioLanguages"][0], "eng");
     assert_eq!(updated["requiredAudioLanguages"][1], "jpn");
     assert_eq!(updated["folderTemplate"], "{title} ({year})");
+    assert_eq!(updated["renameEnabled"], false);
     assert_eq!(updated["renameTemplate"], "{title} [{quality}].{ext}");
     assert_eq!(updated["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(updated["renameMissingMetadataPolicy"], "skip");
@@ -3452,6 +3464,7 @@ async fn graphql_typed_media_settings_round_trip() {
             rootFolders { path isDefault }
             requiredAudioLanguages
             folderTemplate
+            renameEnabled
             renameTemplate
             renameCollisionPolicy
             renameMissingMetadataPolicy
@@ -3477,6 +3490,7 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(settings["requiredAudioLanguages"][0], "eng");
     assert_eq!(settings["requiredAudioLanguages"][1], "jpn");
     assert_eq!(settings["folderTemplate"], "{title} ({year})");
+    assert_eq!(settings["renameEnabled"], false);
     assert_eq!(settings["renameTemplate"], "{title} [{quality}].{ext}");
     assert_eq!(settings["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(settings["renameMissingMetadataPolicy"], "skip");

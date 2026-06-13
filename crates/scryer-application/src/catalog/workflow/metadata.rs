@@ -210,7 +210,7 @@ impl AppUseCase {
         self.services
             .library
             .media_files
-            .set_movie_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
+            .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
             .await?;
         self.emit_title_updated_activity(Some(actor.id.clone()), &title)
             .await;

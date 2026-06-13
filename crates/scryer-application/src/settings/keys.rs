@@ -60,6 +60,7 @@ pub const ANIME_ROOT_FOLDERS_KEY: &str = "anime.root_folders";
 pub const TLS_CERT_PATH_KEY: &str = "tls.cert_path";
 pub const TLS_KEY_PATH_KEY: &str = "tls.key_path";
 
+pub const RENAME_ENABLED_KEY: &str = "rename.enabled";
 pub const RENAME_TEMPLATE_KEY: &str = "rename.template";
 pub const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY: &str = "rename.template.movie.global";
 pub const RENAME_TEMPLATE_SERIES_GLOBAL_KEY: &str = "rename.template.series.global";

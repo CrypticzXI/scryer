@@ -33,6 +33,7 @@ async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
+    rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
     source_video: &Path,
@@ -97,7 +98,9 @@ async fn execute_resolved_episode_import(
             title,
             &effective_parsed,
             &ext,
+            source_video,
             title_folder_path,
+            rename_enabled,
             rename_template,
             rename_season,
             rename_episode_number,
@@ -156,6 +159,7 @@ async fn execute_resolved_episode_import(
             .media_files
             .insert_media_file(&media_file_input)
             .await?;
+        analyze_and_persist_imported_media_file(app, &title.id, &media_file_id, &dest_path).await;
         if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
             app,
             &title.id,
@@ -296,7 +300,9 @@ async fn execute_resolved_episode_import(
         title,
         &effective_parsed,
         &ext,
+        source_video,
         title_folder_path,
+        rename_enabled,
         rename_template,
         rename_season,
         rename_episode_number,

@@ -536,7 +536,7 @@ impl MediaFileRepository for MediaFileStore {
         Ok(())
     }
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
         primary_file_id: &str,
@@ -564,10 +564,10 @@ impl MediaFileRepository for MediaFileStore {
         args.extend(ids.iter().cloned().map(SqlArg::Text));
 
         let updated =
-            execute_write(&self.datastore, "set_movie_file_roles_for_title", sql, args).await?;
+            execute_write(&self.datastore, "set_media_file_roles_for_title", sql, args).await?;
         if updated != ids.len() as u64 {
             return Err(AppError::Repository(format!(
-                "expected to update {} movie media file roles, updated {updated}",
+                "expected to update {} media file roles, updated {updated}",
                 ids.len()
             )));
         }

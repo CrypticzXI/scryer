@@ -78,7 +78,7 @@ async fn persist_or_reuse_scanned_media_file(
         title_id: title.id.clone(),
         file_path: file.path.clone(),
         size_bytes: snapshot.size_bytes,
-        role: crate::MediaFileRole::Additional,
+        role: crate::MediaFileRole::Primary,
         source_signature_scheme,
         source_signature_value,
         quality_label: None,

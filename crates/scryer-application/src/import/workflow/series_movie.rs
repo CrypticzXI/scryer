@@ -324,6 +324,7 @@ async fn import_additional_movie_download(
     source_size: i64,
     parsed: &ParsedReleaseMetadata,
     media_root: &str,
+    rename_enabled: bool,
     rename_template: &str,
     folder_template: &str,
     existing_files: &[crate::TitleMediaFile],
@@ -335,7 +336,11 @@ async fn import_additional_movie_download(
         .unwrap_or("mkv")
         .to_string();
     let tokens = build_rename_tokens(title, parsed, &ext);
-    let rendered_filename = render_rename_template(rename_template, &tokens);
+    let rendered_filename = if rename_enabled {
+        render_rename_template(rename_template, &tokens)
+    } else {
+        preserved_import_filename(source_video)
+    };
     let full_folder_path = effective_title_folder_path(media_root, title, folder_template, parsed.year);
     let canonical_dest_path = full_folder_path.join(&rendered_filename);
     let dest_path = additional_import_dest_path(&canonical_dest_path, parsed);
@@ -436,6 +441,8 @@ async fn import_additional_movie_download(
         .media_files
         .insert_media_file(&media_file_input)
         .await?;
+    analyze_and_persist_imported_media_file(app, &title.id, &imported_media_file_id, &dest_path)
+        .await;
     if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
         app,
         &title.id,
@@ -532,6 +539,7 @@ async fn import_movie_download(
 
     let ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     } = resolve_import_paths(app, title).await?;
@@ -561,6 +569,7 @@ async fn import_movie_download(
             source_size,
             &parsed,
             &media_root,
+            rename_enabled,
             &rename_template,
             &folder_template,
             &existing_files,
@@ -653,7 +662,11 @@ async fn import_movie_download(
         .unwrap_or("mkv")
         .to_string();
     let tokens = build_rename_tokens(title, &prepared.parsed, &ext);
-    let rendered_filename = render_rename_template(&rename_template, &tokens);
+    let rendered_filename = if rename_enabled {
+        render_rename_template(&rename_template, &tokens)
+    } else {
+        preserved_import_filename(&source_video)
+    };
 
     let full_folder_path =
         effective_title_folder_path(&media_root, title, &folder_template, prepared.parsed.year);
@@ -1149,6 +1162,7 @@ async fn import_series_movie_download(
 
     let ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template: _rename_template,
         folder_template,
     } = resolve_import_paths(app, title).await?;
@@ -1183,10 +1197,14 @@ async fn import_series_movie_download(
             Some(format!("S{season:02}E{episode_number:02}"))
         })
         .unwrap_or_else(|| "S00E00".to_string());
-    let rendered_filename = sanitize_filesystem_component(&format!(
-        "{} - {} - {}.{}",
-        title.name, season_episode, movie.title, ext
-    ));
+    let rendered_filename = if rename_enabled {
+        sanitize_filesystem_component(&format!(
+            "{} - {} - {}.{}",
+            title.name, season_episode, movie.title, ext
+        ))
+    } else {
+        preserved_import_filename(&source_video)
+    };
 
     // Build destination: <media_root>/<title folder>/Season 00/<filename>
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);

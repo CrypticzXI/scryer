@@ -191,6 +191,7 @@ export type MediaSettings = {
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
   folderTemplate: string;
+  renameEnabled: boolean;
   renameTemplate: string;
   renameCollisionPolicy: string;
   renameMissingMetadataPolicy: string;

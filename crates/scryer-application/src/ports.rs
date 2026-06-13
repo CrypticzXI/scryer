@@ -1368,7 +1368,7 @@ pub trait MediaFileRepository: Send + Sync {
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()>;
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
         primary_file_id: &str,
@@ -1823,6 +1823,7 @@ pub trait IndexerClient: Send + Sync {
         ids: std::collections::HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
+        id_search_facet: Option<String>,
         newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,

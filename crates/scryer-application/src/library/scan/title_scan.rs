@@ -339,6 +339,7 @@ async fn normalize_movie_file_roles_after_scan(
     app: &AppUseCase,
     title: &Title,
     movie_scope: &MovieScanScope,
+    newly_imported_file_count: usize,
 ) -> bool {
     let mut media_files = match app
         .services
@@ -373,78 +374,78 @@ async fn normalize_movie_file_roles_after_scan(
         .iter()
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
-    let selected_primary_id = match primary_files.as_slice() {
-        [file] => file.id.clone(),
-        [] => {
-            let category = crate::post_download_gate::facet_to_category_hint(&title.facet);
-            let profile_lookup = crate::catalog::discovery::QualityProfileLookup {
-                title_tags: &title.tags,
-                library_id: Some(title.library_id.as_str()),
-                imdb_id: title_external_id(title, "imdb"),
-                tvdb_id: title_external_id(title, "tvdb"),
-                category_hint: Some(category),
-            };
-            let profile = match app.resolve_quality_profile(profile_lookup).await {
-                Ok(profile) => profile,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        title_id = %title.id,
-                        "failed to resolve quality profile for movie scan role selection"
-                    );
-                    crate::QualityProfile::default()
-                }
-            };
-            let required_audio_languages = app
-                .resolve_required_audio_languages(
-                    Some(&title.id),
-                    Some(&title.library_id),
-                    Some(category),
-                )
-                .await
-                .unwrap_or_default();
-            let persona = app
-                .resolve_scoring_persona(Some(&title.library_id), Some(category))
-                .await
-                .unwrap_or_default();
-
-            let mut ranked = Vec::with_capacity(media_files.len());
-            for file in &media_files {
-                let score = score_movie_media_file_for_primary(
-                    title,
-                    &profile,
-                    &required_audio_languages,
-                    &persona,
-                    category,
-                    file,
+    let should_rank_primary =
+        primary_files.is_empty() || newly_imported_file_count == media_files.len();
+    let selected_primary_id = if should_rank_primary {
+        let category = crate::post_download_gate::facet_to_category_hint(&title.facet);
+        let profile_lookup = crate::catalog::discovery::QualityProfileLookup {
+            title_tags: &title.tags,
+            library_id: Some(title.library_id.as_str()),
+            imdb_id: title_external_id(title, "imdb"),
+            tvdb_id: title_external_id(title, "tvdb"),
+            category_hint: Some(category),
+        };
+        let profile = match app.resolve_quality_profile(profile_lookup).await {
+            Ok(profile) => profile,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = %title.id,
+                    "failed to resolve quality profile for movie scan role selection"
                 );
-                ranked.push((
-                    file.id.clone(),
-                    file.file_path.clone(),
-                    file.size_bytes,
-                    score,
-                ));
+                crate::QualityProfile::default()
             }
-            ranked.sort_by(|left, right| {
-                right
-                    .3
-                    .cmp(&left.3)
-                    .then_with(|| right.2.cmp(&left.2))
-                    .then_with(|| left.1.cmp(&right.1))
-                    .then_with(|| left.0.cmp(&right.0))
-            });
-            ranked[0].0.clone()
+        };
+        let required_audio_languages = app
+            .resolve_required_audio_languages(
+                Some(&title.id),
+                Some(&title.library_id),
+                Some(category),
+            )
+            .await
+            .unwrap_or_default();
+        let persona = app
+            .resolve_scoring_persona(Some(&title.library_id), Some(category))
+            .await
+            .unwrap_or_default();
+
+        let mut ranked = Vec::with_capacity(media_files.len());
+        for file in &media_files {
+            let score = score_movie_media_file_for_primary(
+                title,
+                &profile,
+                &required_audio_languages,
+                &persona,
+                category,
+                file,
+            );
+            ranked.push((
+                file.id.clone(),
+                file.file_path.clone(),
+                file.size_bytes,
+                score,
+            ));
         }
-        _ => {
-            let mut primary_files = primary_files;
-            primary_files.sort_by(|left, right| {
-                left.created_at
-                    .cmp(&right.created_at)
-                    .then_with(|| left.file_path.cmp(&right.file_path))
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            primary_files[0].id.clone()
-        }
+        ranked.sort_by(|left, right| {
+            right
+                .3
+                .cmp(&left.3)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        ranked[0].0.clone()
+    } else if let [file] = primary_files.as_slice() {
+        file.id.clone()
+    } else {
+        let mut primary_files = primary_files;
+        primary_files.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.file_path.cmp(&right.file_path))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        primary_files[0].id.clone()
     };
 
     let additional_file_ids = media_files
@@ -467,7 +468,7 @@ async fn normalize_movie_file_roles_after_scan(
         .services
         .library
         .media_files
-        .set_movie_file_roles_for_title(&title.id, &selected_primary_id, &additional_file_ids)
+        .set_media_file_roles_for_title(&title.id, &selected_primary_id, &additional_file_ids)
         .await
     {
         Ok(()) => true,
@@ -481,6 +482,141 @@ async fn normalize_movie_file_roles_after_scan(
             false
         }
     }
+}
+
+fn episodic_media_file_coverage_key(file: &crate::EpisodeScopedMediaFile) -> Vec<String> {
+    let mut episode_ids = file.episode_ids.clone();
+    episode_ids.sort();
+    episode_ids.dedup();
+    episode_ids
+}
+
+fn select_primary_episodic_media_file(files: &[&crate::EpisodeScopedMediaFile]) -> String {
+    let primary_files = files
+        .iter()
+        .copied()
+        .filter(|file| file.media_file.role.is_primary())
+        .collect::<Vec<_>>();
+    if let [file] = primary_files.as_slice() {
+        return file.media_file.id.clone();
+    }
+
+    let mut ranked = if primary_files.is_empty() {
+        files.to_vec()
+    } else {
+        primary_files
+    };
+    ranked.sort_by(|left, right| {
+        right
+            .media_file
+            .acquisition_score
+            .unwrap_or(0)
+            .cmp(&left.media_file.acquisition_score.unwrap_or(0))
+            .then_with(|| right.media_file.size_bytes.cmp(&left.media_file.size_bytes))
+            .then_with(|| left.media_file.file_path.cmp(&right.media_file.file_path))
+            .then_with(|| left.media_file.id.cmp(&right.media_file.id))
+    });
+    ranked[0].media_file.id.clone()
+}
+
+async fn normalize_episodic_file_roles_after_scan(
+    app: &AppUseCase,
+    title: &Title,
+    episode_ids: &HashSet<String>,
+) -> bool {
+    if episode_ids.is_empty() {
+        return false;
+    }
+
+    let mut episode_ids = episode_ids.iter().cloned().collect::<Vec<_>>();
+    episode_ids.sort();
+
+    let scoped_files = match app
+        .services
+        .library
+        .media_files
+        .list_live_media_files_for_episode_ids(&title.id, &episode_ids)
+        .await
+    {
+        Ok(files) => files,
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                "failed to list episodic media files for scan role normalization"
+            );
+            return false;
+        }
+    };
+    if scoped_files.is_empty() {
+        return false;
+    }
+
+    let mut normalized_coverages = HashSet::new();
+    let mut title_updated = false;
+    for episode_id in episode_ids {
+        let candidates = scoped_files
+            .iter()
+            .filter(|file| file.episode_ids.iter().any(|id| id == &episode_id))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let coverage_key = episodic_media_file_coverage_key(candidates[0]);
+        if candidates
+            .iter()
+            .any(|file| episodic_media_file_coverage_key(file) != coverage_key)
+        {
+            debug!(
+                title_id = %title.id,
+                episode_id = %episode_id,
+                "skipping episodic media file role normalization for mixed episode coverage"
+            );
+            continue;
+        }
+        if !normalized_coverages.insert(coverage_key) {
+            continue;
+        }
+
+        let selected_primary_id = select_primary_episodic_media_file(&candidates);
+        let additional_file_ids = candidates
+            .iter()
+            .filter(|file| file.media_file.id != selected_primary_id)
+            .map(|file| file.media_file.id.clone())
+            .collect::<Vec<_>>();
+        let needs_update = candidates.iter().any(|file| {
+            if file.media_file.id == selected_primary_id {
+                !file.media_file.role.is_primary()
+            } else {
+                !file.media_file.role.is_additional()
+            }
+        });
+        if !needs_update {
+            continue;
+        }
+
+        match app
+            .services
+            .library
+            .media_files
+            .set_media_file_roles_for_title(&title.id, &selected_primary_id, &additional_file_ids)
+            .await
+        {
+            Ok(()) => title_updated = true,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = %title.id,
+                    episode_id = %episode_id,
+                    primary_file_id = %selected_primary_id,
+                    "failed to normalize episodic media file roles after scan"
+                );
+            }
+        }
+    }
+
+    title_updated
 }
 
 async fn cleanup_missing_movie_title_records(
@@ -1062,7 +1198,8 @@ impl AppUseCase {
             let cleanup_updated =
                 cleanup_missing_movie_title_records(self, &title, &cleanup, &movie_scope).await;
             let roles_updated =
-                normalize_movie_file_roles_after_scan(self, &title, &movie_scope).await;
+                normalize_movie_file_roles_after_scan(self, &title, &movie_scope, summary.imported)
+                    .await;
             if cleanup_updated || roles_updated {
                 self.emit_title_updated_activity(None, &title).await;
             }
@@ -1207,6 +1344,7 @@ impl AppUseCase {
 
         let mut existing_records_by_path: HashMap<String, TitleMediaFile> = HashMap::new();
         let mut episode_links: HashSet<(String, String)> = HashSet::new();
+        let mut role_normalization_episode_ids = HashSet::new();
 
         for file in &existing_files {
             existing_records_by_path
@@ -1364,6 +1502,9 @@ impl AppUseCase {
                 }
 
                 summary.matched += 1;
+                for episode in &target_episodes {
+                    role_normalization_episode_ids.insert(episode.id.clone());
+                }
                 let layout_observation =
                     classify_title_scan_layout(&title_dir, &source_path, &target_episodes);
                 layout_summary.observe(layout_observation);
@@ -1579,65 +1720,83 @@ impl AppUseCase {
 
         flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
 
-        if !library_scan_cancel_requested(cancel_token.as_ref()) && !scoped_discovered_files {
-            reconcile_library_scan_unmatched_items(self, &title.facet, &title_dir_str, &seen_paths)
-                .await?;
+        if !library_scan_cancel_requested(cancel_token.as_ref()) {
             let mut title_updated_after_scan = false;
-            for stale_path in remaining_existing_paths {
-                let Some(record) = existing_records_by_path.get(&stale_path).cloned() else {
-                    continue;
-                };
-                if !stale_path.starts_with(title_dir_str.as_str()) {
-                    continue;
+
+            if !scoped_discovered_files {
+                reconcile_library_scan_unmatched_items(
+                    self,
+                    &title.facet,
+                    &title_dir_str,
+                    &seen_paths,
+                )
+                .await?;
+                for stale_path in remaining_existing_paths {
+                    let Some(record) = existing_records_by_path.get(&stale_path).cloned() else {
+                        continue;
+                    };
+                    if !stale_path.starts_with(title_dir_str.as_str()) {
+                        continue;
+                    }
+                    if stored_path_to_path_buf(&record.file_path).exists() {
+                        continue;
+                    }
+                    let db_started = Instant::now();
+                    let delete_result = self
+                        .services
+                        .library
+                        .media_files
+                        .delete_media_file(&record.id)
+                        .await;
+                    db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
+                    if let Err(error) = delete_result {
+                        warn!(
+                            error = %error,
+                            title_id = %title.id,
+                            file_path = %record.file_path,
+                            "failed to delete stale media file during title scan"
+                        );
+                    } else {
+                        title_updated_after_scan = true;
+                    }
                 }
-                if stored_path_to_path_buf(&record.file_path).exists() {
-                    continue;
+
+                if title.folder_path.as_deref() != Some(title_dir_str.as_str()) {
+                    let db_started = Instant::now();
+                    self.services
+                        .catalog
+                        .titles
+                        .set_folder_path(&title.id, &title_dir_str)
+                        .await?;
+                    db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
+                    title_updated_after_scan = true;
                 }
-                let db_started = Instant::now();
-                let delete_result = self
-                    .services
-                    .library
-                    .media_files
-                    .delete_media_file(&record.id)
-                    .await;
-                db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
-                if let Err(error) = delete_result {
-                    warn!(
-                        error = %error,
-                        title_id = %title.id,
-                        file_path = %record.file_path,
-                        "failed to delete stale media file during title scan"
-                    );
-                } else {
+
+                if let Some(use_season_folders) = layout_summary.inferred_use_season_folders()
+                    && crate::import_workflow::use_season_folders(&title) != use_season_folders
+                {
+                    let tags = merge_title_scan_option_tags(title.tags.clone(), use_season_folders);
+                    let db_started = Instant::now();
+                    self.apply_title_metadata_update(
+                        Some(actor.id.clone()),
+                        &title.id,
+                        None,
+                        None,
+                        Some(tags),
+                    )
+                    .await?;
+                    db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                     title_updated_after_scan = true;
                 }
             }
 
-            if title.folder_path.as_deref() != Some(title_dir_str.as_str()) {
-                let db_started = Instant::now();
-                self.services
-                    .catalog
-                    .titles
-                    .set_folder_path(&title.id, &title_dir_str)
-                    .await?;
-                db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
-                title_updated_after_scan = true;
-            }
-
-            if let Some(use_season_folders) = layout_summary.inferred_use_season_folders()
-                && crate::import_workflow::use_season_folders(&title) != use_season_folders
+            if normalize_episodic_file_roles_after_scan(
+                self,
+                &title,
+                &role_normalization_episode_ids,
+            )
+            .await
             {
-                let tags = merge_title_scan_option_tags(title.tags.clone(), use_season_folders);
-                let db_started = Instant::now();
-                self.apply_title_metadata_update(
-                    Some(actor.id.clone()),
-                    &title.id,
-                    None,
-                    None,
-                    Some(tags),
-                )
-                .await?;
-                db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                 title_updated_after_scan = true;
             }
 

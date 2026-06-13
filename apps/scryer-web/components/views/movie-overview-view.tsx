@@ -426,6 +426,7 @@ type Props = {
   hasDownloadClients: boolean;
   showSearchPrerequisiteNotice: boolean;
   renamePlan: MediaRenamePlan | null;
+  renameEnabled: boolean;
   renamePreviewing: boolean;
   renameApplying: boolean;
   interactiveSearchAttempted: boolean;
@@ -477,6 +478,7 @@ export function MovieOverviewView({
   hasDownloadClients,
   showSearchPrerequisiteNotice,
   renamePlan,
+  renameEnabled,
   renamePreviewing,
   renameApplying,
   interactiveSearchAttempted,
@@ -560,7 +562,15 @@ export function MovieOverviewView({
   const runtime = formatRuntime(title.runtimeMinutes);
   const year = title.year;
   const studio = title.studio;
-  const hasMediaFiles = mediaFiles.length > 0;
+  const sortedMediaFiles = mediaFiles
+    .map((file, index) => ({ file, index }))
+    .sort((left, right) => {
+      const leftRank = left.file.role === "primary" ? 0 : 1;
+      const rightRank = right.file.role === "primary" ? 0 : 1;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map(({ file }) => file);
+  const hasMediaFiles = sortedMediaFiles.length > 0;
   const orphanCollections = collections.filter(
     (collection) => !collection.orderedPath || !mediaFiles.some((file) => file.filePath === collection.orderedPath),
   );
@@ -918,7 +928,7 @@ export function MovieOverviewView({
                 <FolderOpen className="h-4 w-4" />
               {t("title.filesOnDisk")}
               </CardTitle>
-            {canManageTitle ? (
+            {canManageTitle && renameEnabled ? (
               <Button
                 id="movie-overview-rename-preview"
                 className="w-full sm:w-auto"
@@ -933,7 +943,7 @@ export function MovieOverviewView({
           </div>
         </CardHeader>
         <CardContent>
-          {mediaFiles.length === 0 && orphanCollections.length === 0 ? (
+          {sortedMediaFiles.length === 0 && orphanCollections.length === 0 ? (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
                 {t("title.noFilesTracked")} {t("title.noFilesTrackedHint")}
@@ -951,7 +961,7 @@ export function MovieOverviewView({
             </div>
           ) : (
             <div className="space-y-2">
-              {mediaFiles.map((mediaFile) => {
+              {sortedMediaFiles.map((mediaFile) => {
                 const isAdditionalFile = mediaFile.role === "additional";
                 const isPrimaryFile = mediaFile.role === "primary";
                 const isPromotingFile = primaryMovieFileUpdatingId === mediaFile.id;
@@ -1005,7 +1015,7 @@ export function MovieOverviewView({
                             : undefined}
                         />
                       </div>
-                      <div className="flex shrink-0 flex-wrap items-center gap-3 lg:justify-end lg:self-center lg:pl-6">
+                      <div className="flex shrink-0 flex-col items-start gap-3 lg:items-end lg:self-start lg:pl-6">
                         <div className="text-left sm:text-right">
                           <div
                             className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl"
@@ -1018,55 +1028,59 @@ export function MovieOverviewView({
                           </div>
                         </div>
                         {canManageTitle ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            id={selectorId("movie-overview-search-subtitles", mediaFile.id)}
-                            className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
-                            onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
-                            title={t("subtitle.search")}
-                            aria-label={t("subtitle.search")}
-                          >
-                            <Search className="mr-1.5 h-3.5 w-3.5" />
-                            {t("subtitle.search")}
-                          </Button>
-                        ) : null}
-                        {canManageTitle && isAdditionalFile && onMakePrimaryFile ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            id={selectorId("movie-overview-make-primary-file", mediaFile.id)}
-                            className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
-                            onClick={() => {
-                              void onMakePrimaryFile(mediaFile.id);
-                            }}
-                            disabled={isPromotingFile}
-                            title={t("mediaFile.makePrimary")}
-                            aria-label={t("mediaFile.makePrimary")}
-                          >
-                            {isPromotingFile ? (
-                              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Star className="mr-1.5 h-3.5 w-3.5" />
-                            )}
-                            {t("mediaFile.makePrimary")}
-                          </Button>
-                        ) : null}
-                        {canManageTitle && onDeleteFile ? (
-                          <Button
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            id={selectorId("movie-overview-delete-file", mediaFile.id)}
-                            onClick={() => onDeleteFile(mediaFile.id)}
-                            className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
-                            title={t("mediaFile.delete")}
-                            aria-label={t("mediaFile.delete")}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-start gap-2 lg:justify-end">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                id={selectorId("movie-overview-search-subtitles", mediaFile.id)}
+                                className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
+                                onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
+                                title={t("subtitle.search")}
+                                aria-label={t("subtitle.search")}
+                              >
+                                <Search className="mr-1.5 h-3.5 w-3.5" />
+                                {t("subtitle.search")}
+                              </Button>
+                              {isAdditionalFile && onMakePrimaryFile ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="secondary"
+                                  id={selectorId("movie-overview-make-primary-file", mediaFile.id)}
+                                  className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
+                                  onClick={() => {
+                                    void onMakePrimaryFile(mediaFile.id);
+                                  }}
+                                  disabled={isPromotingFile}
+                                  title={t("mediaFile.makePrimary")}
+                                  aria-label={t("mediaFile.makePrimary")}
+                                >
+                                  {isPromotingFile ? (
+                                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Star className="mr-1.5 h-3.5 w-3.5" />
+                                  )}
+                                  {t("mediaFile.makePrimary")}
+                                </Button>
+                              ) : null}
+                            </div>
+                            {onDeleteFile ? (
+                              <Button
+                                type="button"
+                                size="icon-sm"
+                                variant="secondary"
+                                id={selectorId("movie-overview-delete-file", mediaFile.id)}
+                                onClick={() => onDeleteFile(mediaFile.id)}
+                                className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
+                                title={t("mediaFile.delete")}
+                                aria-label={t("mediaFile.delete")}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
                     </div>

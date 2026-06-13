@@ -179,6 +179,13 @@ mod tests {
             reduced_comparison_key("Eiga Given: Hiiragi Mix", TitleMatchProfile::Movie),
             "given hiiragi mix"
         );
+        assert_eq!(
+            reduced_comparison_key(
+                "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+                TitleMatchProfile::Movie
+            ),
+            "demon slayer kimetsu no yaiba mugen train"
+        );
     }
 
     #[test]

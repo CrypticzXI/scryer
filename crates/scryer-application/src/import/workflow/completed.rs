@@ -15,6 +15,55 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
         }
     });
 }
+
+async fn analyze_and_persist_imported_media_file(
+    app: &AppUseCase,
+    title_id: &str,
+    media_file_id: &str,
+    file_path: &std::path::Path,
+) {
+    let acceptance = match app
+        .services
+        .library
+        .media_analyzer
+        .analyze_file(file_path.to_path_buf())
+        .await
+    {
+        Ok(crate::MediaAnalysisOutcome::Valid(analysis)) => {
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: Some(*analysis),
+                scan_error: None,
+            }
+        }
+        Ok(crate::MediaAnalysisOutcome::Invalid(error)) => {
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: None,
+                scan_error: Some(error),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                title_id,
+                file_id = %media_file_id,
+                file_path = %file_path.display(),
+                "failed to analyze imported media file"
+            );
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: None,
+                scan_error: Some(error.to_string()),
+            }
+        }
+    };
+
+    crate::post_download_gate::persist_media_analysis_result(
+        &app.services.library.media_files,
+        media_file_id,
+        &acceptance,
+    )
+    .await;
+}
+
 fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceIdentity {
     DownloadSourceIdentity::new(
         Some(completed.client_id.as_str()),

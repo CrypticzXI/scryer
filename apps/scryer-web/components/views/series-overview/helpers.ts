@@ -1,6 +1,7 @@
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
+  SeriesMovieLink,
   TitleCollection,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
@@ -240,6 +241,93 @@ export function blocklistEntryMatchesEpisode(
   }
   const keys = extractEpisodeKeysFromReleaseTitle(entry.sourceTitle);
   return keys.has(episodeKey(season, episodeNumber));
+}
+
+export type SeriesTimelineItem =
+  | {
+      kind: "collection";
+      key: string;
+      collection: TitleCollection;
+      sortValue: number;
+    }
+  | {
+      kind: "seriesMovie";
+      key: string;
+      link: SeriesMovieLink;
+      sortValue: number;
+    };
+
+export function seriesMovieTimelineSortValue(link: SeriesMovieLink) {
+  const narrativeOrder = link.narrativeOrder?.trim();
+  if (narrativeOrder && /^-?\d+(?:\.\d+)?$/.test(narrativeOrder)) {
+    const value = Number.parseFloat(narrativeOrder);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  if (link.afterSeason != null) {
+    return link.afterSeason + 0.5;
+  }
+
+  if (link.beforeSeason != null) {
+    return link.beforeSeason - 0.5;
+  }
+
+  return 0.5;
+}
+
+export function buildSeriesTimelineItems(
+  collections: TitleCollection[],
+  seriesMovieLinks: SeriesMovieLink[],
+): SeriesTimelineItem[] {
+  const items: SeriesTimelineItem[] = [
+    ...collections.map((collection) => ({
+      kind: "collection" as const,
+      key: `s-${collection.id}`,
+      collection,
+      sortValue: parseSeasonSortValue(collection),
+    })),
+    ...seriesMovieLinks.map((link) => ({
+      kind: "seriesMovie" as const,
+      key: `m-${link.id}`,
+      link,
+      sortValue: seriesMovieTimelineSortValue(link),
+    })),
+  ];
+
+  return items.sort(compareSeriesTimelineItems);
+}
+
+function compareSeriesTimelineItems(
+  left: SeriesTimelineItem,
+  right: SeriesTimelineItem,
+) {
+  const leftSpecials = left.kind === "collection" && isSpecialsCollection(left.collection);
+  const rightSpecials = right.kind === "collection" && isSpecialsCollection(right.collection);
+  if (leftSpecials !== rightSpecials) {
+    return leftSpecials ? 1 : -1;
+  }
+
+  if (left.sortValue !== right.sortValue) {
+    return right.sortValue - left.sortValue;
+  }
+
+  if (left.kind !== right.kind) {
+    return left.kind === "collection" ? -1 : 1;
+  }
+
+  if (left.kind === "collection" && right.kind === "collection") {
+    return right.collection.collectionIndex.localeCompare(left.collection.collectionIndex)
+      || right.collection.id.localeCompare(left.collection.id);
+  }
+
+  if (left.kind === "seriesMovie" && right.kind === "seriesMovie") {
+    return left.link.movie.title.localeCompare(right.link.movie.title)
+      || left.link.id.localeCompare(right.link.id);
+  }
+
+  return 0;
 }
 
 /**

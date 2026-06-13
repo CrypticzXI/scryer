@@ -250,6 +250,9 @@ impl AppUseCase {
                 "requested facet does not match title facet".into(),
             ));
         }
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
 
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))
@@ -270,6 +273,9 @@ impl AppUseCase {
     ) -> AppResult<RenamePlan> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
 
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))

@@ -907,6 +907,7 @@ impl SettingsMutations {
                 }),
                 required_audio_languages: input.required_audio_languages,
                 folder_template: input.folder_template,
+                rename_enabled: input.rename_enabled,
                 rename_template: input.rename_template,
                 rename_collision_policy: input.rename_collision_policy,
                 rename_missing_metadata_policy: input.rename_missing_metadata_policy,

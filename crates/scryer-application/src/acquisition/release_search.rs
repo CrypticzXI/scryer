@@ -5,8 +5,9 @@ use super::acquisition::{
 use super::*;
 use crate::acquisition_policy::evaluate_upgrade;
 use crate::acquisition_search_queries::{
-    anidb_id_from_external_ids, build_search_queries, imdb_id_from_title,
-    tmdb_id_from_external_ids, tvdb_id_from_external_ids,
+    anidb_id_from_external_ids, build_movie_search_queries, build_search_queries,
+    imdb_id_from_title, mal_id_from_external_ids, tmdb_id_from_external_ids,
+    tvdb_id_from_external_ids,
 };
 use crate::delay_profile::DelayProfile;
 use crate::quality::release_parser::ParseDisposition;
@@ -30,8 +31,12 @@ pub(crate) struct ResolvedReleaseSearchSubject {
     pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
+    pub(crate) mal_id: Option<String>,
     pub(crate) category: String,
-    pub(crate) facet: String,
+    pub(crate) owner_facet: MediaFacet,
+    pub(crate) search_facet: MediaFacet,
+    pub(crate) id_search_facet: Option<MediaFacet>,
+    pub(crate) newznab_categories: Vec<String>,
     pub(crate) runtime_minutes: Option<i32>,
     pub(crate) season: Option<u32>,
     pub(crate) episode: Option<u32>,
@@ -197,12 +202,26 @@ pub(crate) fn series_movie_search_title(
     let movie = &link.movie;
     let mut search_title = title.clone();
     search_title.name = movie.title.clone();
+    search_title.facet = MediaFacet::Movie;
     search_title.year = movie.year;
     search_title.imdb_id = movie.imdb_id.clone();
     search_title.runtime_minutes = movie.runtime_minutes;
-    search_title
-        .external_ids
-        .retain(|external_id| !matches!(external_id.source.as_str(), "tvdb" | "tmdb" | "anidb"));
+    search_title.external_ids.retain(|external_id| {
+        !matches!(
+            external_id.source.trim().to_ascii_lowercase().as_str(),
+            "imdb" | "tvdb" | "tmdb" | "anidb" | "mal"
+        )
+    });
+    if let Some(imdb_id) = movie
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+    {
+        search_title.external_ids.push(scryer_domain::ExternalId {
+            source: "imdb".to_string(),
+            value: imdb_id,
+        });
+    }
     if let Some(tvdb_id) = movie
         .tvdb_id
         .as_ref()
@@ -233,9 +252,114 @@ pub(crate) fn series_movie_search_title(
             value: anidb_id.clone(),
         });
     }
-    search_title.aliases.clear();
-    search_title.tagged_aliases.clear();
+    if let Some(mal_id) = movie
+        .mal_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        search_title.external_ids.push(scryer_domain::ExternalId {
+            source: "mal".to_string(),
+            value: mal_id.clone(),
+        });
+    }
+    search_title.aliases = series_movie_search_aliases(&search_title);
+    search_title.tagged_aliases = search_title
+        .aliases
+        .iter()
+        .map(|alias| scryer_domain::TaggedAlias {
+            name: alias.clone(),
+            language: "und".to_string(),
+        })
+        .collect();
     search_title
+}
+
+fn series_movie_search_aliases(search_title: &Title) -> Vec<String> {
+    let mut aliases = Vec::new();
+    let mut seen = HashSet::new();
+    let primary_key = crate::title_matching::canonical_lookup_key(&search_title.name);
+    push_series_movie_alias_evidence(&mut aliases, &mut seen, search_title.name.clone());
+
+    for candidate in crate::title_matching::search_variants(&search_title.name) {
+        push_series_movie_alias(&mut aliases, &mut seen, &primary_key, candidate);
+    }
+    let reduced = crate::title_matching::reduced_comparison_key(
+        &search_title.name,
+        crate::title_matching::TitleMatchProfile::Movie,
+    );
+    push_series_movie_alias(&mut aliases, &mut seen, &primary_key, reduced);
+
+    let parsed = crate::parse_release_metadata_for_target(
+        &search_title.name,
+        &crate::build_release_parse_context(search_title, None, None, Some("movie")),
+    );
+    let mut variants = parsed.normalized_title_variants.clone();
+    if !variants
+        .iter()
+        .any(|title| title.eq_ignore_ascii_case(&parsed.normalized_title))
+    {
+        variants.push(parsed.normalized_title);
+    }
+    for variant in variants {
+        push_series_movie_alias(&mut aliases, &mut seen, &primary_key, variant);
+    }
+
+    aliases
+}
+
+fn push_series_movie_alias(
+    aliases: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    primary_key: &str,
+    alias: String,
+) {
+    let alias = alias.split_whitespace().collect::<Vec<_>>().join(" ");
+    if alias.is_empty() {
+        return;
+    }
+    let key = crate::title_matching::canonical_lookup_key(&alias);
+    if !key.is_empty() && key != primary_key && seen.insert(key) {
+        aliases.push(alias);
+    }
+}
+
+fn push_series_movie_alias_evidence(
+    aliases: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    alias: String,
+) {
+    let alias = alias.split_whitespace().collect::<Vec<_>>().join(" ");
+    if alias.is_empty() {
+        return;
+    }
+    let key = crate::title_matching::canonical_lookup_key(&alias);
+    if !key.is_empty() && seen.insert(key) {
+        aliases.push(alias);
+    }
+}
+
+fn media_facet_from_str(value: &str) -> Option<MediaFacet> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "movie" => Some(MediaFacet::Movie),
+        "series" => Some(MediaFacet::Series),
+        "anime" => Some(MediaFacet::Anime),
+        _ => None,
+    }
+}
+
+fn owner_facet_for_wanted_item(title: &Title, item: &WantedItem) -> MediaFacet {
+    item.title_facet
+        .as_deref()
+        .and_then(media_facet_from_str)
+        .unwrap_or_else(|| title.facet.clone())
+}
+
+fn series_movie_newznab_categories(owner_facet: &MediaFacet) -> Vec<String> {
+    let mut categories = vec!["2000".to_string()];
+    if matches!(owner_facet, MediaFacet::Anime) {
+        categories.push("5070".to_string());
+    }
+    categories
 }
 
 fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
@@ -744,8 +868,12 @@ impl AppUseCase {
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
-            category,
-            facet: title.facet.as_str().to_string(),
+            mal_id: mal_id_from_external_ids(&title.external_ids),
+            category: category.clone(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
             runtime_minutes: title.runtime_minutes,
             season: None,
             episode: None,
@@ -856,8 +984,12 @@ impl AppUseCase {
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
-            category,
-            facet: title.facet.as_str().to_string(),
+            mal_id: mal_id_from_external_ids(&title.external_ids),
+            category: category.clone(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
             runtime_minutes: episode_record
                 .as_ref()
                 .and_then(|episode| episode.duration_seconds)
@@ -924,8 +1056,12 @@ impl AppUseCase {
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
-            category,
-            facet: title.facet.as_str().to_string(),
+            mal_id: mal_id_from_external_ids(&title.external_ids),
+            category: category.clone(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
             runtime_minutes,
             season: Some(season_num),
             episode: None,
@@ -974,16 +1110,16 @@ impl AppUseCase {
         let anidb_id = anidb_id_from_external_ids(&search_title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
-        let mut queries = vec![if let Some(year) = search_title.year {
-            format!("{} {}", search_title.name.trim(), year)
-        } else {
-            search_title.name.trim().to_string()
-        }];
-        let mut seen = HashSet::new();
-        queries.retain(|query| !query.trim().is_empty() && seen.insert(query.to_ascii_lowercase()));
+        let query_result = build_movie_search_queries(
+            &search_title,
+            "series_movie",
+            self.release_search_category_for_facet(&search_title.facet),
+        );
+        let mut queries = query_result.queries;
         if queries.is_empty() && imdb_id.is_some() {
             queries.push(String::new());
         }
+        let category = self.release_search_category_for_facet(&search_title.facet);
 
         Ok((
             search_title.clone(),
@@ -996,8 +1132,12 @@ impl AppUseCase {
                 tmdb_id: tmdb_id_from_external_ids(&search_title.external_ids),
                 tvdb_id,
                 anidb_id,
-                category: self.release_search_category_for_facet(&search_title.facet),
-                facet: title.facet.as_str().to_string(),
+                mal_id: mal_id_from_external_ids(&search_title.external_ids),
+                category,
+                owner_facet: title.facet.clone(),
+                search_facet: search_title.facet.clone(),
+                id_search_facet: Some(MediaFacet::Movie),
+                newznab_categories: series_movie_newznab_categories(&title.facet),
                 runtime_minutes: search_title.runtime_minutes,
                 season: None,
                 episode: None,
@@ -1020,6 +1160,7 @@ impl AppUseCase {
         episode: Option<&Episode>,
     ) -> ResolvedReleaseSearchSubject {
         let query_result = build_search_queries(title, item, episode, &self.facet_registry);
+        let owner_facet = owner_facet_for_wanted_item(title, item);
         let absolute_episode = episode
             .and_then(|episode| episode.absolute_number.as_deref())
             .and_then(|value| value.parse::<u32>().ok());
@@ -1033,8 +1174,16 @@ impl AppUseCase {
             tmdb_id: query_result.tmdb_id,
             tvdb_id: query_result.tvdb_id,
             anidb_id: query_result.anidb_id,
-            category: query_result.category,
-            facet: title.facet.as_str().to_string(),
+            mal_id: query_result.mal_id,
+            category: query_result.category.clone(),
+            owner_facet: owner_facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: (item.media_type == "series_movie").then_some(MediaFacet::Movie),
+            newznab_categories: if item.media_type == "series_movie" {
+                series_movie_newznab_categories(&owner_facet)
+            } else {
+                Vec::new()
+            },
             runtime_minutes: episode
                 .and_then(|episode| episode.duration_seconds)
                 .map(|seconds| (seconds / 60) as i32)
@@ -1352,8 +1501,12 @@ mod tests {
             tmdb_id: None,
             tvdb_id: None,
             anidb_id: None,
+            mal_id: None,
             category: title.facet.as_str().to_string(),
-            facet: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
             runtime_minutes: title.runtime_minutes,
             season: None,
             episode: None,

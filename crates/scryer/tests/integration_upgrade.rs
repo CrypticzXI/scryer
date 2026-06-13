@@ -165,14 +165,14 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         self.inner.update_media_file_path(file_id, file_path).await
     }
 
-    async fn set_movie_file_roles_for_title(
+    async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
         primary_file_id: &str,
         additional_file_ids: &[String],
     ) -> AppResult<()> {
         self.inner
-            .set_movie_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
             .await
     }
 

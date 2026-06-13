@@ -825,6 +825,7 @@ pub async fn execute_manual_import(
 
     let ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     } = resolve_import_paths(app, &title).await?;
@@ -908,6 +909,7 @@ pub async fn execute_manual_import(
             app,
             actor,
             &title,
+            rename_enabled,
             &rename_template,
             &full_folder_path,
             &source,

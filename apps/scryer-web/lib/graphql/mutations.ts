@@ -840,6 +840,7 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    renameEnabled
     renameTemplate
     renameCollisionPolicy
     renameMissingMetadataPolicy
