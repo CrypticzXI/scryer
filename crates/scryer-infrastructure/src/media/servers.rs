@@ -256,11 +256,12 @@ async fn replace_connection_details(
         MediaServerProvider::Plex => {
             SqlRuntime::execute(
                 SqlExec::Tx(tx),
-                "INSERT INTO plex_media_server_details (connection_id, machine_id, created_at, updated_at)
-                 VALUES ({}, {}, {}, {})",
+                "INSERT INTO plex_media_server_details (connection_id, machine_id, api_key, created_at, updated_at)
+                 VALUES ({}, {}, {}, {}, {})",
                 &[
                     SqlArg::Text(connection.id.clone()),
                     SqlArg::OptText(connection.machine_id.clone()),
+                    encrypted_api_key_arg(encryption_key, connection.api_key.as_ref())?,
                     SqlArg::Timestamp(connection.created_at),
                     SqlArg::Timestamp(connection.updated_at),
                 ],
@@ -398,6 +399,8 @@ async fn row_to_connection(
         }
         MediaServerProvider::Plex => {
             connection.machine_id = load_plex_machine_id(datastore, &id).await?;
+            connection.api_key =
+                load_api_key(datastore, "plex_media_server_details", &id, encryption_key).await?;
         }
         MediaServerProvider::Emby => {
             connection.api_key =

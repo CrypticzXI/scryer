@@ -107,6 +107,7 @@ impl RenameMissingMetadataPolicy {
 pub struct RenamePlanItem {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub normalized_filename: Option<String>,
@@ -137,6 +138,7 @@ pub struct RenamePlan {
 pub struct RenameApplyItemResult {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub final_path: Option<String>,
@@ -1345,6 +1347,7 @@ struct ResolvedSeriesRenameMetadata {
 struct RenamePlanItemIds {
     collection_id: Option<String>,
     media_file_id: Option<String>,
+    series_movie_link_ids: Vec<String>,
 }
 
 struct RenamePlanSource {
@@ -1414,6 +1417,7 @@ fn rename_plan_item(
     RenamePlanItem {
         collection_id: item_ids.collection_id,
         media_file_id: item_ids.media_file_id,
+        series_movie_link_ids: item_ids.series_movie_link_ids,
         current_path,
         proposed_path,
         normalized_filename,
@@ -1778,6 +1782,7 @@ fn build_series_media_file_rename_plan_item(
     let source_item_ids = RenamePlanItemIds {
         collection_id: None,
         media_file_id: Some(source.file.id.clone()),
+        series_movie_link_ids: source.file.series_movie_link_ids.clone(),
     };
     let source_file = match prepare_rename_plan_source(
         source_item_ids.clone(),
@@ -1831,6 +1836,7 @@ fn build_series_media_file_rename_plan_item(
     let item_ids = RenamePlanItemIds {
         collection_id: rename_metadata.collection_id.clone(),
         media_file_id: source_item_ids.media_file_id,
+        series_movie_link_ids: source_item_ids.series_movie_link_ids,
     };
     let rendered = match resolve_rendered_rename_filename(
         &source_file,
@@ -2148,6 +2154,7 @@ fn build_movie_rename_plan_item(
     let item_ids = RenamePlanItemIds {
         collection_id: Some(collection.id.clone()),
         media_file_id: media_file.map(|media_file| media_file.id.clone()),
+        series_movie_link_ids: Vec::new(),
     };
     let source_file =
         match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {

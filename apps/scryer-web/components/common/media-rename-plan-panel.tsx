@@ -3,6 +3,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 
 type MediaRenamePlanItem = {
   collectionId?: string | null;
+  seriesMovieLinkIds?: string[];
   currentPath?: string | null;
   proposedPath?: string | null;
 };

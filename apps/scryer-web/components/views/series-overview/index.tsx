@@ -379,12 +379,16 @@ export function SeriesOverviewView({
       }
     }
 
-    if (latestKey) {
+    if (latestKey || standaloneSeriesMovieLinks.length > 0) {
       initializedRef.current = true;
-      setExpandedKeys(new Set([latestKey]));
-    } else if (standaloneSeriesMovieLinks.length > 0) {
-      initializedRef.current = true;
-      setExpandedKeys(new Set([STANDALONE_SERIES_MOVIE_KEY]));
+      const nextExpanded = new Set<string>();
+      if (latestKey) {
+        nextExpanded.add(latestKey);
+      }
+      if (standaloneSeriesMovieLinks.length > 0) {
+        nextExpanded.add(STANDALONE_SERIES_MOVIE_KEY);
+      }
+      setExpandedKeys(nextExpanded);
     }
   }, [latestKey, initialEpisodeId, episodesByCollection, standaloneSeriesMovieLinks.length]);
 

@@ -231,7 +231,7 @@ fn title_external_id<'a>(title: &'a Title, source: &str) -> Option<&'a str> {
 
 fn media_analysis_from_title_media_file(file: &TitleMediaFile) -> MediaFileAnalysis {
     MediaFileAnalysis {
-        video_codec: file.video_codec.clone(),
+        video_codec: file.video_codec,
         video_width: file.video_width,
         video_height: file.video_height,
         video_bitrate_kbps: file.video_bitrate_kbps,
@@ -286,7 +286,7 @@ fn parsed_release_for_movie_media_file(file: &TitleMediaFile) -> crate::ParsedRe
     {
         parsed.quality = Some(quality.clone());
     }
-    if let Some(codec) = file.video_codec_parsed.clone() {
+    if let Some(codec) = file.video_codec_parsed {
         parsed.video_codec = Some(codec);
     }
     if let Some(codec) = file

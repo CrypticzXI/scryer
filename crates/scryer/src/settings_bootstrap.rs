@@ -1149,6 +1149,22 @@ mod tests {
         assert!(!changed);
         assert_eq!(profiles, vec![customized_profile]);
     }
+
+    #[test]
+    fn merge_default_quality_profiles_seeds_standard_defaults_when_empty() {
+        let (profiles, changed) = merge_default_quality_profiles(
+            Vec::new(),
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(changed);
+        assert!(profiles.iter().any(|profile| profile.id == "4k"));
+        assert!(profiles.iter().any(|profile| profile.id == "1080p"));
+        assert!(!profiles.iter().any(|profile| profile.id == "8k"));
+    }
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(

@@ -849,8 +849,13 @@ impl AppUseCase {
                 "api_key".to_string(),
                 serde_json::Value::String(api_key.to_string()),
             );
+            config.insert(
+                "auth_token".to_string(),
+                serde_json::Value::String(api_key.to_string()),
+            );
         } else {
             config.remove("api_key");
+            config.remove("auth_token");
         }
         if let Some(machine_id) = connection.machine_id.as_deref() {
             config.insert(

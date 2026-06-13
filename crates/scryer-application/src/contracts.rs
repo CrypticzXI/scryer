@@ -26,7 +26,7 @@ impl DownloadSubmissionPurpose {
         }
     }
 
-    pub fn from_str(raw: &str) -> Self {
+    pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
             _ => Self::Standard,
@@ -53,7 +53,7 @@ impl MediaFileRole {
         }
     }
 
-    pub fn from_str(raw: &str) -> Self {
+    pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional" => Self::Additional,
             _ => Self::Primary,

@@ -258,6 +258,7 @@ fn fingerprint_deterministic() {
     let items = vec![RenamePlanItem {
         collection_id: None,
         media_file_id: None,
+        series_movie_link_ids: Vec::new(),
         current_path: "/data/movie.mkv".to_string(),
         proposed_path: Some("/data/Movie (2024).mkv".to_string()),
         normalized_filename: Some("Movie (2024).mkv".to_string()),

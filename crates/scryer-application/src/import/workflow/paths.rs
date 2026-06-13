@@ -250,6 +250,45 @@ async fn matched_completed_download_submission(
     )))
 }
 
+pub(crate) enum ResolvedCompletedDownloadOriginForImport {
+    Ready(CompletedDownload),
+    Conflict {
+        reason: &'static str,
+        detail: String,
+    },
+    NoScryerOrigin,
+}
+
+pub(crate) async fn resolve_completed_download_origin_for_import(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    item: Option<&DownloadQueueItem>,
+) -> AppResult<ResolvedCompletedDownloadOriginForImport> {
+    let submission_resolution = resolve_completed_download_submission(app, completed, item).await?;
+    Ok(
+        match resolve_completed_download_origin(completed, &submission_resolution) {
+            CompletedDownloadOriginResolution::Ready(completed) => {
+                ResolvedCompletedDownloadOriginForImport::Ready(completed)
+            }
+            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }
+            }
+            CompletedDownloadOriginResolution::NoScryerOrigin => {
+                ResolvedCompletedDownloadOriginForImport::NoScryerOrigin
+            }
+        },
+    )
+}
+
+pub(crate) async fn block_completed_download_origin_conflict_for_manual_review(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    reason: &str,
+    detail: &str,
+) {
+    block_completed_download_identity_for_manual_review(app, completed, reason, detail).await;
+}
+
 async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
     completed: &CompletedDownload,
@@ -294,28 +333,6 @@ async fn completed_download_already_imported_for_current_attempt(
         .imports
         .is_already_imported(&source_identity)
         .await
-}
-
-fn completed_download_for_submission_cleanup(
-    completed: &CompletedDownload,
-    resolution: &CompletedDownloadSubmissionResolution,
-) -> CompletedDownload {
-    if has_scryer_origin(&completed.parameters) {
-        return completed.clone();
-    }
-
-    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
-        return completed.clone();
-    };
-
-    let mut patched = completed.clone();
-    merge_scryer_origin_parameters(
-        &mut patched.parameters,
-        matched.submission.title_id.clone(),
-        matched.submission.facet.clone(),
-        &matched.submission.scope,
-    );
-    patched
 }
 
 async fn completed_download_terminal_state_for_resolution(
@@ -615,13 +632,36 @@ pub async fn try_import_completed_downloads(
                 state = state.as_str(),
                 "import: DownloadId already has terminal state"
             );
-            let cleanup_completed =
-                completed_download_for_submission_cleanup(&completed, &submission_resolution);
-            let cleanup =
-                reconcile_terminal_download_cleanup_for_completed(app, &cleanup_completed, state)
+            match resolve_completed_download_origin(&completed, &submission_resolution) {
+                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
+                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                        app,
+                        &cleanup_completed,
+                        state,
+                    )
                     .await;
-            if terminal_download_cleanup_is_complete(cleanup) {
-                processed_ids.insert(source_ref.clone());
+                    if terminal_download_cleanup_is_complete(cleanup) {
+                        processed_ids.insert(source_ref.clone());
+                    }
+                }
+                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                    block_completed_download_identity_for_manual_review(
+                        app,
+                        &completed,
+                        reason,
+                        &detail,
+                    )
+                    .await;
+                }
+                CompletedDownloadOriginResolution::NoScryerOrigin => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: terminal download state found but no scryer origin was available for cleanup"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                }
             }
             continue;
         }
@@ -673,60 +713,71 @@ pub async fn try_import_completed_downloads(
                 title = %item.title_name,
                 "import: treating already-imported download as terminal imported for cleanup"
             );
-            let cleanup_completed =
-                completed_download_for_submission_cleanup(&completed, &submission_resolution);
-            let cleanup = reconcile_terminal_download_cleanup_for_completed(
-                app,
-                &cleanup_completed,
-                TrackedDownloadState::Imported,
-            )
-            .await;
-            if terminal_download_cleanup_is_complete(cleanup) {
-                processed_ids.insert(source_ref.clone());
+            match resolve_completed_download_origin(&completed, &submission_resolution) {
+                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
+                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                        app,
+                        &cleanup_completed,
+                        TrackedDownloadState::Imported,
+                    )
+                    .await;
+                    if terminal_download_cleanup_is_complete(cleanup) {
+                        processed_ids.insert(source_ref.clone());
+                    }
+                }
+                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                    block_completed_download_identity_for_manual_review(
+                        app,
+                        &completed,
+                        reason,
+                        &detail,
+                    )
+                    .await;
+                }
+                CompletedDownloadOriginResolution::NoScryerOrigin => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: already-imported download had no scryer origin for cleanup"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                }
             }
             continue;
         }
 
-        let completed = if has_scryer_origin(&completed.parameters) {
-            completed.clone()
-        } else {
-            match &submission_resolution {
-                CompletedDownloadSubmissionResolution::Matched(matched)
-                    if submission_has_scryer_origin(&matched.submission) =>
-                {
-                    let mut patched = completed.clone();
-                    merge_scryer_origin_parameters(
-                        &mut patched.parameters,
-                        matched.submission.title_id.clone(),
-                        matched.submission.facet.clone(),
-                        &matched.submission.scope,
-                    );
-                    patched
-                }
-                CompletedDownloadSubmissionResolution::Matched(_) => {
+        let completed = match resolve_completed_download_origin(&completed, &submission_resolution)
+        {
+            CompletedDownloadOriginResolution::Ready(completed) => completed,
+            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                block_completed_download_identity_for_manual_review(
+                    app, &completed, reason, &detail,
+                )
+                .await;
+                continue;
+            }
+            CompletedDownloadOriginResolution::NoScryerOrigin => {
+                if matches!(
+                    &submission_resolution,
+                    CompletedDownloadSubmissionResolution::Matched(_)
+                ) {
                     tracing::debug!(
                         source_ref = %source_ref,
                         title = %item.title_name,
                         client_type = %completed.client_type,
                         "import: ignoring stub download_submissions row without scryer origin metadata"
                     );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
-                }
-                CompletedDownloadSubmissionResolution::Foreign => {
+                } else {
                     tracing::debug!(
                         source_ref = %source_ref,
                         title = %item.title_name,
                         client_type = %completed.client_type,
                         "import: no scryer origin — not in parameters or download_submissions table"
                     );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
                 }
-                CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-                | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => {
-                    unreachable!()
-                }
+                processed_ids.insert(source_ref.clone());
+                continue;
             }
         };
 

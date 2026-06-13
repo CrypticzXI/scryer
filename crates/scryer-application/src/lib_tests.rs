@@ -17441,6 +17441,93 @@ async fn try_import_completed_downloads_blocks_missing_download_id_submission() 
 }
 
 #[tokio::test]
+async fn try_import_completed_downloads_blocks_origin_scope_conflict() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Scope Conflict".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let item_id = "origin-scope-conflict-1";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Scope.Conflict.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("seed durable submission");
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "stale-title",
+        "Scope.Conflict.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    assert!(import_repo.records.lock().await.is_empty());
+    let state = download_submissions
+        .get_tracked_state(&DownloadSourceIdentity::new(
+            Some(config.id.as_str()),
+            "nzbget",
+            item_id,
+        ))
+        .await
+        .expect("tracked state lookup");
+    assert_eq!(
+        state.as_deref(),
+        Some(TrackedDownloadState::ImportBlocked.as_str())
+    );
+}
+
+#[tokio::test]
 async fn try_import_completed_downloads_dedupes_same_download_id_when_item_id_changes() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

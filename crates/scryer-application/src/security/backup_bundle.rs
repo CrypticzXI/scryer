@@ -544,6 +544,18 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "movie_entities",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "series_movie_links",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "file_series_movie_link_map",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "media_server_connections",
         classification: BackupTableClassification::Export,
     },
@@ -1551,6 +1563,26 @@ mod tests {
             .map(|entry| entry.classification);
 
         assert_eq!(classification, Some(BackupTableClassification::Export));
+    }
+
+    #[test]
+    fn backup_table_catalog_exports_series_movie_tables() {
+        for table in [
+            "movie_entities",
+            "series_movie_links",
+            "file_series_movie_link_map",
+        ] {
+            let classification = BACKUP_TABLE_CATALOG
+                .iter()
+                .find(|entry| entry.table == table)
+                .map(|entry| entry.classification);
+
+            assert_eq!(
+                classification,
+                Some(BackupTableClassification::Export),
+                "{table} should be exported in logical backups"
+            );
+        }
     }
 
     #[test]

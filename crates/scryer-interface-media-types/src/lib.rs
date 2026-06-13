@@ -1812,6 +1812,7 @@ pub struct DeleteTitlesPayload {
 pub struct MediaRenamePlanItemPayload {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub normalized_filename: Option<String>,
@@ -1842,6 +1843,7 @@ pub struct MediaRenamePlanPayload {
 pub struct MediaRenameApplyItemPayload {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub final_path: Option<String>,

@@ -113,6 +113,18 @@ export function seriesOverviewEpisodeInteractiveSearchId(
   );
 }
 
+export function seriesOverviewSeriesMovieRowId(seriesMovieLinkId: string): string {
+  return selectorId("series-overview-series-movie", seriesMovieLinkId);
+}
+
+export function seriesOverviewSeriesMovieInteractiveSearchId(seriesMovieLinkId: string): string {
+  return selectorId("series-overview-series-movie-interactive-search", seriesMovieLinkId);
+}
+
+export function seriesOverviewSeriesMovieAutoSearchId(seriesMovieLinkId: string): string {
+  return selectorId("series-overview-series-movie-auto-search", seriesMovieLinkId);
+}
+
 export function seriesOverviewSeasonMonitorId(collectionId: string): string {
   return selectorId("series-overview-season-monitor", collectionId);
 }

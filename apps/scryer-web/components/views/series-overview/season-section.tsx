@@ -46,6 +46,9 @@ import {
   seriesOverviewEpisodeAutoSearchId,
   seriesOverviewEpisodeInteractiveSearchId,
   seriesOverviewEpisodeRowId,
+  seriesOverviewSeriesMovieAutoSearchId,
+  seriesOverviewSeriesMovieInteractiveSearchId,
+  seriesOverviewSeriesMovieRowId,
 } from "@/lib/utils/dom-ids";
 import {
   EpisodeProgressBar,
@@ -1123,6 +1126,7 @@ export function SeasonSection({
                     return (
                       <div
                         key={link.id}
+                        id={seriesOverviewSeriesMovieRowId(link.id)}
                         className="rounded-xl border border-border/70 bg-card/40 p-3"
                       >
                         <div className="space-y-3">
@@ -1133,6 +1137,7 @@ export function SeasonSection({
                           <div className="flex flex-wrap items-center gap-2">
                             {onRunSeriesMovieSearch ? (
                               <button
+                                id={seriesOverviewSeriesMovieInteractiveSearchId(link.id)}
                                 type="button"
                                 disabled={searchLoading}
                                 onClick={() => onRunSeriesMovieSearch(link)}
@@ -1144,6 +1149,7 @@ export function SeasonSection({
                             ) : null}
                             {onAutoSearchSeriesMovie ? (
                               <button
+                                id={seriesOverviewSeriesMovieAutoSearchId(link.id)}
                                 type="button"
                                 disabled={autoSearchLoading}
                                 onClick={() => onAutoSearchSeriesMovie(link)}

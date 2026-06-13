@@ -905,7 +905,7 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         role: row
             .opt_text("role")?
             .as_deref()
-            .map(scryer_application::MediaFileRole::from_str)
+            .map(scryer_application::MediaFileRole::from_label)
             .unwrap_or_default(),
         source_signature_scheme: row.opt_text("source_signature_scheme")?,
         source_signature_value: row.opt_text("source_signature_value")?,

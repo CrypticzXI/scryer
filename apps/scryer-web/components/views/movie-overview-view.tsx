@@ -959,43 +959,41 @@ export function MovieOverviewView({
                   <div
                     key={mediaFile.id}
                     id={selectorId("movie-overview-media-file", mediaFile.id)}
-                    className="rounded bg-card/60 px-3 py-3 text-sm"
+                    className="rounded-lg bg-card/55 px-4 py-4 text-sm"
                   >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <div className="flex items-start gap-3">
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                      <div className="min-w-0 space-y-3">
+                        <div className="flex items-start gap-2.5">
                           <HardDrive className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-                          <div className="min-w-0 flex-1 space-y-1.5">
-                            <p
-                              id={selectorId("movie-overview-media-file-path", mediaFile.id)}
-                              className="break-all font-mono text-sm text-muted-foreground"
+                          <p
+                            id={selectorId("movie-overview-media-file-path", mediaFile.id)}
+                            className="min-w-0 break-all font-mono text-sm leading-5 text-muted-foreground"
+                          >
+                            {mediaFile.filePath}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground/60">
+                          {isPrimaryFile ? (
+                            <span
+                              id={selectorId("movie-overview-media-file-role", "primary", mediaFile.id)}
+                              className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300"
                             >
-                              {mediaFile.filePath}
-                            </p>
-                            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground/60">
-                              {isPrimaryFile ? (
-                                <span
-                                  id={selectorId("movie-overview-media-file-role", "primary", mediaFile.id)}
-                                  className="rounded border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300"
-                                >
-                                  {t("mediaFile.primary")}
-                                </span>
-                              ) : null}
-                              {isAdditionalFile ? (
-                                <span
-                                  id={selectorId("movie-overview-media-file-role", "additional", mediaFile.id)}
-                                  className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
-                                >
-                                  {t("mediaFile.additional")}
-                                </span>
-                              ) : null}
-                              {mediaFile.acquisitionScore != null ? (
-                                <span title={mediaFile.scoringLog ?? undefined}>
-                                  {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
+                              {t("mediaFile.primary")}
+                            </span>
+                          ) : null}
+                          {isAdditionalFile ? (
+                            <span
+                              id={selectorId("movie-overview-media-file-role", "additional", mediaFile.id)}
+                              className="rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
+                            >
+                              {t("mediaFile.additional")}
+                            </span>
+                          ) : null}
+                          {mediaFile.acquisitionScore != null ? (
+                            <span title={mediaFile.scoringLog ?? undefined}>
+                              {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
+                            </span>
+                          ) : null}
                         </div>
                         <MediaInfoBadges file={mediaFile} />
                         <ExternalSubtitleSection
@@ -1007,10 +1005,10 @@ export function MovieOverviewView({
                             : undefined}
                         />
                       </div>
-                      <div className="flex shrink-0 items-center gap-3 sm:self-center sm:pl-4">
+                      <div className="flex shrink-0 flex-wrap items-center gap-3 lg:justify-end lg:self-center lg:pl-6">
                         <div className="text-left sm:text-right">
                           <div
-                            className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl"
+                            className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl"
                             style={{
                               fontFamily:
                                 "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",

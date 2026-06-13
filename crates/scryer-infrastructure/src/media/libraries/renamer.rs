@@ -76,6 +76,7 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
             let mut result = RenameApplyItemResult {
                 collection_id: item.collection_id.clone(),
                 media_file_id: item.media_file_id.clone(),
+                series_movie_link_ids: item.series_movie_link_ids.clone(),
                 current_path: item.current_path.clone(),
                 proposed_path: item.proposed_path.clone(),
                 final_path: None,

@@ -2882,6 +2882,12 @@
             "null"
           ]
         },
+        "import_purpose": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "is_recent": {
           "type": [
             "boolean",

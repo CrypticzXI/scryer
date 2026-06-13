@@ -1253,6 +1253,7 @@ fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPaylo
     MediaRenamePlanItemPayload {
         collection_id: item.collection_id,
         media_file_id: item.media_file_id,
+        series_movie_link_ids: item.series_movie_link_ids,
         current_path: item.current_path,
         proposed_path: item.proposed_path,
         normalized_filename: item.normalized_filename,
@@ -1283,6 +1284,7 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
     MediaRenameApplyItemPayload {
         collection_id: item.collection_id,
         media_file_id: item.media_file_id,
+        series_movie_link_ids: item.series_movie_link_ids,
         current_path: item.current_path,
         proposed_path: item.proposed_path,
         final_path: item.final_path,

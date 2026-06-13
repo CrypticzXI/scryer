@@ -21,6 +21,14 @@ fn normalize_quality_2160p() {
 }
 
 #[test]
+fn normalize_quality_4320p() {
+    assert_eq!(
+        normalize_quality_tier(Some("4320p")),
+        Some("4320P".to_string())
+    );
+}
+
+#[test]
 fn normalize_quality_720p() {
     assert_eq!(
         normalize_quality_tier(Some("720p")),
@@ -123,6 +131,12 @@ fn parse_release_metadata_canonicalizes_video_codec_aliases() {
             .as_ref(),
         Some(&crate::release_parser::VideoCodec::H264)
     );
+    let av1_8k = parse_release_metadata("Movie.2026.4320p.WEB-DL.AV1.AAC");
+    assert_eq!(
+        av1_8k.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::Av1)
+    );
+    assert_eq!(av1_8k.quality.as_deref(), Some("4320p"));
 }
 
 // ── normalize_list ────────────────────────────────────────────────────────
@@ -148,7 +162,7 @@ fn normalize_list_filters_empty() {
 #[test]
 fn parse_profile_normalizes_video_codec_lists() {
     let profile = QualityProfile::parse(
-        r#"{"id":"t","name":"T","criteria":{"video_codec_allowlist":["h264","hevc"],"video_codec_blocklist":["avc","x265"]}}"#,
+        r#"{"id":"t","name":"T","criteria":{"video_codec_allowlist":["h264","hevc","av01"],"video_codec_blocklist":["avc","x265","av1"]}}"#,
     )
     .expect("should parse");
 
@@ -156,14 +170,16 @@ fn parse_profile_normalizes_video_codec_lists() {
         profile.criteria.video_codec_allowlist,
         vec![
             crate::release_parser::VideoCodec::H264,
-            crate::release_parser::VideoCodec::H265
+            crate::release_parser::VideoCodec::H265,
+            crate::release_parser::VideoCodec::Av1
         ]
     );
     assert_eq!(
         profile.criteria.video_codec_blocklist,
         vec![
             crate::release_parser::VideoCodec::H264,
-            crate::release_parser::VideoCodec::H265
+            crate::release_parser::VideoCodec::H265,
+            crate::release_parser::VideoCodec::Av1
         ]
     );
 }
@@ -699,6 +715,15 @@ fn default_4k_profile_has_three_tiers() {
 }
 
 #[test]
+fn default_8k_profile_has_4320p_archival_tier() {
+    let profile = default_quality_profile_8k_for_search();
+    assert_eq!(profile.id, "8k");
+    assert_eq!(profile.criteria.archival_quality.as_deref(), Some("4320P"));
+    assert_eq!(profile.criteria.quality_tiers[0], "4320P");
+    assert!(!profile.criteria.prefer_remux);
+}
+
+#[test]
 fn default_1080p_profile_has_two_tiers() {
     let profile = default_quality_profile_1080p_for_search();
     assert_eq!(profile.criteria.quality_tiers.len(), 2);
@@ -879,6 +904,26 @@ fn size_plausible_bluray_remux_not_penalized() {
     // Should not be blocked or excessively penalized
     assert!(d.allowed);
     assert!(d.release_score >= 0);
+}
+
+#[test]
+fn size_scoring_accepts_plausible_8k_av1_webdl() {
+    let release = parse_release_metadata("Movie.2026.4320p.WEB-DL.AV1.AAC");
+    let w = balanced_weights();
+    let size_65gb = 65 * 1024 * 1024 * 1024_i64;
+
+    let mut d = QualityProfileDecision::new();
+    apply_size_scoring_for_category(&mut d, &release, Some(size_65gb), None, Some(120), &w);
+
+    assert!(d.allowed);
+    assert_eq!(
+        release.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::Av1)
+    );
+    assert!(
+        !d.block_codes
+            .contains(&"size_implausible_for_quality".to_string())
+    );
 }
 
 #[test]

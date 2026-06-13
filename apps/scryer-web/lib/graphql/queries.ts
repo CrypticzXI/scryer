@@ -1183,6 +1183,7 @@ export const mediaRenamePreviewQuery = `query MediaRenamePreview($input: MediaRe
     errors
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       normalizedFilename

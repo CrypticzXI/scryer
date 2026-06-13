@@ -549,6 +549,7 @@ export const applyMediaRenameMutation = `mutation ApplyMediaRename($input: Media
     failed
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       finalPath
@@ -569,6 +570,7 @@ export const applyMediaRenameBulkMutation = `mutation ApplyMediaRenameBulk($inpu
     failed
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       finalPath

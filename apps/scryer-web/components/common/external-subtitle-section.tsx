@@ -41,7 +41,7 @@ function SubtitleFlag({
   className: string;
 }) {
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${className}`}>
+    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${className}`}>
       {label}
     </span>
   );
@@ -169,7 +169,7 @@ export function ExternalSubtitleSection({
   return (
     <>
       <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">{t("subtitle.external")}</p>
+        <p className="text-sm font-medium text-muted-foreground">{t("subtitle.external")}</p>
         <div className="space-y-2">
           {downloads.map((download) => {
             const canBlocklist = allowBlocklist && canBlocklistSubtitle(download);
@@ -177,20 +177,20 @@ export function ExternalSubtitleSection({
             return (
               <div
                 key={download.id}
-                className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
+                className="rounded-lg border border-border/70 bg-background/40 px-3 py-3"
               >
-                <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
                       {download.language}
                     </span>
                     {download.provider ? (
-                      <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      <span className="rounded-full border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                         {download.provider}
                       </span>
                     ) : null}
                     {download.sourceKind === "discovered" ? (
-                      <span className="rounded border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
                         {t("subtitle.onDisk")}
                       </span>
                     ) : null}
@@ -265,12 +265,10 @@ export function ExternalSubtitleSection({
                     </div>
                   ) : null}
                 </div>
-                <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">
+                <p className="mt-5 break-all font-mono text-[11px] leading-5 text-muted-foreground">
                   {download.filePath}
                 </p>
-                <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-                  {download.releaseInfo ? <span>{download.releaseInfo}</span> : null}
-                  {download.uploader ? <span>{download.uploader}</span> : null}
+                <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
                   <span>{formatDateTime(download.downloadedAt)}</span>
                 </div>
               </div>

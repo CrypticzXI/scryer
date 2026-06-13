@@ -5,6 +5,7 @@ import {
   commitQualityProfileDraftToEntries,
   hasDuplicateQualityProfileName,
 } from "./quality-profile-draft-commit.ts";
+import { QUALITY_TIER_CHOICES } from "../constants/quality-profiles.ts";
 import type { ParsedQualityProfileEntry, QualityProfileDraft } from "@/lib/types";
 
 function makeEntry(id: string, name: string): ParsedQualityProfileEntry {
@@ -94,4 +95,12 @@ test("hasDuplicateQualityProfileName ignores the current profile id during renam
 
   assert.equal(hasDuplicateQualityProfileName(entries, "4K", "default"), false);
   assert.equal(hasDuplicateQualityProfileName(entries, " anime max ", "default"), true);
+});
+
+test("quality profile choices expose 8k", () => {
+  assert.ok(
+    QUALITY_TIER_CHOICES.some(
+      (choice) => choice.value === "4320P" && choice.label.includes("8K"),
+    ),
+  );
 });

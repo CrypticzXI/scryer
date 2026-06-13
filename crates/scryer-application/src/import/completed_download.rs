@@ -15,7 +15,11 @@ use std::path::Path;
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
-use crate::import_workflow::import_completed_download;
+use crate::import_workflow::{
+    ResolvedCompletedDownloadOriginForImport,
+    block_completed_download_origin_conflict_for_manual_review, import_completed_download,
+    resolve_completed_download_origin_for_import,
+};
 use crate::tracked_downloads::TrackedDownload;
 use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
 use crate::{
@@ -340,6 +344,38 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
         );
         td.state = TrackedDownloadState::ImportPending;
         return false;
+    };
+    let completed = match resolve_completed_download_origin_for_import(
+        app,
+        &completed,
+        Some(&td.client_item),
+    )
+    .await
+    {
+        Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => completed,
+        Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
+        Ok(ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }) => {
+            block_completed_download_origin_conflict_for_manual_review(
+                app, &completed, reason, &detail,
+            )
+            .await;
+            td.state = TrackedDownloadState::ImportBlocked;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![format!(
+                "Download origin scope conflicts with the matched submission ({reason}). Manual confirmation required before import."
+            )];
+            return false;
+        }
+        Err(error) => {
+            tracing::warn!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                error = %error,
+                "import: completed download origin resolution failed, will retry"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+            return false;
+        }
     };
 
     tracing::info!(

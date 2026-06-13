@@ -1770,6 +1770,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
             renamable
             items {
               collectionId
+              seriesMovieLinkIds
               mediaFileId
               currentPath
               proposedPath
@@ -1794,7 +1795,8 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
     assert_eq!(plan["renamable"].as_i64(), Some(1));
 
     let item = &plan["items"][0];
-    assert_eq!(item["collectionId"], json!(specials.id));
+    assert_eq!(item["collectionId"], serde_json::Value::Null);
+    assert_eq!(item["seriesMovieLinkIds"], json!([series_movie_link.id]));
     assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
@@ -1807,7 +1809,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
                 .path()
                 .join("Festival Saga (2024)")
                 .join("Season 00")
-                .join("Festival Saga - S00E03 (3) - 1080p.mkv")
+                .join("Festival Saga - S00E03 (003) - 1080p.mkv")
                 .to_string_lossy()
                 .to_string()
         )
@@ -1997,7 +1999,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
         .path()
         .join("Anime Apply Show (2024)")
         .join("Season 00")
-        .join("Anime Apply Show - S00E03 (3) - 1080p.mkv")
+        .join("Anime Apply Show - S00E03 (003) - 1080p.mkv")
         .to_string_lossy()
         .to_string();
 
@@ -9424,7 +9426,7 @@ async fn library_series_scan_counts_new_title_files_before_post_hydration_scan_p
 }
 
 #[tokio::test]
-async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming() {
+async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_folder() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
 
@@ -9448,6 +9450,107 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
         .set_folder_path(&title.id, stale_folder.to_string_lossy().as_ref())
         .await
         .expect("set stale folder path");
+
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let movie_dir = media_root.path().join("Existing Movie [2160p]");
+    std::fs::create_dir_all(&movie_dir).expect("create movie dir");
+    let movie_path = movie_dir.join("Existing.Movie.2024.2160p.WEB-DL.mkv");
+    let movie_file = std::fs::File::create(&movie_path).expect("create movie file");
+    movie_file
+        .set_len(60 * 1024 * 1024)
+        .expect("set movie file size");
+    std::fs::write(
+        movie_dir.join("movie.nfo"),
+        r#"<movie><title>Existing Movie</title><tvdbid>123456</tvdbid><year>2024</year></movie>"#,
+    )
+    .expect("write movie.nfo");
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateLibraryPaths($input: UpdateLibraryPathsInput!) {
+          updateLibraryPaths(input: $input) {
+            moviePath
+            seriesPath
+            animePath
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "moviePath": media_root.path().display().to_string(),
+            "seriesPath": "/tmp/series-unused",
+            "animePath": "/tmp/anime-unused"
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let summary = ctx
+        .app
+        .scan_library(&admin, MediaFacet::Movie)
+        .await
+        .expect("scan movie library");
+
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.matched, 0);
+    assert_eq!(summary.imported, 0);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.unmatched, 0);
+
+    let refreshed_title = ctx
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load title")
+        .expect("title exists");
+    assert_eq!(refreshed_title.name, "Existing Movie");
+    assert_eq!(
+        refreshed_title.folder_path.as_deref(),
+        Some(stale_folder.to_string_lossy().as_ref())
+    );
+
+    let titles = ctx
+        .titles
+        .list(Some(MediaFacet::Movie), None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 1, "scan must not create a duplicate title");
+
+    let collections = ctx
+        .shows
+        .list_collections_for_title(&title.id)
+        .await
+        .expect("list collections");
+    assert!(collections.is_empty());
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert!(media_files.is_empty());
+}
+
+#[tokio::test]
+async fn library_movie_scan_matches_existing_title_from_movie_nfo_when_folder_missing() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let title = create_catalog_title(
+        &ctx,
+        "Existing Movie",
+        MediaFacet::Movie,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "123456".to_string(),
+        }],
+        vec![],
+        false,
+    )
+    .await;
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let movie_dir = media_root.path().join("Existing Movie [2160p]");

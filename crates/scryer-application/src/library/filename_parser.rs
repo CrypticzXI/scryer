@@ -764,7 +764,7 @@ fn series_movie_match_keys(link: &SeriesMovieLink) -> Vec<String> {
     .flatten()
     .map(library_name_match_key)
     .filter(|key| !key.is_empty())
-        .collect()
+    .collect()
 }
 
 fn normalized_key_contains_phrase(haystack: &str, needle: &str) -> bool {

@@ -55,6 +55,7 @@ import type {
 } from "@/lib/types/download-clients";
 import type {
   FacetQualityPrefs,
+  QualityTargetId,
   ViewCategoryId,
 } from "@/lib/types/quality-profiles";
 import type {
@@ -264,6 +265,18 @@ interface SetupWizardContainerProps {
   ) => string;
   isReentry?: boolean;
   onBackendRestarting: () => void;
+}
+
+function formatQualityTarget(target: QualityTargetId): string {
+  switch (target) {
+    case "8k":
+      return "8K";
+    case "4k":
+      return "4K";
+    case "1080p":
+      return "1080P";
+  }
+  return target;
 }
 
 export function SetupWizardContainer({
@@ -983,7 +996,7 @@ export function SetupWizardContainer({
           { facet: "anime", name: "Anime" },
         ];
         const wizardProfileIds = WIZARD_FACETS.map((f) => `wizard-${f.facet}`);
-        const builtinProfileIds = ["4k", "1080p"];
+        const builtinProfileIds = ["8k", "4k", "1080p"];
         const keptProfiles = existingProfiles.filter(
           (p) =>
             !wizardProfileIds.includes(p.id) &&
@@ -994,7 +1007,7 @@ export function SetupWizardContainer({
           const prefs = facetPrefs[facet];
           const template = existingProfiles.find((p) => p.id === prefs.quality);
           if (template) {
-            const profileName = `${name} (${prefs.quality === "4k" ? "4K" : "1080P"})`;
+            const profileName = `${name} (${formatQualityTarget(prefs.quality)})`;
             keptProfiles.push({
               id: `wizard-${facet}`,
               name: profileName,

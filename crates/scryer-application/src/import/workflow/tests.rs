@@ -1,14 +1,18 @@
 #[cfg(test)]
 mod tests {
     use super::{
+        COMPLETED_ORIGIN_SCOPE_CONFLICT, CompletedDownloadOriginResolution,
+        CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
         ManualImportFileMapping, completed_import_status_for_result, is_sample_file,
-        merge_scryer_origin_parameters, resolved_episode_ids_are_within_expected,
+        resolve_completed_download_origin, resolved_episode_ids_are_within_expected,
         sanitized_title_folder_component, skip_reason_for_import_check_code,
         validate_path_manual_import_mappings,
     };
-    use crate::SubmissionScope;
+    use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
     use chrono::Utc;
-    use scryer_domain::{ImportDecision, ImportResult, ImportSkipReason, ImportStatus};
+    use scryer_domain::{
+        CompletedDownload, ImportDecision, ImportResult, ImportSkipReason, ImportStatus,
+    };
     use std::collections::HashSet;
     use std::fs;
 
@@ -39,31 +43,223 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn completed_origin_parameters_preserve_series_movie_scope() {
-        let mut parameters = Vec::new();
+    fn completed_download_with_parameters(parameters: Vec<(&str, &str)>) -> CompletedDownload {
+        CompletedDownload {
+            client_type: "sabnzbd".to_string(),
+            client_id: "client-1".to_string(),
+            download_client_item_id: "item-1".to_string(),
+            download_id: Some("download-1".to_string()),
+            name: "Release".to_string(),
+            dest_dir: "/downloads/release".to_string(),
+            category: Some("anime".to_string()),
+            size_bytes: Some(1024),
+            completed_at: None,
+            parameters: parameters
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        }
+    }
 
-        merge_scryer_origin_parameters(
-            &mut parameters,
-            "title-1".to_string(),
-            "anime".to_string(),
-            &SubmissionScope::SeriesMovie {
+    fn matched_submission(
+        title_id: &str,
+        facet: &str,
+        scope: SubmissionScope,
+    ) -> CompletedDownloadSubmissionResolution {
+        CompletedDownloadSubmissionResolution::Matched(Box::new(
+            CompletedDownloadSubmissionMatch {
+                submission: DownloadSubmission {
+                    title_id: title_id.to_string(),
+                    facet: facet.to_string(),
+                    download_client_id: Some("client-1".to_string()),
+                    download_client_type: "sabnzbd".to_string(),
+                    download_client_item_id: "item-1".to_string(),
+                    source_hint: None,
+                    source_kind: None,
+                    source_title: None,
+                    request_signature: None,
+                    purpose: DownloadSubmissionPurpose::Standard,
+                    scope,
+                },
+                identity: None,
+            },
+        ))
+    }
+
+    fn parameter_value<'a>(parameters: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        parameters
+            .iter()
+            .find(|(candidate_key, _)| candidate_key == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn completed_origin_resolution_keeps_matching_complete_params() {
+        let completed = completed_download_with_parameters(vec![
+            ("*scryer_title_id", "title-1"),
+            ("*scryer_facet", "anime"),
+            ("*scryer_series_movie_link_id", "series-movie-link-1"),
+        ]);
+        let resolution = matched_submission(
+            "title-1",
+            "anime",
+            SubmissionScope::SeriesMovie {
                 series_movie_link_id: "series-movie-link-1".to_string(),
             },
         );
 
-        assert!(parameters.iter().any(|(key, value)| {
-            key == "*scryer_title_id" && value == "title-1"
-        }));
-        assert!(parameters.iter().any(|(key, value)| {
-            key == "*scryer_facet" && value == "anime"
-        }));
-        assert!(parameters.iter().any(|(key, value)| {
-            key == "*scryer_series_movie_link_id" && value == "series-movie-link-1"
-        }));
-        assert!(!parameters
-            .iter()
-            .any(|(key, _)| key == "*scryer_collection_id"));
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &resolution)
+        else {
+            panic!("expected ready completed download");
+        };
+
+        assert_eq!(resolved.parameters, completed.parameters);
+    }
+
+    #[test]
+    fn completed_origin_resolution_writes_series_movie_scope_without_existing_params() {
+        let completed = completed_download_with_parameters(vec![]);
+        let resolution = matched_submission(
+            "title-1",
+            "anime",
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: "series-movie-link-1".to_string(),
+            },
+        );
+
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &resolution)
+        else {
+            panic!("expected ready completed download");
+        };
+
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_title_id"),
+            Some("title-1")
+        );
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_facet"),
+            Some("anime")
+        );
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_series_movie_link_id"),
+            Some("series-movie-link-1")
+        );
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_collection_id"),
+            None
+        );
+    }
+
+    #[test]
+    fn completed_origin_resolution_preserves_legacy_collection_for_series_movie() {
+        let completed = completed_download_with_parameters(vec![
+            ("*scryer_title_id", "title-1"),
+            ("*scryer_facet", "anime"),
+            ("*scryer_collection_id", "legacy-collection-1"),
+        ]);
+        let resolution = matched_submission(
+            "title-1",
+            "anime",
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: "series-movie-link-1".to_string(),
+            },
+        );
+
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &resolution)
+        else {
+            panic!("expected ready completed download");
+        };
+
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_collection_id"),
+            Some("legacy-collection-1")
+        );
+        assert_eq!(
+            parameter_value(&resolved.parameters, "*scryer_series_movie_link_id"),
+            Some("series-movie-link-1")
+        );
+    }
+
+    #[test]
+    fn completed_origin_resolution_conflicts_on_title_facet_or_scope_mismatch() {
+        for (completed, resolution) in [
+            (
+                completed_download_with_parameters(vec![("*scryer_title_id", "title-2")]),
+                matched_submission("title-1", "anime", SubmissionScope::Title),
+            ),
+            (
+                completed_download_with_parameters(vec![
+                    ("*scryer_title_id", "title-1"),
+                    ("*scryer_facet", "movie"),
+                ]),
+                matched_submission("title-1", "anime", SubmissionScope::Title),
+            ),
+            (
+                completed_download_with_parameters(vec![
+                    ("*scryer_title_id", "title-1"),
+                    ("*scryer_facet", "anime"),
+                    ("*scryer_series_movie_link_id", "series-movie-link-1"),
+                ]),
+                matched_submission(
+                    "title-1",
+                    "anime",
+                    SubmissionScope::Collection {
+                        collection_id: "collection-1".to_string(),
+                    },
+                ),
+            ),
+        ] {
+            let CompletedDownloadOriginResolution::Conflict { reason, detail } =
+                resolve_completed_download_origin(&completed, &resolution)
+            else {
+                panic!("expected origin conflict");
+            };
+            assert_eq!(reason, COMPLETED_ORIGIN_SCOPE_CONFLICT);
+            assert!(!detail.is_empty());
+        }
+    }
+
+    #[test]
+    fn completed_origin_resolution_preserves_existing_params_for_stub_submission() {
+        let completed = completed_download_with_parameters(vec![
+            ("*scryer_title_id", "title-1"),
+            ("*scryer_facet", "anime"),
+        ]);
+        let resolution = matched_submission(
+            "",
+            "",
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: "series-movie-link-1".to_string(),
+            },
+        );
+
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &resolution)
+        else {
+            panic!("expected ready completed download");
+        };
+
+        assert_eq!(resolved.parameters, completed.parameters);
+    }
+
+    #[test]
+    fn completed_origin_resolution_ignores_stub_submission_without_params() {
+        let completed = completed_download_with_parameters(vec![]);
+        let resolution = matched_submission(
+            "",
+            "",
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: "series-movie-link-1".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            resolve_completed_download_origin(&completed, &resolution),
+            CompletedDownloadOriginResolution::NoScryerOrigin
+        ));
     }
 
     #[test]

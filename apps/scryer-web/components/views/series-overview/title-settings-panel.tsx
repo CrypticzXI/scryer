@@ -23,6 +23,7 @@ const DEFAULT_MARKER = "__default__";
 
 type MediaRenamePlanItem = {
   collectionId: string | null;
+  seriesMovieLinkIds: string[];
   currentPath: string;
   proposedPath: string | null;
 };

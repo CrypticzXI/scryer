@@ -207,6 +207,20 @@ fn mp4_dv_profile8() {
 }
 
 // ---------------------------------------------------------------------------
+// Emerging MKV metadata
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mkv_h264_8k_fixture_reports_dimensions() {
+    let a = analyze_file(&media("h264_8k_aac.mkv")).unwrap();
+    assert_eq!(a.container_format.as_deref(), Some("matroska"));
+    assert_eq!(a.video_codec.as_deref(), Some("h264"));
+    assert_eq!(a.video_width, Some(7680));
+    assert_eq!(a.video_height, Some(4320));
+    assert!(is_valid_video(&a));
+}
+
+// ---------------------------------------------------------------------------
 // HDR10+ (MKV + MP4)
 // ---------------------------------------------------------------------------
 

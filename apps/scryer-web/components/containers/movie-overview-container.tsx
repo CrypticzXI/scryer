@@ -173,6 +173,7 @@ export type TitleMediaFile = {
 
 export type MediaRenamePlanItem = {
   collectionId: string | null;
+  seriesMovieLinkIds: string[];
   currentPath: string;
   proposedPath: string | null;
   normalizedFilename: string | null;

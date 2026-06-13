@@ -1055,7 +1055,7 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
         purpose: row
             .opt_text("purpose")?
             .as_deref()
-            .map(scryer_application::DownloadSubmissionPurpose::from_str)
+            .map(scryer_application::DownloadSubmissionPurpose::from_label)
             .unwrap_or_default(),
     })
 }
