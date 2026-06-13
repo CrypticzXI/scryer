@@ -29,7 +29,7 @@ pub(crate) fn build_search_queries(
         .unwrap_or_else(|| "series".to_string());
 
     match item.media_type.as_str() {
-        "movie" => {
+        "movie" | "series_movie" => {
             let mut queries = Vec::new();
             if !title.name.is_empty() {
                 let query = if let Some(year) = title.year {
@@ -44,6 +44,11 @@ pub(crate) fn build_search_queries(
             if queries.is_empty() && imdb_id.is_some() {
                 queries.push(String::new());
             }
+            let category = if item.media_type == "series_movie" {
+                "movies".to_string()
+            } else {
+                category
+            };
             SearchQueryResult {
                 queries,
                 imdb_id,
@@ -137,32 +142,6 @@ pub(crate) fn build_search_queries(
                 category,
                 season: season_param,
                 episode: episode_param,
-            }
-        }
-        "interstitial_movie" => {
-            let mut queries = Vec::new();
-            if !title.name.is_empty() {
-                let query = if let Some(year) = title.year {
-                    format!("{} {}", title.name, year)
-                } else {
-                    title.name.clone()
-                };
-                queries.push(query);
-            }
-            let mut seen = std::collections::HashSet::new();
-            queries.retain(|query| seen.insert(query.to_ascii_lowercase()));
-            if queries.is_empty() && imdb_id.is_some() {
-                queries.push(String::new());
-            }
-            SearchQueryResult {
-                queries,
-                imdb_id,
-                tmdb_id,
-                tvdb_id,
-                anidb_id,
-                category: "movies".to_string(),
-                season: None,
-                episode: None,
             }
         }
         _ => SearchQueryResult {

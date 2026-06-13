@@ -1,15 +1,17 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadQueueBucket, apply_tracked_download_queue_metadata, classify_download_queue_item,
-        dedupe_download_queue_items, derive_download_queue_display_state,
-        tracked_download_queue_snapshot,
+        DownloadQueueBucket, apply_tracked_download_queue_metadata,
+        canonicalize_download_queue_item_clients, classify_download_queue_item,
+        collect_download_client_filter_options, dedupe_download_queue_items,
+        derive_download_queue_display_state, download_queue_client_filter_key,
+        synthetic_terminal_download_queue_item, tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
     use chrono::Utc;
     use scryer_domain::{
-        DownloadQueueItem, DownloadQueueState, ImportStatus, TitleMatchType, TrackedDownloadState,
-        TrackedDownloadStatus,
+        DownloadClientConfig, DownloadClientStatus, DownloadQueueItem, DownloadQueueState,
+        ImportStatus, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
     };
 
     fn item(id: &str, state: DownloadQueueState) -> DownloadQueueItem {
@@ -47,6 +49,27 @@ mod tests {
         }
     }
 
+    fn client_config(
+        id: &str,
+        name: &str,
+        client_type: &str,
+        priority: i64,
+    ) -> DownloadClientConfig {
+        DownloadClientConfig {
+            id: id.to_string(),
+            name: name.to_string(),
+            client_type: client_type.to_string(),
+            config_json: "{}".to_string(),
+            is_enabled: true,
+            status: DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            client_priority: priority,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn dedupe_download_queue_items_merges_duplicate_client_job_ids() {
         let mut first = item("job-1", DownloadQueueState::Completed);
@@ -81,6 +104,88 @@ mod tests {
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0].client_id, "client-1");
         assert_eq!(deduped[1].client_id, "client-2");
+    }
+
+    #[test]
+    fn canonicalize_download_queue_items_maps_legacy_type_id_to_unique_config() {
+        let configs = vec![client_config("Weaver", "Weaver", "weaver", 1)];
+        let mut queue_item = item("job-1", DownloadQueueState::Downloading);
+        queue_item.client_id = "weaver".to_string();
+        queue_item.client_name = "weaver".to_string();
+        queue_item.client_type = "weaver".to_string();
+        let mut items = vec![queue_item];
+
+        canonicalize_download_queue_item_clients(&mut items, &configs);
+
+        assert_eq!(items[0].client_id, "Weaver");
+        assert_eq!(items[0].client_name, "Weaver");
+        assert_eq!(items[0].client_type, "weaver");
+        assert_eq!(download_queue_client_filter_key(&items[0]), "Weaver");
+
+        let options = collect_download_client_filter_options(&items);
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].client_id, "Weaver");
+        assert_eq!(options[0].client_name, "Weaver");
+    }
+
+    #[test]
+    fn canonicalize_download_queue_items_does_not_guess_for_multiple_same_type_clients() {
+        let configs = vec![
+            client_config("weaver-primary", "Weaver Primary", "weaver", 1),
+            client_config("weaver-secondary", "Weaver Secondary", "weaver", 2),
+        ];
+        let mut queue_item = item("job-1", DownloadQueueState::Downloading);
+        queue_item.client_id = "weaver".to_string();
+        queue_item.client_name = "weaver".to_string();
+        queue_item.client_type = "weaver".to_string();
+        let mut items = vec![queue_item];
+
+        canonicalize_download_queue_item_clients(&mut items, &configs);
+
+        assert_eq!(items[0].client_id, "weaver");
+        assert_eq!(items[0].client_name, "weaver");
+        assert_eq!(download_queue_client_filter_key(&items[0]), "weaver");
+    }
+
+    #[test]
+    fn synthetic_terminal_download_queue_item_uses_tracked_client_identity_hint() {
+        let config = client_config("Weaver", "Weaver", "weaver", 1);
+        let mut client_item = item("job-1", DownloadQueueState::Completed);
+        client_item.client_id.clear();
+        client_item.client_name.clear();
+        client_item.client_type.clear();
+        let tracked = crate::tracked_downloads::TrackedDownload {
+            id: "Weaver:job-1".to_string(),
+            client_id: "Weaver".to_string(),
+            client_type: "weaver".to_string(),
+            client_item,
+            state: TrackedDownloadState::Imported,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: false,
+            import_attempted: true,
+            path_missing_since: None,
+            skip_reacquire_on_failure: false,
+        };
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        let mut items = vec![
+            synthetic_terminal_download_queue_item(&metadata, Some(&config))
+                .expect("synthetic terminal item"),
+        ];
+        canonicalize_download_queue_item_clients(&mut items, &[config]);
+
+        assert_eq!(items[0].client_id, "Weaver");
+        assert_eq!(items[0].client_name, "Weaver");
+        assert_eq!(items[0].client_type, "weaver");
+        assert_eq!(download_queue_client_filter_key(&items[0]), "Weaver");
     }
 
     #[test]

@@ -259,6 +259,13 @@ pub enum DownloadSourceKindValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum QueueDownloadPurposeValue {
+    Standard,
+    AdditionalFile,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "lowercase")]
 pub enum DelayProfilePreferredProtocolValue {
     Usenet,
@@ -797,7 +804,7 @@ impl WantedStatusValue {
 pub enum WantedMediaTypeValue {
     Movie,
     Episode,
-    InterstitialMovie,
+    SeriesMovie,
 }
 
 impl WantedMediaTypeValue {
@@ -805,7 +812,7 @@ impl WantedMediaTypeValue {
         match self {
             Self::Movie => "movie",
             Self::Episode => "episode",
-            Self::InterstitialMovie => "interstitial_movie",
+            Self::SeriesMovie => "series_movie",
         }
     }
 
@@ -813,7 +820,7 @@ impl WantedMediaTypeValue {
         match value.trim().to_ascii_lowercase().as_str() {
             "movie" => Some(Self::Movie),
             "episode" => Some(Self::Episode),
-            "interstitial_movie" => Some(Self::InterstitialMovie),
+            "series_movie" => Some(Self::SeriesMovie),
             _ => None,
         }
     }
@@ -1068,32 +1075,6 @@ pub struct MediaRequestPayload {
 #[derive(SimpleObject, Clone)]
 pub struct SubmitMediaRequestPayload {
     pub accepted: bool,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct InterstitialMovieMetadataPayload {
-    pub tvdb_id: String,
-    pub name: String,
-    pub slug: String,
-    pub year: Option<i32>,
-    pub content_status: String,
-    pub overview: String,
-    pub poster_url: String,
-    pub language: String,
-    pub runtime_minutes: i32,
-    pub sort_title: String,
-    pub imdb_id: String,
-    pub genres: Vec<String>,
-    pub studio: String,
-    pub digital_release_date: Option<String>,
-    pub association_confidence: Option<String>,
-    pub continuity_status: Option<String>,
-    pub movie_form: Option<String>,
-    pub confidence: Option<String>,
-    pub signal_summary: Option<String>,
-    pub placement: Option<String>,
-    pub movie_tmdb_id: Option<String>,
-    pub movie_mal_id: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1427,6 +1408,7 @@ pub struct QueueDownloadScopePayload {
     pub kind: String,
     pub episode_id: Option<String>,
     pub episode_ids: Vec<String>,
+    pub series_movie_link_id: Option<String>,
     pub collection_id: Option<String>,
 }
 
@@ -1659,6 +1641,7 @@ pub struct MarkTrackedDownloadFailedInput {
 pub enum QueueDownloadScopeInput {
     Episode(String),
     EpisodeSet(Vec<String>),
+    SeriesMovie(String),
     Collection(String),
     Title(bool),
 }
@@ -2194,7 +2177,7 @@ pub struct ApproveMediaRequestPayload {
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
     pub title_id: String,
-    pub collection_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
     pub season: Option<String>,
     pub episode: Option<String>,
     pub limit: Option<i32>,
@@ -2206,6 +2189,7 @@ pub struct QueueDownloadInput {
     pub candidate_token: String,
     pub scope: QueueDownloadScopeInput,
     pub replace_in_progress: Option<bool>,
+    pub purpose: Option<QueueDownloadPurposeValue>,
 }
 
 #[derive(InputObject)]
@@ -2858,6 +2842,12 @@ pub struct UpdateTitleInput {
     pub facet: Option<MediaFacetValue>,
     pub tags: Option<Vec<String>>,
     pub options: Option<TitleOptionsInput>,
+}
+
+#[derive(InputObject)]
+pub struct SetPrimaryMovieFileInput {
+    pub title_id: String,
+    pub file_id: String,
 }
 
 #[derive(InputObject)]

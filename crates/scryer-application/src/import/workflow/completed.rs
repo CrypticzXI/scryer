@@ -22,16 +22,101 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
         &completed.download_client_item_id,
     )
 }
+async fn completed_import_purpose(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+) -> crate::DownloadSubmissionPurpose {
+    let identity = completed_download_identity(completed);
+    if let Ok(Some(submission)) = app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(&identity)
+        .await
+    {
+        return submission.purpose;
+    }
+
+    extract_parameter(&completed.parameters, "*scryer_import_purpose")
+        .as_deref()
+        .map(crate::DownloadSubmissionPurpose::from_str)
+        .unwrap_or_default()
+}
+fn additional_import_dest_path(
+    canonical_dest_path: &Path,
+    parsed: &ParsedReleaseMetadata,
+) -> PathBuf {
+    let parent = canonical_dest_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = canonical_dest_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("additional");
+    let extension = canonical_dest_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mkv");
+    let raw_label = parsed
+        .edition
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(parsed.raw_title.as_str());
+    let sanitized_label = sanitize_filesystem_component(raw_label)
+        .trim()
+        .chars()
+        .take(48)
+        .collect::<String>();
+    let label = if sanitized_label.is_empty() {
+        "additional".to_string()
+    } else {
+        sanitized_label
+    };
+    let hash = blake3::hash(parsed.raw_title.as_bytes()).to_hex();
+    let hash = &hash.as_str()[..8];
+    let base_name = sanitize_filesystem_component(&format!("{stem} - {label} {hash}.{extension}"));
+    let mut candidate = parent.join(&base_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    for suffix in 2..=999 {
+        let name =
+            sanitize_filesystem_component(&format!("{stem} - {label} {hash} ({suffix}).{extension}"));
+        candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    parent.join(sanitize_filesystem_component(&format!(
+        "{stem} - {label} {hash} {}.{extension}",
+        Id::new().0
+    )))
+}
 fn merge_scryer_origin_parameters(
     parameters: &mut Vec<(String, String)>,
     title_id: String,
     facet: String,
-    collection_id: Option<String>,
+    scope: &SubmissionScope,
 ) {
     upsert_parameter(parameters, "*scryer_title_id", title_id);
     upsert_parameter(parameters, "*scryer_facet", facet);
-    if let Some(collection_id) = collection_id {
-        upsert_parameter(parameters, "*scryer_collection_id", collection_id);
+    match scope {
+        SubmissionScope::Collection { collection_id } => {
+            upsert_parameter(parameters, "*scryer_collection_id", collection_id.clone());
+        }
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => {
+            upsert_parameter(
+                parameters,
+                "*scryer_series_movie_link_id",
+                series_movie_link_id.clone(),
+            );
+        }
+        SubmissionScope::Episode { .. }
+        | SubmissionScope::EpisodeSet { .. }
+        | SubmissionScope::Title
+        | SubmissionScope::Orphan => {}
     }
 }
 fn upsert_parameter(parameters: &mut Vec<(String, String)>, key: &str, value: String) {

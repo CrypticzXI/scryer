@@ -681,7 +681,7 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "title_image_variants",
-        classification: BackupTableClassification::Export,
+        classification: BackupTableClassification::Rebuild,
     },
     BackupTableCatalogEntry {
         table: "title_images",

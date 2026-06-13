@@ -805,6 +805,8 @@ fn scoped_media_file(
             id: id.to_string(),
             title_id: "title-1".to_string(),
             episode_id: episode_ids.first().map(|value| (*value).to_string()),
+            series_movie_link_ids: Vec::new(),
+            role: crate::MediaFileRole::Primary,
             file_path: file_path.to_string(),
             size_bytes: 1_000,
             source_signature_scheme: None,

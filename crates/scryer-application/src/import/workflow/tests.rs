@@ -2,9 +2,11 @@
 mod tests {
     use super::{
         ManualImportFileMapping, completed_import_status_for_result, is_sample_file,
-        resolved_episode_ids_are_within_expected, sanitized_title_folder_component,
-        skip_reason_for_import_check_code, validate_path_manual_import_mappings,
+        merge_scryer_origin_parameters, resolved_episode_ids_are_within_expected,
+        sanitized_title_folder_component, skip_reason_for_import_check_code,
+        validate_path_manual_import_mappings,
     };
+    use crate::SubmissionScope;
     use chrono::Utc;
     use scryer_domain::{ImportDecision, ImportResult, ImportSkipReason, ImportStatus};
     use std::collections::HashSet;
@@ -35,6 +37,33 @@ mod tests {
             &["ep-1".to_string(), "ep-2".to_string()],
             &expected
         ));
+    }
+
+    #[test]
+    fn completed_origin_parameters_preserve_series_movie_scope() {
+        let mut parameters = Vec::new();
+
+        merge_scryer_origin_parameters(
+            &mut parameters,
+            "title-1".to_string(),
+            "anime".to_string(),
+            &SubmissionScope::SeriesMovie {
+                series_movie_link_id: "series-movie-link-1".to_string(),
+            },
+        );
+
+        assert!(parameters.iter().any(|(key, value)| {
+            key == "*scryer_title_id" && value == "title-1"
+        }));
+        assert!(parameters.iter().any(|(key, value)| {
+            key == "*scryer_facet" && value == "anime"
+        }));
+        assert!(parameters.iter().any(|(key, value)| {
+            key == "*scryer_series_movie_link_id" && value == "series-movie-link-1"
+        }));
+        assert!(!parameters
+            .iter()
+            .any(|(key, _)| key == "*scryer_collection_id"));
     }
 
     #[test]

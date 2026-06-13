@@ -1,5 +1,7 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use chrono::{DateTime, Utc};
-use scryer_application::{AppError, AppResult};
+use scryer_application::{AppError, AppResult, BACKUP_TABLE_CATALOG};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +26,35 @@ pub(crate) fn strip_nonportable_backup_fields(
     if table == "plugin_installations" {
         object.remove("wasm_bytes");
     }
+}
+
+pub(crate) fn validate_restore_manifest_table_set(
+    row_counts: &BTreeMap<String, u64>,
+    export_tables: &[String],
+) -> AppResult<()> {
+    let expected_tables = export_tables.iter().cloned().collect::<BTreeSet<_>>();
+    let manifest_tables = row_counts.keys().cloned().collect::<BTreeSet<_>>();
+    let catalog_tables = BACKUP_TABLE_CATALOG
+        .iter()
+        .map(|entry| entry.table.to_string())
+        .collect::<BTreeSet<_>>();
+    if expected_tables.is_subset(&manifest_tables) && manifest_tables.is_subset(&catalog_tables) {
+        return Ok(());
+    }
+
+    let missing = expected_tables
+        .difference(&manifest_tables)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unexpected = manifest_tables
+        .difference(&catalog_tables)
+        .cloned()
+        .collect::<Vec<_>>();
+    Err(AppError::Validation(format!(
+        "backup bundle table set does not match the current restore catalog: missing [{}], unexpected [{}]",
+        missing.join(", "),
+        unexpected.join(", ")
+    )))
 }
 
 pub(crate) fn normalize_import_object_for_target(
@@ -236,6 +267,14 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
             .unwrap_or_else(|| JsonValue::Array(Vec::new()));
         object.insert(source_field.to_string(), value);
     }
+
+    for generated_field in [
+        "poster_local_path",
+        "background_local_path",
+        "banner_local_path",
+    ] {
+        object.remove(generated_field);
+    }
 }
 
 fn copy_title_record_field(
@@ -285,12 +324,14 @@ fn missing_or_blank(value: Option<&JsonValue>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use chrono::TimeZone;
     use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
     use super::{
         ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
-        strip_nonportable_backup_fields,
+        strip_nonportable_backup_fields, validate_restore_manifest_table_set,
     };
 
     #[test]
@@ -374,6 +415,127 @@ mod tests {
         .expect("plugin installation row should normalize");
 
         assert!(!object.contains_key("wasm_bytes"));
+    }
+
+    #[test]
+    fn restore_manifest_validation_accepts_legacy_generated_tables() {
+        let row_counts = BTreeMap::from_iter([
+            ("settings_definitions".to_string(), 1),
+            ("settings_values".to_string(), 1),
+            ("title_image_variants".to_string(), 42),
+        ]);
+        let export_tables = vec![
+            "settings_definitions".to_string(),
+            "settings_values".to_string(),
+        ];
+
+        validate_restore_manifest_table_set(&row_counts, &export_tables)
+            .expect("known non-export catalog tables should be ignored on restore");
+    }
+
+    #[test]
+    fn restore_manifest_validation_rejects_unknown_tables() {
+        let row_counts = BTreeMap::from_iter([
+            ("settings_definitions".to_string(), 1),
+            ("settings_values".to_string(), 1),
+            ("mystery_cache".to_string(), 42),
+        ]);
+        let export_tables = vec![
+            "settings_definitions".to_string(),
+            "settings_values".to_string(),
+        ];
+
+        let error = validate_restore_manifest_table_set(&row_counts, &export_tables)
+            .expect_err("unknown tables should stay invalid");
+        assert!(error.to_string().contains("mystery_cache"));
+    }
+
+    #[test]
+    fn title_import_normalization_drops_generated_local_image_paths() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 15, 9, 30, 0)
+            .single()
+            .expect("fixed timestamp");
+        let mut object = JsonMap::from_iter([
+            ("id".to_string(), JsonValue::String("title-1".to_string())),
+            (
+                "library_id".to_string(),
+                JsonValue::String("library-1".to_string()),
+            ),
+            ("name".to_string(), JsonValue::String("Title".to_string())),
+            ("facet".to_string(), JsonValue::String("movie".to_string())),
+            (
+                "poster_url".to_string(),
+                JsonValue::String("https://example.invalid/poster.jpg".to_string()),
+            ),
+            (
+                "poster_local_path".to_string(),
+                JsonValue::String("/images/titles/title-1/poster/w250/hash".to_string()),
+            ),
+            (
+                "background_local_path".to_string(),
+                JsonValue::String("/images/titles/title-1/fanart/w1280/hash".to_string()),
+            ),
+            (
+                "banner_local_path".to_string(),
+                JsonValue::String("/images/titles/title-1/banner/w500/hash".to_string()),
+            ),
+        ]);
+
+        normalize_import_object_for_target(
+            "titles",
+            &mut object,
+            now,
+            &[
+                ImportColumnRule {
+                    name: "id".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "library_id".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "name".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "facet".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "poster_url".to_string(),
+                    nullable: true,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+            ],
+            7,
+        )
+        .expect("title row should normalize");
+
+        assert_eq!(
+            object.get("poster_url"),
+            Some(&JsonValue::String(
+                "https://example.invalid/poster.jpg".to_string()
+            ))
+        );
+        assert!(!object.contains_key("poster_local_path"));
+        assert!(!object.contains_key("background_local_path"));
+        assert!(!object.contains_key("banner_local_path"));
     }
 
     #[test]

@@ -219,6 +219,16 @@ impl MediaFileRepository for NullMediaFileRepository {
         ))
     }
 
+    async fn link_file_to_series_movie(
+        &self,
+        _file_id: &str,
+        _series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "media file repository is not configured".to_string(),
+        ))
+    }
+
     async fn list_media_files_for_title(&self, _title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),
@@ -233,6 +243,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),
         ))
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        _title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
     }
 
     async fn list_title_media_size_summaries(
@@ -286,6 +303,17 @@ impl MediaFileRepository for NullMediaFileRepository {
     }
 
     async fn update_media_file_path(&self, _file_id: &str, _file_path: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "media file repository is not configured".to_string(),
+        ))
+    }
+
+    async fn set_movie_file_roles_for_title(
+        &self,
+        _title_id: &str,
+        _primary_file_id: &str,
+        _additional_file_ids: &[String],
+    ) -> AppResult<()> {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),
         ))
@@ -437,6 +465,12 @@ impl WantedItemRepository for NullWantedItemRepository {
         Ok(())
     }
     async fn delete_wanted_items_for_collection(&self, _collection_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        _series_movie_link_id: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
     async fn delete_wanted_items_for_episode(&self, _episode_id: &str) -> AppResult<()> {
@@ -1003,6 +1037,8 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
         &self,
         _: &str,
         _: &str,
+        _: crate::DownloadSubmissionPurpose,
+        _: &crate::SubmissionScope,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(None)
     }
@@ -2039,6 +2075,33 @@ pub mod test_nulls {
 
     #[async_trait]
     impl ShowRepository for NullShowRepository {
+        async fn list_series_movie_links_for_title(
+            &self,
+            _: &str,
+        ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+            Ok(vec![])
+        }
+        async fn get_series_movie_link_by_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+        async fn find_series_movie_link_by_legacy_collection_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+        async fn upsert_series_movie_link(
+            &self,
+            link: scryer_domain::SeriesMovieLink,
+        ) -> AppResult<scryer_domain::SeriesMovieLink> {
+            Ok(link)
+        }
+        async fn delete_stale_series_movie_links(&self, _: &str, _: &[String]) -> AppResult<()> {
+            Ok(())
+        }
         async fn list_collections_for_title(&self, _: &str) -> AppResult<Vec<Collection>> {
             Ok(vec![])
         }
@@ -2062,27 +2125,6 @@ pub mod test_nulls {
         }
         async fn update_collection(&self, _: &str, _: CollectionUpdate) -> AppResult<Collection> {
             Err(AppError::Repository("not configured".into()))
-        }
-        async fn update_collection_interstitial_movie(
-            &self,
-            _: &str,
-            _: scryer_domain::InterstitialMovieMetadata,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not configured".into()))
-        }
-        async fn update_collection_specials_movies(
-            &self,
-            _: &str,
-            _: Vec<scryer_domain::InterstitialMovieMetadata>,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not configured".into()))
-        }
-        async fn update_interstitial_season_episode(
-            &self,
-            _: &str,
-            _: Option<String>,
-        ) -> AppResult<()> {
-            Ok(())
         }
         async fn set_collection_episodes_monitored(&self, _: &str, _: bool) -> AppResult<()> {
             Ok(())

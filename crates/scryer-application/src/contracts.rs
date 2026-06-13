@@ -5,9 +5,68 @@ use std::path::PathBuf;
 pub enum SubmissionScope {
     Episode { episode_id: String },
     EpisodeSet { episode_ids: Vec<String> },
+    SeriesMovie { series_movie_link_id: String },
     Collection { collection_id: String },
     Title,
     Orphan,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DownloadSubmissionPurpose {
+    #[default]
+    Standard,
+    AdditionalFile,
+}
+
+impl DownloadSubmissionPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::AdditionalFile => "additional_file",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "additional_file" => Self::AdditionalFile,
+            _ => Self::Standard,
+        }
+    }
+
+    pub fn is_additional_file(self) -> bool {
+        self == Self::AdditionalFile
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MediaFileRole {
+    #[default]
+    Primary,
+    Additional,
+}
+
+impl MediaFileRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Additional => "additional",
+        }
+    }
+
+    pub fn from_str(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "additional" => Self::Additional,
+            _ => Self::Primary,
+        }
+    }
+
+    pub fn is_primary(self) -> bool {
+        self == Self::Primary
+    }
+
+    pub fn is_additional(self) -> bool {
+        self == Self::Additional
+    }
 }
 
 impl SubmissionScope {
@@ -15,6 +74,7 @@ impl SubmissionScope {
         title_id: &str,
         episode_id: Option<String>,
         collection_id: Option<String>,
+        series_movie_link_id: Option<String>,
         episode_set_ids: Option<Vec<String>>,
     ) -> Self {
         if let Some(mut episode_ids) = episode_set_ids {
@@ -28,6 +88,12 @@ impl SubmissionScope {
 
         if let Some(episode_id) = episode_id {
             return Self::Episode { episode_id };
+        }
+
+        if let Some(series_movie_link_id) = series_movie_link_id {
+            return Self::SeriesMovie {
+                series_movie_link_id,
+            };
         }
 
         if let Some(collection_id) = collection_id {
@@ -55,12 +121,25 @@ impl SubmissionScope {
         }
     }
 
+    pub fn series_movie_link_id(&self) -> Option<&str> {
+        match self {
+            Self::SeriesMovie {
+                series_movie_link_id,
+            } => Some(series_movie_link_id.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn persisted_episode_id(&self) -> Option<&str> {
         self.episode_id()
     }
 
     pub fn persisted_collection_id(&self) -> Option<&str> {
         self.collection_id()
+    }
+
+    pub fn persisted_series_movie_link_id(&self) -> Option<&str> {
+        self.series_movie_link_id()
     }
 
     pub fn episode_ids(&self) -> Option<&[String]> {
@@ -83,6 +162,7 @@ pub struct DownloadSubmission {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub request_signature: Option<String>,
+    pub purpose: DownloadSubmissionPurpose,
     pub scope: SubmissionScope,
 }
 
@@ -573,6 +653,7 @@ pub struct InsertMediaFileInput {
     pub title_id: String,
     pub file_path: String,
     pub size_bytes: i64,
+    pub role: MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,
     pub quality_label: Option<String>,
@@ -648,6 +729,7 @@ pub struct IndexerRoutingPlan {
 #[derive(Clone, Debug)]
 pub struct DownloadClientAddRequest {
     pub title: Title,
+    pub purpose: DownloadSubmissionPurpose,
     pub download_id: Option<String>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
@@ -677,6 +759,7 @@ impl DownloadClientAddRequest {
     ) -> Self {
         Self {
             title: title.clone(),
+            purpose: DownloadSubmissionPurpose::Standard,
             download_id: None,
             source_hint,
             staged_nzb: None,

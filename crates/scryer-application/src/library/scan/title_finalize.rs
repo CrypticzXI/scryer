@@ -78,6 +78,7 @@ async fn persist_or_reuse_scanned_media_file(
         title_id: title.id.clone(),
         file_path: file.path.clone(),
         size_bytes: snapshot.size_bytes,
+        role: crate::MediaFileRole::Additional,
         source_signature_scheme,
         source_signature_value,
         quality_label: None,
@@ -251,9 +252,6 @@ async fn ensure_movie_collection_for_file(
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: title.monitored,
         created_at: Utc::now(),
     };
@@ -296,6 +294,7 @@ pub(crate) async fn finalize_title_scan_file(
         file,
         parsed,
         target_episodes,
+        series_movie_link_id,
         snapshot,
         record,
     } = plan;
@@ -362,6 +361,27 @@ pub(crate) async fn finalize_title_scan_file(
         }
         crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), None)
             .await;
+    }
+
+    if let Some(series_movie_link_id) = series_movie_link_id.as_deref() {
+        title_updated = true;
+        let db_started = Instant::now();
+        let link_result = app
+            .services
+            .library
+            .media_files
+            .link_file_to_series_movie(&persisted_file.file_id, series_movie_link_id)
+            .await;
+        *db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
+        if let Err(error) = link_result {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                series_movie_link_id,
+                file_id = %persisted_file.file_id,
+                "failed to link scanned file to series movie"
+            );
+        }
     }
 
     let file_path = stored_path_to_path_buf(&file.path);

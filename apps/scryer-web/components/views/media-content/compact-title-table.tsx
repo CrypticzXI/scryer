@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   TableBody,
@@ -64,6 +65,7 @@ type CompactTitleTableProps = {
   onToggleMonitored?: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
   onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (title: TitleRecord, release: Release) => void;
+  onQueueAdditionalFromInteractive?: (title: TitleRecord, release: Release) => Promise<void> | void;
   isDeletingById: Record<string, boolean>;
   isTogglingMonitoredById?: Record<string, boolean>;
   selectedTitleIds: ReadonlySet<string>;
@@ -93,6 +95,7 @@ export function CompactTitleTable({
   onToggleMonitored,
   onInteractiveSearch,
   onQueueFromInteractive,
+  onQueueAdditionalFromInteractive,
   isDeletingById,
   isTogglingMonitoredById,
   selectedTitleIds,
@@ -539,6 +542,19 @@ export function CompactTitleTable({
                       }
                       return onQueueFromInteractive(item, release);
                     }}
+                    onQueueAdditional={
+                      onQueueAdditionalFromInteractive
+                        ? (release) => {
+                            if (bulkActionBusy) {
+                              return;
+                            }
+                            return onQueueAdditionalFromInteractive(item, release);
+                        }
+                        : undefined
+                    }
+                    canQueueAdditional={(release) =>
+                      releaseSupportsAdditionalFileQueue(release, item.facet)
+                    }
                     requireCandidateToken
                   />
                 )}

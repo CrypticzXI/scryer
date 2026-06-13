@@ -1425,9 +1425,11 @@ mod tests {
     use scryer_application::{
         BACKUP_TABLE_CATALOG, BackupBundleExportRequest, BackupExportSecrets,
         BackupTableClassification, LogicalBackupExporter, SettingsRepository, SystemInfoProvider,
+        TitleImageKind, TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord,
         TitleRepository, UserRepository, inspect_backup_bundle,
     };
     use scryer_domain::{ExternalId, Id, MediaFacet, Title, User};
+    use sqlx::Row;
     use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
@@ -1769,6 +1771,17 @@ mod tests {
                 "inspected bundle table set should match the export catalog"
             );
             assert!(
+                !outcome
+                    .summary
+                    .row_counts
+                    .contains_key("title_image_variants"),
+                "backup should not include generated title image variant rows"
+            );
+            assert!(
+                !inspected.row_counts.contains_key("title_image_variants"),
+                "inspected bundle should not include generated title image variant rows"
+            );
+            assert!(
                 outcome.summary.row_counts.contains_key("settings_values"),
                 "backup should include settings JSON rows"
             );
@@ -1882,11 +1895,13 @@ mod tests {
                     let settings =
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore.clone());
                     let users = UserStore::new(datastore);
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
-                    seed_backup_matrix_data(&settings, &titles, &users).await
+                    seed_backup_matrix_data(&settings, &titles, &users).await?;
+                    seed_backup_matrix_title_image(&images).await
                 }
                 TestBackupEngine::Postgres => {
                     let services = self.postgres.as_ref().expect("postgres source");
@@ -1894,11 +1909,13 @@ mod tests {
                     let settings =
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore.clone());
                     let users = UserStore::new(datastore);
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
-                    seed_backup_matrix_data(&settings, &titles, &users).await
+                    seed_backup_matrix_data(&settings, &titles, &users).await?;
+                    seed_backup_matrix_title_image(&images).await
                 }
             }
         }
@@ -2045,8 +2062,11 @@ mod tests {
                     let settings =
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore.clone());
                     let users = UserStore::new(datastore);
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
+                    verify_backup_matrix_title_image_restore(&images).await?;
+                    verify_sqlite_title_image_restore_tables(services.pool()).await?;
                     services.pool().close().await;
                 }
                 TestBackupEngine::Postgres => {
@@ -2059,8 +2079,11 @@ mod tests {
                     let settings =
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore.clone());
                     let users = UserStore::new(datastore);
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
+                    verify_backup_matrix_title_image_restore(&images).await?;
+                    verify_postgres_title_image_restore_tables(services.pool()).await?;
                     services.pool().close().await;
                 }
             }
@@ -2105,6 +2128,36 @@ mod tests {
         Ok(())
     }
 
+    async fn seed_backup_matrix_title_image<I>(images: &I) -> AppResult<()>
+    where
+        I: TitleImageRepository,
+    {
+        images
+            .upsert_title_image_source_result(
+                "backup-lattice-title",
+                TitleImageSourceResult {
+                    kind: TitleImageKind::Poster,
+                    source_url: "https://example.invalid/poster.jpg".to_string(),
+                    source_etag: Some("matrix-etag".to_string()),
+                    source_last_modified: Some("Wed, 12 Jun 2026 03:00:00 GMT".to_string()),
+                    source_format: "jpeg".to_string(),
+                    source_width: 1200,
+                    source_height: 1800,
+                    variants: vec![TitleImageVariantRecord {
+                        variant_key: "w250".to_string(),
+                        format: "avif".to_string(),
+                        width: 250,
+                        height: 375,
+                        bytes: vec![1, 2, 3, 4, 5],
+                        digest: "blake3:backup-matrix-poster-w250".to_string(),
+                    }],
+                },
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
     fn backup_matrix_setting_definition() -> SettingDefinitionSeed {
         SettingDefinitionSeed {
             category: "backup_matrix".to_string(),
@@ -2143,6 +2196,135 @@ mod tests {
         let title = title.expect("restored title should exist");
         assert_eq!(title.external_ids[0].source, "tmdb");
         assert_eq!(title.external_ids[0].value, "424242");
+        Ok(())
+    }
+
+    async fn verify_backup_matrix_title_image_restore<I>(images: &I) -> AppResult<()>
+    where
+        I: TitleImageRepository,
+    {
+        let blob = images
+            .get_title_image_blob("backup-lattice-title", TitleImageKind::Poster, "w250")
+            .await?;
+        assert!(
+            blob.is_none(),
+            "restored backup should not include generated title image variant bytes"
+        );
+
+        let tasks = images.list_title_image_refresh_work(10, &[]).await?;
+        let task = tasks
+            .iter()
+            .find(|task| {
+                task.title_id == "backup-lattice-title" && task.kind == TitleImageKind::Poster
+            })
+            .expect("restored title image metadata should queue refresh work");
+        assert_eq!(task.source_url, "https://example.invalid/poster.jpg");
+        assert!(
+            task.variants
+                .iter()
+                .any(|variant| variant.variant_key == "w250"),
+            "poster refresh work should include the missing preferred variant"
+        );
+        Ok(())
+    }
+
+    async fn verify_sqlite_title_image_restore_tables(pool: &sqlx::SqlitePool) -> AppResult<()> {
+        let row = sqlx::query(
+            "SELECT poster_local_path, background_local_path
+               FROM titles
+              WHERE id = ?",
+        )
+        .bind("backup-lattice-title")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to load restored title: {error}")))?;
+        let poster_local_path: Option<String> =
+            row.try_get("poster_local_path").map_err(|error| {
+                AppError::Repository(format!("failed to decode poster local path: {error}"))
+            })?;
+        let background_local_path: Option<String> =
+            row.try_get("background_local_path").map_err(|error| {
+                AppError::Repository(format!("failed to decode background local path: {error}"))
+            })?;
+        assert!(poster_local_path.is_none());
+        assert!(background_local_path.is_none());
+
+        let source_url: Option<String> = sqlx::query_scalar(
+            "SELECT source_url
+               FROM title_images
+              WHERE title_id = ? AND kind = ?",
+        )
+        .bind("backup-lattice-title")
+        .bind(TitleImageKind::Poster.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to load restored title image source: {error}"
+            ))
+        })?;
+        assert_eq!(
+            source_url.as_deref(),
+            Some("https://example.invalid/poster.jpg")
+        );
+
+        let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored variants: {error}"))
+            })?;
+        assert_eq!(variant_count, 0);
+        Ok(())
+    }
+
+    async fn verify_postgres_title_image_restore_tables(pool: &sqlx::PgPool) -> AppResult<()> {
+        let row = sqlx::query(
+            "SELECT poster_local_path, background_local_path
+               FROM titles
+              WHERE id = $1",
+        )
+        .bind("backup-lattice-title")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to load restored title: {error}")))?;
+        let poster_local_path: Option<String> =
+            row.try_get("poster_local_path").map_err(|error| {
+                AppError::Repository(format!("failed to decode poster local path: {error}"))
+            })?;
+        let background_local_path: Option<String> =
+            row.try_get("background_local_path").map_err(|error| {
+                AppError::Repository(format!("failed to decode background local path: {error}"))
+            })?;
+        assert!(poster_local_path.is_none());
+        assert!(background_local_path.is_none());
+
+        let source_url: Option<String> = sqlx::query_scalar(
+            "SELECT source_url
+               FROM title_images
+              WHERE title_id = $1 AND kind = $2",
+        )
+        .bind("backup-lattice-title")
+        .bind(TitleImageKind::Poster.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to load restored title image source: {error}"
+            ))
+        })?;
+        assert_eq!(
+            source_url.as_deref(),
+            Some("https://example.invalid/poster.jpg")
+        );
+
+        let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored variants: {error}"))
+            })?;
+        assert_eq!(variant_count, 0);
         Ok(())
     }
 

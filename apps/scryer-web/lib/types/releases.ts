@@ -1,10 +1,11 @@
 export type DownloadSourceKind = "nzbFile" | "nzbUrl" | "torrentFile" | "magnetUri";
 
 export type ReleaseQueueScope = {
-  kind: "episode" | "episode_set" | "collection" | "title" | "orphan";
+  kind: "episode" | "episode_set" | "collection" | "series_movie" | "title" | "orphan";
   episodeId?: string | null;
   episodeIds: string[];
   collectionId?: string | null;
+  seriesMovieLinkId?: string | null;
 };
 
 export type Release = {

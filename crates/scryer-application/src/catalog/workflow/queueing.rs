@@ -18,6 +18,7 @@ fn wanted_item_candidates_for_submission_scope(
                 library_slug: None,
                 episode_id: None,
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: None,
                 episode_number: None,
                 media_type: "movie".to_string(),
@@ -75,7 +76,7 @@ fn wanted_item_candidates_for_submission_scope(
             })
             .collect(),
         SubmissionScope::Collection { collection_id } => {
-            let mut candidates = episodes
+            episodes
                 .iter()
                 .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
                 .map(|episode| {
@@ -84,39 +85,41 @@ fn wanted_item_candidates_for_submission_scope(
                         episode.collection_id.clone(),
                     )
                 })
-                .collect::<Vec<_>>();
-            candidates.push((
-                WantedItem {
-                    id: String::new(),
-                    title_id: title_id.to_string(),
-                    title_name: None,
-                    title_slug: None,
-                    title_facet: None,
-                    library_id: None,
-                    library_name: None,
-                    library_slug: None,
-                    episode_id: None,
-                    collection_id: Some(collection_id.clone()),
-                    season_number: None,
-                    episode_number: None,
-                    media_type: "interstitial_movie".to_string(),
-                    search_phase: String::new(),
-                    next_search_at: None,
-                    last_search_at: None,
-                    search_count: 0,
-                    baseline_date: None,
-                    status: WantedStatus::Wanted,
-                    grabbed_release: None,
-                    current_score: None,
-                    latest_release_decision: None,
-                    mismatch_recovery_eligible: false,
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                },
-                Some(collection_id.clone()),
-            ));
-            candidates
+                .collect()
         }
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => vec![(
+            WantedItem {
+                id: String::new(),
+                title_id: title_id.to_string(),
+                title_name: None,
+                title_slug: None,
+                title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
+                episode_id: None,
+                collection_id: None,
+                series_movie_link_id: Some(series_movie_link_id.clone()),
+                season_number: None,
+                episode_number: None,
+                media_type: "series_movie".to_string(),
+                search_phase: String::new(),
+                next_search_at: None,
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: None,
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            None,
+        )],
     }
 }
 fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> WantedItem {
@@ -144,6 +147,7 @@ fn wanted_item_candidate_for_episode_id(
         library_slug: None,
         episode_id: Some(episode_id.to_string()),
         collection_id,
+        series_movie_link_id: None,
         season_number,
         episode_number: None,
         media_type: "episode".to_string(),
@@ -172,7 +176,37 @@ fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubm
         source_kind: None,
         source_title: None,
         request_signature: None,
+        purpose: DownloadSubmissionPurpose::Standard,
         scope: scope.clone(),
+    }
+}
+fn validate_manual_queue_purpose(
+    purpose: DownloadSubmissionPurpose,
+    title: &Title,
+    scope: &SubmissionScope,
+) -> AppResult<()> {
+    if !purpose.is_additional_file() {
+        return Ok(());
+    }
+
+    match scope {
+        SubmissionScope::Title if title.facet == MediaFacet::Movie => Ok(()),
+        SubmissionScope::Title => Err(AppError::Validation(
+            "additional-file title queueing supports only movie titles".into(),
+        )),
+        SubmissionScope::Episode { .. } => Ok(()),
+        SubmissionScope::EpisodeSet { .. } => Err(AppError::Validation(
+            "additional-file queueing supports only title and single-episode scopes".into(),
+        )),
+        SubmissionScope::Collection { .. } => Err(AppError::Validation(
+            "additional-file queueing does not support collection scopes yet".into(),
+        )),
+        SubmissionScope::SeriesMovie { .. } => Err(AppError::Validation(
+            "additional-file queueing does not support series movie scopes yet".into(),
+        )),
+        SubmissionScope::Orphan => Err(AppError::Validation(
+            "additional-file queueing requires a title or episode scope".into(),
+        )),
     }
 }
 fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
@@ -321,7 +355,9 @@ impl AppUseCase {
         queued_release: QueuedReleaseSelection,
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
+        purpose: DownloadSubmissionPurpose,
     ) -> AppResult<QueueDownloadOutcome> {
+        validate_manual_queue_purpose(purpose, title, &scope)?;
         let QueuedReleaseSelection {
             source_hint,
             source_kind,
@@ -345,7 +381,7 @@ impl AppUseCase {
                 .services
                 .workflow
                 .download_submissions
-                .find_by_title_and_request_signature(&title.id, signature)
+                .find_by_title_and_request_signature(&title.id, signature, purpose, &scope)
                 .await?
         {
             let queue = self
@@ -369,9 +405,11 @@ impl AppUseCase {
             }
         }
 
-        let conflicts = self
-            .find_blocking_download_submissions(title, &scope)
-            .await?;
+        let conflicts = if purpose.is_additional_file() {
+            Vec::new()
+        } else {
+            self.find_blocking_download_submissions(title, &scope).await?
+        };
         if !conflicts.is_empty() {
             match conflict_policy {
                 SubmissionConflictPolicy::Abort | SubmissionConflictPolicy::Skip => {
@@ -428,6 +466,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose,
                 download_id: Some(download_id),
                 source_hint,
                 staged_nzb: None,
@@ -486,6 +525,7 @@ impl AppUseCase {
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
                             request_signature: request_signature.clone(),
+                            purpose,
                             scope,
                         },
                         accepted_identity,
@@ -564,6 +604,7 @@ impl AppUseCase {
                                 episodes.into_iter().map(|episode| episode.id).collect()
                             })
                             .unwrap_or_default(),
+                        SubmissionScope::SeriesMovie { .. } => Vec::new(),
                         SubmissionScope::Title | SubmissionScope::Orphan => Vec::new(),
                     };
                     let mut blocklist_data = HashMap::new();
@@ -577,6 +618,15 @@ impl AppUseCase {
                         blocklist_data.insert(
                             "collection_id".to_string(),
                             serde_json::json!(collection_id),
+                        );
+                    }
+                    if let SubmissionScope::SeriesMovie {
+                        series_movie_link_id,
+                    } = &scope
+                    {
+                        blocklist_data.insert(
+                            "series_movie_link_id".to_string(),
+                            serde_json::json!(series_movie_link_id),
                         );
                     }
                     let _ = self
@@ -663,6 +713,7 @@ impl AppUseCase {
                 queued_release,
                 SubmissionScope::Title,
                 SubmissionConflictPolicy::Abort,
+                DownloadSubmissionPurpose::Standard,
             )
             .await?;
         let QueueDownloadOutcome::Queued(queued) = queued else {
@@ -702,6 +753,26 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
+        self.queue_existing_title_download_with_purpose(
+            actor,
+            title_id,
+            queued_release,
+            scope,
+            conflict_policy,
+            DownloadSubmissionPurpose::Standard,
+        )
+        .await
+    }
+
+    pub async fn queue_existing_title_download_with_purpose(
+        &self,
+        actor: &User,
+        title_id: &str,
+        queued_release: QueuedReleaseSelection,
+        scope: SubmissionScope,
+        conflict_policy: SubmissionConflictPolicy,
+        purpose: DownloadSubmissionPurpose,
+    ) -> AppResult<QueueDownloadOutcome> {
         let title = self
             .services
             .catalog
@@ -715,8 +786,15 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        self.queue_manual_release_for_title(actor, &title, queued_release, scope, conflict_policy)
-            .await
+        self.queue_manual_release_for_title(
+            actor,
+            &title,
+            queued_release,
+            scope,
+            conflict_policy,
+            purpose,
+        )
+        .await
     }
 }
 impl AppUseCase {
@@ -728,16 +806,37 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
     ) -> AppResult<QueueDownloadOutcome> {
+        self.queue_existing_title_download_from_candidate_token_with_purpose(
+            actor,
+            title_id,
+            candidate_token,
+            scope,
+            conflict_policy,
+            DownloadSubmissionPurpose::Standard,
+        )
+        .await
+    }
+
+    pub async fn queue_existing_title_download_from_candidate_token_with_purpose(
+        &self,
+        actor: &User,
+        title_id: &str,
+        candidate_token: &str,
+        scope: SubmissionScope,
+        conflict_policy: SubmissionConflictPolicy,
+        purpose: DownloadSubmissionPurpose,
+    ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
         let outcome = self
-            .queue_existing_title_download(
+            .queue_existing_title_download_with_purpose(
                 actor,
                 title_id,
                 queued_release.clone(),
                 signed_scope,
                 conflict_policy,
+                purpose,
             )
             .await?;
         let _ = scope;
@@ -807,15 +906,24 @@ impl AppUseCase {
                     "best-release search is not supported for multi-episode scopes".into(),
                 ));
             }
-            SubmissionScope::Collection { collection_id } => {
-                let collection = self
+            SubmissionScope::Collection { .. } => {
+                return Err(AppError::Validation(
+                    "best-release search is not supported for collection scopes".into(),
+                ));
+            }
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            } => {
+                let link = self
                     .services
                     .catalog
                     .shows
-                    .get_collection_by_id(collection_id)
+                    .get_series_movie_link_by_id(series_movie_link_id)
                     .await?
-                    .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
-                self.resolve_release_search_subject_for_collection(&title, &collection)
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!("series movie link {}", series_movie_link_id))
+                    })?;
+                self.resolve_release_search_subject_for_series_movie(&title, &link)
                     .await?
             }
         };
@@ -827,7 +935,10 @@ impl AppUseCase {
             .into_iter()
             .find(|candidate| candidate.auto_eligible == Some(true))
             .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
-        let queue_scope = if matches!(&scope, SubmissionScope::Collection { .. }) {
+        let queue_scope = if matches!(
+            &scope,
+            SubmissionScope::Collection { .. } | SubmissionScope::SeriesMovie { .. }
+        ) {
             scope
         } else if let Some(parsed) = best.parsed_release_metadata.as_ref() {
             let catalog_episodes = self

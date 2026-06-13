@@ -6,8 +6,8 @@ use scryer_application::{
     DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
-    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
+    MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
+    PendingImportStatus, PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
     ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
     SubmissionScope, SubtitleDownloadRepository, SubtitleProviderConfigRepository,
     SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate, TitleImageBlob, TitleImageKind,
@@ -19,9 +19,9 @@ use scryer_application::{
 use scryer_domain::{
     ChannelType, Collection, CollectionType, DomainEventFilter, DomainEventPayload,
     DomainEventStream, DownloadClientConfig, DownloadClientStatus, Episode, ExternalId, Id,
-    ImportStatus, ImportType, InterstitialMovieMetadata, MediaFacet, NewDomainEvent,
-    NotificationChannelConfig, NotificationEventType, NotificationSubscription,
-    SubtitleProviderConfig, TaggedAlias, Title, TitleContextSnapshot, TitleUpdatedEventData,
+    ImportStatus, ImportType, MediaFacet, NewDomainEvent, NotificationChannelConfig,
+    NotificationEventType, NotificationSubscription, SubtitleProviderConfig, TaggedAlias, Title,
+    TitleContextSnapshot, TitleUpdatedEventData,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 use std::collections::HashSet;
@@ -1001,6 +1001,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
         workflow
             .record_submission(DownloadSubmission {
                 title_id: format!("title-{idx}"),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: None,
                 download_client_type: "weaver".to_string(),
@@ -1048,6 +1049,7 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
     workflow
         .record_submission(DownloadSubmission {
             title_id: "legacy-title".to_string(),
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: None,
             download_client_type: "weaver".to_string(),
@@ -1096,6 +1098,7 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
     workflow
         .record_submission(DownloadSubmission {
             title_id: "title-1".to_string(),
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: None,
             download_client_type: "weaver".to_string(),
@@ -1119,6 +1122,7 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
         .record_submission_with_identity(
             DownloadSubmission {
                 title_id: "title-1".to_string(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
                 download_client_id: None,
                 download_client_type: "weaver".to_string(),
@@ -1168,6 +1172,7 @@ async fn record_download_submission_persists_episode_set_scope() {
     workflow
         .record_submission(DownloadSubmission {
             title_id: "title-1".to_string(),
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("client-a".to_string()),
             download_client_type: "weaver".to_string(),
@@ -1199,6 +1204,85 @@ async fn record_download_submission_persists_episode_set_scope() {
             episode_ids: vec!["ep-1".to_string(), "ep-13".to_string()]
         }
     );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn download_submission_signature_lookup_matches_scope() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_download_submission_signature_scope_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow = DownloadSubmissionStore::new(services.datastore());
+
+    for (episode_id, item_id) in [("episode-1", "job-1"), ("episode-2", "job-2")] {
+        workflow
+            .record_submission(DownloadSubmission {
+                title_id: "title-1".to_string(),
+                purpose: scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+                facet: "series".to_string(),
+                download_client_id: Some("client-a".to_string()),
+                download_client_type: "weaver".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: Some("https://example.invalid/same-release.nzb".to_string()),
+                source_kind: None,
+                source_title: Some("Same.Release.S01E01.1080p.WEB-DL".to_string()),
+                request_signature: Some("same-signature".to_string()),
+                scope: SubmissionScope::Episode {
+                    episode_id: episode_id.to_string(),
+                },
+            })
+            .await
+            .expect("record submission should succeed");
+    }
+
+    let episode_two_scope = SubmissionScope::Episode {
+        episode_id: "episode-2".to_string(),
+    };
+    let episode_two = workflow
+        .find_by_title_and_request_signature(
+            "title-1",
+            "same-signature",
+            scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+            &episode_two_scope,
+        )
+        .await
+        .expect("signature lookup should succeed")
+        .expect("episode-two submission should match");
+    assert_eq!(episode_two.download_client_item_id, "job-2");
+
+    let episode_one_scope = SubmissionScope::Episode {
+        episode_id: "episode-1".to_string(),
+    };
+    let episode_one = workflow
+        .find_by_title_and_request_signature(
+            "title-1",
+            "same-signature",
+            scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+            &episode_one_scope,
+        )
+        .await
+        .expect("signature lookup should succeed")
+        .expect("episode-one submission should match");
+    assert_eq!(episode_one.download_client_item_id, "job-1");
+
+    let collection_scope = SubmissionScope::Collection {
+        collection_id: "season-1".to_string(),
+    };
+    let collection = workflow
+        .find_by_title_and_request_signature(
+            "title-1",
+            "same-signature",
+            scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+            &collection_scope,
+        )
+        .await
+        .expect("signature lookup should succeed");
+    assert!(collection.is_none());
 
     let _ = std::fs::remove_file(db);
 }
@@ -2057,9 +2141,6 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         narrative_order: Some("2".to_string()),
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("24".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     };
@@ -2395,6 +2476,78 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
             .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
         "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
     );
+}
+
+#[tokio::test]
+async fn additional_managed_file_role_migration_defaults_existing_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE media_files (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            quality_label TEXT,
+            scan_status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy media_files should be created");
+    sqlx::query(
+        "CREATE TABLE download_submissions (
+            id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            facet TEXT NOT NULL,
+            download_client_type TEXT NOT NULL,
+            download_client_item_id TEXT NOT NULL,
+            submitted_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy download_submissions should be created");
+    sqlx::query(
+        "INSERT INTO media_files
+         (id, title_id, file_path, size_bytes, scan_status, created_at)
+         VALUES ('file-1', 'title-1', '/library/Movie.mkv', 1024, 'scanned', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy media file should insert");
+    sqlx::query(
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_type, download_client_item_id, submitted_at)
+         VALUES ('submission-1', 'title-1', 'movie', 'nzbget', 'job-1', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy submission should insert");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../scryer/src/db/migrations/0129_additional_managed_file_roles.sql"),
+    )
+    .await;
+
+    let role: String = sqlx::query_scalar("SELECT role FROM media_files WHERE id = 'file-1'")
+        .fetch_one(&pool)
+        .await
+        .expect("media file role should load");
+    assert_eq!(role, "primary");
+
+    let purpose: String =
+        sqlx::query_scalar("SELECT purpose FROM download_submissions WHERE id = 'submission-1'")
+            .fetch_one(&pool)
+            .await
+            .expect("download submission purpose should load");
+    assert_eq!(purpose, "standard");
 }
 
 #[tokio::test]
@@ -3966,6 +4119,191 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
 }
 
 #[tokio::test]
+async fn media_file_aggregates_ignore_additional_files_but_listing_includes_them() {
+    let (services, db) = temp_services("scryer_media_file_primary_aggregates").await;
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
+    let media_files = media_file_store(&services);
+
+    let movie_title = make_test_title("title-primary-aggregate-movie", None);
+    TitleRepository::create(&catalog, movie_title.clone())
+        .await
+        .expect("movie title should insert");
+
+    let movie_primary_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: movie_title.id.clone(),
+            file_path: "/library/Movie.Primary.2160p.mkv".to_string(),
+            size_bytes: 8_192,
+            quality_label: Some("2160p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("movie primary media file should insert");
+    let movie_additional_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: movie_title.id.clone(),
+            file_path: "/library/Movie.Additional.720p.mkv".to_string(),
+            size_bytes: 4_096,
+            role: MediaFileRole::Additional,
+            quality_label: Some("720p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("movie additional media file should insert");
+
+    let movie_listing = media_files
+        .list_media_files_for_title(&movie_title.id)
+        .await
+        .expect("movie media files should list");
+    assert_eq!(movie_listing.len(), 2);
+    assert!(
+        movie_listing
+            .iter()
+            .any(|file| { file.id == movie_primary_id && file.role == MediaFileRole::Primary })
+    );
+    assert!(
+        movie_listing.iter().any(|file| {
+            file.id == movie_additional_id && file.role == MediaFileRole::Additional
+        })
+    );
+
+    let quality_summaries = media_files
+        .list_title_quality_summaries(&[movie_title.id.clone()])
+        .await
+        .expect("title quality summaries should list");
+    assert_eq!(quality_summaries.len(), 1);
+    assert_eq!(quality_summaries[0].title_id, movie_title.id);
+    assert_eq!(quality_summaries[0].quality_tier, "2160P");
+
+    let mut series_title = make_test_title("title-primary-aggregate-series", None);
+    series_title.facet = MediaFacet::Series;
+    series_title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    TitleRepository::create(&catalog, series_title.clone())
+        .await
+        .expect("series title should insert");
+
+    let collection = Collection {
+        id: "primary-aggregate-season-1".to_string(),
+        title_id: series_title.id.clone(),
+        collection_type: CollectionType::Season,
+        collection_index: "1".to_string(),
+        label: Some("Season 1".to_string()),
+        ordered_path: None,
+        narrative_order: Some("1".to_string()),
+        first_episode_number: Some("1".to_string()),
+        last_episode_number: Some("2".to_string()),
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    ShowRepository::create_collection(&shows, collection.clone())
+        .await
+        .expect("collection should insert");
+
+    let episode_one = Episode {
+        id: "primary-aggregate-s01e01".to_string(),
+        title_id: series_title.id.clone(),
+        collection_id: Some(collection.id.clone()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("Episode 1".to_string()),
+        air_date: Some("2026-01-01".to_string()),
+        duration_seconds: Some(1_800),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        image_url: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    let episode_two = Episode {
+        id: "primary-aggregate-s01e02".to_string(),
+        episode_number: Some("2".to_string()),
+        episode_label: Some("S01E02".to_string()),
+        title: Some("Episode 2".to_string()),
+        air_date: Some("2026-01-02".to_string()),
+        ..episode_one.clone()
+    };
+    ShowRepository::create_episode(&shows, episode_one.clone())
+        .await
+        .expect("episode one should insert");
+    ShowRepository::create_episode(&shows, episode_two.clone())
+        .await
+        .expect("episode two should insert");
+
+    let episode_one_primary_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: series_title.id.clone(),
+            file_path: "/library/Series.S01E01.Primary.1080p.mkv".to_string(),
+            size_bytes: 2_048,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("episode primary file should insert");
+    media_files
+        .link_file_to_episode(&episode_one_primary_id, &episode_one.id)
+        .await
+        .expect("primary file should link to episode one");
+
+    for (file_path, episode_id) in [
+        (
+            "/library/Series.S01E01.Additional.360p.mkv",
+            episode_one.id.as_str(),
+        ),
+        (
+            "/library/Series.S01E02.Additional.360p.mkv",
+            episode_two.id.as_str(),
+        ),
+    ] {
+        let additional_id = media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: series_title.id.clone(),
+                file_path: file_path.to_string(),
+                size_bytes: 1_024,
+                role: MediaFileRole::Additional,
+                quality_label: Some("360p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("additional episode file should insert");
+        media_files
+            .link_file_to_episode(&additional_id, episode_id)
+            .await
+            .expect("additional file should link to episode");
+    }
+
+    let cutoff_summaries = media_files
+        .list_cutoff_unmet_quality_summaries(&[series_title.id.clone()])
+        .await
+        .expect("cutoff quality summaries should list");
+    assert_eq!(cutoff_summaries.len(), 1);
+    assert_eq!(
+        cutoff_summaries[0].episode_id.as_deref(),
+        Some(episode_one.id.as_str())
+    );
+    assert_eq!(cutoff_summaries[0].quality_tier, "1080P");
+
+    let progress_summaries = media_files
+        .list_title_episode_progress_summaries(&[series_title.id.clone()])
+        .await
+        .expect("episode progress summaries should list");
+    assert_eq!(progress_summaries.len(), 1);
+    assert_eq!(progress_summaries[0].title_id, series_title.id);
+    assert_eq!(progress_summaries[0].owned_episodes, 1);
+    assert_eq!(progress_summaries[0].monitored_episodes, 2);
+    assert_eq!(progress_summaries[0].total_episodes, 2);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_original_{}.db",
@@ -5528,9 +5866,6 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         },
@@ -5566,51 +5901,53 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     .await
     .expect("series episode should insert");
 
-    let anime_collection = ShowRepository::create_collection(
+    let anime_movie_link = ShowRepository::upsert_series_movie_link(
         &shows,
-        Collection {
-            id: "anime-interstitial-1".to_string(),
-            title_id: anime_title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "0".to_string(),
-            label: Some("Movie".to_string()),
-            ordered_path: None,
-            narrative_order: Some("0".to_string()),
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(InterstitialMovieMetadata {
-                tvdb_id: "anime-movie-1".to_string(),
-                name: "Franchise Movie".to_string(),
-                slug: "franchise-movie".to_string(),
+        scryer_domain::SeriesMovieLink {
+            id: "anime-series-movie-1".to_string(),
+            series_title_id: anime_title.id.clone(),
+            movie: scryer_domain::MovieEntity {
+                id: "anime-movie-1".to_string(),
+                title: "Series Movie".to_string(),
+                sort_title: Some("Series Movie".to_string()),
+                slug: Some("series-movie".to_string()),
                 year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Franchise movie between anime arcs".to_string(),
-                poster_url: String::new(),
-                language: "ja".to_string(),
-                runtime_minutes: 100,
-                sort_title: "Franchise Movie".to_string(),
-                continuity_status: Some("canon".to_string()),
+                overview: Some("Series movie between anime arcs".to_string()),
+                poster_url: None,
+                background_url: None,
+                language: Some("ja".to_string()),
+                runtime_minutes: Some(100),
+                content_status: Some("released".to_string()),
                 genres: vec!["anime".to_string()],
-                studio: "Studio".to_string(),
+                studio: Some("Studio".to_string()),
                 digital_release_date: Some("2024-01-01".to_string()),
-                imdb_id: String::new(),
-                association_confidence: Some("high".to_string()),
-                movie_form: None,
-                confidence: Some("high".to_string()),
-                signal_summary: Some("Inserted by test fixture".to_string()),
-                placement: Some("between_seasons".to_string()),
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: None,
+                imdb_id: None,
+                tvdb_id: Some("anime-movie-1".to_string()),
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            placement: Some("between_seasons".to_string()),
+            narrative_order: Some("0".to_string()),
+            after_season: Some(0),
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: Some("high".to_string()),
+            continuity_status: Some("canon".to_string()),
+            movie_form: Some("movie".to_string()),
+            confidence: Some("high".to_string()),
+            signal_summary: Some("Inserted by test fixture".to_string()),
+            source: Some("test".to_string()),
             monitored: true,
+            legacy_collection_id: None,
             created_at: Utc::now(),
+            updated_at: Utc::now(),
         },
     )
     .await
-    .expect("anime interstitial collection should insert");
+    .expect("anime series movie link should insert");
 
     for item in [
         scryer_application::WantedItem {
@@ -5624,6 +5961,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -5651,6 +5989,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             library_slug: None,
             episode_id: Some(series_episode.id.clone()),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -5677,10 +6016,11 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             library_name: None,
             library_slug: None,
             episode_id: None,
-            collection_id: Some(anime_collection.id.clone()),
+            collection_id: None,
+            series_movie_link_id: Some(anime_movie_link.id.clone()),
             season_number: Some("0".to_string()),
             episode_number: None,
-            media_type: "interstitial_movie".to_string(),
+            media_type: "series_movie".to_string(),
             search_phase: "initial".to_string(),
             next_search_at: Some("2024-01-01T00:00:00Z".to_string()),
             last_search_at: None,
@@ -5743,9 +6083,6 @@ async fn seed_due_wanted_episode_order_fixture(
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("10".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         },
@@ -5804,6 +6141,7 @@ async fn seed_due_wanted_episode_order_fixture(
                 library_slug: None,
                 episode_id: Some(episode_id.clone()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: season_number.map(str::to_string),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -5942,6 +6280,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -6281,6 +6620,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "episode".to_string(),
@@ -7455,63 +7795,106 @@ async fn sqlite_show_queries_roundtrip() {
         narrative_order: Some("1".into()),
         first_episode_number: Some("1".into()),
         last_episode_number: Some("12".into()),
-        interstitial_movie: Some(InterstitialMovieMetadata {
-            tvdb_id: "12345".into(),
-            name: "Test Movie".into(),
-            slug: "test-movie".into(),
-            year: Some(2024),
-            content_status: "released".into(),
-            overview: "Interstitial overview".into(),
-            poster_url: "https://example.com/poster.jpg".into(),
-            language: "eng".into(),
-            runtime_minutes: 97,
-            sort_title: "Test Movie".into(),
-            imdb_id: "tt1234567".into(),
-            genres: vec!["Action".into(), "Anime".into()],
-            studio: "Studio Test".into(),
-            digital_release_date: Some("2024-01-01".into()),
-            association_confidence: Some("high".into()),
-            continuity_status: Some("canon".into()),
-            movie_form: Some("movie".into()),
-            confidence: Some("high".into()),
-            signal_summary: Some("TVDB marked special as critical to story".into()),
-            placement: Some("ordered".into()),
-            movie_tmdb_id: Some("99001".into()),
-            movie_mal_id: Some("5001".into()),
-            movie_anidb_id: None,
-        }),
-        specials_movies: vec![InterstitialMovieMetadata {
-            tvdb_id: "67890".into(),
-            name: "Recap Movie".into(),
-            slug: "recap-movie".into(),
-            year: Some(2014),
-            content_status: "released".into(),
-            overview: "Recap of the first half.".into(),
-            poster_url: "https://example.com/recap.jpg".into(),
-            language: "eng".into(),
-            runtime_minutes: 90,
-            sort_title: "Recap Movie".into(),
-            imdb_id: "tt7654321".into(),
-            genres: vec!["Action".into()],
-            studio: "Studio Test".into(),
-            digital_release_date: Some("2014-11-01".into()),
-            association_confidence: Some("high".into()),
-            continuity_status: Some("unknown".into()),
-            movie_form: Some("recap".into()),
-            confidence: Some("high".into()),
-            signal_summary: Some("TVDB special category marks this as a recap".into()),
-            placement: Some("specials".into()),
-            movie_tmdb_id: None,
-            movie_mal_id: None,
-            movie_anidb_id: None,
-        }],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     };
     ShowRepository::create_collection(&shows, collection.clone())
         .await
         .expect("insert collection");
+    let movie_link = ShowRepository::upsert_series_movie_link(
+        &shows,
+        scryer_domain::SeriesMovieLink {
+            id: "series-movie-link-1".into(),
+            series_title_id: title.id.clone(),
+            movie: scryer_domain::MovieEntity {
+                id: "movie-entity-1".into(),
+                title: "Test Movie".into(),
+                sort_title: Some("Test Movie".into()),
+                slug: Some("test-movie".into()),
+                year: Some(2024),
+                overview: Some("Series movie overview".into()),
+                poster_url: Some("https://example.com/poster.jpg".into()),
+                background_url: None,
+                language: Some("eng".into()),
+                runtime_minutes: Some(97),
+                content_status: Some("released".into()),
+                genres: vec!["Action".into(), "Anime".into()],
+                studio: Some("Studio Test".into()),
+                digital_release_date: Some("2024-01-01".into()),
+                imdb_id: Some("tt1234567".into()),
+                tvdb_id: Some("12345".into()),
+                tmdb_id: Some("99001".into()),
+                mal_id: Some("5001".into()),
+                anidb_id: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            placement: Some("ordered".into()),
+            narrative_order: Some("1.5".into()),
+            after_season: Some(1),
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: Some("high".into()),
+            continuity_status: Some("canon".into()),
+            movie_form: Some("movie".into()),
+            confidence: Some("high".into()),
+            signal_summary: Some("TVDB marked special as critical to story".into()),
+            source: Some("test".into()),
+            monitored: true,
+            legacy_collection_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("insert series movie link");
+    ShowRepository::upsert_series_movie_link(
+        &shows,
+        scryer_domain::SeriesMovieLink {
+            id: "series-movie-link-2".into(),
+            series_title_id: title.id.clone(),
+            movie: scryer_domain::MovieEntity {
+                id: "movie-entity-2".into(),
+                title: "Recap Movie".into(),
+                sort_title: Some("Recap Movie".into()),
+                slug: Some("recap-movie".into()),
+                year: Some(2014),
+                overview: Some("Recap of the first half.".into()),
+                poster_url: Some("https://example.com/recap.jpg".into()),
+                background_url: None,
+                language: Some("eng".into()),
+                runtime_minutes: Some(90),
+                content_status: Some("released".into()),
+                genres: vec!["Action".into()],
+                studio: Some("Studio Test".into()),
+                digital_release_date: Some("2014-11-01".into()),
+                imdb_id: Some("tt7654321".into()),
+                tvdb_id: Some("67890".into()),
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            placement: Some("specials".into()),
+            narrative_order: Some("0.1".into()),
+            after_season: Some(0),
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: Some("high".into()),
+            continuity_status: Some("unknown".into()),
+            movie_form: Some("recap".into()),
+            confidence: Some("high".into()),
+            signal_summary: Some("TVDB special category marks this as a recap".into()),
+            source: Some("test".into()),
+            monitored: true,
+            legacy_collection_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("insert recap series movie link");
 
     let episode = Episode {
         id: "episode-show-1".into(),
@@ -7548,28 +7931,25 @@ async fn sqlite_show_queries_roundtrip() {
 
     assert_eq!(collections.len(), 1);
     assert_eq!(collections[0].id, collection.id);
-    assert_eq!(
-        collections[0]
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.name.as_str()),
-        Some("Test Movie")
-    );
     let loaded_collection = ShowRepository::get_collection_by_id(&shows, &collection.id)
         .await
         .expect("get collection by id")
         .expect("collection should exist");
     assert_eq!(loaded_collection.id, collection.id);
+    let series_movie_links = ShowRepository::list_series_movie_links_for_title(&shows, &title.id)
+        .await
+        .expect("list series movie links");
+    assert_eq!(series_movie_links.len(), 2);
+    assert!(series_movie_links.iter().any(|link| {
+        link.id == movie_link.id
+            && link.movie.imdb_id.as_deref() == Some("tt1234567")
+            && link.continuity_status.as_deref() == Some("canon")
+    }));
     assert_eq!(
-        loaded_collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.imdb_id.as_str()),
-        Some("tt1234567")
-    );
-    assert_eq!(loaded_collection.specials_movies.len(), 1);
-    assert_eq!(
-        loaded_collection.specials_movies[0].movie_form.as_deref(),
+        series_movie_links
+            .iter()
+            .find(|link| link.movie.title == "Recap Movie")
+            .and_then(|link| link.movie_form.as_deref()),
         Some("recap")
     );
     assert_eq!(episodes.len(), 1);

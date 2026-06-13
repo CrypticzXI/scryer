@@ -664,10 +664,15 @@ fn dynamic_client_cache_miss_on_updated_at() {
     // Change updated_at to simulate a config update
     config1.updated_at = Utc::now() + chrono::Duration::seconds(10);
     let c2 = dynamic.client_for_provider(&config1).unwrap();
+    let c3 = dynamic.client_for_provider(&config1).unwrap();
 
     assert!(
         !Arc::ptr_eq(&c1, &c2),
         "different updated_at should produce a new client"
+    );
+    assert!(
+        Arc::ptr_eq(&c2, &c3),
+        "rebuilt revision should become the cached client"
     );
 }
 

@@ -571,6 +571,8 @@ impl MediaFileRepository for MockMediaFileRepo {
             id: id.clone(),
             title_id: input.title_id.clone(),
             episode_id: None,
+            series_movie_link_ids: Vec::new(),
+            role: input.role,
             file_path: input.file_path.clone(),
             size_bytes: input.size_bytes,
             source_signature_scheme: input.source_signature_scheme.clone(),
@@ -628,6 +630,14 @@ impl MediaFileRepository for MockMediaFileRepo {
         Ok(())
     }
 
+    async fn link_file_to_series_movie(
+        &self,
+        _file_id: &str,
+        _series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         Ok(self
             .store
@@ -673,6 +683,13 @@ impl MediaFileRepository for MockMediaFileRepo {
                 }
             })
             .collect())
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        _title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        Ok(vec![])
     }
 
     async fn list_title_media_size_summaries(
@@ -823,6 +840,35 @@ impl MediaFileRepository for MockMediaFileRepo {
             .find(|entry| entry.id == file_id)
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
         entry.file_path = file_path.to_string();
+        Ok(())
+    }
+
+    async fn set_movie_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        let additional_ids = additional_file_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut list = self.store.lock().await;
+        let mut updated = 0usize;
+        for entry in list.iter_mut().filter(|entry| entry.title_id == title_id) {
+            if entry.id == primary_file_id {
+                entry.role = crate::MediaFileRole::Primary;
+                updated += 1;
+            } else if additional_ids.contains(entry.id.as_str()) {
+                entry.role = crate::MediaFileRole::Additional;
+                updated += 1;
+            }
+        }
+        if updated != additional_ids.len() + 1 {
+            return Err(AppError::NotFound(format!(
+                "movie media files for title {title_id}"
+            )));
+        }
         Ok(())
     }
 
@@ -1842,12 +1888,70 @@ impl LibraryRepository for MockLibraryRepo {
 struct MockShowRepo {
     collections: Arc<Mutex<Vec<Collection>>>,
     episodes: Arc<Mutex<Vec<Episode>>>,
+    series_movie_links: Arc<Mutex<Vec<scryer_domain::SeriesMovieLink>>>,
     collection_external_ids: Arc<Mutex<Vec<ScopedExternalId>>>,
     episode_external_ids: Arc<Mutex<Vec<ScopedExternalId>>>,
 }
 
 #[async_trait]
 impl ShowRepository for MockShowRepo {
+    async fn list_series_movie_links_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+        let links = self.series_movie_links.lock().await;
+        Ok(links
+            .iter()
+            .filter(|item| item.series_title_id == title_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_series_movie_link_by_id(
+        &self,
+        link_id: &str,
+    ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+        let links = self.series_movie_links.lock().await;
+        Ok(links.iter().find(|item| item.id == link_id).cloned())
+    }
+
+    async fn find_series_movie_link_by_legacy_collection_id(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+        let links = self.series_movie_links.lock().await;
+        Ok(links
+            .iter()
+            .find(|item| item.legacy_collection_id.as_deref() == Some(collection_id))
+            .cloned())
+    }
+
+    async fn upsert_series_movie_link(
+        &self,
+        link: scryer_domain::SeriesMovieLink,
+    ) -> AppResult<scryer_domain::SeriesMovieLink> {
+        let mut links = self.series_movie_links.lock().await;
+        if let Some(existing) = links.iter_mut().find(|item| item.id == link.id) {
+            *existing = link.clone();
+        } else {
+            links.push(link.clone());
+        }
+        Ok(link)
+    }
+
+    async fn delete_stale_series_movie_links(
+        &self,
+        title_id: &str,
+        retained_link_ids: &[String],
+    ) -> AppResult<()> {
+        let retained = retained_link_ids.iter().cloned().collect::<HashSet<_>>();
+        self.series_movie_links
+            .lock()
+            .await
+            .retain(|item| item.series_title_id != title_id || retained.contains(&item.id));
+        Ok(())
+    }
+
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
         let collections = self.collections.lock().await;
         Ok(collections
@@ -1945,42 +2049,6 @@ impl ShowRepository for MockShowRepo {
         }
 
         Ok(item.clone())
-    }
-
-    async fn update_collection_interstitial_movie(
-        &self,
-        collection_id: &str,
-        interstitial_movie: scryer_domain::InterstitialMovieMetadata,
-    ) -> AppResult<Collection> {
-        let mut collections = self.collections.lock().await;
-        let item = collections
-            .iter_mut()
-            .find(|entry| entry.id == collection_id)
-            .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
-        item.interstitial_movie = Some(interstitial_movie);
-        Ok(item.clone())
-    }
-
-    async fn update_collection_specials_movies(
-        &self,
-        collection_id: &str,
-        specials_movies: Vec<scryer_domain::InterstitialMovieMetadata>,
-    ) -> AppResult<Collection> {
-        let mut collections = self.collections.lock().await;
-        let item = collections
-            .iter_mut()
-            .find(|entry| entry.id == collection_id)
-            .ok_or_else(|| AppError::NotFound(format!("collection {}", collection_id)))?;
-        item.specials_movies = specials_movies;
-        Ok(item.clone())
-    }
-
-    async fn update_interstitial_season_episode(
-        &self,
-        _collection_id: &str,
-        _season_episode: Option<String>,
-    ) -> AppResult<()> {
-        Ok(())
     }
 
     async fn set_collection_episodes_monitored(
@@ -4134,6 +4202,17 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.store
+            .lock()
+            .await
+            .retain(|item| item.series_movie_link_id.as_deref() != Some(series_movie_link_id));
+        Ok(())
+    }
+
     async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.store
             .lock()
@@ -4576,6 +4655,8 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         &self,
         title_id: &str,
         request_signature: &str,
+        purpose: DownloadSubmissionPurpose,
+        scope: &SubmissionScope,
     ) -> AppResult<Option<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
@@ -4583,6 +4664,8 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             .find(|entry| {
                 entry.title_id == title_id
                     && entry.request_signature.as_deref() == Some(request_signature)
+                    && entry.purpose == purpose
+                    && &entry.scope == scope
             })
             .cloned())
     }
@@ -4648,6 +4731,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         }) {
             entries.push(DownloadSubmission {
                 title_id: String::new(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: String::new(),
                 download_client_id: identity.client_id.clone(),
                 download_client_type: identity.client_type.clone(),
@@ -9405,6 +9489,87 @@ fn build_test_library_file(path: &str) -> LibraryFile {
     }
 }
 
+fn build_test_library_files(paths: &[&Path]) -> Vec<LibraryFile> {
+    paths
+        .iter()
+        .map(|path| build_test_library_file(path.to_string_lossy().as_ref()))
+        .collect()
+}
+
+async fn bootstrap_movie_scan_app(
+    root: &Path,
+    library_files: Vec<LibraryFile>,
+    metadata_gateway: Arc<dyn MetadataGateway>,
+) -> (AppUseCase, User, Arc<TrackingLibraryScanUnmatchedItemRepo>) {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            root.to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner.set_library_files(library_files).await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items.clone(),
+        metadata_gateway,
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile movie root");
+
+    (app, user, unmatched_items)
+}
+
+async fn create_movie_title_with_folder(
+    app: &AppUseCase,
+    user: &User,
+    name: &str,
+    folder_path: &Path,
+) -> Title {
+    let title = app
+        .add_title(
+            user,
+            NewTitle {
+                name: name.into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, folder_path.to_string_lossy().as_ref())
+        .await
+        .expect("set movie folder path");
+    app.services
+        .catalog
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load movie title")
+        .expect("movie title exists")
+}
+
+fn media_file_role_for_path(files: &[TitleMediaFile], path: &Path) -> MediaFileRole {
+    let path = path.to_string_lossy();
+    files
+        .iter()
+        .find(|file| file.file_path == path)
+        .map(|file| file.role)
+        .expect("media file role")
+}
+
 fn build_test_unmatched_item(
     id: &str,
     facet: MediaFacet,
@@ -9666,9 +9831,6 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: title.monitored,
             created_at: Utc::now(),
         })
@@ -9714,6 +9876,405 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
             .expect("list collections")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_additional() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Primary Choice (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let small_path = title_dir.join("Primary.Choice.2026.720p.WEB-DL.mkv");
+    let large_path = title_dir.join("Primary.Choice.2026.2160p.WEB-DL.mkv");
+    std::fs::write(&small_path, vec![0_u8; 128]).expect("write smaller movie file");
+    std::fs::write(&large_path, vec![0_u8; 512]).expect("write larger movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[small_path.as_path(), large_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Primary Choice", title_dir.as_path()).await;
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 2);
+    assert_eq!(
+        files.iter().filter(|file| file.role.is_primary()).count(),
+        1
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, large_path.as_path()),
+        MediaFileRole::Primary
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, small_path.as_path()),
+        MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn movie_title_scan_preserves_existing_primary_even_when_other_file_scores_better() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Stable Primary (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let primary_path = title_dir.join("Stable.Primary.2026.720p.WEB-DL.mkv");
+    let additional_path = title_dir.join("Stable.Primary.2026.2160p.BluRay.mkv");
+    std::fs::write(&primary_path, vec![0_u8; 128]).expect("write primary movie file");
+    std::fs::write(&additional_path, vec![0_u8; 1024]).expect("write additional movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[primary_path.as_path(), additional_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Stable Primary", title_dir.as_path()).await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: primary_path.to_string_lossy().to_string(),
+            size_bytes: 128,
+            role: MediaFileRole::Primary,
+            quality_label: Some("720p".to_string()),
+            acquisition_score: Some(1),
+            ..Default::default()
+        })
+        .await
+        .expect("seed primary file");
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: additional_path.to_string_lossy().to_string(),
+            size_bytes: 1024,
+            role: MediaFileRole::Additional,
+            quality_label: Some("2160p".to_string()),
+            acquisition_score: Some(100_000),
+            ..Default::default()
+        })
+        .await
+        .expect("seed additional file");
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_file_role_for_path(&files, primary_path.as_path()),
+        MediaFileRole::Primary
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, additional_path.as_path()),
+        MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn movie_title_scan_preserves_user_selected_primary() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("User Primary (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let old_path = title_dir.join("User.Primary.2026.720p.WEB-DL.mkv");
+    let selected_path = title_dir.join("User.Primary.2026.1080p.WEB-DL.mkv");
+    std::fs::write(&old_path, vec![0_u8; 128]).expect("write old primary movie file");
+    std::fs::write(&selected_path, vec![0_u8; 256]).expect("write selected movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[old_path.as_path(), selected_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "User Primary", title_dir.as_path()).await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: old_path.to_string_lossy().to_string(),
+            size_bytes: 128,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("seed old primary");
+    let selected_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: selected_path.to_string_lossy().to_string(),
+            size_bytes: 256,
+            role: MediaFileRole::Additional,
+            ..Default::default()
+        })
+        .await
+        .expect("seed selected file");
+    app.set_primary_movie_file(&user, &title.id, &selected_id)
+        .await
+        .expect("select primary file");
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_file_role_for_path(&files, selected_path.as_path()),
+        MediaFileRole::Primary
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, old_path.as_path()),
+        MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn movie_title_scan_repairs_multiple_primaries_by_oldest_created_at() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Primary Repair (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let oldest_path = title_dir.join("Primary.Repair.2026.720p.WEB-DL.mkv");
+    let newest_path = title_dir.join("Primary.Repair.2026.2160p.WEB-DL.mkv");
+    std::fs::write(&oldest_path, vec![0_u8; 128]).expect("write oldest primary movie file");
+    std::fs::write(&newest_path, vec![0_u8; 1024]).expect("write newest primary movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[oldest_path.as_path(), newest_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Primary Repair", title_dir.as_path()).await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: oldest_path.to_string_lossy().to_string(),
+            size_bytes: 128,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("seed oldest primary");
+    sleep(Duration::from_millis(2)).await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: newest_path.to_string_lossy().to_string(),
+            size_bytes: 1024,
+            role: MediaFileRole::Primary,
+            quality_label: Some("2160p".to_string()),
+            acquisition_score: Some(100_000),
+            ..Default::default()
+        })
+        .await
+        .expect("seed newest primary");
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_file_role_for_path(&files, oldest_path.as_path()),
+        MediaFileRole::Primary
+    );
+    assert_eq!(
+        media_file_role_for_path(&files, newest_path.as_path()),
+        MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn movie_title_scan_cleans_out_of_canonical_folder_pollution() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let canonical_dir = tempdir.path().join("Polluted Movie (2026)");
+    let duplicate_dir = tempdir.path().join("Polluted Movie Copy (2026)");
+    std::fs::create_dir(&canonical_dir).expect("create canonical movie folder");
+    std::fs::create_dir(&duplicate_dir).expect("create duplicate movie folder");
+    let canonical_path = canonical_dir.join("Polluted.Movie.2026.1080p.WEB-DL.mkv");
+    let duplicate_path = duplicate_dir.join("Polluted.Movie.2026.720p.WEB-DL.mkv");
+    std::fs::write(&canonical_path, vec![0_u8; 256]).expect("write canonical movie file");
+    std::fs::write(&duplicate_path, vec![0_u8; 128]).expect("write duplicate movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[canonical_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Polluted Movie", canonical_dir.as_path())
+            .await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: canonical_path.to_string_lossy().to_string(),
+            size_bytes: 256,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("seed canonical media file");
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: duplicate_path.to_string_lossy().to_string(),
+            size_bytes: 128,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("seed duplicate media file");
+    for (path, id) in [
+        (&canonical_path, "canonical"),
+        (&duplicate_path, "duplicate"),
+    ] {
+        app.services
+            .catalog
+            .shows
+            .create_collection(Collection {
+                id: format!("collection-{id}"),
+                title_id: title.id.clone(),
+                collection_type: CollectionType::Movie,
+                collection_index: id.to_string(),
+                label: None,
+                ordered_path: Some(path.to_string_lossy().to_string()),
+                narrative_order: None,
+                first_episode_number: None,
+                last_episode_number: None,
+                monitored: title.monitored,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("seed movie collection");
+    }
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].file_path, canonical_path.to_string_lossy());
+    assert_eq!(files[0].role, MediaFileRole::Primary);
+
+    let collections = app
+        .services
+        .catalog
+        .shows
+        .list_collections_for_title(&title.id)
+        .await
+        .expect("list collections");
+    assert_eq!(collections.len(), 1);
+    assert_eq!(
+        collections[0].ordered_path.as_deref(),
+        Some(canonical_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmatched_item() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let first_dir = tempdir.path().join("Duplicate Title (2026)");
+    let second_dir = tempdir.path().join("Duplicate Title Copy (2026)");
+    std::fs::create_dir(&first_dir).expect("create first movie folder");
+    std::fs::create_dir(&second_dir).expect("create second movie folder");
+    let first_path = first_dir.join("Duplicate.Title.2026.1080p.WEB-DL.mkv");
+    let second_path = second_dir.join("Duplicate.Title.2026.720p.WEB-DL.mkv");
+    std::fs::write(&first_path, vec![0_u8; 256]).expect("write first movie file");
+    std::fs::write(&second_path, vec![0_u8; 128]).expect("write second movie file");
+
+    let (app, user, unmatched_items) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[first_path.as_path(), second_path.as_path()]),
+        Arc::new(FixedBatchSearchMetadataGateway {
+            results: vec![MetadataSearchItem {
+                tvdb_id: "112233".to_string(),
+                name: "Duplicate Title".to_string(),
+                year: Some(2026),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
+            }],
+        }),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Duplicate Title", first_dir.as_path()).await;
+
+    let summary = app
+        .scan_library(&user, MediaFacet::Movie)
+        .await
+        .expect("scan movie library");
+
+    assert!(summary.skipped >= 1);
+    assert!(unmatched_items.items().await.is_empty());
+    let titles = app
+        .list_titles(&user, Some(MediaFacet::Movie), None, None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 1);
+    assert_eq!(titles[0].id, title.id);
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].file_path, first_path.to_string_lossy());
 }
 
 #[tokio::test]
@@ -12677,6 +13238,7 @@ async fn queue_existing_title_download_reports_scope_conflict() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -12725,6 +13287,375 @@ async fn queue_existing_title_download_reports_scope_conflict() {
 }
 
 #[tokio::test]
+async fn queue_existing_title_download_additional_file_ignores_standard_blocker() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Additional Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "existing-standard-job".to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Additional.Queue.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record standard submission");
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "existing-standard-job",
+        DownloadQueueState::Downloading,
+        0,
+    )];
+
+    let outcome = app
+        .queue_existing_title_download_with_purpose(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/directors-cut.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Additional.Queue.Directors.Cut.2026.1080p.WEB-DL".to_string()),
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+            crate::DownloadSubmissionPurpose::AdditionalFile,
+        )
+        .await
+        .expect("additional file queue should bypass standard blocker");
+
+    let QueueDownloadOutcome::Queued(queued) = outcome else {
+        panic!("additional file queue should not conflict with standard blocker");
+    };
+    assert!(!queued.reused_existing);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Additional Queue".to_string()]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 2);
+    assert!(
+        submissions
+            .iter()
+            .any(|submission| submission.purpose == crate::DownloadSubmissionPurpose::Standard)
+    );
+    assert!(submissions.iter().any(|submission| {
+        submission.purpose == crate::DownloadSubmissionPurpose::AdditionalFile
+            && submission.request_signature.is_some()
+    }));
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_additional_file_dedupes_by_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Additional Episode Dedupe".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let queued_release = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/same-release.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Additional.Episode.Dedupe.S01E01.1080p.WEB-DL".to_string()),
+    };
+
+    for episode_id in ["episode-1", "episode-2"] {
+        let outcome = app
+            .queue_existing_title_download_with_purpose(
+                &user,
+                &title.id,
+                queued_release.clone(),
+                SubmissionScope::Episode {
+                    episode_id: episode_id.to_string(),
+                },
+                SubmissionConflictPolicy::Abort,
+                crate::DownloadSubmissionPurpose::AdditionalFile,
+            )
+            .await
+            .expect("additional file queue should allow distinct episode scopes");
+        let QueueDownloadOutcome::Queued(queued) = outcome else {
+            panic!("additional file queue should not conflict");
+        };
+        assert!(
+            !queued.reused_existing,
+            "episode {episode_id} should queue independently"
+        );
+    }
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Additional Episode Dedupe", "Additional Episode Dedupe"]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].purpose,
+        crate::DownloadSubmissionPurpose::AdditionalFile
+    );
+    assert_eq!(
+        submissions[0].scope,
+        SubmissionScope::Episode {
+            episode_id: "episode-2".to_string(),
+        }
+    );
+    assert_eq!(
+        submissions
+            .iter()
+            .filter_map(|submission| submission.request_signature.as_deref())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        1,
+        "same release should keep the same release signature"
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_additional_file_rejects_collection_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Additional Collection Reject".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_existing_title_download_with_purpose(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/season-pack.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Additional.Collection.Reject.S01.1080p.WEB-DL".to_string()),
+            },
+            SubmissionScope::Collection {
+                collection_id: "season-1".to_string(),
+            },
+            SubmissionConflictPolicy::Abort,
+            crate::DownloadSubmissionPurpose::AdditionalFile,
+        )
+        .await
+        .expect_err("collection scope should be rejected for additional files");
+
+    assert!(
+        error
+            .to_string()
+            .contains("additional-file queueing does not support collection scopes yet")
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_additional_file_rejects_non_movie_title_scopes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    for (facet, name) in [
+        (MediaFacet::Series, "Additional Series Reject"),
+        (MediaFacet::Anime, "Additional Anime Reject"),
+    ] {
+        let title = app
+            .add_title(
+                &user,
+                NewTitle {
+                    name: name.into(),
+                    facet,
+                    monitored: true,
+                    tags: vec![],
+                    external_ids: vec![],
+                    min_availability: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create title");
+
+        let error = app
+            .queue_existing_title_download_with_purpose(
+                &user,
+                &title.id,
+                QueuedReleaseSelection {
+                    source_hint: Some("https://example.invalid/title-scope.nzb".to_string()),
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    source_title: Some(format!("{}.2026.1080p.WEB-DL", name.replace(' ', "."))),
+                },
+                SubmissionScope::Title,
+                SubmissionConflictPolicy::Abort,
+                crate::DownloadSubmissionPurpose::AdditionalFile,
+            )
+            .await
+            .expect_err("non-movie title scope should be rejected for additional files");
+
+        assert!(
+            error
+                .to_string()
+                .contains("additional-file title queueing supports only movie titles")
+        );
+    }
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_additional_file_rejects_non_single_episode_scopes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Additional Episode Scope Reject".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    for (scope, expected) in [
+        (
+            SubmissionScope::EpisodeSet {
+                episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            },
+            "additional-file queueing supports only title and single-episode scopes",
+        ),
+        (
+            SubmissionScope::Orphan,
+            "additional-file queueing requires a title or episode scope",
+        ),
+    ] {
+        let error = app
+            .queue_existing_title_download_with_purpose(
+                &user,
+                &title.id,
+                QueuedReleaseSelection {
+                    source_hint: Some("https://example.invalid/episode-pack.nzb".to_string()),
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    source_title: Some(
+                        "Additional.Episode.Scope.Reject.S01.1080p.WEB-DL".to_string(),
+                    ),
+                },
+                scope,
+                SubmissionConflictPolicy::Abort,
+                crate::DownloadSubmissionPurpose::AdditionalFile,
+            )
+            .await
+            .expect_err("unsupported scope should be rejected for additional files");
+
+        assert!(error.to_string().contains(expected));
+    }
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_replace_early_deletes_old_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -12753,6 +13684,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -12829,6 +13761,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
         download_submissions
             .record_submission(DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some("primary".to_string()),
                 download_client_type: "nzbget".to_string(),
@@ -12902,6 +13835,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         library_slug: None,
         episode_id: Some("episode-a".to_string()),
         collection_id: Some("season-1".to_string()),
+        series_movie_link_id: None,
         season_number: Some("1".to_string()),
         episode_number: None,
         media_type: "series".to_string(),
@@ -12992,6 +13926,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         last_search_at: Some(now.clone()),
         download_submission: DownloadSubmission {
             title_id: title_id.to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -13082,6 +14017,7 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -13189,6 +14125,7 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -13331,6 +14268,188 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
 }
 
 #[tokio::test]
+async fn queue_existing_title_download_additional_file_uses_signed_candidate_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, admin) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &admin,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Signed Episode Queue".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "signed_episode_queue_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/signed-episode.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Signed.Episode.Queue.S01E01.1080p.WEB-DL".to_string()),
+    };
+    let signed_scope = SubmissionScope::Episode {
+        episode_id: "episode-1".to_string(),
+    };
+    let candidate_token = app
+        .issue_release_candidate_token(&authenticated_user, &title.id, &signed_scope, &selection)
+        .await
+        .expect("issue candidate token");
+
+    let outcome = app
+        .queue_existing_title_download_from_candidate_token_with_purpose(
+            &authenticated_user,
+            &title.id,
+            &candidate_token,
+            SubmissionScope::Collection {
+                collection_id: "season-1".to_string(),
+            },
+            SubmissionConflictPolicy::Abort,
+            crate::DownloadSubmissionPurpose::AdditionalFile,
+        )
+        .await
+        .expect("signed single-episode scope should allow additional queue");
+    let QueueDownloadOutcome::Queued(outcome) = outcome else {
+        panic!("signed single-episode additional queue should not conflict");
+    };
+
+    assert_eq!(outcome.job_id, format!("job-for-{}", title.id));
+    assert_eq!(outcome.queued_release, selection);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Signed Episode Queue".to_string()]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].purpose,
+        crate::DownloadSubmissionPurpose::AdditionalFile
+    );
+    assert_eq!(submissions[0].scope, signed_scope);
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_additional_file_rejects_signed_episode_set_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, admin) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Signed Episode Set Reject".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "signed_episode_set_reject_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/signed-episode-set.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Signed.Episode.Set.Reject.S01.1080p.WEB-DL".to_string()),
+    };
+    let candidate_token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            &title.id,
+            &SubmissionScope::EpisodeSet {
+                episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+            },
+            &selection,
+        )
+        .await
+        .expect("issue candidate token");
+
+    let error = app
+        .queue_existing_title_download_from_candidate_token_with_purpose(
+            &authenticated_user,
+            &title.id,
+            &candidate_token,
+            SubmissionScope::Episode {
+                episode_id: "episode-1".to_string(),
+            },
+            SubmissionConflictPolicy::Abort,
+            crate::DownloadSubmissionPurpose::AdditionalFile,
+        )
+        .await
+        .expect_err("signed episode-set scope should be rejected for additional queue");
+
+    assert!(
+        error
+            .to_string()
+            .contains("additional-file queueing supports only title and single-episode scopes")
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn queue_best_release_prefers_first_auto_eligible_candidate() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -13412,8 +14531,60 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
     );
 }
 
+fn test_series_movie_link(
+    title_id: &str,
+    name: &str,
+    year: Option<i32>,
+    imdb_id: Option<&str>,
+    tvdb_id: Option<&str>,
+) -> scryer_domain::SeriesMovieLink {
+    let now = Utc::now();
+    scryer_domain::SeriesMovieLink {
+        id: Id::new().0,
+        series_title_id: title_id.to_string(),
+        movie: scryer_domain::MovieEntity {
+            id: Id::new().0,
+            title: name.to_string(),
+            sort_title: Some(name.to_string()),
+            slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+            year,
+            overview: Some("Series movie".to_string()),
+            poster_url: None,
+            background_url: None,
+            language: Some("ja".to_string()),
+            runtime_minutes: Some(110),
+            content_status: Some("released".to_string()),
+            genres: vec!["action".to_string()],
+            studio: Some("Studio".to_string()),
+            digital_release_date: Some("2024-02-01".to_string()),
+            imdb_id: imdb_id.map(str::to_string),
+            tvdb_id: tvdb_id.map(str::to_string),
+            tmdb_id: None,
+            mal_id: None,
+            anidb_id: None,
+            created_at: now,
+            updated_at: now,
+        },
+        placement: Some("between_seasons".to_string()),
+        narrative_order: Some("1.1".to_string()),
+        after_season: Some(1),
+        before_season: None,
+        linked_episode_id: None,
+        association_confidence: Some("high".to_string()),
+        continuity_status: Some("canon".to_string()),
+        movie_form: Some("movie".to_string()),
+        confidence: None,
+        signal_summary: None,
+        source: Some("test".to_string()),
+        monitored: true,
+        legacy_collection_id: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
 #[tokio::test]
-async fn queue_best_release_supports_interstitial_movie_collection_scope() {
+async fn queue_best_release_supports_series_movie_scope() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -13457,64 +14628,31 @@ async fn queue_best_release_supports_interstitial_movie_collection_scope() {
         .await
         .expect("create title");
 
-    let collection = app
+    let link = app
         .services
         .catalog
         .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "1.1".to_string(),
-            label: Some("Movie 1".to_string()),
-            ordered_path: None,
-            narrative_order: Some("1.1".to_string()),
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "movie-1".to_string(),
-                name: "Movie 1".to_string(),
-                slug: "movie-1".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Interstitial movie".to_string(),
-                poster_url: String::new(),
-                language: "ja".to_string(),
-                runtime_minutes: 110,
-                sort_title: "Movie 1".to_string(),
-                imdb_id: String::new(),
-                genres: vec!["action".to_string()],
-                studio: "Studio".to_string(),
-                digital_release_date: Some("2024-02-01".to_string()),
-                association_confidence: Some("high".to_string()),
-                continuity_status: Some("canon".to_string()),
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: Some("between_seasons".to_string()),
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: None,
-            monitored: true,
-            created_at: Utc::now(),
-        })
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Movie 1",
+            Some(2024),
+            None,
+            Some("movie-1"),
+        ))
         .await
-        .expect("create interstitial collection");
+        .expect("create series movie link");
 
     let job_id = app
         .queue_best_release(
             &user,
             &title.id,
-            SubmissionScope::Collection {
-                collection_id: collection.id.clone(),
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: link.id.clone(),
             },
             SubmissionConflictPolicy::Abort,
         )
         .await
-        .expect("queue best release for collection");
+        .expect("queue best release for series movie");
     let QueueDownloadOutcome::Queued(job_id) = job_id else {
         panic!("best release should not conflict");
     };
@@ -13529,14 +14667,14 @@ async fn queue_best_release_supports_interstitial_movie_collection_scope() {
     );
     assert_eq!(
         submissions[0].scope,
-        SubmissionScope::Collection {
-            collection_id: collection.id
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id: link.id
         }
     );
 }
 
 #[tokio::test]
-async fn resolve_release_search_subject_for_collection_uses_interstitial_movie_metadata() {
+async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metadata() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
         "Mugen.Train.2020.1080p.WEB-DL",
@@ -13559,57 +14697,24 @@ async fn resolve_release_search_subject_for_collection_uses_interstitial_movie_m
         .await
         .expect("create anime title");
 
-    let collection = app
+    let link = app
         .services
         .catalog
         .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "1.1".to_string(),
-            label: Some("Mugen Train".to_string()),
-            ordered_path: None,
-            narrative_order: Some("1.1".to_string()),
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "12345".to_string(),
-                name: "Mugen Train".to_string(),
-                slug: "mugen-train".to_string(),
-                year: Some(2020),
-                content_status: "released".to_string(),
-                overview: "Interstitial movie".to_string(),
-                poster_url: String::new(),
-                language: "ja".to_string(),
-                runtime_minutes: 110,
-                sort_title: "Mugen Train".to_string(),
-                imdb_id: "tt11032374".to_string(),
-                genres: vec!["action".to_string()],
-                studio: "Studio".to_string(),
-                digital_release_date: Some("2024-02-01".to_string()),
-                association_confidence: Some("high".to_string()),
-                continuity_status: Some("canon".to_string()),
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: Some("between_seasons".to_string()),
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: None,
-            monitored: false,
-            created_at: Utc::now(),
-        })
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Mugen Train",
+            Some(2020),
+            Some("tt11032374"),
+            Some("12345"),
+        ))
         .await
-        .expect("create interstitial collection");
+        .expect("create series movie link");
 
     let (search_title, subject) = app
-        .resolve_release_search_subject_for_collection(&title, &collection)
+        .resolve_release_search_subject_for_series_movie(&title, &link)
         .await
-        .expect("resolve interstitial movie subject");
+        .expect("resolve series movie subject");
 
     assert_eq!(search_title.name, "Mugen Train");
     assert_eq!(search_title.year, Some(2020));
@@ -13619,8 +14724,8 @@ async fn resolve_release_search_subject_for_collection_uses_interstitial_movie_m
     assert_eq!(subject.imdb_id.as_deref(), Some("tt11032374"));
     assert_eq!(
         subject.submission_scope,
-        SubmissionScope::Collection {
-            collection_id: collection.id,
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id: link.id,
         }
     );
 }
@@ -14012,9 +15117,6 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_series_querie
             narrative_order: Some("2".to_string()),
             first_episode_number: Some("11".to_string()),
             last_episode_number: Some("11".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -14102,9 +15204,6 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries
             narrative_order: Some("2".to_string()),
             first_episode_number: Some("11".to_string()),
             last_episode_number: Some("11".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -14694,6 +15793,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
 
     let active_submission = DownloadSubmission {
         title_id: created.id.clone(),
+        purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),
         download_client_id: Some("primary".to_string()),
         download_client_type: "sabnzbd".to_string(),
@@ -14706,6 +15806,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
     };
     let terminal_submission = DownloadSubmission {
         title_id: created.id.clone(),
+        purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),
         download_client_id: Some("primary".to_string()),
         download_client_type: "sabnzbd".to_string(),
@@ -14900,6 +16001,7 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: String::new(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: String::new(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "sabnzbd".to_string(),
@@ -15064,6 +16166,7 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: "title-1".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -15441,6 +16544,7 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: "missing-title".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -15554,6 +16658,8 @@ async fn list_download_import_page_uses_runtime_tracked_snapshot_cache() {
             tracked_id,
             crate::tracked_downloads::TrackedDownloadQueueMetadata {
                 client_item: history_item,
+                client_id: "primary".to_string(),
+                client_type: "nzbget".to_string(),
                 title_id: Some("title-1".to_string()),
                 facet: Some("series".to_string()),
                 source_title: Some("Cached Release".to_string()),
@@ -15682,6 +16788,8 @@ async fn download_import_page_renders_importing_state_from_runtime_snapshot() {
             tracked_id,
             crate::tracked_downloads::TrackedDownloadQueueMetadata {
                 client_item: history_item,
+                client_id: "primary".to_string(),
+                client_type: "nzbget".to_string(),
                 title_id: Some("title-1".to_string()),
                 facet: Some("movie".to_string()),
                 source_title: Some("Fixture blocked-worker-1".to_string()),
@@ -15767,6 +16875,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
         .record_submission_with_identity(
             DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some(config.id.clone()),
                 download_client_type: "nzbget".to_string(),
@@ -16003,6 +17112,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some(config.id.clone()),
             download_client_type: "nzbget".to_string(),
@@ -16151,6 +17261,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
         .record_submission_with_identity(
             DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some(client_id.to_string()),
                 download_client_type: "weaver".to_string(),
@@ -16235,6 +17346,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_download_id_instead_of_
             .record_submission_with_identity(
                 DownloadSubmission {
                     title_id: submitted_title_id.to_string(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
                     facet: "movie".to_string(),
                     download_client_id: Some(client_id.to_string()),
                     download_client_type: "weaver".to_string(),
@@ -16365,6 +17477,7 @@ async fn try_import_completed_downloads_dedupes_same_download_id_when_item_id_ch
         .record_submission_with_identity(
             DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some(config.id.clone()),
                 download_client_type: "weaver".to_string(),
@@ -16499,6 +17612,7 @@ async fn try_import_completed_downloads_uses_download_submission_fallback_for_un
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some(config.id.clone()),
             download_client_type: "qbittorrent".to_string(),
@@ -16583,6 +17697,7 @@ async fn try_import_completed_downloads_retries_terminal_cleanup_for_untagged_qb
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some(config.id.clone()),
             download_client_type: "qbittorrent".to_string(),
@@ -16796,6 +17911,8 @@ async fn list_download_history_page_includes_tracked_terminal_rows_when_client_h
             tracked_id,
             crate::tracked_downloads::TrackedDownloadQueueMetadata {
                 client_item: tracked_history_item,
+                client_id: "primary".to_string(),
+                client_type: "nzbget".to_string(),
                 title_id: Some(title.id.clone()),
                 facet: Some("movie".to_string()),
                 source_title: Some("Paper.Lantern.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
@@ -17460,6 +18577,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -17519,6 +18637,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -17648,6 +18767,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -17707,6 +18827,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -17853,6 +18974,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -17900,6 +19022,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -18001,6 +19124,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -18037,6 +19161,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -18185,6 +19310,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -18220,6 +19346,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -18326,6 +19453,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
         download_submissions
             .record_submission(DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
                 download_client_id: Some("primary".to_string()),
                 download_client_type: "weaver".to_string(),
@@ -18439,6 +19567,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "weaver".to_string(),
@@ -18547,6 +19676,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -18691,9 +19821,6 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             narrative_order: Some("7".to_string()),
             first_episode_number: Some("23".to_string()),
             last_episode_number: Some("24".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -18743,6 +19870,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("7".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -18769,6 +19897,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -19008,6 +20137,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                 library_slug: None,
                 episode_id: Some(episode_id.to_string()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: Some("1".to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -19042,6 +20172,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -19136,9 +20267,6 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19199,6 +20327,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
+                series_movie_link_id: None,
                 season_number: Some("1".to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
@@ -19222,6 +20351,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -19368,9 +20498,6 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19391,9 +20518,6 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             narrative_order: Some("2".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19471,6 +20595,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: episode.season_number.clone(),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -19494,6 +20619,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -19598,9 +20724,6 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19621,9 +20744,6 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             narrative_order: Some("2".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19676,6 +20796,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: Some(season_number.to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -19699,6 +20820,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -19913,9 +21035,6 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -19967,6 +21086,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
+                series_movie_link_id: None,
                 season_number: Some("1".to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
@@ -20079,9 +21199,6 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
             narrative_order: Some("7".to_string()),
             first_episode_number: Some("23".to_string()),
             last_episode_number: Some("24".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -20130,6 +21247,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: Some("7".to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -20222,9 +21340,6 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             narrative_order: Some("5".to_string()),
             first_episode_number: Some("01".to_string()),
             last_episode_number: Some("02".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -20273,6 +21388,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("5".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -20307,6 +21423,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "weaver".to_string(),
@@ -20456,6 +21573,7 @@ async fn seed_movie_wanted_for_acquisition(
             library_slug: Some("movies".to_string()),
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -20518,9 +21636,6 @@ async fn seed_anime_season_wanted_for_acquisition(
             narrative_order: Some(season_number.to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -20572,6 +21687,7 @@ async fn seed_anime_season_wanted_for_acquisition(
                 library_slug: Some("anime".to_string()),
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
+                series_movie_link_id: None,
                 season_number: Some(season_number.to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
@@ -21182,6 +22298,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
             library_slug: Some("movies".to_string()),
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -21274,9 +22391,6 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("1".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     };
@@ -21329,6 +22443,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
             library_slug: Some("series".to_string()),
             episode_id: Some(episode.id.clone()),
             collection_id: Some(season.id.clone()),
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -21419,6 +22534,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -21441,6 +22557,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -21556,6 +22673,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -21626,6 +22744,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -21765,9 +22884,6 @@ async fn acquisition_cycle_limits_due_work_per_title_slice() {
                 narrative_order: Some(season_number.to_string()),
                 first_episode_number: Some("1".to_string()),
                 last_episode_number: Some("1".to_string()),
-                interstitial_movie: None,
-                specials_movies: vec![],
-                interstitial_season_episode: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -21816,6 +22932,7 @@ async fn acquisition_cycle_limits_due_work_per_title_slice() {
                 library_slug: None,
                 episode_id: Some(episode.id.clone()),
                 collection_id: Some(season.id.clone()),
+                series_movie_link_id: None,
                 season_number: Some(season_number.to_string()),
                 episode_number: Some("1".to_string()),
                 media_type: "episode".to_string(),
@@ -21901,9 +23018,6 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -21951,6 +23065,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -22035,9 +23150,6 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -22085,6 +23197,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             library_slug: None,
             episode_id: Some(episode.id.clone()),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: None,
             media_type: "episode".to_string(),
@@ -22156,6 +23269,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -22215,6 +23329,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -22289,6 +23404,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -22401,6 +23517,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -22428,6 +23545,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         library_slug: None,
         episode_id: Some("episode-2".to_string()),
         collection_id: None,
+        series_movie_link_id: None,
         season_number: Some("1".to_string()),
         episode_number: None,
         media_type: "episode".to_string(),
@@ -22575,6 +23693,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -22632,7 +23751,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
 }
 
 #[tokio::test]
-async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_items() {
+async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -22650,7 +23769,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .titles
         .create(Title {
             id: Id::new().0,
-            name: "Interstitial Only".into(),
+            name: "Series Movie Only".into(),
             facet: MediaFacet::Anime,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
             monitored: false,
@@ -22700,9 +23819,6 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: false,
             created_at: Utc::now(),
         })
@@ -22767,52 +23883,19 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .await
         .expect("create episode two");
 
-    let interstitial = app
+    let link = app
         .services
         .catalog
         .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "1.1".to_string(),
-            label: Some("Movie 1".to_string()),
-            ordered_path: None,
-            narrative_order: Some("1.1".to_string()),
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "movie-1".to_string(),
-                name: "Movie 1".to_string(),
-                slug: "movie-1".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Interstitial movie".to_string(),
-                poster_url: String::new(),
-                language: "ja".to_string(),
-                runtime_minutes: 110,
-                sort_title: "Movie 1".to_string(),
-                imdb_id: String::new(),
-                genres: vec!["action".to_string()],
-                studio: "Studio".to_string(),
-                digital_release_date: Some("2024-02-01".to_string()),
-                association_confidence: Some("high".to_string()),
-                continuity_status: Some("canon".to_string()),
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: Some("between_seasons".to_string()),
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: None,
-            monitored: false,
-            created_at: Utc::now(),
-        })
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Movie 1",
+            Some(2024),
+            None,
+            Some("movie-1"),
+        ))
         .await
-        .expect("create interstitial");
+        .expect("create series movie link");
 
     for episode_id in [&episode_one.id, &episode_two.id] {
         wanted_items
@@ -22827,6 +23910,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
                 library_slug: None,
                 episode_id: Some(episode_id.clone()),
                 collection_id: None,
+                series_movie_link_id: None,
                 season_number: Some("1".to_string()),
                 episode_number: None,
                 media_type: "episode".to_string(),
@@ -22847,9 +23931,8 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             .expect("seed stale episode wanted item");
     }
 
-    app.set_collection_monitored(&user, &interstitial.id, true)
-        .await
-        .expect("monitor interstitial collection");
+    app.sync_wanted_series_inner(&title, &Utc::now(), true)
+        .await;
 
     let wanted = wanted_items
         .list_wanted_items(WantedItemsQuery {
@@ -22860,11 +23943,12 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
         .await
         .expect("list wanted items");
     assert_eq!(wanted.len(), 1);
-    assert_eq!(wanted[0].media_type, "interstitial_movie");
+    assert_eq!(wanted[0].media_type, "series_movie");
     assert_eq!(
-        wanted[0].collection_id.as_deref(),
-        Some(interstitial.id.as_str())
+        wanted[0].series_movie_link_id.as_deref(),
+        Some(link.id.as_str())
     );
+    assert!(wanted[0].collection_id.is_none());
     assert!(wanted.iter().all(|item| item.episode_id.is_none()));
 }
 
@@ -23124,6 +24208,103 @@ async fn update_title_metadata_changes_name_and_tags() {
         &events[0].payload,
         DomainEventPayload::TitleUpdated(_)
     ));
+}
+
+#[tokio::test]
+async fn set_primary_movie_file_promotes_selected_and_demotes_same_folder_files() {
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) = bootstrap_with_cutoff_projection_state(
+        Arc::new(StoredSettingsRepo::default()),
+        Arc::new(StoredQualityProfileRepo::default()),
+        media_files,
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Primary Switch".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, "/movies/Primary Switch (2026)")
+        .await
+        .expect("set folder path");
+
+    let old_primary_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/movies/Primary Switch (2026)/Primary Switch 1080p.mkv".into(),
+            size_bytes: 1_000,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("insert old primary");
+    let new_primary_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/movies/Primary Switch (2026)/Primary Switch 2160p.mkv".into(),
+            size_bytes: 2_000,
+            role: MediaFileRole::Additional,
+            ..Default::default()
+        })
+        .await
+        .expect("insert additional file");
+    let out_of_folder_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/movies/Primary Switch Copy/Primary Switch 720p.mkv".into(),
+            size_bytes: 500,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("insert polluted out-of-folder file");
+
+    app.set_primary_movie_file(&user, &title.id, &new_primary_id)
+        .await
+        .expect("promote primary movie file");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list files");
+    let role_for = |file_id: &str| {
+        files
+            .iter()
+            .find(|file| file.id == file_id)
+            .map(|file| file.role)
+            .expect("file role")
+    };
+    assert_eq!(role_for(&new_primary_id), MediaFileRole::Primary);
+    assert_eq!(role_for(&old_primary_id), MediaFileRole::Additional);
+    assert_eq!(role_for(&out_of_folder_id), MediaFileRole::Primary);
+
+    let events = title_updated_events(&app, &title.id).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor_user_id.as_deref(), Some(user.id.as_str()));
 }
 
 async fn create_series_with_collection_and_episode(
@@ -23836,7 +25017,7 @@ async fn series_hydration_persists_and_clears_episode_image_url() {
 }
 
 #[tokio::test]
-async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
+async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
     let (app, user) = bootstrap();
     let app = app.with_test_overrides(|services| {
         services.with_metadata_gateway(Arc::new(MockMetadataGateway {
@@ -24002,29 +25183,36 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
         .list_collections(&user, &title.id)
         .await
         .expect("list collections");
-    let interstitial = collections
-        .iter()
-        .find(|collection| collection.collection_type == CollectionType::Interstitial)
-        .expect("interstitial collection should exist");
-    assert_eq!(interstitial.collection_index, "1.1");
-    assert!(!interstitial.monitored);
-    assert_eq!(
-        interstitial
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.tvdb_id.as_str()),
-        Some("131963")
+    assert!(
+        collections
+            .iter()
+            .all(|collection| collection.label.as_deref() != Some("Mugen Train"))
     );
-    assert_eq!(interstitial.label.as_deref(), Some("Mugen Train"));
-
-    let interstitial_episodes = app
-        .list_episodes(&user, &interstitial.id)
+    let links = app
+        .list_series_movie_links(&user, &title.id)
         .await
-        .expect("list interstitial episodes");
-    assert_eq!(interstitial_episodes.len(), 1);
+        .expect("list series movie links");
+    assert_eq!(links.len(), 1);
+    let link = &links[0];
+    assert_eq!(link.movie.title, "Mugen Train");
+    assert_eq!(link.movie.tvdb_id.as_deref(), Some("131963"));
+    assert_eq!(link.movie.imdb_id.as_deref(), Some("tt11032374"));
+    assert_eq!(link.continuity_status.as_deref(), Some("canon"));
+    assert_eq!(link.association_confidence.as_deref(), Some("high"));
+
+    let specials = collections
+        .iter()
+        .find(|collection| collection.collection_type == CollectionType::Specials)
+        .expect("specials collection should exist");
+    let specials_episodes = app
+        .list_episodes(&user, &specials.id)
+        .await
+        .expect("list specials episodes");
+    assert_eq!(specials_episodes.len(), 1);
+    assert_eq!(specials_episodes[0].title.as_deref(), Some("Mugen Train"));
     assert_eq!(
-        interstitial_episodes[0].title.as_deref(),
-        Some("Mugen Train")
+        link.linked_episode_id.as_deref(),
+        Some(specials_episodes[0].id.as_str())
     );
 }
 
@@ -24237,9 +25425,6 @@ async fn rehydrating_existing_regular_season_preserves_manual_unmonitored_state(
             narrative_order: Some("2".to_string()),
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: false,
             created_at: Utc::now(),
         })
@@ -24355,7 +25540,7 @@ async fn series_rollout_reuses_legacy_season_zero_specials_collection() {
 }
 
 #[tokio::test]
-async fn anime_mapping_without_movie_link_does_not_create_interstitial_collection() {
+async fn anime_mapping_without_movie_link_does_not_create_series_movie_link() {
     let (app, user) = bootstrap();
     let title = app
         .add_title(
@@ -24454,9 +25639,13 @@ async fn anime_mapping_without_movie_link_does_not_create_interstitial_collectio
     assert!(
         collections
             .iter()
-            .all(|collection| collection.collection_type != CollectionType::Interstitial),
-        "unexpected interstitial collection created"
+            .all(|collection| collection.collection_type != CollectionType::Movie)
     );
+    let links = app
+        .list_series_movie_links(&user, &title.id)
+        .await
+        .expect("list series movie links");
+    assert!(links.is_empty(), "unexpected series movie link created");
 }
 
 #[tokio::test]
@@ -24595,7 +25784,7 @@ async fn anime_hydration_persists_scoped_anibridge_ids_for_episode_and_full_seas
 }
 
 #[tokio::test]
-async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_movies_separate() {
+async fn anime_movies_create_series_movie_links_without_collection_metadata() {
     let (app, user) = bootstrap();
     let title = app
         .add_title(
@@ -24732,28 +25921,30 @@ async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_mo
         .find(|collection| collection.collection_type == CollectionType::Specials)
         .expect("specials collection should exist");
     assert!(!specials.monitored);
-    assert_eq!(specials.specials_movies.len(), 1);
-    assert_eq!(
-        specials.specials_movies[0].movie_form.as_deref(),
-        Some("recap")
+    assert!(
+        collections
+            .iter()
+            .all(|collection| collection.collection_type != CollectionType::Movie)
     );
-
-    let interstitial = collections
+    let links = app
+        .list_series_movie_links(&user, &title.id)
+        .await
+        .expect("list series movie links");
+    assert_eq!(links.len(), 2);
+    let recap = links
         .iter()
-        .find(|collection| collection.collection_type == CollectionType::Interstitial)
-        .expect("ordered movie collection should exist");
-    assert!(!interstitial.monitored);
-    assert_eq!(
-        interstitial
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.continuity_status.as_deref()),
-        Some("canon")
-    );
+        .find(|link| link.movie.title == "Stoneguard: Crimson Bow and Arrow")
+        .expect("recap movie link");
+    assert_eq!(recap.movie_form.as_deref(), Some("recap"));
+    let ordered = links
+        .iter()
+        .find(|link| link.movie.title == "Mugen Train")
+        .expect("ordered movie link");
+    assert_eq!(ordered.continuity_status.as_deref(), Some("canon"));
 }
 
 #[tokio::test]
-async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
+async fn anime_series_movie_refresh_updates_localized_movie_entity_metadata() {
     let (app, user) = bootstrap();
     let title = app
         .add_title(
@@ -24893,44 +26084,20 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
     )
     .await;
 
-    let collections = app
-        .list_collections(&user, &title.id)
+    let links = app
+        .list_series_movie_links(&user, &title.id)
         .await
-        .expect("list collections");
-    let interstitial = collections
-        .iter()
-        .find(|collection| collection.collection_type == CollectionType::Interstitial)
-        .expect("interstitial collection should exist");
+        .expect("list series movie links");
+    assert_eq!(links.len(), 1);
+    let link = &links[0];
 
-    assert_eq!(
-        interstitial.label.as_deref(),
-        Some("Vanguard Academy: Two Heroes")
-    );
-    assert_eq!(
-        interstitial
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.name.as_str()),
-        Some("Vanguard Academy: Two Heroes")
-    );
-    assert_eq!(
-        interstitial
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.overview.as_str()),
-        Some("English overview")
-    );
-    assert_eq!(
-        interstitial
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.language.as_str()),
-        Some("eng")
-    );
+    assert_eq!(link.movie.title.as_str(), "Vanguard Academy: Two Heroes");
+    assert_eq!(link.movie.overview.as_deref(), Some("English overview"));
+    assert_eq!(link.movie.language.as_deref(), Some("eng"));
 }
 
 #[tokio::test]
-async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
+async fn anime_specials_refresh_updates_localized_series_movie_metadata() {
     let (app, user) = bootstrap();
     let title = app
         .add_title(
@@ -25030,25 +26197,19 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
     )
     .await;
 
-    let collections = app
-        .list_collections(&user, &title.id)
+    let links = app
+        .list_series_movie_links(&user, &title.id)
         .await
-        .expect("list collections");
-    let specials = collections
-        .iter()
-        .find(|collection| collection.collection_type == CollectionType::Specials)
-        .expect("specials collection should exist");
+        .expect("list series movie links");
+    assert_eq!(links.len(), 1);
+    let link = &links[0];
 
-    assert_eq!(specials.specials_movies.len(), 1);
+    assert_eq!(link.movie.title, "Stoneguard: Crimson Bow and Arrow");
     assert_eq!(
-        specials.specials_movies[0].name,
-        "Stoneguard: Crimson Bow and Arrow"
+        link.movie.overview.as_deref(),
+        Some("English recap overview")
     );
-    assert_eq!(
-        specials.specials_movies[0].overview,
-        "English recap overview"
-    );
-    assert_eq!(specials.specials_movies[0].language, "eng");
+    assert_eq!(link.movie.language.as_deref(), Some("eng"));
 }
 
 #[tokio::test]

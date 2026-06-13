@@ -1383,6 +1383,37 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [client, confirmReplaceConflict, setGlobalStatus, t],
   );
 
+  const queueAdditionalFromRelease = React.useCallback(
+    async (title: TitleRecord, release: Release) => {
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+
+      try {
+        const { data, error } = await client
+          .mutation(queueExistingMutation, {
+            input: {
+              titleId: title.id,
+              scope: releaseQueueScopeInput(release, { title: true }),
+              candidateToken: release.candidateToken,
+              purpose: "ADDITIONAL_FILE",
+            },
+          })
+          .toPromise();
+        if (error) throw error;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this title.",
+        );
+        setGlobalStatus(t("status.queuedLatest", { name: title.name }));
+      } catch (error) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+      }
+    },
+    [client, setGlobalStatus, t],
+  );
+
   const toggleTitleMonitored = React.useCallback(
     async (title: TitleRecord, monitored: boolean) => {
       const titleId = title.id;
@@ -2690,6 +2721,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           toggleTitleMonitored,
           runInteractiveSearchForTitle,
           queueExistingFromRelease,
+          queueAdditionalFromRelease,
           isTogglingTitleMonitoredById: titleMonitoringLoadingById,
           downloadClients,
           activeScopeRouting,

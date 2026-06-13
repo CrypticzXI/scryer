@@ -3,6 +3,7 @@ use scryer_domain::{
     Id, MediaServerConnection, MediaServerProvider, NotificationChannelConfig,
     NotificationEventType, NotificationSubscription, NotificationTarget, NotificationTargetKind,
 };
+use url::Url;
 
 use crate::ports::NOTIFICATION_REQUEST_SCHEMA_VERSION;
 use crate::{
@@ -810,6 +811,39 @@ impl AppUseCase {
             "base_url".to_string(),
             serde_json::Value::String(connection.base_url.clone()),
         );
+        if connection.provider == MediaServerProvider::Plex {
+            let parsed = Url::parse(&connection.base_url).map_err(|err| {
+                AppError::Validation(format!(
+                    "invalid Plex media server base URL '{}': {err}",
+                    connection.base_url
+                ))
+            })?;
+            if let Some(host) = parsed
+                .host_str()
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+            {
+                config.insert(
+                    "host".to_string(),
+                    serde_json::Value::String(host.to_string()),
+                );
+            } else {
+                config.remove("host");
+            }
+            let port = parsed
+                .port_or_known_default()
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "32400".to_string());
+            config.insert("port".to_string(), serde_json::Value::String(port));
+            config.insert(
+                "use_ssl".to_string(),
+                serde_json::Value::String((parsed.scheme() == "https").to_string()),
+            );
+            config.insert(
+                "update_library".to_string(),
+                serde_json::Value::String("true".into()),
+            );
+        }
         if let Some(api_key) = connection.api_key.as_deref() {
             config.insert(
                 "api_key".to_string(),

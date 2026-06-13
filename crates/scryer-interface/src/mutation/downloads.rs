@@ -81,14 +81,18 @@ impl DownloadMutations {
             candidate_token,
             scope,
             replace_in_progress,
+            purpose,
         } = input;
         let outcome = app
-            .queue_existing_title_download_from_candidate_token(
+            .queue_existing_title_download_from_candidate_token_with_purpose(
                 &actor,
                 &title_id,
                 &candidate_token,
                 scope.into_application(),
                 SubmissionConflictPolicy::from_replace_flag(replace_in_progress.unwrap_or(false)),
+                purpose
+                    .map(|value| value.into_application())
+                    .unwrap_or_default(),
             )
             .await
             .map_err(to_gql_error)?;

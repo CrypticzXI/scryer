@@ -61,6 +61,8 @@ pub struct TrackedDownload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedDownloadQueueMetadata {
     pub client_item: DownloadQueueItem,
+    pub client_id: String,
+    pub client_type: String,
     pub title_id: Option<String>,
     pub facet: Option<String>,
     pub source_title: Option<String>,
@@ -74,6 +76,8 @@ impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
     fn from(value: &TrackedDownload) -> Self {
         Self {
             client_item: value.client_item.clone(),
+            client_id: value.client_id.clone(),
+            client_type: value.client_type.clone(),
             title_id: value.title_id.clone(),
             facet: value.facet.clone(),
             source_title: value.source_title.clone(),
@@ -428,6 +432,7 @@ impl TrackedDownloadService {
                 .download_submissions
                 .record_submission(DownloadSubmission {
                     title_id: String::new(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
                     facet: td.facet.clone().unwrap_or_default(),
                     download_client_id: Some(td.client_id.clone())
                         .filter(|value| !value.is_empty()),
@@ -1063,6 +1068,8 @@ mod tests {
             &self,
             _: &str,
             _: &str,
+            _: crate::DownloadSubmissionPurpose,
+            _: &crate::SubmissionScope,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
             Ok(None)
         }
@@ -2064,6 +2071,7 @@ mod tests {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: Some(crate::DownloadSubmission {
                 title_id: "title-1".to_string(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
                 download_client_id: Some("client-1".to_string()),
                 download_client_type: "nzbget".to_string(),
@@ -2220,6 +2228,8 @@ mod tests {
                 &self,
                 _: &str,
                 _: &str,
+                _: crate::DownloadSubmissionPurpose,
+                _: &crate::SubmissionScope,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
                 Ok(None)
             }

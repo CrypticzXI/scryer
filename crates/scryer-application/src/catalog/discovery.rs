@@ -1077,11 +1077,11 @@ impl AppUseCase {
         Ok(results)
     }
 
-    pub async fn search_indexers_for_interstitial_movie(
+    pub async fn search_indexers_for_series_movie(
         &self,
         actor: &User,
         title_id: String,
-        collection_id: String,
+        series_movie_link_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1096,35 +1096,30 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        let collection = self
+        let link = self
             .services
             .catalog
             .shows
-            .get_collection_by_id(&collection_id)
+            .get_series_movie_link_by_id(&series_movie_link_id)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
-        if collection.title_id != title.id {
+            .ok_or_else(|| AppError::NotFound(format!("series movie {series_movie_link_id}")))?;
+        if link.series_title_id != title.id {
             return Err(AppError::Validation(
-                "collection does not belong to title".into(),
-            ));
-        }
-        if collection.interstitial_movie.is_none() {
-            return Err(AppError::Validation(
-                "collection does not have interstitial movie metadata".into(),
+                "series movie does not belong to title".into(),
             ));
         }
 
         let (search_title, subject) = self
-            .resolve_release_search_subject_for_collection(&title, &collection)
+            .resolve_release_search_subject_for_series_movie(&title, &link)
             .await?;
 
         info!(
             actor = actor.id.as_str(),
             title_id = title_id.as_str(),
-            collection_id = collection_id.as_str(),
+            series_movie_link_id = series_movie_link_id.as_str(),
             query = subject.queries.first().map(String::as_str).unwrap_or(""),
             category = subject.category.as_str(),
-            "searching indexers for interstitial movie"
+            "searching indexers for series movie"
         );
 
         let mut results = self

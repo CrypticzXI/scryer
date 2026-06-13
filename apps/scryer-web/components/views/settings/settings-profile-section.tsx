@@ -532,6 +532,7 @@ export function SettingsProfileSection({
             ) : null}
             {isVisibleExternalAccountProvider("plex") && linkablePlexConnections.length > 0 ? (
               <Button
+                id="settings-profile-link-plex-start"
                 type="button"
                 variant={linkingProvider === "plex" ? "secondary" : "outline"}
                 onClick={() => onStartLinkAccount("plex")}
@@ -668,10 +669,17 @@ export function SettingsProfileSection({
               )}
             </div>
             {linkAccountError ? (
-              <p className="text-sm text-destructive">{linkAccountError}</p>
+              <p id="settings-profile-link-plex-error" className="text-sm text-destructive">
+                {linkAccountError}
+              </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
-              <Button type="submit" disabled={!canSubmitPlexLink} className="w-fit">
+              <Button
+                id="settings-profile-link-plex-submit"
+                type="submit"
+                disabled={!canSubmitPlexLink}
+                className="w-fit"
+              >
                 {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {t("profile.signInWithPlexToLink")}
               </Button>

@@ -103,6 +103,8 @@ impl LibraryScanTitleWalkMode {
 
 #[derive(Clone, Debug, Default)]
 struct LibraryScanMovieCleanupContext {
+    canonical_folder_path: Option<String>,
+    scan_folder_path: Option<String>,
     stale_collection_ids: Vec<String>,
 }
 
@@ -150,13 +152,55 @@ fn append_unique_library_files(target: &mut Vec<LibraryFile>, files: Vec<Library
     added
 }
 
+fn normalized_movie_work_folder(path: Option<&str>) -> Option<String> {
+    path.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn movie_work_folders_match(left: Option<&str>, right: Option<&str>) -> bool {
+    normalized_movie_work_folder(left) == normalized_movie_work_folder(right)
+}
+
 fn merge_library_scan_title_work(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     mut work: LibraryScanTitleWork,
-) {
+) -> bool {
     let title_id = work.title.id.clone();
     match workset.get_mut(&title_id) {
         Some(existing) => {
+            if let (
+                LibraryScanTitleFacetPlan::Movie(existing_cleanup),
+                LibraryScanTitleFacetPlan::Movie(new_cleanup),
+            ) = (&mut existing.facet_plan, &work.facet_plan)
+            {
+                let existing_folder_path = existing_cleanup
+                    .canonical_folder_path
+                    .as_deref()
+                    .or(existing_cleanup.scan_folder_path.as_deref());
+                if !movie_work_folders_match(
+                    existing_folder_path,
+                    new_cleanup.scan_folder_path.as_deref(),
+                ) {
+                    for collection_id in &new_cleanup.stale_collection_ids {
+                        if !existing_cleanup
+                            .stale_collection_ids
+                            .contains(collection_id)
+                        {
+                            existing_cleanup
+                                .stale_collection_ids
+                                .push(collection_id.clone());
+                        }
+                    }
+                    return false;
+                }
+
+                if existing_cleanup.canonical_folder_path.is_none() {
+                    existing_cleanup.canonical_folder_path =
+                        new_cleanup.canonical_folder_path.clone();
+                }
+            }
+
             if let Some(files) = work.discovered_files.take() {
                 let existing_files = existing.discovered_files.get_or_insert_with(Vec::new);
                 append_unique_library_files(existing_files, files);
@@ -180,9 +224,23 @@ fn merge_library_scan_title_work(
             existing.title = work.title;
             existing.mode = work.mode;
             existing.created_in_scan |= work.created_in_scan;
+            true
         }
         None => {
+            if let LibraryScanTitleFacetPlan::Movie(cleanup) = &work.facet_plan {
+                let canonical_folder_path = cleanup
+                    .canonical_folder_path
+                    .as_deref()
+                    .or(cleanup.scan_folder_path.as_deref());
+                if !movie_work_folders_match(
+                    canonical_folder_path,
+                    cleanup.scan_folder_path.as_deref(),
+                ) {
+                    return false;
+                }
+            }
             workset.insert(title_id, work);
+            true
         }
     }
 }

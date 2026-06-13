@@ -576,6 +576,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
@@ -715,6 +716,7 @@ impl AppUseCase {
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
                             download_client_type: grab.client_type.clone(),

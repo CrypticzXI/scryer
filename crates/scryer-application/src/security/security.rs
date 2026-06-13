@@ -529,6 +529,9 @@ impl AppUseCase {
                 ("collection", Some(collection_id.clone()))
             }
             SubmissionScope::Title => ("title", None),
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            } => ("series_movie", Some(series_movie_link_id.clone())),
             SubmissionScope::Orphan => ("orphan", None),
         }
     }
@@ -571,6 +574,13 @@ impl AppUseCase {
                 collection_id: scope_id.ok_or_else(|| {
                     AppError::Unauthorized(
                         "release candidate token missing collection scope id".into(),
+                    )
+                })?,
+            }),
+            "series_movie" => Ok(SubmissionScope::SeriesMovie {
+                series_movie_link_id: scope_id.ok_or_else(|| {
+                    AppError::Unauthorized(
+                        "release candidate token missing series movie scope id".into(),
                     )
                 })?,
             }),

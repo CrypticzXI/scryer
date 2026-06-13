@@ -10,8 +10,8 @@ use crate::acquisition_policy::{
     parse_schedule_baseline_date,
 };
 use crate::acquisition_release_search::{
-    ReleaseAutoDecisionCode, annotate_auto_decision, interstitial_movie_search_title,
-    serialize_decision_explanation,
+    ReleaseAutoDecisionCode, annotate_auto_decision, serialize_decision_explanation,
+    series_movie_search_title,
 };
 use crate::contracts::{SubmissionConflictPolicy, SubmissionScopeConflict, WantedSearchOutcome};
 use crate::domain_events::{

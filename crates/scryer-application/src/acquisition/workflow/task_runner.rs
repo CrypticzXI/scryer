@@ -408,18 +408,16 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
-    // For interstitial movies, build a synthetic title from the collection's movie metadata
-    // so the search uses the movie's name/year/IMDB ID instead of the parent series'
-    let search_title = if item.media_type == "interstitial_movie" {
-        if let Some(ref coll_id) = item.collection_id
+    let search_title = if item.media_type == "series_movie" {
+        if let Some(ref link_id) = item.series_movie_link_id
             && let Ok(Some(collection)) = app
                 .services
                 .catalog
                 .shows
-                .get_collection_by_id(coll_id)
+                .get_series_movie_link_by_id(link_id)
                 .await
         {
-            interstitial_movie_search_title(&title, &collection)
+            series_movie_search_title(&title, &collection)
         } else {
             title.clone()
         }
@@ -583,7 +581,10 @@ async fn process_single_wanted_item(
                             .media_files
                             .list_media_files_for_title(&title.id)
                             .await
-                            .unwrap_or_default();
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|file| file.role.is_primary())
+                            .collect::<Vec<_>>();
 
                         let episode_file_scores: std::collections::HashMap<String, i32> =
                             existing_files
@@ -662,6 +663,7 @@ async fn process_single_wanted_item(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
+                                    purpose: crate::DownloadSubmissionPurpose::Standard,
                                     download_id: Some(download_id),
                                     source_hint: pack_url.clone(),
                                     staged_nzb: None,
@@ -754,6 +756,7 @@ async fn process_single_wanted_item(
                                             last_search_at: Some(now.to_rfc3339()),
                                             download_submission: DownloadSubmission {
                                                 title_id: title.id.clone(),
+                                                purpose: crate::DownloadSubmissionPurpose::Standard,
                                                 facet: facet_str.trim_matches('"').to_string(),
                                                 download_client_id: grab.client_id.clone(),
                                                 download_client_type: grab.client_type.clone(),
@@ -1167,6 +1170,7 @@ async fn process_single_wanted_item(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
@@ -1283,6 +1287,7 @@ async fn process_single_wanted_item(
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
                             download_client_type: grab.client_type.clone(),
@@ -1866,6 +1871,7 @@ mod task_runner_tests {
             library_slug: None,
             episode_id: Some(format!("{title_id}-episode-{episode_number}")),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: Some(episode_number.to_string()),
             media_type: "episode".to_string(),

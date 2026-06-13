@@ -945,6 +945,177 @@ ALTER TABLE ONLY public.download_jobs
         assert_eq!(manifest.baselines.len(), 2);
     }
 
+    #[tokio::test]
+    async fn sqlite_0130_migrates_duplicate_legacy_provider_ids() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        let mut conn = pool.acquire().await.expect("acquire sqlite connection");
+
+        let setup = r#"
+            CREATE TABLE titles (
+                id TEXT PRIMARY KEY NOT NULL
+            );
+            CREATE TABLE collections (
+                id TEXT PRIMARY KEY NOT NULL,
+                title_id TEXT NOT NULL,
+                collection_type TEXT NOT NULL,
+                collection_index TEXT NOT NULL,
+                label TEXT,
+                narrative_order TEXT,
+                monitored INTEGER,
+                ordered_path TEXT,
+                interstitial_name TEXT,
+                interstitial_sort_title TEXT,
+                interstitial_slug TEXT,
+                interstitial_year INTEGER,
+                interstitial_overview TEXT,
+                interstitial_poster_url TEXT,
+                interstitial_language TEXT,
+                interstitial_runtime_minutes INTEGER,
+                interstitial_content_status TEXT,
+                interstitial_genres_json TEXT,
+                interstitial_studio TEXT,
+                interstitial_digital_release_date TEXT,
+                interstitial_imdb_id TEXT,
+                interstitial_tvdb_id TEXT,
+                interstitial_movie_tmdb_id TEXT,
+                interstitial_movie_mal_id TEXT,
+                interstitial_movie_anidb_id TEXT,
+                interstitial_placement TEXT,
+                interstitial_association_confidence TEXT,
+                interstitial_continuity_status TEXT,
+                interstitial_movie_form TEXT,
+                interstitial_confidence TEXT,
+                interstitial_signal_summary TEXT,
+                interstitial_season_episode TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            );
+            CREATE TABLE episodes (
+                id TEXT PRIMARY KEY NOT NULL,
+                title_id TEXT NOT NULL,
+                collection_id TEXT,
+                season_number TEXT,
+                episode_number TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE media_files (
+                id TEXT PRIMARY KEY NOT NULL,
+                title_id TEXT NOT NULL,
+                file_path TEXT NOT NULL
+            );
+            CREATE TABLE file_episode_map (
+                file_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                PRIMARY KEY (file_id, episode_id)
+            );
+            CREATE TABLE wanted_items (
+                id TEXT PRIMARY KEY NOT NULL,
+                title_id TEXT NOT NULL,
+                episode_id TEXT,
+                collection_id TEXT,
+                media_type TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_wanted_items_movie_unique
+                ON wanted_items(title_id)
+                WHERE episode_id IS NULL AND collection_id IS NULL;
+            CREATE TABLE download_submissions (
+                id TEXT PRIMARY KEY NOT NULL,
+                collection_id TEXT
+            );
+            CREATE TABLE workflow_operations (
+                id TEXT PRIMARY KEY NOT NULL,
+                collection_id TEXT
+            );
+
+            INSERT INTO titles (id) VALUES ('title-1');
+            INSERT INTO collections (
+                id, title_id, collection_type, collection_index, label, narrative_order,
+                monitored, ordered_path, interstitial_name, interstitial_sort_title,
+                interstitial_slug, interstitial_year, interstitial_overview,
+                interstitial_poster_url, interstitial_language, interstitial_runtime_minutes,
+                interstitial_content_status, interstitial_genres_json, interstitial_studio,
+                interstitial_digital_release_date, interstitial_imdb_id, interstitial_tvdb_id,
+                interstitial_movie_tmdb_id, interstitial_movie_mal_id,
+                interstitial_movie_anidb_id, interstitial_placement,
+                interstitial_association_confidence, interstitial_continuity_status,
+                interstitial_movie_form, interstitial_confidence, interstitial_signal_summary,
+                interstitial_season_episode, created_at, updated_at
+            ) VALUES
+                (
+                    'legacy-collection-1', 'title-1', 'interstitial', '1.5', 'Bridge Movie A',
+                    '1.5', 1, '/media/bridge-a.mkv', 'Bridge Movie', 'Bridge Movie',
+                    'bridge-movie', 2024, 'overview', 'poster', 'eng', 95, 'released',
+                    '[]', 'Studio', '2024-01-01', 'tt1234567', 'movie-tvdb-1', NULL,
+                    NULL, NULL, 'after season 1', 'high', 'canonical', 'movie', 'high',
+                    'fixture', 'S00E01', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z'
+                ),
+                (
+                    'legacy-collection-2', 'title-1', 'interstitial', '2.5', 'Bridge Movie B',
+                    '2.5', 1, '/media/bridge-b.mkv', 'Bridge Movie', 'Bridge Movie',
+                    'bridge-movie', 2024, 'overview', 'poster', 'eng', 95, 'released',
+                    '[]', 'Studio', '2024-01-01', 'tt1234567', 'movie-tvdb-1', NULL,
+                    NULL, NULL, 'after season 2', 'high', 'canonical', 'movie', 'high',
+                    'fixture', 'S00E02', '2024-01-02T00:00:00Z', '2024-01-02T00:00:00Z'
+                );
+            INSERT INTO media_files (id, title_id, file_path)
+            VALUES
+                ('file-1', 'title-1', '/media/bridge-a.mkv'),
+                ('file-2', 'title-1', '/media/bridge-b.mkv');
+        "#;
+
+        for statement in split_sql_statements(setup) {
+            sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+                .execute(&mut *conn)
+                .await
+                .unwrap_or_else(|error| panic!("failed setup statement {statement}: {error}"));
+        }
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask-migrations has a repository parent");
+        let migration_sql = std::fs::read_to_string(
+            repo_root.join("crates/scryer/src/db/migrations/0130_series_movie_links.sql"),
+        )
+        .expect("read sqlite 0130 migration");
+        for statement in split_sql_statements(&migration_sql) {
+            sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+                .execute(&mut *conn)
+                .await
+                .unwrap_or_else(|error| panic!("failed migration statement {statement}: {error}"));
+        }
+
+        let link_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM series_movie_links")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count links");
+        let movie_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM movie_entities")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count movies");
+        let distinct_movie_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(DISTINCT movie_entity_id) FROM series_movie_links")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count linked movies");
+        let file_link_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_series_movie_link_map")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count file links");
+
+        assert_eq!(link_count, 2);
+        assert_eq!(movie_count, 1);
+        assert_eq!(distinct_movie_count, 1);
+        assert_eq!(file_link_count, 2);
+    }
+
     #[test]
     fn saved_0122_baselines_have_table_column_constraint_and_index_parity() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))

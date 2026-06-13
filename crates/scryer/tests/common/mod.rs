@@ -140,6 +140,15 @@ impl WantedItemRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.wanted
+            .delete_wanted_items_for_series_movie_link(series_movie_link_id)
+            .await
+    }
+
     async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.wanted
             .delete_wanted_items_for_episode(episode_id)

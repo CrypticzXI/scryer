@@ -326,24 +326,32 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         &self,
         title_id: &str,
         request_signature: &str,
+        purpose: scryer_application::DownloadSubmissionPurpose,
+        scope: &scryer_application::SubmissionScope,
     ) -> AppResult<Option<DownloadSubmission>> {
         let recent_cutoff = Utc::now() - chrono::Duration::seconds(30);
         let sql = download_submission_select_sql(
             &self.datastore,
-            "WHERE title_id = {} AND request_signature = {} AND COALESCE(tracked_state, '') = '' AND submitted_at >= {} ORDER BY submitted_at DESC, id DESC LIMIT 1",
+            "WHERE title_id = {} AND request_signature = {} AND purpose = {} AND COALESCE(tracked_state, '') = '' AND submitted_at >= {} ORDER BY submitted_at DESC, id DESC",
         );
-        let row = SqlRuntime::fetch_optional(
+        let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
             &sql,
             &[
                 SqlArg::Text(title_id.to_string()),
                 SqlArg::Text(request_signature.to_string()),
+                SqlArg::Text(purpose.as_str().to_string()),
                 SqlArg::Timestamp(recent_cutoff),
             ],
         )
         .await?;
-        row.map(|row| download_submission_from_row(&row))
-            .transpose()
+        for row in rows {
+            let submission = download_submission_from_row(&row)?;
+            if &submission.scope == scope {
+                return Ok(Some(submission));
+            }
+        }
+        Ok(None)
     }
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
@@ -435,8 +443,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO download_submissions
-                     (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id, tracked_state, tracked_state_at)
-                     VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, NULL, NULL, {}, {})
+                     (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, tracked_state, tracked_state_at)
+                     VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, 'standard', NULL, NULL, {}, {})
                      ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
                      SET tracked_state = excluded.tracked_state,
                          tracked_state_at = excluded.tracked_state_at",

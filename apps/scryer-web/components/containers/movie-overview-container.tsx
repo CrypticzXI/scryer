@@ -14,6 +14,7 @@ import {
   deleteTitleMutation,
   queueExistingMutation,
   scanTitleLibraryMutation,
+  setPrimaryMovieFileMutation,
   setTitleMonitoredMutation,
   triggerTitleWantedSearchMutation,
   triggerTitleMismatchRecoverySearchMutation,
@@ -129,6 +130,7 @@ export type TitleMediaFile = {
   id: string;
   titleId: string;
   episodeId: string | null;
+  role: string;
   filePath: string;
   sizeBytes: string;
   qualityLabel: string | null;
@@ -279,6 +281,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     initialItems: downloadQueueSeed,
   });
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
+  const [primaryMovieFileUpdatingId, setPrimaryMovieFileUpdatingId] =
+    React.useState<string | null>(null);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
@@ -746,6 +750,59 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     [title, client, confirmReplaceConflict, t, setGlobalStatus, refreshTitleDetail],
   );
 
+  const queueAdditionalRelease = React.useCallback(
+    async (release: Release) => {
+      if (!title) return;
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+      try {
+        const { data, error } = await client.mutation(queueExistingMutation, {
+          input: {
+            titleId: title.id,
+            scope: releaseQueueScopeInput(release, { title: true }),
+            candidateToken: release.candidateToken,
+            purpose: "ADDITIONAL_FILE",
+          },
+        }).toPromise();
+        if (error) throw error;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this title.",
+        );
+        setGlobalStatus(t("status.queueSuccess", { name: release.title }));
+        await refreshTitleDetail();
+      } catch (err) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(err, t("status.apiError")));
+      }
+    },
+    [title, client, t, setGlobalStatus, refreshTitleDetail],
+  );
+
+  const handleMakePrimaryMovieFile = React.useCallback(
+    async (fileId: string) => {
+      if (!title) return;
+      setPrimaryMovieFileUpdatingId(fileId);
+      try {
+        const { error } = await client.mutation(setPrimaryMovieFileMutation, {
+          input: {
+            titleId: title.id,
+            fileId,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.primaryMovieFileUpdated"));
+        await refreshTitleDetail();
+      } catch (err) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(err, t("status.apiError")));
+      } finally {
+        setPrimaryMovieFileUpdatingId(null);
+      }
+    },
+    [title, client, t, setGlobalStatus, refreshTitleDetail],
+  );
+
   const handleRefreshAndScan = React.useCallback(async () => {
     if (!title) return;
     setRefreshAndScanLoading(true);
@@ -1026,6 +1083,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         deleteLoading={deleteLoading}
         onSearch={runIndexerSearch}
         onQueue={queueRelease}
+        onQueueAdditional={queueAdditionalRelease}
         onSearchMonitored={handleSearchMonitored}
         onRefreshAndScan={handleRefreshAndScan}
         onTitleChanged={refreshTitleDetail}
@@ -1051,8 +1109,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
           canManageTitle ? handleClearReleaseBlocklistEntry : undefined
         }
         mediaFiles={mediaFiles}
+        primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         subtitleDownloads={subtitleDownloads}
         onDeleteFile={handleDeleteMediaFile}
+        onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
         onRefreshSubtitles={() => { void refreshTitleDetail(); }}
         onOpenFixMatch={() => setFixMatchOpen(true)}
       />

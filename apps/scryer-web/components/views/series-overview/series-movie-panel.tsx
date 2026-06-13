@@ -1,24 +1,24 @@
 import { ExternalLink } from "lucide-react";
-import type { InterstitialMovieMetadata } from "@/components/containers/series-overview-container";
+import type { SeriesMovieLink } from "@/components/containers/series-overview-container";
 import { useTranslate } from "@/lib/context/translate-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
 import { localizedTitleStatus } from "../overview-localization";
-import { getImdbUrl, getTvdbMovieUrl, formatRuntimeFromMinutes } from "./helpers";
+import { formatRuntimeFromMinutes, getImdbUrl, getTvdbMovieUrl } from "./helpers";
 
-type InterstitialMoviePanelProps = {
-  movie: InterstitialMovieMetadata;
+type SeriesMoviePanelProps = {
+  link: SeriesMovieLink;
   hasFile?: boolean;
-  monitored?: boolean;
 };
 
-export function InterstitialMoviePanel({ movie, hasFile, monitored }: InterstitialMoviePanelProps) {
+export function SeriesMoviePanel({ link, hasFile }: SeriesMoviePanelProps) {
   const t = useTranslate();
+  const movie = link.movie;
   const imdbUrl = getImdbUrl(movie.imdbId);
-  const tvdbUrl = getTvdbMovieUrl(movie);
+  const tvdbUrl = getTvdbMovieUrl(movie.tvdbId, movie.slug);
   const runtime = formatRuntimeFromMinutes(movie.runtimeMinutes);
   const posterUrl = selectPosterVariantUrl(movie.posterUrl, "w250");
-  const badges = buildMovieBadges(movie, hasFile, monitored, t);
+  const badges = buildMovieBadges(link, hasFile, t);
   const localizedStatus = localizedTitleStatus(t, movie.contentStatus);
 
   return (
@@ -27,7 +27,7 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
         {posterUrl ? (
           <TitlePoster
             src={posterUrl}
-            alt={movie.name}
+            alt={movie.title}
             className="h-auto w-28 rounded-lg object-cover shadow-md sm:w-[140px]"
           />
         ) : (
@@ -37,7 +37,7 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-card-foreground">{movie.name}</p>
+        <p className="text-sm font-semibold text-card-foreground">{movie.title}</p>
         {badges.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-2">
             {badges.map((badge) => (
@@ -51,23 +51,17 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
           </div>
         ) : null}
         <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          {movie.year ? (
-            <span>{movie.year}</span>
-          ) : null}
-          {runtime ? (
-            <span>{runtime}</span>
-          ) : null}
-          {localizedStatus ? (
-            <span>{localizedStatus}</span>
-          ) : null}
+          {movie.year ? <span>{movie.year}</span> : null}
+          {runtime ? <span>{runtime}</span> : null}
+          {localizedStatus ? <span>{localizedStatus}</span> : null}
         </div>
         {movie.overview ? (
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{movie.overview}</p>
         ) : (
           <p className="mt-3 text-sm italic text-muted-foreground/60">{t("title.descriptionUnavailable")}</p>
         )}
-        {movie.signalSummary ? (
-          <p className="mt-2 text-xs text-muted-foreground/80">{movie.signalSummary}</p>
+        {link.signalSummary ? (
+          <p className="mt-2 text-xs text-muted-foreground/80">{link.signalSummary}</p>
         ) : null}
         <div className="mt-3 flex flex-wrap gap-2 text-sm">
           {imdbUrl ? (
@@ -101,45 +95,41 @@ export function InterstitialMoviePanel({ movie, hasFile, monitored }: Interstiti
 }
 
 function buildMovieBadges(
-  movie: InterstitialMovieMetadata,
+  link: SeriesMovieLink,
   hasFile: boolean | undefined,
-  monitored: boolean | undefined,
   t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string,
-): Array<{ label: string; tone: "emerald" | "amber" | "slate" | "sky" | "red" }> {
-  const badges: Array<{ label: string; tone: "emerald" | "amber" | "slate" | "sky" | "red" }> = [];
+): Array<{ label: string; tone: "emerald" | "amber" | "slate" | "red" }> {
+  const badges: Array<{ label: string; tone: "emerald" | "amber" | "slate" | "red" }> = [];
 
-  // File status badge
   if (hasFile === true) {
     badges.push({ label: t("history.downloadCompleted"), tone: "emerald" });
-  } else if (monitored === true && hasFile === false) {
+  } else if (link.monitored) {
     badges.push({ label: t("episode.missing"), tone: "red" });
-  } else if (monitored === false) {
+  } else {
     badges.push({ label: t("search.monitorType.unmonitored"), tone: "slate" });
   }
 
-  if (movie.movieForm === "recap") {
+  if (link.movieForm === "recap") {
     badges.push({ label: t("episode.recap"), tone: "slate" });
-  } else if (movie.movieForm === "special") {
+  } else if (link.movieForm === "special") {
     badges.push({ label: t("episode.special"), tone: "slate" });
-  } else if (movie.continuityStatus === "filler") {
+  } else if (link.continuityStatus === "filler") {
     badges.push({ label: t("episode.filler"), tone: "slate" });
-  } else if (movie.continuityStatus === "canon") {
+  } else if (link.continuityStatus === "canon") {
     badges.push({ label: t("title.canon"), tone: "emerald" });
-  } else if (movie.continuityStatus === "mixed") {
+  } else if (link.continuityStatus === "mixed") {
     badges.push({ label: t("title.mixed"), tone: "amber" });
   }
 
   return badges;
 }
 
-function badgeClassName(tone: "emerald" | "amber" | "slate" | "sky" | "red") {
+function badgeClassName(tone: "emerald" | "amber" | "slate" | "red") {
   switch (tone) {
     case "emerald":
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     case "amber":
       return "border-amber-500/30 bg-amber-500/10 text-amber-100";
-    case "sky":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-100";
     case "red":
       return "border-red-500/30 bg-red-500/10 text-red-200";
     default:

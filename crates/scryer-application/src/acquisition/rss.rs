@@ -852,7 +852,10 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
         let upgrade_context = self
             .resolve_upgrade_context_for_title_with_category(
                 title,
@@ -1049,6 +1052,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
@@ -1129,6 +1133,7 @@ impl AppUseCase {
                     .record_submission_with_identity(
                         DownloadSubmission {
                             title_id: title.id.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
                             download_client_type: grab.client_type.clone(),

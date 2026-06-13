@@ -8,14 +8,14 @@ use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
-    BlocklistRepository, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
-    DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
-    JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository,
-    MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
-    ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord,
-    TotpFailedAttemptRecord, TotpRepository, UserRepository, WantedItem, WantedItemRepository,
-    WebauthnCredentialRecord, WebauthnRepository, start_background_download_delete_poller,
+    BlocklistRepository, CutoffUnmetQualitySummary, DownloadSubmissionRepository,
+    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, JwtSessionScope, LibraryRootDraft,
+    MediaFileAnalysis, MediaFileRepository, MediaServerConnectionRepository, PendingRelease,
+    PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
+    TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository, UserRepository,
+    WantedItem, WantedItemRepository, WebauthnCredentialRecord, WebauthnRepository,
+    start_background_download_delete_poller,
 };
 use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
@@ -24,7 +24,6 @@ use scryer_domain::{
     MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType, NewDomainEvent,
     ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User, UserAuthorization,
 };
-use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
     SettingDefinitionSeed, TotpStore, WebauthnStore,
@@ -262,8 +261,27 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.link_file_to_episode(file_id, episode_id).await
     }
 
+    async fn link_file_to_series_movie(
+        &self,
+        file_id: &str,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .link_file_to_series_movie(file_id, series_movie_link_id)
+            .await
+    }
+
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         self.inner.list_media_files_for_title(title_id).await
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        self.inner
+            .list_series_movie_link_ids_with_files_for_title(title_id)
+            .await
     }
 
     async fn list_live_media_files_for_episode_ids(
@@ -345,6 +363,17 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.update_media_file_path(file_id, file_path).await
     }
 
+    async fn set_movie_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_movie_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .await
+    }
+
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
         self.inner.mark_scan_failed(file_id, error).await
     }
@@ -359,220 +388,6 @@ impl MediaFileRepository for FailingMediaFileRepo {
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
         self.inner.delete_media_file(file_id).await
-    }
-}
-
-struct FailingShowRepo {
-    inner: ShowStore,
-    fail_collection_id: String,
-    fail_path: String,
-}
-
-#[async_trait]
-impl ShowRepository for FailingShowRepo {
-    async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
-        self.inner.list_collections_for_title(title_id).await
-    }
-
-    async fn list_collection_external_ids(
-        &self,
-        collection_id: &str,
-    ) -> AppResult<Vec<ScopedExternalId>> {
-        self.inner.list_collection_external_ids(collection_id).await
-    }
-
-    async fn list_collections_for_titles(
-        &self,
-        title_ids: &[String],
-    ) -> AppResult<HashMap<String, Vec<Collection>>> {
-        self.inner.list_collections_for_titles(title_ids).await
-    }
-
-    async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
-        self.inner.get_collection_by_id(collection_id).await
-    }
-
-    async fn get_collection_by_ordered_path(
-        &self,
-        ordered_path: &str,
-    ) -> AppResult<Option<Collection>> {
-        self.inner
-            .get_collection_by_ordered_path(ordered_path)
-            .await
-    }
-
-    async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
-        self.inner.create_collection(collection).await
-    }
-
-    async fn update_collection(
-        &self,
-        collection_id: &str,
-        update: CollectionUpdate,
-    ) -> AppResult<Collection> {
-        if collection_id == self.fail_collection_id
-            && update.ordered_path.as_deref() == Some(self.fail_path.as_str())
-        {
-            return Err(AppError::Repository(format!(
-                "injected collection path failure for {collection_id}"
-            )));
-        }
-
-        self.inner.update_collection(collection_id, update).await
-    }
-
-    async fn update_collection_interstitial_movie(
-        &self,
-        collection_id: &str,
-        interstitial_movie: scryer_domain::InterstitialMovieMetadata,
-    ) -> AppResult<Collection> {
-        self.inner
-            .update_collection_interstitial_movie(collection_id, interstitial_movie)
-            .await
-    }
-
-    async fn update_collection_specials_movies(
-        &self,
-        collection_id: &str,
-        specials_movies: Vec<scryer_domain::InterstitialMovieMetadata>,
-    ) -> AppResult<Collection> {
-        self.inner
-            .update_collection_specials_movies(collection_id, specials_movies)
-            .await
-    }
-
-    async fn update_interstitial_season_episode(
-        &self,
-        collection_id: &str,
-        season_episode: Option<String>,
-    ) -> AppResult<()> {
-        self.inner
-            .update_interstitial_season_episode(collection_id, season_episode)
-            .await
-    }
-
-    async fn set_collection_episodes_monitored(
-        &self,
-        collection_id: &str,
-        monitored: bool,
-    ) -> AppResult<()> {
-        self.inner
-            .set_collection_episodes_monitored(collection_id, monitored)
-            .await
-    }
-
-    async fn set_collections_monitored(
-        &self,
-        collection_ids: &[String],
-        monitored: bool,
-    ) -> AppResult<()> {
-        self.inner
-            .set_collections_monitored(collection_ids, monitored)
-            .await
-    }
-
-    async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
-        self.inner.delete_collection(collection_id).await
-    }
-
-    async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.inner.delete_collections_for_title(title_id).await
-    }
-
-    async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>> {
-        self.inner.list_episodes_for_collection(collection_id).await
-    }
-
-    async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
-        self.inner.list_episodes_for_title(title_id).await
-    }
-
-    async fn list_episode_external_ids(
-        &self,
-        episode_id: &str,
-    ) -> AppResult<Vec<ScopedExternalId>> {
-        self.inner.list_episode_external_ids(episode_id).await
-    }
-
-    async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
-        self.inner.get_episode_by_id(episode_id).await
-    }
-
-    async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
-        self.inner.create_episode(episode).await
-    }
-
-    async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
-        self.inner.update_episode(episode_id, update).await
-    }
-
-    async fn set_episodes_monitored(
-        &self,
-        episode_ids: &[String],
-        monitored: bool,
-    ) -> AppResult<()> {
-        self.inner
-            .set_episodes_monitored(episode_ids, monitored)
-            .await
-    }
-
-    async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
-        self.inner.delete_episode(episode_id).await
-    }
-
-    async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.inner.delete_episodes_for_title(title_id).await
-    }
-
-    async fn find_episode_by_title_and_numbers(
-        &self,
-        title_id: &str,
-        season_number: &str,
-        episode_number: &str,
-    ) -> AppResult<Option<Episode>> {
-        self.inner
-            .find_episode_by_title_and_numbers(title_id, season_number, episode_number)
-            .await
-    }
-
-    async fn find_episode_by_title_and_absolute_number(
-        &self,
-        title_id: &str,
-        absolute_number: &str,
-    ) -> AppResult<Option<Episode>> {
-        self.inner
-            .find_episode_by_title_and_absolute_number(title_id, absolute_number)
-            .await
-    }
-
-    async fn list_episodes_in_date_range(
-        &self,
-        start_inclusive: &str,
-        end_inclusive: &str,
-    ) -> AppResult<Vec<scryer_domain::CalendarEpisode>> {
-        self.inner
-            .list_episodes_in_date_range(start_inclusive, end_inclusive)
-            .await
-    }
-
-    async fn list_primary_collection_summaries(
-        &self,
-        title_ids: &[String],
-    ) -> AppResult<Vec<scryer_application::PrimaryCollectionSummary>> {
-        self.inner
-            .list_primary_collection_summaries(title_ids)
-            .await
-    }
-
-    async fn replace_anibridge_scoped_external_ids_for_title(
-        &self,
-        title_id: &str,
-        collection_ids: Vec<ScopedExternalId>,
-        episode_ids: Vec<ScopedExternalId>,
-    ) -> AppResult<()> {
-        self.inner
-            .replace_anibridge_scoped_external_ids_for_title(title_id, collection_ids, episode_ids)
-            .await
     }
 }
 
@@ -1316,9 +1131,6 @@ async fn create_series_scan_title(
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("10".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -1439,6 +1251,111 @@ async fn create_series_scan_episode(
         .expect("create episode")
 }
 
+async fn create_series_movie_special_episode(
+    ctx: &TestContext,
+    title: &Title,
+    collection: &Collection,
+    episode_number: &str,
+    episode_title: &str,
+    tvdb_id: &str,
+) -> Episode {
+    let episode = Episode {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_id: Some(collection.id.clone()),
+        episode_type: scryer_domain::EpisodeType::Special,
+        episode_number: Some(episode_number.to_string()),
+        season_number: Some("0".to_string()),
+        episode_label: Some(format!("S00E{episode_number:0>2}")),
+        title: Some(episode_title.to_string()),
+        air_date: None,
+        duration_seconds: Some(5400),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: Some(episode_number.to_string()),
+        overview: None,
+        tvdb_id: Some(tvdb_id.to_string()),
+        image_url: None,
+        monitored: true,
+        created_at: chrono::Utc::now(),
+    };
+    ctx.shows
+        .create_episode(episode)
+        .await
+        .expect("create series movie special episode")
+}
+
+async fn create_test_series_movie_link(
+    ctx: &TestContext,
+    title: &Title,
+    movie_title: &str,
+    tvdb_id: &str,
+    linked_episode_id: Option<String>,
+    legacy_collection_id: Option<String>,
+) -> scryer_domain::SeriesMovieLink {
+    let now = chrono::Utc::now();
+    let link = scryer_domain::SeriesMovieLink {
+        id: Id::new().0,
+        series_title_id: title.id.clone(),
+        movie: scryer_domain::MovieEntity {
+            id: Id::new().0,
+            title: movie_title.to_string(),
+            sort_title: Some(movie_title.to_string()),
+            slug: Some(
+                movie_title
+                    .to_ascii_lowercase()
+                    .replace(|ch: char| !ch.is_ascii_alphanumeric(), "-")
+                    .trim_matches('-')
+                    .to_string(),
+            ),
+            year: title.year,
+            overview: Some(format!("{movie_title} overview")),
+            poster_url: Some(format!(
+                "https://example.com/{}.jpg",
+                movie_title
+                    .to_ascii_lowercase()
+                    .replace(|ch: char| !ch.is_ascii_alphanumeric(), "-")
+                    .trim_matches('-')
+            )),
+            background_url: None,
+            language: Some("eng".to_string()),
+            runtime_minutes: Some(95),
+            content_status: Some("released".to_string()),
+            genres: vec!["Adventure".to_string()],
+            studio: title.studio.clone(),
+            digital_release_date: Some("2024-01-01".to_string()),
+            imdb_id: Some(format!("tt{tvdb_id}")),
+            tvdb_id: Some(tvdb_id.to_string()),
+            tmdb_id: None,
+            mal_id: None,
+            anidb_id: None,
+            created_at: now,
+            updated_at: now,
+        },
+        placement: None,
+        narrative_order: Some("1.0".to_string()),
+        after_season: None,
+        before_season: None,
+        linked_episode_id,
+        association_confidence: Some("high".to_string()),
+        continuity_status: Some("canonical".to_string()),
+        movie_form: Some("movie".to_string()),
+        confidence: Some("high".to_string()),
+        signal_summary: Some("test fixture".to_string()),
+        source: Some("test".to_string()),
+        monitored: true,
+        legacy_collection_id,
+        created_at: now,
+        updated_at: now,
+    };
+    ctx.shows
+        .upsert_series_movie_link(link)
+        .await
+        .expect("create series movie link")
+}
+
 #[tokio::test]
 async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     let ctx = TestContext::new().await;
@@ -1470,9 +1387,6 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             narrative_order: None,
             first_episode_number: Some("3".to_string()),
             last_episode_number: Some("3".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1624,9 +1538,6 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1765,7 +1676,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
 }
 
 #[tokio::test]
-async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_numbering() {
+async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_numbering() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
@@ -1792,52 +1703,43 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
     )
     .await;
     let file_path = season_zero_dir.join("Festival.Saga.Movie.Special.1080p.mkv");
-    std::fs::write(&file_path, b"anime-interstitial").expect("write interstitial file");
+    std::fs::write(&file_path, b"anime-series-movie").expect("write series movie file");
 
-    let interstitial = ctx
+    let specials = ctx
         .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
-            collection_type: scryer_domain::CollectionType::Interstitial,
+            collection_type: scryer_domain::CollectionType::Specials,
             collection_index: "0".to_string(),
-            label: Some("Movie".to_string()),
-            ordered_path: Some(file_path.to_string_lossy().to_string()),
+            label: Some("Specials".to_string()),
+            ordered_path: None,
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "9200103".to_string(),
-                name: "Festival Film".to_string(),
-                slug: "festival-film".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Festival special".to_string(),
-                poster_url: "https://example.com/festival-film.jpg".to_string(),
-                language: "eng".to_string(),
-                runtime_minutes: 95,
-                sort_title: "Festival Film".to_string(),
-                imdb_id: "tt9200103".to_string(),
-                genres: vec!["Fantasy".to_string()],
-                studio: "Scryer Films".to_string(),
-                digital_release_date: Some("2024-01-01".to_string()),
-                association_confidence: None,
-                continuity_status: None,
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: None,
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: Some("S00E03".to_string()),
             monitored: true,
             created_at: chrono::Utc::now(),
         })
         .await
-        .expect("create interstitial collection");
+        .expect("create specials collection");
+    let special_episode = create_series_movie_special_episode(
+        &ctx,
+        &title,
+        &specials,
+        "3",
+        "Festival Film",
+        "9200103",
+    )
+    .await;
+    let series_movie_link = create_test_series_movie_link(
+        &ctx,
+        &title,
+        "Festival Film",
+        "9200103",
+        Some(special_episode.id.clone()),
+        None,
+    )
+    .await;
 
     let file_id = ctx
         .media_files
@@ -1849,7 +1751,15 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
             ..Default::default()
         })
         .await
-        .expect("insert interstitial file");
+        .expect("insert series movie file");
+    ctx.media_files
+        .link_file_to_episode(&file_id, &special_episode.id)
+        .await
+        .expect("link series movie special episode");
+    ctx.media_files
+        .link_file_to_series_movie(&file_id, &series_movie_link.id)
+        .await
+        .expect("link series movie file");
 
     let body = gql(
         &ctx,
@@ -1884,7 +1794,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
     assert_eq!(plan["renamable"].as_i64(), Some(1));
 
     let item = &plan["items"][0];
-    assert_eq!(item["collectionId"], json!(interstitial.id));
+    assert_eq!(item["collectionId"], json!(specials.id));
     assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
@@ -1906,7 +1816,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
 }
 
 #[tokio::test]
-async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_collections() {
+async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_specials() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     ctx.app = ctx.app.with_test_overrides(|builder| {
@@ -1939,9 +1849,6 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1999,66 +1906,65 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
 
     let season_zero_dir = media_root.path().join("Anime Apply Show").join("Season 00");
     std::fs::create_dir_all(&season_zero_dir).expect("create season zero dir");
-    let interstitial_file_path = season_zero_dir.join("Anime.Apply.Show.Movie.Special.1080p.mkv");
-    std::fs::write(&interstitial_file_path, b"anime-apply-interstitial")
-        .expect("write interstitial file");
+    let series_movie_file_path = season_zero_dir.join("Anime.Apply.Show.Movie.Special.1080p.mkv");
+    std::fs::write(&series_movie_file_path, b"anime-apply-series-movie")
+        .expect("write series movie file");
 
-    let interstitial_collection = ctx
+    let specials_collection = ctx
         .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
-            collection_type: scryer_domain::CollectionType::Interstitial,
+            collection_type: scryer_domain::CollectionType::Specials,
             collection_index: "0".to_string(),
-            label: Some("Movie".to_string()),
-            ordered_path: Some(interstitial_file_path.to_string_lossy().to_string()),
+            label: Some("Specials".to_string()),
+            ordered_path: None,
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "9300103".to_string(),
-                name: "Pilot Movie".to_string(),
-                slug: "pilot-movie".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Pilot side story".to_string(),
-                poster_url: "https://example.com/pilot-movie.jpg".to_string(),
-                language: "eng".to_string(),
-                runtime_minutes: 90,
-                sort_title: "Pilot Movie".to_string(),
-                imdb_id: "tt9300103".to_string(),
-                genres: vec!["Adventure".to_string()],
-                studio: "Scryer Films".to_string(),
-                digital_release_date: Some("2024-01-01".to_string()),
-                association_confidence: None,
-                continuity_status: None,
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: None,
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: Some("S00E03".to_string()),
             monitored: true,
             created_at: chrono::Utc::now(),
         })
         .await
-        .expect("create interstitial collection");
+        .expect("create specials collection");
+    let series_movie_episode = create_series_movie_special_episode(
+        &ctx,
+        &title,
+        &specials_collection,
+        "3",
+        "Pilot Movie",
+        "9300103",
+    )
+    .await;
+    let series_movie_link = create_test_series_movie_link(
+        &ctx,
+        &title,
+        "Pilot Movie",
+        "9300103",
+        Some(series_movie_episode.id.clone()),
+        None,
+    )
+    .await;
 
-    let interstitial_file_id = ctx
+    let series_movie_file_id = ctx
         .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
-            file_path: interstitial_file_path.to_string_lossy().to_string(),
+            file_path: series_movie_file_path.to_string_lossy().to_string(),
             size_bytes: 2048,
             quality_label: Some("1080p".to_string()),
             ..Default::default()
         })
         .await
-        .expect("insert interstitial media file");
+        .expect("insert series movie media file");
+    ctx.media_files
+        .link_file_to_episode(&series_movie_file_id, &series_movie_episode.id)
+        .await
+        .expect("link series movie special");
+    ctx.media_files
+        .link_file_to_series_movie(&series_movie_file_id, &series_movie_link.id)
+        .await
+        .expect("link series movie file");
 
     let actor = ctx
         .app
@@ -2087,7 +1993,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .join("Anime Apply Show - S01E01 (001) - 1080p.mkv")
         .to_string_lossy()
         .to_string();
-    let expected_interstitial_path = media_root
+    let expected_series_movie_path = media_root
         .path()
         .join("Anime Apply Show (2024)")
         .join("Season 00")
@@ -2101,39 +2007,36 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .await
         .expect("load updated regular media file")
         .expect("regular media file");
-    let updated_interstitial_file = ctx
+    let updated_series_movie_file = ctx
         .media_files
-        .get_media_file_by_id(&interstitial_file_id)
+        .get_media_file_by_id(&series_movie_file_id)
         .await
-        .expect("load updated interstitial media file")
-        .expect("interstitial media file");
+        .expect("load updated series movie media file")
+        .expect("series movie media file");
     let refreshed_season_collection = ctx
         .shows
         .get_collection_by_id(&season_collection.id)
         .await
         .expect("load season collection")
         .expect("season collection");
-    let refreshed_interstitial_collection = ctx
+    let refreshed_specials_collection = ctx
         .shows
-        .get_collection_by_id(&interstitial_collection.id)
+        .get_collection_by_id(&specials_collection.id)
         .await
-        .expect("load interstitial collection")
-        .expect("interstitial collection");
+        .expect("load specials collection")
+        .expect("specials collection");
 
     assert_eq!(updated_regular_file.file_path, expected_regular_path);
     assert_eq!(
-        updated_interstitial_file.file_path,
-        expected_interstitial_path
+        updated_series_movie_file.file_path,
+        expected_series_movie_path
     );
     assert_eq!(refreshed_season_collection.ordered_path, None);
-    assert_eq!(
-        refreshed_interstitial_collection.ordered_path,
-        Some(expected_interstitial_path.clone())
-    );
+    assert_eq!(refreshed_specials_collection.ordered_path, None);
     assert!(std::path::Path::new(&expected_regular_path).exists());
-    assert!(std::path::Path::new(&expected_interstitial_path).exists());
+    assert!(std::path::Path::new(&expected_series_movie_path).exists());
     assert!(!regular_file_path.exists());
-    assert!(!interstitial_file_path.exists());
+    assert!(!series_movie_file_path.exists());
 }
 
 #[tokio::test]
@@ -2173,9 +2076,6 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2284,9 +2184,6 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2393,9 +2290,6 @@ async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_fo
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2500,9 +2394,6 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
             narrative_order: None,
             first_episode_number: Some("3".to_string()),
             last_episode_number: Some("3".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2670,9 +2561,6 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2702,9 +2590,6 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2785,9 +2670,6 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2912,9 +2794,6 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2998,9 +2877,6 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -3129,177 +3005,6 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     assert!(!std::path::Path::new(&expected_path).exists());
 }
 
-#[tokio::test]
-async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_update_fails() {
-    let mut ctx = TestContext::new().await;
-    seed_typed_settings_definitions(&ctx).await;
-    ctx.app = ctx.app.with_test_overrides(|builder| {
-        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
-    });
-    let media_root = tempfile::tempdir().expect("media root tempdir");
-
-    let title = create_catalog_title(
-        &ctx,
-        "Anime Interstitial Rollback",
-        MediaFacet::Anime,
-        vec![ExternalId {
-            source: "tvdb".to_string(),
-            value: "99001".to_string(),
-        }],
-        vec![media_root_tag(media_root.path())],
-        true,
-    )
-    .await;
-
-    let season_zero_dir = media_root
-        .path()
-        .join("Anime Interstitial Rollback")
-        .join("Season 00");
-    std::fs::create_dir_all(&season_zero_dir).expect("create season zero dir");
-    set_title_folder_path(
-        &ctx,
-        &title.id,
-        season_zero_dir.parent().expect("title folder"),
-    )
-    .await;
-    let source_path = season_zero_dir.join("Anime.Interstitial.Rollback.Movie.Special.1080p.mkv");
-    std::fs::write(&source_path, b"anime-interstitial-rollback").expect("write source file");
-    let expected_path = media_root
-        .path()
-        .join("Anime Interstitial Rollback (2024)")
-        .join("Season 00")
-        .join("Anime Interstitial Rollback - S00E03 (3) - 1080p.mkv")
-        .to_string_lossy()
-        .to_string();
-
-    let interstitial = ctx
-        .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: scryer_domain::CollectionType::Interstitial,
-            collection_index: "0".to_string(),
-            label: Some("Movie".to_string()),
-            ordered_path: Some(source_path.to_string_lossy().to_string()),
-            narrative_order: None,
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "9900103".to_string(),
-                name: "Rollback Movie".to_string(),
-                slug: "rollback-movie".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "Rollback special".to_string(),
-                poster_url: "https://example.com/rollback-movie.jpg".to_string(),
-                language: "eng".to_string(),
-                runtime_minutes: 88,
-                sort_title: "Rollback Movie".to_string(),
-                imdb_id: "tt9900103".to_string(),
-                genres: vec!["Adventure".to_string()],
-                studio: "Scryer Films".to_string(),
-                digital_release_date: Some("2024-01-01".to_string()),
-                association_confidence: None,
-                continuity_status: None,
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: None,
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: Some("S00E03".to_string()),
-            monitored: true,
-            created_at: chrono::Utc::now(),
-        })
-        .await
-        .expect("create interstitial collection");
-
-    let file_id = ctx
-        .media_files
-        .insert_media_file(&InsertMediaFileInput {
-            title_id: title.id.clone(),
-            file_path: source_path.to_string_lossy().to_string(),
-            size_bytes: 2048,
-            quality_label: Some("1080p".to_string()),
-            ..Default::default()
-        })
-        .await
-        .expect("insert interstitial media file");
-
-    ctx.app = ctx.app.with_test_overrides(|builder| {
-        builder.with_shows(std::sync::Arc::new(FailingShowRepo {
-            inner: ShowStore::new(ctx.db.datastore()),
-            fail_collection_id: interstitial.id.clone(),
-            fail_path: expected_path.clone(),
-        }))
-    });
-
-    let actor = ctx
-        .app
-        .find_or_create_default_user()
-        .await
-        .expect("default user");
-    let preview = ctx
-        .app
-        .preview_rename_for_title(&actor, &title.id, MediaFacet::Anime)
-        .await
-        .expect("preview rename plan");
-    assert_eq!(preview.renamable, 1);
-    assert!(
-        preview
-            .items
-            .iter()
-            .all(|item| item.write_action != scryer_application::RenameWriteAction::Replace)
-    );
-
-    let result = ctx
-        .app
-        .apply_rename_for_title(&actor, &title.id, MediaFacet::Anime, &preview.fingerprint)
-        .await
-        .expect("apply rename");
-    assert_eq!(result.applied, 0);
-    assert_eq!(result.failed, 1);
-
-    let item = &result.items[0];
-    assert_eq!(item.status.as_str(), "failed");
-    assert_eq!(item.reason_code, "db_update_failed");
-    assert_eq!(
-        item.final_path.as_deref(),
-        Some(source_path.to_string_lossy().as_ref())
-    );
-    assert!(
-        item.error_message
-            .as_deref()
-            .is_some_and(|message| message.contains("rollback succeeded"))
-    );
-
-    let stored_file = ctx
-        .media_files
-        .get_media_file_by_id(&file_id)
-        .await
-        .expect("load interstitial media file")
-        .expect("interstitial media file");
-    let stored_collection = ctx
-        .shows
-        .get_collection_by_id(&interstitial.id)
-        .await
-        .expect("load interstitial collection")
-        .expect("interstitial collection");
-    assert_eq!(
-        stored_file.file_path,
-        source_path.to_string_lossy().to_string()
-    );
-    assert_eq!(
-        stored_collection.ordered_path,
-        Some(source_path.to_string_lossy().to_string())
-    );
-    assert!(source_path.exists());
-    assert!(!std::path::Path::new(&expected_path).exists());
-}
-
 // ---------------------------------------------------------------------------
 // Basic connectivity
 // ---------------------------------------------------------------------------
@@ -3366,7 +3071,7 @@ async fn graphql_introspection_query_root_uses_semantic_search_and_browse_fields
 }
 
 #[tokio::test]
-async fn graphql_introspection_exposes_collection_search_input_on_search_releases() {
+async fn graphql_introspection_exposes_series_movie_search_input_on_search_releases() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
@@ -3388,13 +3093,13 @@ async fn graphql_introspection_exposes_collection_search_input_on_search_release
     let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
 
     assert!(names.contains(&"titleId"));
-    assert!(names.contains(&"collectionId"));
+    assert!(names.contains(&"seriesMovieLinkId"));
     assert!(names.contains(&"season"));
     assert!(names.contains(&"episode"));
 }
 
 #[tokio::test]
-async fn graphql_search_releases_rejects_collection_and_episode_inputs_together() {
+async fn graphql_search_releases_rejects_series_movie_and_episode_inputs_together() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
@@ -3406,7 +3111,7 @@ async fn graphql_search_releases_rejects_collection_and_episode_inputs_together(
         json!({
             "input": {
                 "titleId": "title-1",
-                "collectionId": "collection-1",
+                "seriesMovieLinkId": "series-movie-link-1",
                 "season": "1",
                 "episode": "1"
             }
@@ -3418,7 +3123,7 @@ async fn graphql_search_releases_rejects_collection_and_episode_inputs_together(
     let message = errors[0]["message"]
         .as_str()
         .expect("expected graphql error message");
-    assert!(message.contains("collection searches cannot include season or episode"));
+    assert!(message.contains("series movie searches cannot include season or episode"));
 }
 
 #[tokio::test]
@@ -5738,9 +5443,6 @@ async fn graphql_traverses_core_graph_relationships() {
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("1".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -5809,6 +5511,7 @@ async fn graphql_traverses_core_graph_relationships() {
         library_slug: None,
         episode_id: Some(episode.id.clone()),
         collection_id: Some(collection.id.clone()),
+        series_movie_link_id: None,
         season_number: Some("1".to_string()),
         episode_number: episode.episode_number.clone(),
         media_type: "episode".to_string(),
@@ -6683,10 +6386,7 @@ async fn graphql_introspection_exposes_wanted_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert_eq!(
-        media_type_names,
-        vec!["movie", "episode", "interstitial_movie"]
-    );
+    assert_eq!(media_type_names, vec!["movie", "episode", "series_movie"]);
 
     let search_phase_names: Vec<&str> = body["data"]["wantedSearchPhase"]["enumValues"]
         .as_array()
@@ -7247,9 +6947,6 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("3".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: false,
             created_at: chrono::Utc::now(),
         })
@@ -7268,9 +6965,6 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: false,
             created_at: chrono::Utc::now(),
         })
@@ -7289,9 +6983,6 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: false,
             created_at: chrono::Utc::now(),
         })
@@ -7425,9 +7116,6 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("4".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7618,9 +7306,6 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7639,9 +7324,6 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7660,38 +7342,18 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
         .await
         .expect("create season zero collection");
 
-    let interstitial_path = media_root
+    let series_movie_path = media_root
         .path()
-        .join("Matched.Size.Anime.Interstitial.1080p.mkv");
-    let _interstitial_collection = ctx
-        .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "0".to_string(),
-            label: Some("Interstitial".to_string()),
-            ordered_path: Some(interstitial_path.to_string_lossy().to_string()),
-            narrative_order: None,
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: Some("S00E03".to_string()),
-            monitored: true,
-            created_at: chrono::Utc::now(),
-        })
-        .await
-        .expect("create interstitial collection");
+        .join("Matched.Size.Anime.Series.Movie.1080p.mkv");
+    let series_movie_link =
+        create_test_series_movie_link(&ctx, &title, "Matched Size Movie", "7654303", None, None)
+            .await;
 
     let regular_episode_1 =
         create_series_scan_episode(&ctx, &title, &season_collection, "1", "1", "S01E01").await;
@@ -7755,16 +7417,21 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .await
         .expect("link season zero file");
 
-    ctx.media_files
+    let series_movie_file_id = ctx
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
-            file_path: interstitial_path.to_string_lossy().to_string(),
+            file_path: series_movie_path.to_string_lossy().to_string(),
             size_bytes: 400,
             quality_label: Some("1080p".to_string()),
             ..Default::default()
         })
         .await
-        .expect("insert interstitial file");
+        .expect("insert series movie file");
+    ctx.media_files
+        .link_file_to_series_movie(&series_movie_file_id, &series_movie_link.id)
+        .await
+        .expect("link series movie file");
 
     ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
@@ -7797,6 +7464,33 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
 
     assert_eq!(listed_title["name"], "Matched Size Anime");
     assert_eq!(listed_title["sizeBytes"], json!(1_900));
+
+    let overview = gql(
+        &ctx,
+        r#"
+        query($titleId: String!) {
+          title(id: $titleId) {
+            mediaFiles {
+              id
+              seriesMovieLinkIds
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+    assert_no_errors(&overview);
+    let series_movie_file = overview["data"]["title"]["mediaFiles"]
+        .as_array()
+        .expect("media files array")
+        .iter()
+        .find(|file| file["id"] == series_movie_file_id)
+        .expect("series movie file in title media files");
+    assert_eq!(
+        series_movie_file["seriesMovieLinkIds"],
+        json!([series_movie_link.id])
+    );
 }
 
 #[tokio::test]
@@ -7826,9 +7520,6 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8363,9 +8054,6 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             narrative_order: None,
             first_episode_number: Some("29".to_string()),
             last_episode_number: Some("30".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8501,9 +8189,6 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -9293,9 +8978,6 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("1".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: false,
         created_at: chrono::Utc::now(),
     };
@@ -9415,9 +9097,6 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("1".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: false,
         created_at: chrono::Utc::now(),
     };
@@ -10151,6 +9830,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -10204,6 +9884,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
             request_signature: None,
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             scope: scryer_application::SubmissionScope::Title,
         })
         .await
@@ -11952,9 +11633,6 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -12142,9 +11820,6 @@ async fn graphql_title_history_filters_by_episode_id() {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -12299,9 +11974,6 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -12791,9 +12463,6 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                     narrative_order: None,
                     first_episode_number: Some("1".to_string()),
                     last_episode_number: Some("1".to_string()),
-                    interstitial_movie: None,
-                    specials_movies: vec![],
-                    interstitial_season_episode: None,
                     monitored: true,
                     created_at: chrono::Utc::now(),
                 })
@@ -13422,9 +13091,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: now,
         })
@@ -13508,162 +13174,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             .into_iter()
             .all(|entry| entry.id != collection.id),
         "delete should remove the matching movie collection row"
-    );
-}
-
-#[tokio::test]
-async fn delete_media_file_clears_matching_interstitial_collection_ordered_path() {
-    let ctx = TestContext::new().await;
-    let media_root = tempfile::tempdir().expect("media root tempdir");
-    let now = Utc::now();
-
-    let title = Title {
-        id: Id::new().0,
-        name: "Interstitial Cleanup Show".to_string(),
-        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
-        facet: MediaFacet::Anime,
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![ExternalId {
-            source: "tvdb".to_string(),
-            value: "777001".to_string(),
-        }],
-        created_by: None,
-        created_at: now,
-        year: Some(2024),
-        overview: Some("interstitial cleanup coverage".to_string()),
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: Some("Interstitial Cleanup Show".to_string()),
-        slug: Some("interstitial-cleanup-show".to_string()),
-        imdb_id: Some("tt7770001".to_string()),
-        runtime_minutes: Some(24),
-        genres: vec!["Animation".to_string()],
-        content_status: Some("continuing".to_string()),
-        language: Some("jpn".to_string()),
-        first_aired: Some("2024-01-01".to_string()),
-        network: None,
-        studio: Some("Cleanup Studio".to_string()),
-        country: Some("jpn".to_string()),
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: Some("eng".to_string()),
-        metadata_fetched_at: Some(now),
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
-    let title = ctx.titles.create(title).await.expect("create anime title");
-
-    let file_path = media_root
-        .path()
-        .join("Interstitial.Cleanup.Show.Movie.1080p.mkv");
-    std::fs::write(&file_path, b"interstitial-delete").expect("write interstitial media file");
-
-    let file_id = ctx
-        .media_files
-        .insert_media_file(&InsertMediaFileInput {
-            title_id: title.id.clone(),
-            file_path: file_path.to_string_lossy().to_string(),
-            size_bytes: 5_120,
-            quality_label: Some("1080p".to_string()),
-            ..Default::default()
-        })
-        .await
-        .expect("insert interstitial media file");
-    let collection = ctx
-        .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "0".to_string(),
-            label: Some("Movie".to_string()),
-            ordered_path: Some(file_path.to_string_lossy().to_string()),
-            narrative_order: Some("1.0".to_string()),
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
-                tvdb_id: "7770019".to_string(),
-                name: "Cleanup Movie".to_string(),
-                slug: "cleanup-movie".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "cleanup".to_string(),
-                poster_url: "https://example.com/cleanup-movie.jpg".to_string(),
-                language: "eng".to_string(),
-                runtime_minutes: 95,
-                sort_title: "Cleanup Movie".to_string(),
-                imdb_id: "tt7770019".to_string(),
-                genres: vec!["Adventure".to_string()],
-                studio: "Cleanup Studio".to_string(),
-                digital_release_date: Some("2024-02-01".to_string()),
-                association_confidence: None,
-                continuity_status: None,
-                movie_form: None,
-                confidence: None,
-                signal_summary: None,
-                placement: None,
-                movie_tmdb_id: None,
-                movie_mal_id: None,
-                movie_anidb_id: None,
-            }),
-            specials_movies: vec![],
-            interstitial_season_episode: Some("S00E01".to_string()),
-            monitored: true,
-            created_at: now,
-        })
-        .await
-        .expect("create interstitial collection");
-
-    let actor = ctx
-        .app
-        .find_or_create_default_user()
-        .await
-        .expect("default user");
-    let preview = ctx
-        .app
-        .preview_delete_media_file(&actor, &file_id)
-        .await
-        .expect("preview interstitial delete");
-
-    ctx.app
-        .delete_media_file(
-            &actor,
-            &file_id,
-            true,
-            Some(DeleteExecutionConfirmation {
-                preview_fingerprint: preview.fingerprint,
-                typed_confirmation: None,
-            }),
-        )
-        .await
-        .expect("delete interstitial media file");
-
-    assert!(
-        !file_path.exists(),
-        "delete should remove the interstitial file from disk"
-    );
-    assert!(
-        ctx.media_files
-            .get_media_file_by_id(&file_id)
-            .await
-            .expect("lookup deleted interstitial media file")
-            .is_none(),
-        "delete should remove the interstitial media file row"
-    );
-
-    let refreshed_collection = ctx
-        .shows
-        .get_collection_by_id(&collection.id)
-        .await
-        .expect("reload interstitial collection")
-        .expect("interstitial collection should remain");
-    assert_eq!(
-        refreshed_collection.ordered_path, None,
-        "delete should clear the interstitial collection ordered_path"
     );
 }
 

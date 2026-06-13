@@ -562,16 +562,16 @@ impl CatalogQueries {
 
         let SearchReleasesInput {
             title_id,
-            collection_id,
+            series_movie_link_id,
             season,
             episode,
             limit,
         } = input;
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
-        let results = match (collection_id, season, episode) {
-            (Some(collection_id), None, None) => app
-                .search_indexers_for_interstitial_movie(&actor, title_id, collection_id)
+        let results = match (series_movie_link_id, season, episode) {
+            (Some(series_movie_link_id), None, None) => app
+                .search_indexers_for_series_movie(&actor, title_id, series_movie_link_id)
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(season), Some(episode)) => app
@@ -589,7 +589,7 @@ impl CatalogQueries {
             }
             (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
                 return Err(Error::new(
-                    "collection searches cannot include season or episode",
+                    "series movie searches cannot include season or episode",
                 ));
             }
         };

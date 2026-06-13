@@ -138,9 +138,14 @@ pub(crate) fn submission_blocks_wanted_item(
                     episode_ids.iter().any(|candidate| candidate == episode_id)
                 })
         }
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => {
+            item.media_type == "series_movie"
+                && item.series_movie_link_id.as_deref() == Some(series_movie_link_id.as_str())
+        }
         SubmissionScope::Collection { collection_id } => match item.media_type.as_str() {
             "episode" => episode_collection_id == Some(collection_id.as_str()),
-            "interstitial_movie" => item.collection_id.as_deref() == Some(collection_id.as_str()),
             _ => false,
         },
     }
@@ -400,7 +405,10 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
         let episodes_with_files: std::collections::HashSet<String> = existing_files
             .iter()
             .filter_map(|file| file.episode_id.clone())
@@ -461,6 +469,7 @@ impl AppUseCase {
                     library_slug: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
+                    series_movie_link_id: None,
                     season_number: episode.season_number.clone(),
                     episode_number: None,
                     media_type: "episode".to_string(),

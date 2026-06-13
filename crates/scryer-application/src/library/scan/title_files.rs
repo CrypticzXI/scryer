@@ -26,6 +26,7 @@ pub(crate) struct PlannedTitleScanFile {
     pub(crate) file: LibraryFile,
     pub(crate) parsed: crate::ParsedReleaseMetadata,
     pub(crate) target_episodes: Vec<Episode>,
+    pub(crate) series_movie_link_id: Option<String>,
     pub(crate) snapshot: FileSourceSnapshot,
     pub(crate) record: PlannedTitleScanRecord,
 }
@@ -475,6 +476,8 @@ mod tests {
             id: "file-1".into(),
             title_id: "title-1".into(),
             episode_id: Some("episode-1".into()),
+            series_movie_link_ids: Vec::new(),
+            role: crate::MediaFileRole::Primary,
             file_path: "/library/Show/Season 01/Show.S01E01.mkv".into(),
             size_bytes,
             source_signature_scheme: source_signature_scheme.map(str::to_string),
@@ -605,9 +608,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: Some("1".into()),
             last_episode_number: Some("10".into()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -666,9 +666,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: Some("29".into()),
             last_episode_number: Some("30".into()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         };

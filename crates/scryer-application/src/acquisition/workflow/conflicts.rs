@@ -222,7 +222,7 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .map(|files| !files.is_empty())
+            .map(|files| files.iter().any(|file| file.role.is_primary()))
             .unwrap_or(false);
 
         if has_file {
@@ -264,6 +264,7 @@ impl AppUseCase {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),

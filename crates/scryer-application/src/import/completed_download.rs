@@ -1602,6 +1602,38 @@ mod tests {
 
     #[async_trait]
     impl ShowRepository for TestShowRepo {
+        async fn list_series_movie_links_for_title(
+            &self,
+            _: &str,
+        ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+            Ok(vec![])
+        }
+
+        async fn get_series_movie_link_by_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+
+        async fn find_series_movie_link_by_legacy_collection_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+
+        async fn upsert_series_movie_link(
+            &self,
+            link: scryer_domain::SeriesMovieLink,
+        ) -> AppResult<scryer_domain::SeriesMovieLink> {
+            Ok(link)
+        }
+
+        async fn delete_stale_series_movie_links(&self, _: &str, _: &[String]) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
             let collections = self.collections.lock().await;
             Ok(collections
@@ -1659,30 +1691,6 @@ mod tests {
 
         async fn update_collection(&self, _: &str, _: CollectionUpdate) -> AppResult<Collection> {
             Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_collection_interstitial_movie(
-            &self,
-            _: &str,
-            _: scryer_domain::InterstitialMovieMetadata,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_collection_specials_movies(
-            &self,
-            _: &str,
-            _: Vec<scryer_domain::InterstitialMovieMetadata>,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_interstitial_season_episode(
-            &self,
-            _: &str,
-            _: Option<String>,
-        ) -> AppResult<()> {
-            Ok(())
         }
 
         async fn set_collection_episodes_monitored(&self, _: &str, _: bool) -> AppResult<()> {
@@ -2057,6 +2065,8 @@ mod tests {
             &self,
             title_id: &str,
             request_signature: &str,
+            purpose: crate::DownloadSubmissionPurpose,
+            scope: &crate::SubmissionScope,
         ) -> AppResult<Option<DownloadSubmission>> {
             Ok(self
                 .rows
@@ -2066,6 +2076,8 @@ mod tests {
                 .find(|(submission, _)| {
                     submission.title_id == title_id
                         && submission.request_signature.as_deref() == Some(request_signature)
+                        && submission.purpose == purpose
+                        && &submission.scope == scope
                 })
                 .map(|(submission, _)| submission.clone()))
         }
@@ -2674,9 +2686,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         }
@@ -3038,6 +3047,7 @@ mod tests {
         download_submissions
             .record_submission(DownloadSubmission {
                 title_id: String::new(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some("client-1".to_string()),
                 download_client_type: "nzbget".to_string(),
@@ -3448,6 +3458,7 @@ mod tests {
             .record_submission_with_identity(
                 DownloadSubmission {
                     title_id: title.id.clone(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
                     facet: title.facet.as_str().to_string(),
                     download_client_id: Some("client-1".to_string()),
                     download_client_type: "qbittorrent".to_string(),

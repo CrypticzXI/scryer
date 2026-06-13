@@ -386,9 +386,6 @@ fn test_movie_collection(path: &str) -> Collection {
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     }
@@ -399,6 +396,8 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         id: "media-1".to_string(),
         title_id: "title-1".to_string(),
         episode_id: None,
+        series_movie_link_ids: Vec::new(),
+        role: crate::MediaFileRole::Primary,
         file_path: path.to_string(),
         size_bytes: 1_000,
         source_signature_scheme: None,

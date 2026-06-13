@@ -53,6 +53,10 @@ export function titleOverviewOpenButtonId(titleId: string): string {
   return selectorId("title-overview-open", titleId);
 }
 
+export function titleOverviewViewModeId(view: string, mode: string): string {
+  return selectorId("title-overview-view-mode", view, mode);
+}
+
 function normalizedEpisodeSelectorKey(
   facet: string,
   seasonNumber: string | number | null | undefined,
@@ -169,6 +173,71 @@ export function mediaRequestProfileOptionId(scope: string, profileId: string): s
 
 export function mediaRequestMonitorOptionId(scope: string, monitorType: string): string {
   return selectorId(scope, "media-request-monitor-option", monitorType);
+}
+
+type ReleaseSearchSelectorInput = {
+  source?: string | null;
+  title?: string | null;
+  link?: string | null;
+  downloadUrl?: string | null;
+};
+
+type ReleaseSearchResultIdVariant = "mobile";
+
+function stableShortHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36).padStart(7, "0").slice(-7);
+}
+
+function releaseSearchResultSelectorParts(
+  release: ReleaseSearchSelectorInput,
+): string[] {
+  const source = release.source?.trim() || "unknown";
+  const title = release.title?.trim() || "untitled";
+  const identity = [
+    release.source ?? "",
+    release.title ?? "",
+    release.link ?? "",
+    release.downloadUrl ?? "",
+  ].join("|");
+  return [source, title, stableShortHash(identity)];
+}
+
+export function releaseSearchResultRowId(
+  release: ReleaseSearchSelectorInput,
+  variant?: ReleaseSearchResultIdVariant,
+): string {
+  return selectorId(
+    "release-search-result-row",
+    variant,
+    ...releaseSearchResultSelectorParts(release),
+  );
+}
+
+export function releaseSearchResultQueueId(
+  release: ReleaseSearchSelectorInput,
+  variant?: ReleaseSearchResultIdVariant,
+): string {
+  return selectorId(
+    "release-search-result-queue",
+    variant,
+    ...releaseSearchResultSelectorParts(release),
+  );
+}
+
+export function releaseSearchResultQueueAdditionalId(
+  release: ReleaseSearchSelectorInput,
+  variant?: ReleaseSearchResultIdVariant,
+): string {
+  return selectorId(
+    "release-search-result-queue-additional",
+    variant,
+    ...releaseSearchResultSelectorParts(release),
+  );
 }
 
 export function selectorId(

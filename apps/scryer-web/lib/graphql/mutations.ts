@@ -1200,6 +1200,12 @@ export const fixTitleMatchMutation = `mutation FixTitleMatch($input: FixTitleMat
   }
 }`;
 
+export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input: SetPrimaryMovieFileInput!) {
+  setPrimaryMovieFile(input: $input) {
+    id
+  }
+}`;
+
 const wantedSearchPayloadSelection = `
     queuedCount
     skippedInProgressCount

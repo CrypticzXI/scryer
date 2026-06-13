@@ -176,7 +176,18 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
                 .iter()
                 .map(|file| file.path.clone())
                 .collect::<HashSet<_>>();
-            let mut cleanup = LibraryScanMovieCleanupContext::default();
+            let scan_folder_path = Some(path_to_stored_string(&entry.path));
+            let mut cleanup = LibraryScanMovieCleanupContext {
+                canonical_folder_path: title
+                    .folder_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| scan_folder_path.clone()),
+                scan_folder_path,
+                ..Default::default()
+            };
             for collection in collections {
                 let Some(ordered_path) = collection.ordered_path.as_deref() else {
                     continue;

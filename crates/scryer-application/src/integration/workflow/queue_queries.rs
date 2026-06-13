@@ -177,6 +177,65 @@ fn collect_download_client_filter_options(
     });
     clients
 }
+fn unique_download_client_config_for_type<'a>(
+    configs: &'a [DownloadClientConfig],
+    client_type: &str,
+) -> Option<&'a DownloadClientConfig> {
+    let normalized_client_type = client_type.trim().to_ascii_lowercase();
+    if normalized_client_type.is_empty() {
+        return None;
+    }
+
+    let mut matches = configs.iter().filter(|config| {
+        config
+            .client_type
+            .trim()
+            .eq_ignore_ascii_case(&normalized_client_type)
+    });
+    let matched = matches.next()?;
+    matches.next().is_none().then_some(matched)
+}
+fn canonical_download_client_config_for_item<'a>(
+    item: &DownloadQueueItem,
+    configs: &'a [DownloadClientConfig],
+) -> Option<&'a DownloadClientConfig> {
+    let client_id = item.client_id.trim();
+    if !client_id.is_empty()
+        && let Some(config) = configs.iter().find(|config| config.id == client_id)
+    {
+        return Some(config);
+    }
+
+    let client_type = item.client_type.trim();
+    if client_type.is_empty() {
+        return None;
+    }
+
+    let has_type_fallback_id = client_id.is_empty() || client_id.eq_ignore_ascii_case(client_type);
+    has_type_fallback_id
+        .then(|| unique_download_client_config_for_type(configs, client_type))
+        .flatten()
+}
+fn canonicalize_download_queue_item_client(
+    item: &mut DownloadQueueItem,
+    configs: &[DownloadClientConfig],
+) {
+    let Some(config) = canonical_download_client_config_for_item(item, configs) else {
+        return;
+    };
+
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = config.client_type.clone();
+}
+fn canonicalize_download_queue_item_clients(
+    items: &mut [DownloadQueueItem],
+    configs: &[DownloadClientConfig],
+) {
+    for item in items {
+        canonicalize_download_queue_item_client(item, configs);
+    }
+}
 fn matches_download_history_client_ids(
     item: &DownloadQueueItem,
     client_ids: Option<&HashSet<String>>,
@@ -365,6 +424,13 @@ fn synthetic_terminal_download_queue_item(
         item.import_status = Some(ImportStatus::Failed);
     }
 
+    if item.client_id.trim().is_empty() && !tracked.client_id.trim().is_empty() {
+        item.client_id = tracked.client_id.clone();
+    }
+    if item.client_type.trim().is_empty() && !tracked.client_type.trim().is_empty() {
+        item.client_type = tracked.client_type.clone();
+    }
+
     if let Some(primary_client) = primary_client {
         if item.client_id.trim().is_empty() {
             item.client_id = primary_client.id.clone();
@@ -382,11 +448,13 @@ fn synthetic_terminal_download_queue_item(
 impl AppUseCase {
     async fn enrich_download_queue_items(
         &self,
-        primary_client: Option<&DownloadClientConfig>,
+        enabled_clients: &[DownloadClientConfig],
         mut items: Vec<DownloadQueueItem>,
         use_tracked_runtime_snapshot: bool,
     ) -> Vec<DownloadQueueItem> {
+        canonicalize_download_queue_item_clients(&mut items, enabled_clients);
         enrich_download_queue_items_from_submissions(self, &mut items).await;
+        let primary_client = enabled_clients.first();
 
         if use_tracked_runtime_snapshot {
             match tokio::time::timeout(
@@ -431,6 +499,8 @@ impl AppUseCase {
             }
         }
 
+        canonicalize_download_queue_item_clients(&mut items, enabled_clients);
+
         let mut items = dedupe_download_queue_items(items)
             .into_iter()
             .map(|item| {
@@ -465,10 +535,10 @@ impl AppUseCase {
         include_recent_history: bool,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        let primary_client = match self.primary_download_client().await? {
-            Some(client) => client,
-            None => return Ok(Vec::new()),
-        };
+        let enabled_clients = self.enabled_download_clients_by_priority().await?;
+        if enabled_clients.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let queue_items = if include_queue {
             self.services
@@ -496,7 +566,7 @@ impl AppUseCase {
         let mut items: Vec<DownloadQueueItem> = queue_items;
         items.extend(history_items);
         Ok(self
-            .enrich_download_queue_items(Some(&primary_client), items, use_tracked_runtime_snapshot)
+            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
             .await)
     }
 }
@@ -508,10 +578,10 @@ impl AppUseCase {
         include_recent_history: bool,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        let primary_client = match self.primary_download_client().await? {
-            Some(client) => client,
-            None => return Ok(Vec::new()),
-        };
+        let enabled_clients = self.enabled_download_clients_by_priority().await?;
+        if enabled_clients.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let queue_items = if include_queue {
             self.services
@@ -536,7 +606,7 @@ impl AppUseCase {
         items.extend(history_items);
 
         Ok(self
-            .enrich_download_queue_items(Some(&primary_client), items, use_tracked_runtime_snapshot)
+            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
             .await
             .into_iter()
             .filter(|item| item.title_id.as_deref() == Some(title_id))
@@ -817,10 +887,10 @@ impl AppUseCase {
         &self,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        let primary_client = match self.primary_download_client().await? {
-            Some(client) => client,
-            None => return Ok(Vec::new()),
-        };
+        let enabled_clients = self.enabled_download_clients_by_priority().await?;
+        if enabled_clients.is_empty() {
+            return Ok(Vec::new());
+        }
         let items = self
             .services
             .integrations
@@ -829,7 +899,7 @@ impl AppUseCase {
             .await?;
 
         Ok(self
-            .enrich_download_queue_items(Some(&primary_client), items, use_tracked_runtime_snapshot)
+            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
             .await)
     }
 }

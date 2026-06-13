@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use chrono::NaiveDate;
 use regex::Regex;
-use scryer_domain::{CollectionType, InterstitialMovieMetadata, MediaFacet, VIDEO_EXTENSIONS};
+use scryer_domain::{MediaFacet, MovieEntity, SeriesMovieLink, VIDEO_EXTENSIONS};
 use unicode_normalization::UnicodeNormalization;
 
 use super::*;
@@ -78,6 +78,7 @@ pub(crate) struct LibraryFilenameParseInput<'a> {
     pub(crate) title: Option<&'a Title>,
     pub(crate) facet: Option<&'a MediaFacet>,
     pub(crate) collections: &'a [Collection],
+    pub(crate) series_movie_links: &'a [SeriesMovieLink],
     pub(crate) episodes: &'a [Episode],
     pub(crate) existing_record: Option<LibraryFilenameExistingRecord<'a>>,
     pub(crate) mode: LibraryFilenameParseMode,
@@ -93,6 +94,7 @@ impl<'a> LibraryFilenameParseInput<'a> {
             title: None,
             facet: None,
             collections: &[],
+            series_movie_links: &[],
             episodes: &[],
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleOnly,
@@ -102,10 +104,9 @@ impl<'a> LibraryFilenameParseInput<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LibraryFilenameInterstitialTarget {
-    pub(crate) collection_id: String,
-    pub(crate) movie: InterstitialMovieMetadata,
-    pub(crate) season_episode: Option<String>,
+pub(crate) struct LibraryFilenameSeriesMovieTarget {
+    pub(crate) series_movie_link_id: String,
+    pub(crate) movie: MovieEntity,
     pub(crate) linked_episode: Option<Episode>,
 }
 
@@ -116,7 +117,7 @@ pub(crate) enum LibraryFilenameTarget {
         episode_identity: crate::ParsedEpisodeMetadata,
         episodes: Vec<Episode>,
     },
-    InterstitialMovie(Box<LibraryFilenameInterstitialTarget>),
+    SeriesMovie(Box<LibraryFilenameSeriesMovieTarget>),
     Unmatched {
         reason: &'static str,
     },
@@ -136,10 +137,19 @@ impl LibraryFilenameParse {
     pub(crate) fn target_episodes(&self) -> Vec<Episode> {
         match &self.target {
             LibraryFilenameTarget::Episodes { episodes, .. } => episodes.clone(),
-            LibraryFilenameTarget::InterstitialMovie(target) => {
+            LibraryFilenameTarget::SeriesMovie(target) => {
                 target.linked_episode.iter().cloned().collect()
             }
             _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn target_series_movie_link_id(&self) -> Option<&str> {
+        match &self.target {
+            LibraryFilenameTarget::SeriesMovie(target) => {
+                Some(target.series_movie_link_id.as_str())
+            }
+            _ => None,
         }
     }
 
@@ -215,14 +225,14 @@ pub(crate) fn parse_library_filename(
     release_fallback_used = true;
     let fallback_episode = fallback.episode.clone();
     if let Some(episode_identity) = fallback_episode.clone() {
-        if let Some(interstitial) =
-            resolve_interstitial_movie_from_episode_identity(input, &episode_identity)
+        if let Some(series_movie) =
+            resolve_series_movie_from_episode_identity(input, &episode_identity)
         {
             return LibraryFilenameParse {
                 query_evidence: query_build.evidence,
                 parsed_release: fallback,
                 episode_identity: Some(episode_identity),
-                target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
+                target: LibraryFilenameTarget::SeriesMovie(Box::new(series_movie)),
                 strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
                 release_fallback_used,
             };
@@ -261,8 +271,8 @@ pub(crate) fn parse_library_filename(
         };
     }
 
-    if let Some(interstitial) = resolve_interstitial_movie_from_name(input, &raw_name) {
-        let episode_identity = interstitial
+    if let Some(series_movie) = resolve_series_movie_from_name(input, &raw_name, fallback.year) {
+        let episode_identity = series_movie
             .linked_episode
             .as_ref()
             .map(parsed_episode_metadata_from_episode);
@@ -273,7 +283,7 @@ pub(crate) fn parse_library_filename(
             query_evidence: query_build.evidence,
             parsed_release: fallback,
             episode_identity,
-            target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
+            target: LibraryFilenameTarget::SeriesMovie(Box::new(series_movie)),
             strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
             release_fallback_used,
         };
@@ -498,22 +508,6 @@ fn filename_parse_raw_name(path: &Path, display_name: Option<&str>) -> String {
         .to_string()
 }
 
-fn standard_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            S(?P<season>[0-9]{1,2})
-            \s*E(?P<first>[0-9]{1,3})
-            (?P<rest>(?:\s*(?:-|~|–|—)?\s*E?\s*[0-9]{1,3})*)
-            (?:[^0-9]|$)
-            ",
-        )
-        .expect("valid standard episode regex")
-    })
-}
-
 fn resolve_episodes_from_identity_with_season(
     ep_meta: &crate::ParsedEpisodeMetadata,
     season_str: &str,
@@ -686,98 +680,100 @@ fn build_episode_lookup(collections: &[Collection], episodes: &[Episode]) -> Epi
     lookup
 }
 
-fn resolve_interstitial_movie_from_name(
+fn resolve_series_movie_from_name(
     input: &LibraryFilenameParseInput<'_>,
     raw_name: &str,
-) -> Option<LibraryFilenameInterstitialTarget> {
+    filename_year: Option<i32>,
+) -> Option<LibraryFilenameSeriesMovieTarget> {
     let raw_key = library_name_match_key(raw_name);
     if raw_key.is_empty() {
         return None;
     }
 
     input
-        .collections
+        .series_movie_links
         .iter()
-        .filter(|collection| collection.collection_type == CollectionType::Interstitial)
-        .filter_map(|collection| {
-            let movie = collection.interstitial_movie.as_ref()?;
-            let movie_matches = interstitial_movie_match_keys(movie)
+        .filter_map(|link| {
+            if let (Some(filename_year), Some(movie_year)) = (filename_year, link.movie.year)
+                && filename_year != movie_year
+            {
+                return None;
+            }
+
+            let movie_matches = series_movie_match_keys(link)
                 .into_iter()
-                .any(|key| !key.is_empty() && raw_key.contains(&key));
+                .any(|key| normalized_key_contains_phrase(&raw_key, &key));
             if !movie_matches {
                 return None;
             }
 
-            build_interstitial_target(collection, input.episodes)
-                .filter(|target| target.linked_episode.is_some())
+            Some(build_series_movie_target(link, input.episodes))
         })
         .next()
 }
 
-fn resolve_interstitial_movie_from_episode_identity(
+fn resolve_series_movie_from_episode_identity(
     input: &LibraryFilenameParseInput<'_>,
     ep_meta: &crate::ParsedEpisodeMetadata,
-) -> Option<LibraryFilenameInterstitialTarget> {
+) -> Option<LibraryFilenameSeriesMovieTarget> {
     let season = ep_meta.season?;
     if season != 0 {
         return None;
     }
     let episode = ep_meta.episode_numbers.first().copied()?;
-    let label = format!("S00E{episode:02}");
+    let episode = episode.to_string();
     input
-        .collections
+        .series_movie_links
         .iter()
-        .filter(|collection| collection.collection_type == CollectionType::Interstitial)
-        .find(|collection| {
-            collection.interstitial_season_episode.as_deref() == Some(label.as_str())
+        .find(|link| {
+            link.linked_episode_id
+                .as_deref()
+                .and_then(|episode_id| input.episodes.iter().find(|ep| ep.id == episode_id))
+                .is_some_and(|candidate| {
+                    candidate.season_number.as_deref() == Some("0")
+                        && candidate.episode_number.as_deref() == Some(episode.as_str())
+                })
         })
-        .and_then(|collection| build_interstitial_target(collection, input.episodes))
+        .map(|link| build_series_movie_target(link, input.episodes))
 }
 
-fn build_interstitial_target(
-    collection: &Collection,
+fn build_series_movie_target(
+    link: &SeriesMovieLink,
     episodes: &[Episode],
-) -> Option<LibraryFilenameInterstitialTarget> {
-    let movie = collection.interstitial_movie.clone()?;
-    let linked_episode = collection
-        .interstitial_season_episode
+) -> LibraryFilenameSeriesMovieTarget {
+    let linked_episode = link
+        .linked_episode_id
         .as_deref()
-        .and_then(parse_season_episode_label)
-        .and_then(|(season, episode)| {
-            episodes.iter().find(|candidate| {
-                candidate.season_number.as_deref() == Some(season.to_string().as_str())
-                    && candidate.episode_number.as_deref() == Some(episode.to_string().as_str())
-            })
-        })
+        .and_then(|episode_id| episodes.iter().find(|candidate| candidate.id == episode_id))
         .cloned();
 
-    Some(LibraryFilenameInterstitialTarget {
-        collection_id: collection.id.clone(),
-        movie,
-        season_episode: collection.interstitial_season_episode.clone(),
+    LibraryFilenameSeriesMovieTarget {
+        series_movie_link_id: link.id.clone(),
+        movie: link.movie.clone(),
         linked_episode,
-    })
+    }
 }
 
-fn parse_season_episode_label(label: &str) -> Option<(u32, u32)> {
-    let captures = standard_episode_regex().captures(label)?;
-    let season = captures.name("season")?.as_str().parse::<u32>().ok()?;
-    let episode = captures.name("first")?.as_str().parse::<u32>().ok()?;
-    Some((season, episode))
-}
-
-fn interstitial_movie_match_keys(movie: &InterstitialMovieMetadata) -> Vec<String> {
+fn series_movie_match_keys(link: &SeriesMovieLink) -> Vec<String> {
     [
-        Some(movie.name.as_str()),
-        Some(movie.sort_title.as_str()),
-        movie.placement.as_deref(),
-        Some(movie.slug.as_str()),
+        Some(link.movie.title.as_str()),
+        link.movie.sort_title.as_deref(),
+        link.movie.slug.as_deref(),
     ]
     .into_iter()
     .flatten()
     .map(library_name_match_key)
     .filter(|key| !key.is_empty())
-    .collect()
+        .collect()
+}
+
+fn normalized_key_contains_phrase(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let haystack = format!(" {haystack} ");
+    let needle = format!(" {needle} ");
+    haystack.contains(&needle)
 }
 
 fn library_name_match_key(value: &str) -> String {
@@ -849,32 +845,34 @@ fn build_release_parse_context_for_library_filename(
         Some(facet_hint.as_str()),
     );
 
-    for collection in input
-        .collections
-        .iter()
-        .filter(|collection| collection.collection_type == CollectionType::Interstitial)
-    {
-        let Some(movie) = collection.interstitial_movie.as_ref() else {
+    for link in input.series_movie_links {
+        let Some(linked_episode) = link.linked_episode_id.as_deref().and_then(|episode_id| {
+            input
+                .episodes
+                .iter()
+                .find(|episode| episode.id == episode_id)
+        }) else {
             continue;
         };
-        let Some((season, episode)) = collection
-            .interstitial_season_episode
+        let season = linked_episode
+            .season_number
             .as_deref()
-            .and_then(parse_season_episode_label)
-        else {
-            continue;
-        };
-        let mut title_aliases = interstitial_movie_aliases(movie);
+            .and_then(|value| value.parse::<u32>().ok());
+        let episode = linked_episode
+            .episode_number
+            .as_deref()
+            .and_then(|value| value.parse::<u32>().ok());
+        let mut title_aliases = series_movie_aliases(link);
         title_aliases.sort();
         title_aliases.dedup();
         context
             .episodes
             .push(crate::release_parser::ContextEpisode {
-                season: Some(season),
-                episode: Some(episode),
+                season,
+                episode,
                 absolute_number: None,
                 air_date: None,
-                title: Some(movie.name.clone()),
+                title: Some(link.movie.title.clone()),
                 title_aliases,
             });
     }
@@ -882,12 +880,11 @@ fn build_release_parse_context_for_library_filename(
     Some(context)
 }
 
-fn interstitial_movie_aliases(movie: &InterstitialMovieMetadata) -> Vec<String> {
+fn series_movie_aliases(link: &SeriesMovieLink) -> Vec<String> {
     [
-        Some(movie.name.clone()),
-        Some(movie.sort_title.clone()),
-        movie.placement.clone(),
-        Some(movie.slug.clone()),
+        Some(link.movie.title.clone()),
+        link.movie.sort_title.clone(),
+        link.movie.slug.clone(),
     ]
     .into_iter()
     .flatten()
@@ -1314,50 +1311,52 @@ mod tests {
         }
     }
 
-    fn interstitial_movie(name: &str) -> InterstitialMovieMetadata {
-        InterstitialMovieMetadata {
-            tvdb_id: "movie-1".into(),
-            name: name.into(),
-            slug: name.to_ascii_lowercase().replace(' ', "-"),
-            year: Some(2024),
-            content_status: "released".into(),
-            overview: String::new(),
-            poster_url: String::new(),
-            language: "eng".into(),
-            runtime_minutes: 90,
-            sort_title: name.into(),
-            imdb_id: String::new(),
-            genres: vec![],
-            studio: String::new(),
-            digital_release_date: None,
+    fn series_movie_link(name: &str, linked_episode_id: Option<&str>) -> SeriesMovieLink {
+        let now = Utc::now();
+        SeriesMovieLink {
+            id: format!(
+                "series-movie-{}",
+                name.to_ascii_lowercase().replace(' ', "-")
+            ),
+            series_title_id: "title-1".into(),
+            movie: MovieEntity {
+                id: format!("movie-{}", name.to_ascii_lowercase().replace(' ', "-")),
+                title: name.into(),
+                sort_title: Some(name.into()),
+                slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+                year: Some(2024),
+                overview: None,
+                poster_url: None,
+                background_url: None,
+                language: Some("eng".into()),
+                runtime_minutes: Some(90),
+                content_status: Some("released".into()),
+                genres: vec![],
+                studio: None,
+                digital_release_date: None,
+                imdb_id: None,
+                tvdb_id: Some("movie-1".into()),
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: now,
+                updated_at: now,
+            },
+            placement: None,
+            narrative_order: None,
+            after_season: None,
+            before_season: None,
+            linked_episode_id: linked_episode_id.map(str::to_string),
             association_confidence: None,
             continuity_status: None,
-            movie_form: None,
+            movie_form: Some("movie".into()),
             confidence: None,
             signal_summary: None,
-            placement: None,
-            movie_tmdb_id: None,
-            movie_mal_id: None,
-            movie_anidb_id: None,
-        }
-    }
-
-    fn interstitial_collection(name: &str, season_episode: Option<&str>) -> Collection {
-        Collection {
-            id: format!("collection-{}", name.to_ascii_lowercase().replace(' ', "-")),
-            title_id: "title-1".into(),
-            collection_type: CollectionType::Interstitial,
-            collection_index: "special".into(),
-            label: Some(name.into()),
-            ordered_path: None,
-            narrative_order: None,
-            first_episode_number: None,
-            last_episode_number: None,
-            interstitial_movie: Some(interstitial_movie(name)),
-            specials_movies: vec![],
-            interstitial_season_episode: season_episode.map(str::to_string),
+            source: Some("test".into()),
             monitored: true,
-            created_at: Utc::now(),
+            legacy_collection_id: None,
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -1417,6 +1416,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1448,12 +1448,12 @@ mod tests {
     }
 
     #[test]
-    fn title_scan_release_parser_preempts_name_only_interstitial_fallback() {
+    fn title_scan_release_parser_preempts_name_only_series_movie_fallback() {
         let title = title("Example Animated Saga", MediaFacet::Anime);
         let episodes = vec![episode("ep-1-1", "1", "1"), episode("ep-0-1", "0", "1")];
-        let collections = vec![interstitial_collection(
+        let series_movie_links = vec![series_movie_link(
             "Synthetic Bridge Feature",
-            Some("S00E01"),
+            Some("ep-0-1"),
         )];
         let input = LibraryFilenameParseInput {
             path: Path::new(
@@ -1463,7 +1463,8 @@ mod tests {
             library_root: Some(Path::new("/library")),
             title: Some(&title),
             facet: Some(&title.facet),
-            collections: &collections,
+            collections: &[],
+            series_movie_links: &series_movie_links,
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1488,6 +1489,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ep-1-1"]
         );
+        assert_eq!(parse.target_series_movie_link_id(), None);
     }
 
     #[test]
@@ -1503,6 +1505,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1527,20 +1530,18 @@ mod tests {
     }
 
     #[test]
-    fn name_only_interstitial_resolves_as_final_fallback() {
+    fn name_only_series_movie_resolves_as_final_fallback() {
         let title = title("Example Animated Saga", MediaFacet::Anime);
         let episodes = vec![episode("ep-0-1", "0", "1")];
-        let collections = vec![interstitial_collection(
-            "Example Bonus Feature",
-            Some("S00E01"),
-        )];
+        let series_movie_links = vec![series_movie_link("Example Bonus Feature", Some("ep-0-1"))];
         let input = LibraryFilenameParseInput {
             path: Path::new("/library/Example Animated Saga/Example Bonus Feature.mkv"),
             display_name: None,
             library_root: Some(Path::new("/library")),
             title: None,
             facet: Some(&title.facet),
-            collections: &collections,
+            collections: &[],
+            series_movie_links: &series_movie_links,
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1561,6 +1562,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ep-0-1"]
         );
+        assert_eq!(
+            parse.target_series_movie_link_id(),
+            Some(series_movie_links[0].id.as_str())
+        );
+    }
+
+    #[test]
+    fn name_only_series_movie_rejects_placement_only_match() {
+        let title = title("Example Animated Saga", MediaFacet::Anime);
+        let episodes = vec![episode("ep-0-1", "0", "1")];
+        let mut link = series_movie_link("Example Bonus Feature", Some("ep-0-1"));
+        link.placement = Some("Special".into());
+        let series_movie_links = vec![link];
+        let input = LibraryFilenameParseInput {
+            path: Path::new("/library/Example Animated Saga/Special.mkv"),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: None,
+            facet: Some(&title.facet),
+            collections: &[],
+            series_movie_links: &series_movie_links,
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(parse.target_series_movie_link_id(), None);
+    }
+
+    #[test]
+    fn name_only_series_movie_rejects_mismatched_movie_year() {
+        let title = title("Example Animated Saga", MediaFacet::Anime);
+        let episodes = vec![episode("ep-0-1", "0", "1")];
+        let series_movie_links = vec![series_movie_link("Example Bonus Feature", Some("ep-0-1"))];
+        let input = LibraryFilenameParseInput {
+            path: Path::new("/library/Example Animated Saga/Example Bonus Feature (2023).mkv"),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: None,
+            facet: Some(&title.facet),
+            collections: &[],
+            series_movie_links: &series_movie_links,
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(parse.target_series_movie_link_id(), None);
     }
 
     #[test]
@@ -1576,6 +1631,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1614,6 +1670,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1648,6 +1705,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,
@@ -1682,6 +1740,7 @@ mod tests {
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
+            series_movie_links: &[],
             episodes: &episodes,
             existing_record: None,
             mode: LibraryFilenameParseMode::TitleScan,

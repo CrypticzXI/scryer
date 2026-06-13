@@ -4,10 +4,8 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
-  InterstitialMovieMetadata,
 } from "@/components/containers/series-overview-container";
 import { MediaInfoBadges } from "@/components/common/media-info-badges";
-import { InterstitialMoviePanel } from "./interstitial-movie-panel";
 import { formatDate, formatFileSize } from "./helpers";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
@@ -39,14 +37,12 @@ export function EpisodeDetailsPanel({
   mediaFiles,
   subtitleDownloads = [],
   onRefreshSubtitles,
-  linkedMovie,
   onDeleteFile,
 }: {
   episode: CollectionEpisode;
   mediaFiles: EpisodeMediaFile[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
-  linkedMovie?: InterstitialMovieMetadata | null;
   onDeleteFile?: (fileId: string) => void;
 }) {
   const t = useTranslate();
@@ -84,24 +80,13 @@ export function EpisodeDetailsPanel({
           ) : null}
         </div>
       ) : null}
-      {linkedMovie ? (
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">{t("title.movieDetails")}</p>
-          <div className="rounded-xl border border-border/70 bg-card/40 p-3">
-            <InterstitialMoviePanel
-              movie={linkedMovie}
-              hasFile={mediaFiles.length > 0}
-              monitored={episode.monitored}
-            />
-          </div>
-        </div>
-      ) : null}
       <div>
         <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.fileOnDisk")}</p>
         {mediaFiles.length > 0 ? (
           <div className="space-y-2">
             {mediaFiles.map((file) => {
               const downloads = subtitleDownloadsByMediaFile[file.id] ?? [];
+              const isAdditionalFile = file.role === "additional";
               return (
                 <div
                   key={file.id}
@@ -111,6 +96,11 @@ export function EpisodeDetailsPanel({
                   <div className="flex flex-wrap items-center gap-3">
                     <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                     <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">{file.filePath}</span>
+                    {isAdditionalFile ? (
+                      <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-xs text-sky-700 dark:text-sky-300">
+                        {t("mediaFile.additional")}
+                      </span>
+                    ) : null}
                     <span className="text-xs text-muted-foreground/60">{formatFileSize(Number(file.sizeBytes))}</span>
                     <span className="text-xs text-muted-foreground/60">{formatDate(file.createdAt)}</span>
                     {file.acquisitionScore != null ? (

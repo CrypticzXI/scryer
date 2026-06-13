@@ -890,6 +890,7 @@ export default function LoginPage() {
                 </select>
               ) : null}
               <button
+                id="login-plex-submit"
                 type="button"
                 onClick={handlePlexSignIn}
                 disabled={anySubmitting || !plexConnectionId}

@@ -28,7 +28,7 @@ pub(crate) async fn list_wanted_items_query(
         "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
                 t.facet AS title_facet, t.library_id AS library_id,
                 libraries.name AS library_name, libraries.slug AS library_slug,
-                w.episode_id, w.collection_id,
+                w.episode_id, w.collection_id, w.series_movie_link_id,
                 e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
                 w.last_search_at, w.search_count, w.baseline_date, w.status,
                 w.grabbed_release, w.current_score,
@@ -292,6 +292,7 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         library_slug: row.try_get("library_slug").unwrap_or(None),
         episode_id: row.try_get("episode_id").unwrap_or(None),
         collection_id: row.try_get("collection_id").unwrap_or(None),
+        series_movie_link_id: row.try_get("series_movie_link_id").unwrap_or(None),
         season_number: row.try_get("season_number").unwrap_or(None),
         episode_number: row.try_get("episode_number").unwrap_or(None),
         media_type: row

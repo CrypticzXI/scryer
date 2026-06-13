@@ -290,7 +290,7 @@ async fn expected_episode_ids_from_submission_scope(
         SubmissionScope::Collection { collection_id } => {
             episode_ids_for_collection(app, title, collection_id, true).await
         }
-        SubmissionScope::Title | SubmissionScope::Orphan => None,
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => None,
     }
 }
 async fn expected_episode_ids_from_release_title(
@@ -606,6 +606,9 @@ async fn import_single_episode_file(
             .and_then(|ep| ep.absolute_number.clone())
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
+    let additional_import = completed_import_purpose(app, completed)
+        .await
+        .is_additional_file();
     let outcome = execute_resolved_episode_import(
         app,
         actor,
@@ -623,6 +626,7 @@ async fn import_single_episode_file(
         quality_profile,
         None,
         crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic,
+        additional_import,
     )
     .await?;
 
@@ -647,7 +651,9 @@ async fn import_single_episode_file(
             )
             .await;
 
-            if imported_media_file_id.is_some() {
+            if imported_media_file_id.is_some()
+                && reason_code.as_deref() != Some("additional_file")
+            {
                 if nfo_enabled {
                     let nfo_path = std::path::Path::new(dest_path).with_extension("nfo");
                     if let Some(episode) = target_episodes.first() {

@@ -921,6 +921,7 @@ pub async fn execute_manual_import(
             &quality_profile,
             mapping.quality.clone(),
             crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
+            false,
         )
         .await
         {

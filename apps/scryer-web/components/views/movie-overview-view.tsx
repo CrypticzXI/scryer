@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { FolderOpen, HardDrive, Loader2, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
+import { FolderOpen, HardDrive, Loader2, Pause, Play, RotateCcw, Search, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-pane
 import { MovieOverviewDownloadList } from "@/components/common/download-queue-overview";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
+import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
 import {
@@ -433,6 +434,7 @@ type Props = {
   deleteLoading: boolean;
   onSearch: () => void;
   onQueue: (r: Release) => void;
+  onQueueAdditional?: (r: Release) => void;
   onSearchMonitored: () => void;
   onRefreshAndScan: () => void;
   onTitleChanged?: () => Promise<void> | void;
@@ -457,7 +459,9 @@ type Props = {
   mediaFiles: TitleMediaFile[];
   downloadQueueItems: DownloadQueueItem[];
   subtitleDownloads: ExternalSubtitleRecord[];
+  primaryMovieFileUpdatingId?: string | null;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   onRefreshSubtitles?: () => void;
   onOpenFixMatch?: () => void;
 };
@@ -481,6 +485,7 @@ export function MovieOverviewView({
   deleteLoading,
   onSearch,
   onQueue,
+  onQueueAdditional,
   onSearchMonitored,
   onRefreshAndScan,
   onTitleChanged,
@@ -505,7 +510,9 @@ export function MovieOverviewView({
   mediaFiles = [],
   downloadQueueItems = [],
   subtitleDownloads = [],
+  primaryMovieFileUpdatingId = null,
   onDeleteFile,
+  onMakePrimaryFile,
   onRefreshSubtitles,
   onOpenFixMatch,
 }: Props) {
@@ -588,6 +595,10 @@ export function MovieOverviewView({
         <SearchResultBuckets
           results={searchResults}
           onQueue={onQueue}
+          onQueueAdditional={onQueueAdditional}
+          canQueueAdditional={(release) =>
+            releaseSupportsAdditionalFileQueue(release, title.facet)
+          }
           requireCandidateToken
         />
       ) : interactiveSearchAttempted ? (
@@ -941,6 +952,9 @@ export function MovieOverviewView({
           ) : (
             <div className="space-y-2">
               {mediaFiles.map((mediaFile) => {
+                const isAdditionalFile = mediaFile.role === "additional";
+                const isPrimaryFile = mediaFile.role === "primary";
+                const isPromotingFile = primaryMovieFileUpdatingId === mediaFile.id;
                 return (
                   <div
                     key={mediaFile.id}
@@ -952,8 +966,29 @@ export function MovieOverviewView({
                         <div className="flex items-start gap-3">
                           <HardDrive className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                           <div className="min-w-0 flex-1 space-y-1.5">
-                            <p className="break-all font-mono text-sm text-muted-foreground">{mediaFile.filePath}</p>
+                            <p
+                              id={selectorId("movie-overview-media-file-path", mediaFile.id)}
+                              className="break-all font-mono text-sm text-muted-foreground"
+                            >
+                              {mediaFile.filePath}
+                            </p>
                             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground/60">
+                              {isPrimaryFile ? (
+                                <span
+                                  id={selectorId("movie-overview-media-file-role", "primary", mediaFile.id)}
+                                  className="rounded border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300"
+                                >
+                                  {t("mediaFile.primary")}
+                                </span>
+                              ) : null}
+                              {isAdditionalFile ? (
+                                <span
+                                  id={selectorId("movie-overview-media-file-role", "additional", mediaFile.id)}
+                                  className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-sky-700 dark:text-sky-300"
+                                >
+                                  {t("mediaFile.additional")}
+                                </span>
+                              ) : null}
                               {mediaFile.acquisitionScore != null ? (
                                 <span title={mediaFile.scoringLog ?? undefined}>
                                   {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
@@ -997,6 +1032,28 @@ export function MovieOverviewView({
                           >
                             <Search className="mr-1.5 h-3.5 w-3.5" />
                             {t("subtitle.search")}
+                          </Button>
+                        ) : null}
+                        {canManageTitle && isAdditionalFile && onMakePrimaryFile ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            id={selectorId("movie-overview-make-primary-file", mediaFile.id)}
+                            className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
+                            onClick={() => {
+                              void onMakePrimaryFile(mediaFile.id);
+                            }}
+                            disabled={isPromotingFile}
+                            title={t("mediaFile.makePrimary")}
+                            aria-label={t("mediaFile.makePrimary")}
+                          >
+                            {isPromotingFile ? (
+                              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Star className="mr-1.5 h-3.5 w-3.5" />
+                            )}
+                            {t("mediaFile.makePrimary")}
                           </Button>
                         ) : null}
                         {canManageTitle && onDeleteFile ? (

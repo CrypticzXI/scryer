@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use common::TestContext;
 use scryer_application::{
     InsertMediaFileInput, LibraryRootDraft, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileRepository, PendingImportStatus, ShowRepository,
-    TitleRepository,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaFileRole, PendingImportStatus,
+    ShowRepository, TitleRepository,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User};
 use scryer_infrastructure::SettingDefinitionSeed;
@@ -193,9 +193,6 @@ async fn seed_collection(ctx: &TestContext, title: &Title, index: u32) -> Collec
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("99".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -528,6 +525,7 @@ async fn full_rescan_preserves_existing_match_for_loose_series_file() {
             title_id: title.id.clone(),
             file_path: loose_file.to_string_lossy().to_string(),
             size_bytes: 16,
+            role: MediaFileRole::Primary,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: Some("720p".to_string()),
@@ -754,6 +752,7 @@ async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_ti
             title_id: title.id.clone(),
             file_path: movie_file.to_string_lossy().to_string(),
             size_bytes: 24,
+            role: MediaFileRole::Primary,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: Some("1080p".to_string()),

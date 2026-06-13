@@ -566,39 +566,50 @@ pub struct Title {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InterstitialMovieMetadata {
-    pub tvdb_id: String,
-    pub name: String,
-    pub slug: String,
+pub struct MovieEntity {
+    pub id: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
     pub year: Option<i32>,
-    pub content_status: String,
-    pub overview: String,
-    pub poster_url: String,
-    pub language: String,
-    pub runtime_minutes: i32,
-    pub sort_title: String,
-    pub imdb_id: String,
+    pub overview: Option<String>,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub language: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub content_status: Option<String>,
     pub genres: Vec<String>,
-    pub studio: String,
+    pub studio: Option<String>,
     pub digital_release_date: Option<String>,
-    #[serde(default)]
-    pub association_confidence: Option<String>,
-    #[serde(default)]
-    pub continuity_status: Option<String>,
-    #[serde(default)]
-    pub movie_form: Option<String>,
-    #[serde(default)]
-    pub confidence: Option<String>,
-    #[serde(default)]
-    pub signal_summary: Option<String>,
-    #[serde(default)]
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub tmdb_id: Option<String>,
+    pub mal_id: Option<String>,
+    pub anidb_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeriesMovieLink {
+    pub id: String,
+    pub series_title_id: String,
+    pub movie: MovieEntity,
     pub placement: Option<String>,
-    #[serde(default)]
-    pub movie_tmdb_id: Option<String>,
-    #[serde(default)]
-    pub movie_mal_id: Option<String>,
-    #[serde(default)]
-    pub movie_anidb_id: Option<String>,
+    pub narrative_order: Option<String>,
+    pub after_season: Option<i32>,
+    pub before_season: Option<i32>,
+    pub linked_episode_id: Option<String>,
+    pub association_confidence: Option<String>,
+    pub continuity_status: Option<String>,
+    pub movie_form: Option<String>,
+    pub confidence: Option<String>,
+    pub signal_summary: Option<String>,
+    pub source: Option<String>,
+    pub monitored: bool,
+    pub legacy_collection_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,7 +619,6 @@ pub enum CollectionType {
     Season,
     Movie,
     Arc,
-    Interstitial,
     Specials,
 }
 
@@ -618,7 +628,6 @@ impl CollectionType {
             Self::Season => "season",
             Self::Movie => "movie",
             Self::Arc => "arc",
-            Self::Interstitial => "interstitial",
             Self::Specials => "specials",
         }
     }
@@ -628,8 +637,11 @@ impl CollectionType {
             "season" => Some(Self::Season),
             "movie" => Some(Self::Movie),
             "arc" => Some(Self::Arc),
-            "interstitial" => Some(Self::Interstitial),
             "specials" => Some(Self::Specials),
+            // Legacy persisted rows are migrated to series_movie_links; treat
+            // any stragglers as movie-like collections instead of exposing a
+            // first-class collection type again.
+            "interstitial" => Some(Self::Movie),
             _ => None,
         }
     }
@@ -652,10 +664,6 @@ pub struct Collection {
     pub narrative_order: Option<String>,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
-    pub interstitial_movie: Option<InterstitialMovieMetadata>,
-    #[serde(default)]
-    pub specials_movies: Vec<InterstitialMovieMetadata>,
-    pub interstitial_season_episode: Option<String>,
     pub monitored: bool,
     pub created_at: DateTime<Utc>,
 }

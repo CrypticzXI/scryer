@@ -308,13 +308,12 @@ fn completed_download_for_submission_cleanup(
         return completed.clone();
     };
 
-    let collection_id = matched.submission.scope.collection_id().map(str::to_string);
     let mut patched = completed.clone();
     merge_scryer_origin_parameters(
         &mut patched.parameters,
         matched.submission.title_id.clone(),
         matched.submission.facet.clone(),
-        collection_id,
+        &matched.submission.scope,
     );
     patched
 }
@@ -695,14 +694,12 @@ pub async fn try_import_completed_downloads(
                 CompletedDownloadSubmissionResolution::Matched(matched)
                     if submission_has_scryer_origin(&matched.submission) =>
                 {
-                    let collection_id =
-                        matched.submission.scope.collection_id().map(str::to_string);
                     let mut patched = completed.clone();
                     merge_scryer_origin_parameters(
                         &mut patched.parameters,
                         matched.submission.title_id.clone(),
                         matched.submission.facet.clone(),
-                        collection_id,
+                        &matched.submission.scope,
                     );
                     patched
                 }

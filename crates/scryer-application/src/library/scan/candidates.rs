@@ -72,34 +72,27 @@ async fn sync_movie_title_folder_path_for_scan(
     title: &mut Title,
     scan_root: &Path,
     representative_path: &str,
-) {
-    let desired_folder_path = scanned_movie_entry_folder_path(scan_root, representative_path);
+) -> (Option<String>, Option<String>) {
+    let scan_folder_path = scanned_movie_entry_folder_path(scan_root, representative_path);
     let current_folder_path = normalize_title_folder_path(title.folder_path.clone());
 
-    if current_folder_path == desired_folder_path {
-        return;
+    if current_folder_path.is_some() {
+        return (current_folder_path, scan_folder_path);
     }
 
-    let update_result = match desired_folder_path.as_deref() {
-        Some(folder_path) => {
-            app.services
-                .catalog
-                .titles
-                .set_folder_path(&title.id, folder_path)
-                .await
-        }
-        None => {
-            app.services
-                .catalog
-                .titles
-                .clear_folder_path(&title.id)
-                .await
-        }
+    let Some(folder_path) = scan_folder_path.as_deref() else {
+        return (None, scan_folder_path);
     };
 
-    match update_result {
+    match app
+        .services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, folder_path)
+        .await
+    {
         Ok(()) => {
-            title.folder_path = desired_folder_path;
+            title.folder_path = Some(folder_path.to_string());
         }
         Err(error) => {
             warn!(
@@ -110,6 +103,11 @@ async fn sync_movie_title_folder_path_for_scan(
             );
         }
     }
+
+    (
+        normalize_title_folder_path(title.folder_path.clone()),
+        scan_folder_path,
+    )
 }
 
 fn sync_existing_title_folder_path_in_memory(existing_titles: &mut [Title], title: &Title) {
@@ -319,23 +317,29 @@ pub(super) fn movie_title_work(
     }
 }
 
+fn movie_cleanup_context(
+    canonical_folder_path: Option<String>,
+    scan_folder_path: Option<String>,
+) -> LibraryScanMovieCleanupContext {
+    LibraryScanMovieCleanupContext {
+        canonical_folder_path,
+        scan_folder_path,
+        ..Default::default()
+    }
+}
+
 fn merge_default_movie_title_work(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
     title: Title,
     discovered_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
+    cleanup: LibraryScanMovieCleanupContext,
     created_in_scan: bool,
-) {
+) -> bool {
     merge_library_scan_title_work(
         workset,
-        movie_title_work(
-            title,
-            discovered_files,
-            mode,
-            LibraryScanMovieCleanupContext::default(),
-            created_in_scan,
-        ),
-    );
+        movie_title_work(title, discovered_files, mode, cleanup, created_in_scan),
+    )
 }
 
 pub(super) fn episodic_title_work(
@@ -589,17 +593,23 @@ pub(super) async fn process_movie_full_scan_candidate(
     if let Some(mut title) =
         load_existing_title_for_media_file_path(app, &candidate.file.path).await?
     {
-        sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
-            .await;
+        let (canonical_folder_path, scan_folder_path) =
+            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
+                .await;
         sync_existing_title_folder_path_in_memory(existing_titles, &title);
-        summary.matched += 1;
-        merge_default_movie_title_work(
+        let queued = merge_default_movie_title_work(
             workset,
             title,
             discovered_files,
             LibraryScanTitleWalkMode::Full,
+            movie_cleanup_context(canonical_folder_path, scan_folder_path),
             false,
         );
+        if queued {
+            summary.matched += 1;
+        } else {
+            summary.skipped += 1;
+        }
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
@@ -617,17 +627,27 @@ pub(super) async fn process_movie_full_scan_candidate(
     {
         MovieCandidateResolution::Ready(title) => {
             let mut title = *title;
-            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                scan_root,
+                &representative_path,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
-            summary.matched += 1;
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
+            if queued {
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
@@ -773,34 +793,54 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     .await?
     {
         MovieMetadataResolution::Ready(mut title) => {
-            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &candidate.file.path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                scan_root,
+                &candidate.file.path,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
-            summary.matched += 1;
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
+            if queued {
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(())
         }
         MovieMetadataResolution::ReadyCreated { mut title, .. } => {
-            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &candidate.file.path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                scan_root,
+                &candidate.file.path,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
-            summary.imported += 1;
-            summary.matched += 1;
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 true,
             );
+            if queued {
+                summary.imported += 1;
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(())
@@ -1201,8 +1241,9 @@ pub(super) async fn process_movie_refresh_candidate(
     {
         MovieCandidateResolution::Ready(title) => {
             let mut title = *title;
-            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) =
+                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                    .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1215,14 +1256,19 @@ pub(super) async fn process_movie_refresh_candidate(
                     index,
                 );
             }
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Additive,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
-            summary.matched += 1;
+            if queued {
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             Ok(None)
         }
         MovieCandidateResolution::Skipped => {
@@ -1271,8 +1317,9 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     .await?
     {
         MovieMetadataResolution::Ready(mut title) => {
-            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) =
+                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                    .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1285,19 +1332,25 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                     index,
                 );
             }
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Additive,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
-            summary.matched += 1;
+            if queued {
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             Ok(())
         }
         MovieMetadataResolution::ReadyCreated { index, mut title } => {
-            sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                .await;
+            let (canonical_folder_path, scan_folder_path) =
+                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
+                    .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             update_movie_probe_path_index(
                 existing_titles_by_probe_path,
@@ -1305,15 +1358,20 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                 &representative_path,
                 index,
             );
-            merge_default_movie_title_work(
+            let queued = merge_default_movie_title_work(
                 workset,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Additive,
+                movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 true,
             );
-            summary.imported += 1;
-            summary.matched += 1;
+            if queued {
+                summary.imported += 1;
+                summary.matched += 1;
+            } else {
+                summary.skipped += 1;
+            }
             Ok(())
         }
         MovieMetadataResolution::CreateFailed(error) => {

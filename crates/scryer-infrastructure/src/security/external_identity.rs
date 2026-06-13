@@ -686,7 +686,7 @@ fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDisco
                         continue;
                     }
                     match attribute.key.as_ref() {
-                        b"machineIdentifier" => machine_id = Some(value),
+                        b"machineIdentifier" | b"clientIdentifier" => machine_id = Some(value),
                         b"name" => name = Some(value),
                         b"product" => product = Some(value),
                         b"provides" => provides = Some(value),
@@ -737,7 +737,10 @@ fn plex_resources_include_machine(resources_xml: &str, machine_id: &str) -> AppR
                     let attribute = attribute.map_err(|error| {
                         AppError::Repository(format!("invalid Plex resources XML: {error}"))
                     })?;
-                    if attribute.key.as_ref() == b"machineIdentifier" {
+                    if matches!(
+                        attribute.key.as_ref(),
+                        b"machineIdentifier" | b"clientIdentifier"
+                    ) {
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .map_err(|error| {
@@ -1022,6 +1025,44 @@ mod tests {
             .verify_plex("plex-main", Some("machine-1"), "token")
             .await
             .expect("machine should match");
+    }
+
+    #[tokio::test]
+    async fn plex_client_identifier_machine_match_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/users/account.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "user": { "id": "plex-user", "username": "plexuser" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/resources"))
+            .and(query_param("includeHttps", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<MediaContainer><Device clientIdentifier="machine-1" provides="server" /></MediaContainer>"#,
+            ))
+            .mount(&server)
+            .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
+
+        verifier
+            .verify_plex("plex-main", Some("machine-1"), "token")
+            .await
+            .expect("client identifier should match");
+    }
+
+    #[test]
+    fn plex_server_discovery_uses_client_identifier() {
+        let servers = plex_server_discoveries(
+            r#"<MediaContainer><Device clientIdentifier="machine-1" name="E2E Plex" provides="server" /></MediaContainer>"#,
+        )
+        .expect("resources should parse");
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "machine-1");
+        assert_eq!(servers[0].name, "E2E Plex");
     }
 
     #[tokio::test]

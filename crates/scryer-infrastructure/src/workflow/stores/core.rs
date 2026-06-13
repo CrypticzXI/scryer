@@ -24,7 +24,7 @@ use crate::queries::sql_runtime::{
 use crate::types::WorkflowOperationRecord;
 
 pub(crate) const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
-pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id";
+pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub(crate) const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, started_at, finished_at, created_at, updated_at";
 pub(crate) const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
@@ -211,13 +211,14 @@ pub(crate) async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
 ) -> AppResult<()> {
-    let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
+    let (episode_id, collection_id, series_movie_link_id) =
+        persisted_submission_scope(&submission.scope);
     let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
          ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
          SET title_id = excluded.title_id,
              facet = excluded.facet,
@@ -225,8 +226,10 @@ pub(crate) async fn record_download_submission_tx(
              source_kind = excluded.source_kind,
              source_title = excluded.source_title,
              request_signature = excluded.request_signature,
+             purpose = excluded.purpose,
              episode_id = excluded.episode_id,
-             collection_id = excluded.collection_id",
+             collection_id = excluded.collection_id,
+             series_movie_link_id = excluded.series_movie_link_id",
         &[
             SqlArg::Text(Id::new().0),
             SqlArg::Text(submission.title_id.clone()),
@@ -238,8 +241,10 @@ pub(crate) async fn record_download_submission_tx(
             SqlArg::OptText(submission.source_kind.map(|value| value.as_str().to_string())),
             SqlArg::OptText(submission.source_title.clone()),
             SqlArg::OptText(submission.request_signature.clone()),
+            SqlArg::Text(submission.purpose.as_str().to_string()),
             SqlArg::OptText(episode_id.map(str::to_string)),
             SqlArg::OptText(collection_id.map(str::to_string)),
+            SqlArg::OptText(series_movie_link_id.map(str::to_string)),
         ],
     )
     .await?;
@@ -1016,6 +1021,7 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
     let title_id = row.text("title_id")?;
     let episode_id = opt_text_lenient(row, "episode_id")?;
     let collection_id = opt_text_lenient(row, "collection_id")?;
+    let series_movie_link_id = opt_text_lenient(row, "series_movie_link_id")?;
     let episode_set_ids = opt_text_lenient(row, "episode_set_ids")?.map(|raw| {
         raw.split('\u{1f}')
             .map(str::trim)
@@ -1032,6 +1038,7 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
             &title_id,
             episode_id,
             collection_id,
+            series_movie_link_id,
             episode_set_ids,
         ),
         title_id,
@@ -1045,6 +1052,11 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
         source_kind,
         source_title: row.opt_text("source_title")?,
         request_signature: row.opt_text("request_signature")?,
+        purpose: row
+            .opt_text("purpose")?
+            .as_deref()
+            .map(scryer_application::DownloadSubmissionPurpose::from_str)
+            .unwrap_or_default(),
     })
 }
 
@@ -1276,10 +1288,13 @@ pub(crate) async fn update_delete_command_status(
     Ok(())
 }
 
-pub(crate) fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<&str>) {
+pub(crate) fn persisted_submission_scope(
+    scope: &SubmissionScope,
+) -> (Option<&str>, Option<&str>, Option<&str>) {
     (
         scope.persisted_episode_id(),
         scope.persisted_collection_id(),
+        scope.persisted_series_movie_link_id(),
     )
 }
 

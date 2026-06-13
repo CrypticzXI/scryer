@@ -36,7 +36,7 @@ struct CompletedImportTarget {
     is_series: bool,
     video_files: Vec<PathBuf>,
     extracted_dir: Option<PathBuf>,
-    interstitial_collection_id: Option<String>,
+    series_movie_link_id: Option<String>,
 }
 
 enum CompletedImportTargetResolution {
@@ -220,9 +220,35 @@ async fn resolve_completed_import_target(
         return Ok(CompletedImportTargetResolution::Finished(Box::new(result)));
     }
 
-    // Check if this is an interstitial movie import (anime franchise movie → Season 00)
-    let interstitial_collection_id =
-        extract_parameter(&completed.parameters, "*scryer_collection_id");
+    let series_movie_link_id =
+        if let Some(series_movie_link_id) =
+            extract_parameter(&completed.parameters, "*scryer_series_movie_link_id")
+        {
+            Some(series_movie_link_id)
+        } else if let Some(legacy_collection_id) =
+            extract_parameter(&completed.parameters, "*scryer_collection_id")
+        {
+            match app
+                .services
+                .catalog
+                .shows
+                .find_series_movie_link_by_legacy_collection_id(&legacy_collection_id)
+                .await
+            {
+                Ok(Some(link)) => Some(link.id),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        legacy_collection_id = %legacy_collection_id,
+                        "failed to resolve legacy series movie collection id"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
     Ok(CompletedImportTargetResolution::Ready(Box::new(
         CompletedImportTarget {
@@ -230,7 +256,7 @@ async fn resolve_completed_import_target(
             is_series,
             video_files,
             extracted_dir,
-            interstitial_collection_id,
+            series_movie_link_id,
         },
     )))
 }
@@ -243,9 +269,9 @@ async fn dispatch_completed_import_target(
     started_at: chrono::DateTime<Utc>,
     target: &CompletedImportTarget,
 ) -> AppResult<ImportResult> {
-    // Branch on facet: movies import the single largest file, series import all episode files
-    if let Some(ref coll_id) = target.interstitial_collection_id {
-        Box::pin(import_interstitial_movie_download(
+    // Branch on facet: movies import the single largest file, series import all episode files.
+    if let Some(ref series_movie_link_id) = target.series_movie_link_id {
+        Box::pin(import_series_movie_download(
             app,
             actor,
             &target.title,
@@ -253,7 +279,7 @@ async fn dispatch_completed_import_target(
             completed,
             &target.video_files,
             started_at,
-            coll_id,
+            series_movie_link_id,
         ))
         .await
     } else if target.is_series {
@@ -284,6 +310,212 @@ async fn dispatch_completed_import_target(
 // Movie import: pick largest file, single import
 // ---------------------------------------------------------------------------
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "additional movie imports share the normal movie path context without using the upgrade gate"
+)]
+async fn import_additional_movie_download(
+    app: &AppUseCase,
+    actor: &User,
+    title: &scryer_domain::Title,
+    import_id: &str,
+    completed: &CompletedDownload,
+    source_video: &Path,
+    source_size: i64,
+    parsed: &ParsedReleaseMetadata,
+    media_root: &str,
+    rename_template: &str,
+    folder_template: &str,
+    existing_files: &[crate::TitleMediaFile],
+    started_at: chrono::DateTime<Utc>,
+) -> AppResult<ImportResult> {
+    let ext = source_video
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mkv")
+        .to_string();
+    let tokens = build_rename_tokens(title, parsed, &ext);
+    let rendered_filename = render_rename_template(rename_template, &tokens);
+    let full_folder_path = effective_title_folder_path(media_root, title, folder_template, parsed.year);
+    let canonical_dest_path = full_folder_path.join(&rendered_filename);
+    let dest_path = additional_import_dest_path(&canonical_dest_path, parsed);
+
+    let check_ctx = crate::import_checks::ImportCheckContext {
+        source_path: source_video,
+        dest_path: &dest_path,
+        source_size: source_size as u64,
+        parsed,
+        existing_files,
+    };
+    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
+        crate::import_checks::run_import_checks(&check_ctx)
+    {
+        let artifact_result = if code == "duplicate_file" {
+            "already_present"
+        } else {
+            "rejected"
+        };
+        persist_file_import_artifact(
+            app,
+            import_id,
+            completed,
+            title.id.as_str(),
+            source_video,
+            "movie",
+            artifact_result,
+            Some(code),
+            None,
+            &[],
+        )
+        .await;
+        let skip_reason = Some(match code {
+            "duplicate_file" => ImportSkipReason::AlreadyImported,
+            "insufficient_disk_space" => ImportSkipReason::DiskFull,
+            "invalid_extension" | "sample_file" | "sample_directory" => {
+                ImportSkipReason::PolicyMismatch
+            }
+            _ => ImportSkipReason::PolicyMismatch,
+        });
+        let result = ImportResult {
+            import_id: import_id.to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason,
+            title_id: Some(title.id.clone()),
+            source_system: Some(completed.client_type.clone()),
+            source_ref: Some(completed.download_client_item_id.clone()),
+            source_title: Some(completed.name.clone()),
+            source_path: path_to_stored_string(source_video),
+            dest_path: Some(path_to_stored_string(&dest_path)),
+            quality: parsed.quality.clone(),
+            episode_ids: Vec::new(),
+            file_size_bytes: Some(source_size),
+            link_type: None,
+            error_message: Some(reason),
+            started_at,
+            completed_at: Utc::now(),
+        };
+        let result_json = serde_json::to_string(&result).ok();
+        let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
+        app.update_import_status_and_notify(import_id, status, result_json)
+            .await?;
+        return Ok(result);
+    }
+
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
+    let file_result = app
+        .services
+        .workflow
+        .file_importer
+        .import_file(source_video, &dest_path, import_mode)
+        .await?;
+
+    let media_file_input = crate::InsertMediaFileInput {
+        title_id: title.id.clone(),
+        file_path: path_to_stored_string(&dest_path),
+        size_bytes: file_result.size_bytes as i64,
+        role: crate::MediaFileRole::Additional,
+        quality_label: parsed.quality.clone(),
+        scene_name: Some(parsed.raw_title.clone()),
+        release_group: parsed.release_group.clone(),
+        source_type: crate::release_parser::parsed_release_source_type(parsed),
+        resolution: parsed.quality.clone(),
+        video_codec_parsed: parsed.video_codec,
+        audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
+        audio_channels_parsed: parsed.audio_channels.clone(),
+        original_file_path: Some(path_to_stored_string(source_video)),
+        grabbed_release_title: Some(completed.name.clone()),
+        grabbed_at: Some(started_at.to_rfc3339()),
+        edition: parsed.edition.clone(),
+        ..Default::default()
+    };
+    let imported_media_file_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&media_file_input)
+        .await?;
+    if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+        app,
+        &title.id,
+        &imported_media_file_id,
+        None,
+        &dest_path,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            title_id = %title.id,
+            file_id = %imported_media_file_id,
+            dest_path = %dest_path.display(),
+            "failed to reconcile external subtitles after additional movie import"
+        );
+    }
+    maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
+    let link_type =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+
+    persist_file_import_artifact(
+        app,
+        import_id,
+        completed,
+        title.id.as_str(),
+        source_video,
+        "movie",
+        "imported",
+        Some("additional_file"),
+        Some(imported_media_file_id.as_str()),
+        &[],
+    )
+    .await;
+
+    let result = ImportResult {
+        import_id: import_id.to_string(),
+        decision: ImportDecision::Imported,
+        skip_reason: None,
+        title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
+        source_path: path_to_stored_string(source_video),
+        dest_path: Some(path_to_stored_string(&dest_path)),
+        quality: parsed.quality.clone(),
+        episode_ids: Vec::new(),
+        file_size_bytes: Some(file_result.size_bytes as i64),
+        link_type: Some(link_type),
+        error_message: None,
+        started_at,
+        completed_at: Utc::now(),
+    };
+    let result_json = serde_json::to_string(&result).ok();
+    app.update_import_status_and_notify(import_id, ImportStatus::Completed, result_json)
+        .await?;
+
+    let _ = app
+        .append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            title,
+            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: title_context_snapshot(title),
+                media_updates: vec![created_media_update(path_to_stored_string(&dest_path))],
+                imported_count: 1,
+                import_id: Some(import_id.to_string()),
+                source_system: Some(completed.client_type.clone()),
+                source_ref: Some(completed.download_client_item_id.clone()),
+                source_title: Some(completed.name.clone()),
+                source_path: Some(path_to_stored_string(source_video)),
+                dest_path: Some(path_to_stored_string(&dest_path)),
+                quality: parsed.quality.clone(),
+                episode_ids: Vec::new(),
+            }),
+        ))
+        .await;
+
+    Ok(result)
+}
+
 async fn import_movie_download(
     app: &AppUseCase,
     actor: &User,
@@ -311,7 +543,35 @@ async fn import_movie_download(
         .media_files
         .list_media_files_for_title(&title.id)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|file| file.role.is_primary())
+        .collect::<Vec<_>>();
+    if completed_import_purpose(app, completed)
+        .await
+        .is_additional_file()
+    {
+        return import_additional_movie_download(
+            app,
+            actor,
+            title,
+            import_id,
+            completed,
+            &source_video,
+            source_size,
+            &parsed,
+            &media_root,
+            &rename_template,
+            &folder_template,
+            &existing_files,
+            started_at,
+        )
+        .await;
+    }
+    let existing_files = existing_files
+        .into_iter()
+        .filter(|file| file.role.is_primary())
+        .collect::<Vec<_>>();
     let quality_profile = resolve_import_quality_profile(app, title).await;
     let existing_score = existing_files
         .iter()
@@ -736,9 +996,6 @@ async fn import_movie_download(
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     };
@@ -826,14 +1083,14 @@ async fn import_movie_download(
     Ok(result)
 }
 // ---------------------------------------------------------------------------
-// Interstitial movie import: anime franchise movie → Season 00 of the series
+// Series movie import: movie-shaped item stored inside the owning series
 // ---------------------------------------------------------------------------
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "interstitial imports coordinate title, source, and collection state in a single workflow step"
+    reason = "series movie imports coordinate title, source, and link state in a single workflow step"
 )]
-async fn import_interstitial_movie_download(
+async fn import_series_movie_download(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
@@ -841,23 +1098,39 @@ async fn import_interstitial_movie_download(
     completed: &CompletedDownload,
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
-    collection_id: &str,
+    series_movie_link_id: &str,
 ) -> AppResult<ImportResult> {
-    // Load the interstitial collection
-    let collection = match app
+    let link = match app
         .services
         .catalog
         .shows
-        .get_collection_by_id(collection_id)
+        .get_series_movie_link_by_id(series_movie_link_id)
         .await?
     {
-        Some(c) => c,
+        Some(link) if link.series_title_id == title.id => link,
+        Some(_) => {
+            let result = ImportResult {
+                decision: ImportDecision::Failed,
+                skip_reason: None,
+                title_id: Some(title.id.clone()),
+                error_message: Some(format!(
+                    "series movie link {series_movie_link_id} does not belong to title {}",
+                    title.id
+                )),
+                ..base_completed_import_result(import_id, completed, started_at)
+            };
+            let result_json = serde_json::to_string(&result).ok();
+            let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
+            app.update_import_status_and_notify(import_id, status, result_json)
+                .await?;
+            return Ok(result);
+        }
         None => {
             let result = ImportResult {
                 decision: ImportDecision::Failed,
                 skip_reason: None,
                 title_id: Some(title.id.clone()),
-                error_message: Some(format!("interstitial collection {collection_id} not found")),
+                error_message: Some(format!("series movie link {series_movie_link_id} not found")),
                 ..base_completed_import_result(import_id, completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
@@ -867,23 +1140,7 @@ async fn import_interstitial_movie_download(
             return Ok(result);
         }
     };
-
-    let movie = match collection.interstitial_movie.as_ref() {
-        Some(m) => m,
-        None => {
-            let result = ImportResult {
-                decision: ImportDecision::Failed,
-                skip_reason: None,
-                title_id: Some(title.id.clone()),
-                error_message: Some("interstitial collection has no movie metadata".to_string()),
-                ..base_completed_import_result(import_id, completed, started_at)
-            };
-            let result_json = serde_json::to_string(&result).ok();
-            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
-                .await?;
-            return Ok(result);
-        }
-    };
+    let movie = &link.movie;
 
     let source_video = pick_largest_file(video_files)?;
     let source_size = std::fs::metadata(&source_video)
@@ -904,16 +1161,31 @@ async fn import_interstitial_movie_download(
         .unwrap_or("mkv")
         .to_string();
 
-    // Interstitial imports intentionally bypass facet rename templates today and always land as
-    // <series>/<Season 00>/<series - S00E## - interstitial movie.ext>; if this ever becomes
-    // token-driven, move dest_path construction below prepare_import_candidate per the import/rename lesson.
-    let season_episode = collection
-        .interstitial_season_episode
-        .as_deref()
-        .unwrap_or("S00E01");
+    let linked_episode = if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
+        app.services
+            .catalog
+            .shows
+            .get_episode_by_id(linked_episode_id)
+            .await?
+    } else {
+        None
+    };
+    let linked_episode_ids = linked_episode
+        .as_ref()
+        .map(|episode| vec![episode.id.clone()])
+        .unwrap_or_default();
+    let linked_episode_artifacts = linked_episode.iter().cloned().collect::<Vec<_>>();
+    let season_episode = linked_episode
+        .as_ref()
+        .and_then(|episode| {
+            let season = episode.season_number.as_deref()?.parse::<i32>().ok()?;
+            let episode_number = episode.episode_number.as_deref()?.parse::<i32>().ok()?;
+            Some(format!("S{season:02}E{episode_number:02}"))
+        })
+        .unwrap_or_else(|| "S00E00".to_string());
     let rendered_filename = sanitize_filesystem_component(&format!(
         "{} - {} - {}.{}",
-        title.name, season_episode, movie.name, ext
+        title.name, season_episode, movie.title, ext
     ));
 
     // Build destination: <media_root>/<title folder>/Season 00/<filename>
@@ -929,19 +1201,13 @@ async fn import_interstitial_movie_download(
         .list_media_files_for_title(&title.id)
         .await
         .unwrap_or_default();
-    // Filter to files in this collection's Season 00 path
-    let collection_files: Vec<_> = existing_files
+    let series_movie_files: Vec<_> = existing_files
         .iter()
-        .filter(|f| {
-            collection
-                .ordered_path
-                .as_deref()
-                .is_some_and(|p| f.file_path == p)
-        })
+        .filter(|file| file.file_path == path_to_stored_string(&dest_path))
         .cloned()
         .collect();
     let quality_profile = resolve_import_quality_profile(app, title).await;
-    let existing_score = collection_files
+    let existing_score = series_movie_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
@@ -952,12 +1218,13 @@ async fn import_interstitial_movie_download(
         &quality_profile,
         &source_video,
         source_size,
-        !collection_files.is_empty(),
+        !series_movie_files.is_empty(),
         existing_score,
         false,
         crate::post_download_gate::RuntimeSampleValidation::automatic(
-            title
+            movie
                 .runtime_minutes
+                .or(title.runtime_minutes)
                 .filter(|runtime_minutes| *runtime_minutes > 0)
                 .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
         ),
@@ -1014,12 +1281,12 @@ async fn import_interstitial_movie_download(
         }
     };
 
-    // Upgrade check: if there's an existing file for this interstitial, score and compare
+    // Upgrade check: if there's an existing file for this series movie, score and compare.
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
 
-    if !collection_files.is_empty() {
+    if !series_movie_files.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
             &quality_profile,
@@ -1027,13 +1294,13 @@ async fn import_interstitial_movie_download(
             &persona,
             &prepared.parsed,
             crate::post_download_gate::facet_to_category_hint(&title.facet),
-            Some(movie.runtime_minutes),
+            movie.runtime_minutes,
             Some(source_size),
             true,
         );
         let new_score = new_decision.preference_score;
 
-        if let Some(existing_file) = collection_files
+        if let Some(existing_file) = series_movie_files
             .iter()
             .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         {
@@ -1078,16 +1345,46 @@ async fn import_interstitial_movie_download(
                         .await;
                         tracing::info!(
                             title = %title.name,
-                            movie = %movie.name,
+                            movie = %movie.title,
                             old_score = outcome.old_score,
                             new_score = outcome.new_score,
-                            "interstitial movie file upgraded"
+                            "series movie file upgraded"
                         );
                         persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
-                        mark_wanted_completed_for_collection(
+                        if let Err(error) = app
+                            .services
+                            .library
+                            .media_files
+                            .link_file_to_series_movie(&outcome.new_file_id, series_movie_link_id)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to link upgraded file to series movie"
+                            );
+                        }
+                        if let Some(linked_episode_id) = link.linked_episode_id.as_deref()
+                            && let Err(error) = app
+                                .services
+                                .library
+                                .media_files
+                                .link_file_to_episode(&outcome.new_file_id, linked_episode_id)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                episode_id = %linked_episode_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to link upgraded series movie file to linked episode"
+                            );
+                        }
+                        mark_wanted_completed_for_series_movie_link(
                             app,
                             &title.id,
-                            collection_id,
+                            series_movie_link_id,
                             Some(outcome.new_score),
                         )
                         .await;
@@ -1162,13 +1459,13 @@ async fn import_interstitial_movie_download(
                         if import_mode == scryer_domain::ImportMode::Move {
                             tracing::error!(
                                 error = %err,
-                                "interstitial upgrade failed in move mode"
+                                "series movie upgrade failed in move mode"
                             );
                             return Err(err);
                         }
                         tracing::error!(
                             error = %err,
-                            "interstitial upgrade failed, falling through to normal import"
+                            "series movie upgrade failed, falling through to normal import"
                         );
                     }
                 }
@@ -1184,7 +1481,7 @@ async fn import_interstitial_movie_download(
                     "already_present",
                     Some("existing_better_or_equal"),
                     None,
-                    &[],
+                    &linked_episode_artifacts,
                 )
                 .await;
                 let result = ImportResult {
@@ -1198,7 +1495,7 @@ async fn import_interstitial_movie_download(
                     source_path: path_to_stored_string(&source_video),
                     dest_path: Some(path_to_stored_string(&dest_path)),
                     quality: prepared.parsed.quality.clone(),
-                    episode_ids: Vec::new(),
+                    episode_ids: linked_episode_ids.clone(),
                     file_size_bytes: Some(source_size),
                     link_type: None,
                     error_message: Some(format!(
@@ -1238,7 +1535,7 @@ async fn import_interstitial_movie_download(
         &quality_profile,
         title,
         file_result.size_bytes as i64,
-        !collection_files.is_empty(),
+        !series_movie_files.is_empty(),
     )
     .await;
 
@@ -1292,7 +1589,7 @@ async fn import_interstitial_movie_download(
                 error = %err,
                 title_id = %title.id,
                 dest_path = %dest_path.display(),
-                "failed to insert interstitial media_files record"
+                "failed to insert series movie media_files record"
             );
             if import_mode == scryer_domain::ImportMode::Move {
                 return Err(AppError::Repository(format!(
@@ -1316,28 +1613,40 @@ async fn import_interstitial_movie_download(
         "imported",
         None,
         imported_media_file_id.as_deref(),
-        &[],
+        &linked_episode_artifacts,
     )
     .await;
 
-    // Update the interstitial collection with the file path
-    if let Err(err) = app
-        .services
-        .catalog
-        .shows
-        .update_collection(
-            collection_id,
-            CollectionUpdate {
-                ordered_path: Some(path_to_stored_string(&dest_path)),
-                ..Default::default()
-            },
-        )
-        .await
+    if let Some(file_id) = imported_media_file_id.as_deref()
+        && let Err(err) = app
+            .services
+            .library
+            .media_files
+            .link_file_to_series_movie(file_id, series_movie_link_id)
+            .await
     {
         tracing::warn!(
             error = %err,
-            collection_id = collection_id,
-            "failed to update interstitial collection ordered_path"
+            file_id = %file_id,
+            series_movie_link_id = %series_movie_link_id,
+            "failed to link imported file to series movie"
+        );
+    }
+    if let Some(file_id) = imported_media_file_id.as_deref()
+        && let Some(linked_episode_id) = link.linked_episode_id.as_deref()
+        && let Err(err) = app
+            .services
+            .library
+            .media_files
+            .link_file_to_episode(file_id, linked_episode_id)
+            .await
+    {
+        tracing::warn!(
+            error = %err,
+            file_id = %file_id,
+            episode_id = %linked_episode_id,
+            series_movie_link_id = %series_movie_link_id,
+            "failed to link imported series movie file to linked episode"
         );
     }
 
@@ -1347,22 +1656,24 @@ async fn import_interstitial_movie_download(
         .await?;
     if nfo_enabled {
         let nfo_path = dest_path.with_extension("nfo");
-        let nfo_content = crate::nfo::render_interstitial_movie_nfo(
-            movie,
-            season_episode,
-            &collection.collection_index,
-        );
+        let nfo_content =
+            crate::nfo::render_series_movie_episode_nfo(movie, &season_episode, link.after_season);
         if let Err(err) = tokio::fs::write(&nfo_path, nfo_content.as_bytes()).await {
             tracing::warn!(
                 error = %err,
                 path = %nfo_path.display(),
-                "failed to write interstitial movie NFO sidecar"
+                "failed to write series movie NFO sidecar"
             );
         }
     }
 
-    // Mark wanted item as completed (by collection_id)
-    mark_wanted_completed_for_collection(app, &title.id, collection_id, Some(acq_score)).await;
+    mark_wanted_completed_for_series_movie_link(
+        app,
+        &title.id,
+        series_movie_link_id,
+        Some(acq_score),
+    )
+    .await;
 
     // Spawn post-processing
     spawn_post_processing(PostProcessingContext {
@@ -1399,7 +1710,7 @@ async fn import_interstitial_movie_download(
         source_path: path_to_stored_string(&source_video),
         dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
-        episode_ids: Vec::new(),
+        episode_ids: linked_episode_ids.clone(),
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(link_type),
         error_message: None,
@@ -1424,28 +1735,26 @@ async fn import_interstitial_movie_download(
             source_path: Some(path_to_stored_string(&source_video)),
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
-            episode_ids: Vec::new(),
+            episode_ids: linked_episode_ids.clone(),
         }),
     ))
     .await?;
 
     Ok(result)
 }
-/// Mark a wanted item as completed by collection_id (for interstitial movies).
-async fn mark_wanted_completed_for_collection(
+async fn mark_wanted_completed_for_series_movie_link(
     app: &AppUseCase,
     title_id: &str,
-    collection_id: &str,
+    series_movie_link_id: &str,
     imported_score: Option<i32>,
 ) {
-    // Find the wanted item by iterating (since we don't have a direct lookup by collection_id)
     match app
         .services
         .workflow
         .wanted_items
         .list_wanted_items(WantedItemsQuery {
             statuses: vec!["wanted".into()],
-            media_types: vec!["interstitial_movie".into()],
+            media_types: vec!["series_movie".into()],
             title_id: Some(title_id.to_string()),
             limit: 100,
             ..WantedItemsQuery::default()
@@ -1454,7 +1763,7 @@ async fn mark_wanted_completed_for_collection(
     {
         Ok(items) => {
             for item in items {
-                if item.collection_id.as_deref() == Some(collection_id) {
+                if item.series_movie_link_id.as_deref() == Some(series_movie_link_id) {
                     let now = Utc::now().to_rfc3339();
                     let _ = app
                         .services
@@ -1480,8 +1789,8 @@ async fn mark_wanted_completed_for_collection(
             tracing::warn!(
                 error = %err,
                 title_id = title_id,
-                collection_id = collection_id,
-                "failed to look up wanted item for interstitial movie"
+                series_movie_link_id = series_movie_link_id,
+                "failed to look up wanted item for series movie"
             );
         }
     }

@@ -190,35 +190,43 @@ fn canonical_title_evidence_for_episode(
     }
 }
 
-pub(crate) fn interstitial_movie_search_title(title: &Title, collection: &Collection) -> Title {
-    let Some(movie) = collection.interstitial_movie.as_ref() else {
-        return title.clone();
-    };
-
+pub(crate) fn series_movie_search_title(
+    title: &Title,
+    link: &scryer_domain::SeriesMovieLink,
+) -> Title {
+    let movie = &link.movie;
     let mut search_title = title.clone();
-    search_title.name = movie.name.clone();
+    search_title.name = movie.title.clone();
     search_title.year = movie.year;
-    search_title.imdb_id = (!movie.imdb_id.trim().is_empty()).then(|| movie.imdb_id.clone());
-    search_title.runtime_minutes = Some(movie.runtime_minutes);
+    search_title.imdb_id = movie.imdb_id.clone();
+    search_title.runtime_minutes = movie.runtime_minutes;
     search_title
         .external_ids
         .retain(|external_id| !matches!(external_id.source.as_str(), "tvdb" | "tmdb" | "anidb"));
-    if !movie.tvdb_id.trim().is_empty() {
+    if let Some(tvdb_id) = movie
+        .tvdb_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         search_title.external_ids.push(scryer_domain::ExternalId {
             source: "tvdb".to_string(),
-            value: movie.tvdb_id.clone(),
+            value: tvdb_id.clone(),
         });
     }
-    if let Some(tmdb_id) = movie.movie_tmdb_id.as_ref()
-        && !tmdb_id.trim().is_empty()
+    if let Some(tmdb_id) = movie
+        .tmdb_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
     {
         search_title.external_ids.push(scryer_domain::ExternalId {
             source: "tmdb".to_string(),
             value: tmdb_id.clone(),
         });
     }
-    if let Some(anidb_id) = movie.movie_anidb_id.as_ref()
-        && !anidb_id.trim().is_empty()
+    if let Some(anidb_id) = movie
+        .anidb_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
     {
         search_title.external_ids.push(scryer_domain::ExternalId {
             source: "anidb".to_string(),
@@ -661,7 +669,10 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
         let delay_profiles = self.load_delay_profiles().await;
         let now = Utc::now();
         let upgrade_context = self
@@ -927,15 +938,15 @@ impl AppUseCase {
         })
     }
 
-    pub(crate) async fn resolve_release_search_subject_for_collection(
+    pub(crate) async fn resolve_release_search_subject_for_series_movie(
         &self,
         title: &Title,
-        collection: &Collection,
+        link: &scryer_domain::SeriesMovieLink,
     ) -> AppResult<(Title, ResolvedReleaseSearchSubject)> {
-        let search_title = interstitial_movie_search_title(title, collection);
+        let search_title = series_movie_search_title(title, link);
         if search_title.name.trim().is_empty() {
             return Err(AppError::Validation(
-                "collection search subject has no searchable title".into(),
+                "series movie search subject has no searchable title".into(),
             ));
         }
 
@@ -944,14 +955,14 @@ impl AppUseCase {
             .workflow
             .wanted_items
             .list_wanted_items(WantedItemsQuery {
-                media_types: vec!["interstitial_movie".into()],
+                media_types: vec!["series_movie".into()],
                 title_id: Some(title.id.clone()),
                 limit: 500,
                 ..WantedItemsQuery::default()
             })
             .await?
             .into_iter()
-            .find(|item| item.collection_id.as_deref() == Some(collection.id.as_str()));
+            .find(|item| item.series_movie_link_id.as_deref() == Some(link.id.as_str()));
 
         let imdb_id = search_title
             .imdb_id
@@ -995,8 +1006,8 @@ impl AppUseCase {
                 current_score: wanted.as_ref().and_then(|item| item.current_score),
                 last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
                 grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
-                submission_scope: SubmissionScope::Collection {
-                    collection_id: collection.id.clone(),
+                submission_scope: SubmissionScope::SeriesMovie {
+                    series_movie_link_id: link.id.clone(),
                 },
             },
         ))
@@ -1126,6 +1137,8 @@ mod tests {
             id: "media-file-1".to_string(),
             title_id: "title-1".to_string(),
             episode_id: episode_id.map(str::to_string),
+            series_movie_link_ids: Vec::new(),
+            role: crate::MediaFileRole::Primary,
             file_path: format!("/data/series/{release_title}.mkv"),
             size_bytes: 1,
             source_signature_scheme: None,
@@ -1190,6 +1203,7 @@ mod tests {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),

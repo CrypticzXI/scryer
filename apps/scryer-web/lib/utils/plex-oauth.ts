@@ -1,5 +1,8 @@
 const PLEX_CLIENT_IDENTIFIER_KEY = "scryer_plex_client_identifier";
 const PLEX_PIN_TIMEOUT_MS = 15 * 60 * 1000;
+const PLEX_PIN_POLL_INTERVAL_MS = 2_000;
+const PLEX_PIN_RATE_LIMIT_BACKOFF_MS = 5_000;
+const PLEX_PIN_MAX_BACKOFF_MS = 30_000;
 
 type PlexPinResponse = {
   id?: number;
@@ -85,13 +88,24 @@ async function pollPlexPin(
   headers: Record<string, string>,
   deadline: number,
 ): Promise<string> {
+  let nextDelayMs = PLEX_PIN_POLL_INTERVAL_MS;
   while (Date.now() < deadline) {
     const response = await fetch(`https://plex.tv/api/v2/pins/${pinId}`, {
       headers,
     });
+    if (response.status === 429) {
+      const retryAfterMs = retryAfterHeaderToMs(response.headers.get("Retry-After"));
+      nextDelayMs = Math.min(
+        Math.max(retryAfterMs ?? nextDelayMs * 2, PLEX_PIN_RATE_LIMIT_BACKOFF_MS),
+        PLEX_PIN_MAX_BACKOFF_MS,
+      );
+      await waitForPlexPoll(nextDelayMs, deadline);
+      continue;
+    }
     if (!response.ok) {
       throw new Error("Unable to check the Plex sign-in PIN.");
     }
+    nextDelayMs = PLEX_PIN_POLL_INTERVAL_MS;
     const body = (await response.json()) as PlexPinResponse;
     const authToken = body.authToken ?? body.auth_token;
     if (authToken) {
@@ -101,9 +115,27 @@ async function pollPlexPin(
     if (expiresAt && Date.now() >= Date.parse(expiresAt)) {
       break;
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    await waitForPlexPoll(nextDelayMs, deadline);
   }
   throw new Error("Plex sign-in expired before it completed.");
+}
+
+function retryAfterHeaderToMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isNaN(timestamp)) {
+    return Math.max(0, timestamp - Date.now());
+  }
+  return null;
+}
+
+async function waitForPlexPoll(delayMs: number, deadline: number) {
+  const remainingMs = Math.max(0, deadline - Date.now());
+  await new Promise((resolve) => window.setTimeout(resolve, Math.min(delayMs, remainingMs)));
 }
 
 export async function authenticateWithPlexPin(): Promise<string> {

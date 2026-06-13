@@ -442,6 +442,7 @@ fn build_plugin_add_request(
                 .release_title
                 .clone()
                 .or_else(|| request.source_title.clone()),
+            import_purpose: Some(request.purpose.as_str().to_string()),
             is_recent: request.is_recent,
             season_pack: request.season_pack,
             indexer_name: request.indexer_name.clone(),
@@ -968,6 +969,7 @@ mod tests {
                 digital_release_date: None,
                 folder_path: None,
             },
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             download_id: None,
             source_hint: Some("https://tracker.example/release.torrent".to_string()),
             staged_nzb: None,
