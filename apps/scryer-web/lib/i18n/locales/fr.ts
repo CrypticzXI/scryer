@@ -623,6 +623,7 @@ const fr: LocaleDictionary = {
     "La recherche interactive arrive bientôt.",
   "title.seasonMonitored": "Saison surveillée",
   "title.episodeMonitored": "Épisode surveillé",
+  "title.seriesMovieMonitored": "Film de série surveillé",
   "title.deleteFilesOnDisk": "Supprimer les fichiers sur le disque",
   "title.seasonsAndEpisodes": "Saisons et épisodes",
   "title.noTrackedSeasons":

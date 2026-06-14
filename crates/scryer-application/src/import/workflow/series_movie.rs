@@ -310,6 +310,13 @@ async fn dispatch_completed_import_target(
 // Movie import: pick largest file, single import
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
+struct SeriesMovieAdditionalImportContext<'a> {
+    series_movie_link_id: &'a str,
+    linked_episode_id: Option<&'a str>,
+    linked_episode_artifacts: &'a [scryer_domain::Episode],
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "additional movie imports share the normal movie path context without using the upgrade gate"
@@ -327,23 +334,37 @@ async fn import_additional_movie_download(
     rename_enabled: bool,
     rename_template: &str,
     folder_template: &str,
+    canonical_dest_path: Option<&Path>,
+    series_movie_context: Option<SeriesMovieAdditionalImportContext<'_>>,
     existing_files: &[crate::TitleMediaFile],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
-    let ext = source_video
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("mkv")
-        .to_string();
-    let tokens = build_rename_tokens(title, parsed, &ext);
-    let rendered_filename = if rename_enabled {
-        render_rename_template(rename_template, &tokens)
+    let canonical_dest_path = if let Some(canonical_dest_path) = canonical_dest_path {
+        canonical_dest_path.to_path_buf()
     } else {
-        preserved_import_filename(source_video)
+        let ext = source_video
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mkv")
+            .to_string();
+        let tokens = build_rename_tokens(title, parsed, &ext);
+        let rendered_filename = if rename_enabled {
+            render_rename_template(rename_template, &tokens)
+        } else {
+            preserved_import_filename(source_video)
+        };
+        let full_folder_path =
+            effective_title_folder_path(media_root, title, folder_template, parsed.year);
+        full_folder_path.join(&rendered_filename)
     };
-    let full_folder_path = effective_title_folder_path(media_root, title, folder_template, parsed.year);
-    let canonical_dest_path = full_folder_path.join(&rendered_filename);
     let dest_path = additional_import_dest_path(&canonical_dest_path, parsed);
+    let linked_episode_artifacts = series_movie_context
+        .map(|context| context.linked_episode_artifacts)
+        .unwrap_or(&[]);
+    let linked_episode_ids = series_movie_context
+        .and_then(|context| context.linked_episode_id)
+        .map(|episode_id| vec![episode_id.to_string()])
+        .unwrap_or_default();
 
     let check_ctx = crate::import_checks::ImportCheckContext {
         source_path: source_video,
@@ -370,7 +391,7 @@ async fn import_additional_movie_download(
             artifact_result,
             Some(code),
             None,
-            &[],
+            linked_episode_artifacts,
         )
         .await;
         let skip_reason = Some(match code {
@@ -392,7 +413,7 @@ async fn import_additional_movie_download(
             source_path: path_to_stored_string(source_video),
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: parsed.quality.clone(),
-            episode_ids: Vec::new(),
+            episode_ids: linked_episode_ids.clone(),
             file_size_bytes: Some(source_size),
             link_type: None,
             error_message: Some(reason),
@@ -441,6 +462,38 @@ async fn import_additional_movie_download(
         .media_files
         .insert_media_file(&media_file_input)
         .await?;
+    if let Some(context) = series_movie_context {
+        if let Err(error) = app
+            .services
+            .library
+            .media_files
+            .link_file_to_series_movie(&imported_media_file_id, context.series_movie_link_id)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                file_id = %imported_media_file_id,
+                series_movie_link_id = %context.series_movie_link_id,
+                "failed to link additional imported file to series movie"
+            );
+        }
+        if let Some(linked_episode_id) = context.linked_episode_id
+            && let Err(error) = app
+                .services
+                .library
+                .media_files
+                .link_file_to_episode(&imported_media_file_id, linked_episode_id)
+                .await
+        {
+            tracing::warn!(
+                error = %error,
+                file_id = %imported_media_file_id,
+                episode_id = %linked_episode_id,
+                series_movie_link_id = %context.series_movie_link_id,
+                "failed to link additional imported series movie file to linked episode"
+            );
+        }
+    }
     analyze_and_persist_imported_media_file(app, &title.id, &imported_media_file_id, &dest_path)
         .await;
     if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
@@ -474,7 +527,7 @@ async fn import_additional_movie_download(
         "imported",
         Some("additional_file"),
         Some(imported_media_file_id.as_str()),
-        &[],
+        linked_episode_artifacts,
     )
     .await;
 
@@ -489,7 +542,7 @@ async fn import_additional_movie_download(
         source_path: path_to_stored_string(source_video),
         dest_path: Some(path_to_stored_string(&dest_path)),
         quality: parsed.quality.clone(),
-        episode_ids: Vec::new(),
+        episode_ids: linked_episode_ids.clone(),
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(link_type),
         error_message: None,
@@ -515,7 +568,7 @@ async fn import_additional_movie_download(
                 source_path: Some(path_to_stored_string(source_video)),
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
-                episode_ids: Vec::new(),
+                episode_ids: linked_episode_ids,
             }),
         ))
         .await;
@@ -572,6 +625,8 @@ async fn import_movie_download(
             rename_enabled,
             &rename_template,
             &folder_template,
+            None,
+            None,
             &existing_files,
             started_at,
         )
@@ -1163,7 +1218,7 @@ async fn import_series_movie_download(
     let ImportPathSettings {
         media_root,
         rename_enabled,
-        rename_template: _rename_template,
+        rename_template,
         folder_template,
     } = resolve_import_paths(app, title).await?;
 
@@ -1224,6 +1279,34 @@ async fn import_series_movie_download(
         .filter(|file| file.file_path == path_to_stored_string(&dest_path))
         .cloned()
         .collect();
+    if completed_import_purpose(app, completed)
+        .await
+        .is_additional_file()
+    {
+        return import_additional_movie_download(
+            app,
+            actor,
+            title,
+            import_id,
+            completed,
+            &source_video,
+            source_size,
+            &parsed,
+            &media_root,
+            rename_enabled,
+            &rename_template,
+            &folder_template,
+            Some(&dest_path),
+            Some(SeriesMovieAdditionalImportContext {
+                series_movie_link_id,
+                linked_episode_id: link.linked_episode_id.as_deref(),
+                linked_episode_artifacts: &linked_episode_artifacts,
+            }),
+            &series_movie_files,
+            started_at,
+        )
+        .await;
+    }
     let quality_profile = resolve_import_quality_profile(app, title).await;
     let existing_score = series_movie_files
         .iter()

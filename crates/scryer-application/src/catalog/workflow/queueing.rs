@@ -180,6 +180,23 @@ fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubm
         scope: scope.clone(),
     }
 }
+async fn episode_ids_for_queue_scope(app: &AppUseCase, scope: &SubmissionScope) -> Vec<String> {
+    match scope {
+        SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+        SubmissionScope::Collection { collection_id } => app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(collection_id)
+            .await
+            .map(|episodes| episodes.into_iter().map(|episode| episode.id).collect())
+            .unwrap_or_default(),
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => {
+            Vec::new()
+        }
+    }
+}
 fn validate_manual_queue_purpose(
     purpose: DownloadSubmissionPurpose,
     title: &Title,
@@ -201,9 +218,7 @@ fn validate_manual_queue_purpose(
         SubmissionScope::Collection { .. } => Err(AppError::Validation(
             "additional-file queueing does not support collection scopes yet".into(),
         )),
-        SubmissionScope::SeriesMovie { .. } => Err(AppError::Validation(
-            "additional-file queueing does not support series movie scopes yet".into(),
-        )),
+        SubmissionScope::SeriesMovie { .. } => Ok(()),
         SubmissionScope::Orphan => Err(AppError::Validation(
             "additional-file queueing requires a title or episode scope".into(),
         )),
@@ -526,7 +541,7 @@ impl AppUseCase {
                             source_title: source_title_for_attempt.clone(),
                             request_signature: request_signature.clone(),
                             purpose,
-                            scope,
+                            scope: scope.clone(),
                         },
                         accepted_identity,
                     )
@@ -652,16 +667,17 @@ impl AppUseCase {
 
         drop(dedupe_guard);
         drop(scope_guard);
+        let grabbed_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
 
         self.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
             title,
             DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
                 title: title_context_snapshot(title),
-                source_title: None,
-                source_hint: None,
+                source_title: source_title_for_attempt.clone(),
+                source_hint: source_hint_for_attempt.clone(),
                 download_id: Some(grab.job_id.clone()),
-                episode_ids: Vec::new(),
+                episode_ids: grabbed_episode_ids,
             }),
         ))
         .await?;

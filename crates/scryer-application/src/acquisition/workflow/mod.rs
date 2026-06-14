@@ -11,7 +11,6 @@ use crate::acquisition_policy::{
 };
 use crate::acquisition_release_search::{
     ReleaseAutoDecisionCode, annotate_auto_decision, serialize_decision_explanation,
-    series_movie_search_title,
 };
 use crate::contracts::{SubmissionConflictPolicy, SubmissionScopeConflict, WantedSearchOutcome};
 use crate::domain_events::{

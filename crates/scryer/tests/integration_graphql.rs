@@ -12068,6 +12068,134 @@ async fn graphql_title_history_filters_by_episode_id() {
 }
 
 #[tokio::test]
+async fn graphql_title_history_filters_skipped_import_by_episode_id() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Skipped Episode History Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("The Skipped One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("skipped-episode-history-1".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_user_id: None,
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ImportRejected(scryer_domain::ImportRejectedEventData {
+                title: Some(TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                }),
+                status: scryer_domain::ImportStatus::Skipped,
+                import_id: Some("skipped-episode-import".to_string()),
+                source_system: Some("weaver".to_string()),
+                source_ref: Some("10028".to_string()),
+                source_title: Some("Skipped Episode Release".to_string()),
+                source_path: Some(
+                    "/weaver-downloads/complete/anime/Skipped Episode Release#10028".to_string(),
+                ),
+                dest_path: None,
+                quality: None,
+                reason: Some("duplicate file already exists".to_string()),
+                skip_reason: Some(scryer_domain::ImportSkipReason::DuplicateFile),
+                episode_ids: vec![episode.id.clone()],
+            }),
+        })
+        .await
+        .expect("append skipped import event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: String!, $episodeId: String!) {
+          titleHistory(filter: { titleIds: [$titleId], episodeId: $episodeId, limit: 10 }) {
+            totalCount
+            records {
+              eventType
+              episodeId
+              episodeIds
+              failureReason
+              skipReason
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id, "episodeId": episode.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("title history records array");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["eventType"], "import_skipped");
+    assert_eq!(records[0]["episodeId"], episode.id);
+    assert_eq!(records[0]["episodeIds"], json!([episode.id.clone()]));
+    assert_eq!(records[0]["failureReason"], "duplicate file already exists");
+    assert_eq!(records[0]["skipReason"], "duplicate_file");
+}
+
+#[tokio::test]
 async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_events() {
     let ctx = TestContext::new().await;
     let title = create_catalog_title(

@@ -1,5 +1,5 @@
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::from_episode;
+use crate::mappers::{from_episode, from_series_movie_link};
 use crate::types::*;
 use async_graphql::{Context, Object, Result as GqlResult};
 
@@ -42,5 +42,19 @@ impl CollectionMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_episode(episode))
+    }
+
+    async fn set_series_movie_monitored(
+        &self,
+        ctx: &Context<'_>,
+        input: SetSeriesMovieMonitoredInput,
+    ) -> GqlResult<SeriesMovieLinkPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let link = app
+            .set_series_movie_monitored(&actor, &input.series_movie_link_id, input.monitored)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_series_movie_link(link))
     }
 }

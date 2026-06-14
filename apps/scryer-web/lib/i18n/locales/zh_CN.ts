@@ -571,6 +571,7 @@ const zh_CN: LocaleDictionary = {
   "title.interactiveSearchComingSoon": "手动搜索即将推出。",
   "title.seasonMonitored": "季度监控中",
   "title.episodeMonitored": "集监控中",
+  "title.seriesMovieMonitored": "系列电影监控中",
   "title.deleteFilesOnDisk": "删除磁盘上的文件",
   "title.seasonsAndEpisodes": "季与剧集",
   "title.noTrackedSeasons": "此作品尚未跟踪任何季度。",

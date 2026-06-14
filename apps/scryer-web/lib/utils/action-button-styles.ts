@@ -1,6 +1,9 @@
 export const boxedActionButtonBaseClass =
   "h-9 w-9 border shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[color,background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:shadow-[0_10px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.85)] dark:shadow-none dark:hover:translate-y-0 dark:hover:shadow-none";
 
+export const boxedTextActionButtonBaseClass =
+  "h-9 border px-3 shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[color,background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:shadow-[0_10px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.85)] dark:shadow-none dark:hover:translate-y-0 dark:hover:shadow-none";
+
 export const boxedActionButtonToneClass = {
   auto:
     "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-200 dark:hover:border-emerald-400/45 dark:hover:bg-emerald-500/22 dark:hover:text-emerald-50",

@@ -801,6 +801,7 @@ const en: LocaleDictionary = {
   "title.interactiveSearchComingSoon": "Interactive search is coming soon.",
   "title.seasonMonitored": "Season monitored",
   "title.episodeMonitored": "Episode monitored",
+  "title.seriesMovieMonitored": "Series movie monitored",
   "title.deleteFilesOnDisk": "Permanently delete files from disk",
   "title.seasonsAndEpisodes": "Seasons and Episodes",
   "title.noTrackedSeasons": "No seasons are tracked for this show yet.",

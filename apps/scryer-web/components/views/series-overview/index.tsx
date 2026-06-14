@@ -141,6 +141,7 @@ type Props = {
   onBackToList?: () => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
   onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
+  onSetSeriesMovieMonitored?: (seriesMovieLinkId: string, monitored: boolean) => Promise<void>;
   onSetTitleMonitored?: (monitored: boolean) => Promise<void>;
   onSearchMonitored?: () => Promise<void> | void;
   onRefreshAndScan?: () => Promise<void> | void;
@@ -190,6 +191,7 @@ export function SeriesOverviewView({
   onBackToList,
   onSetCollectionMonitored,
   onSetEpisodeMonitored,
+  onSetSeriesMovieMonitored,
   onSetTitleMonitored,
   onSearchMonitored,
   onRefreshAndScan,
@@ -616,6 +618,40 @@ export function SeriesOverviewView({
     [client, confirmReplaceConflict, onTitleChanged, setGlobalStatus, t, title],
   );
 
+  const handleQueueAdditionalFromSeriesMovieSearch = React.useCallback(
+    async (link: SeriesMovieLink, release: Release) => {
+      if (!title) return;
+
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+
+      try {
+        const { data, error: mutationError } = await client
+          .mutation(queueExistingMutation, {
+            input: {
+              titleId: title.id,
+              scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
+              candidateToken: release.candidateToken,
+              purpose: "ADDITIONAL_FILE",
+            },
+          })
+          .toPromise();
+        if (mutationError) throw mutationError;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this series movie.",
+        );
+        setGlobalStatus(t("status.queueSuccess", { name: release.title }));
+        await onTitleChanged?.();
+      } catch (error: unknown) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+      }
+    },
+    [client, onTitleChanged, setGlobalStatus, t, title],
+  );
+
   const handleAutoSearchSeriesMovie = React.useCallback(
     (link: SeriesMovieLink) => {
       if (!hasDownloadClients) {
@@ -926,15 +962,22 @@ export function SeriesOverviewView({
                     <SeriesMovieTimelineSection
                       key={item.key}
                       link={item.link}
+                      expanded={expandedKeys.has(item.key)}
+                      onToggle={() => toggleKey(item.key)}
                       mediaFilesByEpisode={mediaFilesByEpisode}
                       mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
+                      subtitleDownloads={subtitleDownloads}
+                      onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
                       seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
                       seriesMovieSearchLoadingByLink={seriesMovieSearchLoadingByLink}
                       seriesMovieSearchAttemptedByLink={seriesMovieSearchAttemptedByLink}
                       searchBlockedBySeriesMovie={searchBlockedBySeriesMovie}
                       onRunSeriesMovieSearch={canManageTitle ? handleRunSeriesMovieSearch : undefined}
                       onQueueFromSeriesMovieSearch={canManageTitle ? handleQueueFromSeriesMovieSearch : undefined}
+                      onQueueAdditionalFromSeriesMovieSearch={canManageTitle ? handleQueueAdditionalFromSeriesMovieSearch : undefined}
                       onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
+                      onSetSeriesMovieMonitored={canManageTitle ? onSetSeriesMovieMonitored : undefined}
+                      onDeleteFile={canManageTitle ? onDeleteFile : undefined}
                       autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
                     />
                   );

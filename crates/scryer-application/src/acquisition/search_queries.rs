@@ -133,7 +133,7 @@ pub(crate) fn build_search_queries(
 
 pub(crate) fn build_movie_search_queries(
     title: &Title,
-    media_type: &str,
+    _media_type: &str,
     category: String,
 ) -> SearchQueryResult {
     let imdb_id = imdb_id_from_title(title);
@@ -142,11 +142,7 @@ pub(crate) fn build_movie_search_queries(
     let anidb_id = anidb_id_from_external_ids(&title.external_ids);
     let mal_id = mal_id_from_external_ids(&title.external_ids);
     let mut queries = Vec::new();
-    let query_title = if media_type == "series_movie" {
-        series_movie_query_title(title)
-    } else {
-        title.name.trim().to_string()
-    };
+    let query_title = title.name.trim().to_string();
     if !query_title.is_empty() {
         let query = if let Some(year) = title.year {
             format!("{query_title} {year}")
@@ -171,50 +167,6 @@ pub(crate) fn build_movie_search_queries(
         season: None,
         episode: None,
     }
-}
-
-fn series_movie_query_title(title: &Title) -> String {
-    let terminal_token = crate::title_matching::reduced_comparison_key(
-        &title.name,
-        crate::title_matching::TitleMatchProfile::Movie,
-    )
-    .split_whitespace()
-    .last()
-    .map(str::to_string);
-    let candidates = title
-        .aliases
-        .iter()
-        .filter_map(|alias| {
-            let key = crate::title_matching::canonical_lookup_key(alias);
-            crate::title_matching::has_usable_reduced_key(&key).then_some((alias.clone(), key))
-        })
-        .collect::<Vec<_>>();
-    let preferred_candidates = candidates
-        .iter()
-        .filter(|(_, key)| {
-            terminal_token
-                .as_deref()
-                .is_none_or(|tail| key.split_whitespace().any(|word| word == tail))
-        })
-        .collect::<Vec<_>>();
-    let candidate_pool = if preferred_candidates.is_empty() {
-        candidates.iter().collect::<Vec<_>>()
-    } else {
-        preferred_candidates
-    };
-
-    candidate_pool
-        .iter()
-        .filter(|(_, key)| key.split_whitespace().count() >= 3)
-        .min_by_key(|(_, key)| key.split_whitespace().count())
-        .or_else(|| {
-            candidate_pool
-                .iter()
-                .min_by_key(|(_, key)| key.split_whitespace().count())
-        })
-        .map(|(alias, _)| alias.trim().to_string())
-        .filter(|alias| !alias.is_empty())
-        .unwrap_or_else(|| title.name.trim().to_string())
 }
 
 pub(crate) fn tmdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {

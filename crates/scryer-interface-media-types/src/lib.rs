@@ -2872,6 +2872,12 @@ pub struct SetEpisodeMonitoredInput {
     pub monitored: bool,
 }
 
+#[derive(InputObject, Clone)]
+pub struct SetSeriesMovieMonitoredInput {
+    pub series_movie_link_id: String,
+    pub monitored: bool,
+}
+
 #[derive(InputObject)]
 pub struct SetUserAppPermissionsInput {
     pub user_id: String,

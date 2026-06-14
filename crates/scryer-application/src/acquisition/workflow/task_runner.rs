@@ -408,49 +408,17 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
-    let search_title = if item.media_type == "series_movie" {
-        if let Some(ref link_id) = item.series_movie_link_id
-            && let Ok(Some(collection)) = app
-                .services
-                .catalog
-                .shows
-                .get_series_movie_link_by_id(link_id)
-                .await
-        {
-            series_movie_search_title(&title, &collection)
-        } else {
-            title.clone()
-        }
-    } else {
-        title.clone()
-    };
-
-    let search_title = if item.media_type == "episode" {
-        if let Some(anidb_id) = app
-            .local_scoped_anidb_id_for_episode(episode.as_ref())
-            .await
-        {
-            let mut title = search_title;
-            title.external_ids.retain(|id| {
-                !matches!(
-                    id.source.trim().to_ascii_lowercase().as_str(),
-                    "anidb" | "anidb_id"
-                )
-            });
-            title.external_ids.push(scryer_domain::ExternalId {
-                source: "anidb".into(),
-                value: anidb_id,
-            });
-            title
-        } else {
-            search_title
-        }
-    } else {
-        search_title
-    };
+    let search_title = app
+        .release_search_title_for_wanted_item(&title, item, episode.as_ref())
+        .await;
 
     let subject = app
-        .resolve_release_search_subject_for_wanted_item(&search_title, item, episode.as_ref())
+        .resolve_release_search_subject_for_wanted_item(
+            &title,
+            &search_title,
+            item,
+            episode.as_ref(),
+        )
         .await;
     let search_season = subject.season;
 

@@ -17,7 +17,8 @@ use crate::settings::settings::root_folder_entries_from_library_roots;
 use scryer_domain::{
     DomainEventPayload, JobRunCompletedEventData, JobRunFailedEventData, JobRunStartedEventData,
     MediaFileDeletedEventData, MediaFileDeletedReason, MetadataHydrationState,
-    ReleaseGrabbedEventData, TitleAddedEventData, TitleDeletedEventData, TitleRematchedEventData,
+    ReleaseGrabbedEventData, SeriesMovieLink, TitleAddedEventData, TitleDeletedEventData,
+    TitleRematchedEventData,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;

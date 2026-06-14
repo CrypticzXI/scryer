@@ -193,6 +193,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 root_folders: None,
                 required_audio_languages: None,
                 folder_template: Some(template.to_string()),
+                rename_enabled: None,
                 rename_template: None,
                 rename_collision_policy: None,
                 rename_missing_metadata_policy: None,

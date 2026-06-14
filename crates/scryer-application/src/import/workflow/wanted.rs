@@ -80,6 +80,7 @@ async fn execute_resolved_episode_import(
                 },
                 finalize_before_import: false,
                 reason_code: Some("additional_file_multi_episode".to_string()),
+                episode_ids: target_episode_ids.clone(),
             });
         }
 
@@ -123,6 +124,7 @@ async fn execute_resolved_episode_import(
                 message: reason,
                 reason_code: Some(code.to_string()),
                 skip_reason: Some(skip_reason_for_import_check_code(code)),
+                episode_ids: target_episode_ids.clone(),
             });
         }
 
@@ -252,6 +254,7 @@ async fn execute_resolved_episode_import(
                 rejection,
                 finalize_before_import: true,
                 reason_code: None,
+                episode_ids: target_episode_ids.clone(),
             });
         }
     };
@@ -282,6 +285,7 @@ async fn execute_resolved_episode_import(
             reason_code: Some(
                 super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
             ),
+            episode_ids: target_episode_ids.clone(),
         });
     }
 
@@ -326,6 +330,7 @@ async fn execute_resolved_episode_import(
             message: reason,
             reason_code: Some(code.to_string()),
             skip_reason: Some(skip_reason_for_import_check_code(code)),
+            episode_ids: target_episode_ids.clone(),
         });
     }
 
@@ -357,6 +362,7 @@ async fn execute_resolved_episode_import(
                     rejection,
                     finalize_before_import: true,
                     reason_code: None,
+                    episode_ids: target_episode_ids.clone(),
                 });
             }
         };
@@ -426,6 +432,7 @@ async fn execute_resolved_episode_import(
                     rejection,
                     finalize_before_import: false,
                     reason_code: None,
+                    episode_ids: target_episode_ids.clone(),
                 });
             }
             Err(err) => {

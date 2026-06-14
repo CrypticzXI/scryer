@@ -614,6 +614,7 @@ const de: LocaleDictionary = {
   "title.interactiveSearchComingSoon": "Interaktive Suche kommt bald.",
   "title.seasonMonitored": "Staffel überwacht",
   "title.episodeMonitored": "Episode überwacht",
+  "title.seriesMovieMonitored": "Serienfilm überwacht",
   "title.deleteFilesOnDisk": "Dateien auf der Festplatte löschen",
   "title.seasonsAndEpisodes": "Staffeln und Folgen",
   "title.noTrackedSeasons":

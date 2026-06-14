@@ -46,6 +46,9 @@ export function releaseSupportsAdditionalFileQueue(
   if ("episode" in scope) {
     return true;
   }
+  if ("seriesMovie" in scope) {
+    return true;
+  }
   if ("title" in scope) {
     return titleFacet === "movie";
   }

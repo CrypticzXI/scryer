@@ -1051,24 +1051,26 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            let filtered_ids =
+            let eligible_ids =
                 filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet));
             if matches!(
                 resolved_caps.id_dispatch_mode,
                 IdDispatchMode::Aggregate | IdDispatchMode::QueryOnly
             ) {
-                let dropped_ids = available_ids
+                let extra_ids = available_ids
                     .keys()
-                    .filter(|id_type| !filtered_ids.contains_key(*id_type))
+                    .filter(|id_type| !eligible_ids.contains_key(*id_type))
                     .cloned()
                     .collect::<Vec<_>>();
-                if !dropped_ids.is_empty() {
+                if !available_ids.is_empty() {
                     debug!(
                         indexer = config.name.as_str(),
                         facet,
                         id_search_facet,
-                        dropped_ids = ?dropped_ids,
-                        "dropping IDs not advertised by effective caps"
+                        eligible_ids = ?eligible_ids.keys().collect::<Vec<_>>(),
+                        carried_ids = ?available_ids.keys().collect::<Vec<_>>(),
+                        extra_ids = ?extra_ids,
+                        "ID strategy capability resolved; carrying full ID envelope when strategy runs"
                     );
                 }
             }
@@ -1604,10 +1606,15 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
     let mut strategies = Vec::with_capacity(4);
 
-    let filtered_ids = filter_ids_for_types(ids, caps.id_types_for_facet(id_facet));
-    if !filtered_ids.is_empty() && !is_alias_query {
+    let eligible_ids = filter_ids_for_types(ids, caps.id_types_for_facet(id_facet));
+    if !eligible_ids.is_empty() && !is_alias_query {
+        let full_ids = ids
+            .iter()
+            .filter(|(_, value)| !value.trim().is_empty())
+            .map(|(id_type, value)| (id_type.clone(), value.clone()))
+            .collect::<HashMap<_, _>>();
         let selected_ids = match id_dispatch_mode {
-            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => filtered_ids.clone(),
+            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => full_ids,
             IdDispatchMode::QueryOnly => HashMap::new(),
         };
         if id_facet == "anime" && !selected_ids.is_empty() {
@@ -1638,7 +1645,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             }
         }
 
-        if strategies.is_empty() {
+        if strategies.is_empty() && !selected_ids.is_empty() {
             strategies.push(SearchStrategy {
                 request_query: String::new(),
                 request_facet: id_facet.to_string(),
@@ -2641,7 +2648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_prowlarr_movie_caps_drop_tmdb_when_proxy_does_not_advertise_it() {
+    async fn managed_prowlarr_movie_caps_carry_full_id_envelope_when_any_id_is_eligible() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
         config.managed_parent_config_id = Some("parent".into());
@@ -2691,12 +2698,16 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12004567".to_string()),
+                ("tmdb_id".to_string(), "120045".to_string()),
+            ])
         );
     }
 
     #[tokio::test]
-    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids() {
+    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids_to_carry_full_id_envelope()
+    {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
 
@@ -2742,7 +2753,10 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12004567".to_string()),
+                ("tmdb_id".to_string(), "120045".to_string()),
+            ])
         );
     }
 
@@ -3169,7 +3183,10 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12345678".to_string()),
+                ("tmdb_id".to_string(), "123456".to_string()),
+            ])
         );
         assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
         assert!(recorded[0].categories.is_empty());
@@ -3202,7 +3219,13 @@ mod tests {
         let response = multi
             .search(
                 "Expected Movie 2024".to_string(),
-                HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt12345678".to_string()),
+                    ("tmdb_id".to_string(), "123456".to_string()),
+                    ("tvdb_id".to_string(), "98765".to_string()),
+                    ("anidb_id".to_string(), "54321".to_string()),
+                    ("mal_id".to_string(), "67890".to_string()),
+                ]),
                 Some("movie".to_string()),
                 Some("movie".to_string()),
                 Some("movie".to_string()),
@@ -3226,7 +3249,13 @@ mod tests {
         assert_eq!(recorded.len(), 1, "ID results should suppress fallback");
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12345678".to_string()),
+                ("tmdb_id".to_string(), "123456".to_string()),
+                ("tvdb_id".to_string(), "98765".to_string()),
+                ("anidb_id".to_string(), "54321".to_string()),
+                ("mal_id".to_string(), "67890".to_string()),
+            ])
         );
     }
 
@@ -3897,7 +3926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_backed_id_searches_keep_title_guard() {
+    async fn query_backed_id_searches_skip_title_guard() {
         let (client, _calls) = scripted_search_client(movie_caps(), |call| {
             if call.ids.contains_key("imdb_id") {
                 response_with_titles(&[
@@ -3927,8 +3956,12 @@ mod tests {
             .await
             .expect("query-backed ID search should succeed");
 
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].title, "Lantern.Tide.2001.1080p.BluRay");
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(
+            response.results[0].title,
+            "Lantern.Tide.Hidden.Current.2001.1080p.BluRay"
+        );
+        assert_eq!(response.results[1].title, "Lantern.Tide.2001.1080p.BluRay");
     }
 
     #[test]

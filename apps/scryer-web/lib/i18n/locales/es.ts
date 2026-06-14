@@ -626,6 +626,7 @@ const es: LocaleDictionary = {
     "La búsqueda interactiva estará disponible próximamente.",
   "title.seasonMonitored": "Temporada monitorizada",
   "title.episodeMonitored": "Episodio monitorizado",
+  "title.seriesMovieMonitored": "Película de serie monitorizada",
   "title.deleteFilesOnDisk": "Eliminar archivos del disco",
   "title.seasonsAndEpisodes": "Temporadas y episodios",
   "title.noTrackedSeasons":

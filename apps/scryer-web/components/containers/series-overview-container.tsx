@@ -14,6 +14,7 @@ import {
   queueBestReleaseMutation,
   queueExistingMutation,
   setEpisodeMonitoredMutation,
+  setSeriesMovieMonitoredMutation,
   setTitleMonitoredMutation,
   triggerTitleWantedSearchMutation,
   triggerSeasonWantedSearchMutation,
@@ -693,6 +694,18 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     [client, refreshTitleDetail],
   );
 
+  const handleSetSeriesMovieMonitored = React.useCallback(
+    async (seriesMovieLinkId: string, monitored: boolean) => {
+      const { error } = await client.mutation(
+        setSeriesMovieMonitoredMutation,
+        { input: { seriesMovieLinkId, monitored } },
+      ).toPromise();
+      if (error) throw error;
+      await refreshTitleDetail();
+    },
+    [client, refreshTitleDetail],
+  );
+
   const handleSetTitleMonitored = React.useCallback(
     async (monitored: boolean) => {
       if (!title) return;
@@ -1140,6 +1153,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onBackToList={onBackToList}
         onSetCollectionMonitored={handleSetCollectionMonitored}
         onSetEpisodeMonitored={handleSetEpisodeMonitored}
+        onSetSeriesMovieMonitored={handleSetSeriesMovieMonitored}
         onSetTitleMonitored={handleSetTitleMonitored}
         onSearchMonitored={handleSearchMonitored}
         onAutoSearchEpisode={handleAutoSearchEpisode}

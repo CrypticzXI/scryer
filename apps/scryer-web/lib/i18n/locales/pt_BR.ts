@@ -619,6 +619,7 @@ const pt_BR: LocaleDictionary = {
     "A pesquisa interativa estará disponível em breve.",
   "title.seasonMonitored": "Temporada monitorada",
   "title.episodeMonitored": "Episódio monitorado",
+  "title.seriesMovieMonitored": "Filme de série monitorado",
   "title.deleteFilesOnDisk": "Excluir arquivos do disco",
   "title.seasonsAndEpisodes": "Temporadas e episódios",
   "title.noTrackedSeasons":

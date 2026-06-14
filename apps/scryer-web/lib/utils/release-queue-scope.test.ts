@@ -33,6 +33,19 @@ test("additional-file queue eligibility uses the signed release queue scope", ()
     ),
     true,
   );
+  assert.equal(
+    releaseSupportsAdditionalFileQueue(
+      {
+        queueScope: {
+          kind: "series_movie",
+          seriesMovieLinkId: "series-movie-1",
+          episodeIds: [],
+        },
+      },
+      "anime",
+    ),
+    true,
+  );
 
   const unsupportedScopes: ReleaseQueueScope[] = [
     { kind: "collection", collectionId: "season-1", episodeIds: [] },

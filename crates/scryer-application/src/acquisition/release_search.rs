@@ -768,6 +768,49 @@ impl AppUseCase {
         preferred_scoped_external_id(&collection_ids, "anidb")
     }
 
+    pub(crate) async fn release_search_title_for_wanted_item(
+        &self,
+        title: &Title,
+        item: &WantedItem,
+        episode: Option<&Episode>,
+    ) -> Title {
+        let search_title = if item.media_type == "series_movie" {
+            if let Some(ref link_id) = item.series_movie_link_id
+                && let Ok(Some(link)) = self
+                    .services
+                    .catalog
+                    .shows
+                    .get_series_movie_link_by_id(link_id)
+                    .await
+            {
+                series_movie_search_title(title, &link)
+            } else {
+                title.clone()
+            }
+        } else {
+            title.clone()
+        };
+
+        if item.media_type == "episode"
+            && let Some(anidb_id) = self.local_scoped_anidb_id_for_episode(episode).await
+        {
+            let mut search_title = search_title;
+            search_title.external_ids.retain(|id| {
+                !matches!(
+                    id.source.trim().to_ascii_lowercase().as_str(),
+                    "anidb" | "anidb_id"
+                )
+            });
+            search_title.external_ids.push(scryer_domain::ExternalId {
+                source: "anidb".into(),
+                value: anidb_id,
+            });
+            return search_title;
+        }
+
+        search_title
+    }
+
     pub(crate) async fn evaluate_search_results_for_subject(
         &self,
         title: &Title,
@@ -1155,20 +1198,25 @@ impl AppUseCase {
 
     pub(crate) async fn resolve_release_search_subject_for_wanted_item(
         &self,
-        title: &Title,
+        owner_title: &Title,
+        search_title: &Title,
         item: &WantedItem,
         episode: Option<&Episode>,
     ) -> ResolvedReleaseSearchSubject {
-        let query_result = build_search_queries(title, item, episode, &self.facet_registry);
-        let owner_facet = owner_facet_for_wanted_item(title, item);
+        let query_result = build_search_queries(search_title, item, episode, &self.facet_registry);
+        let owner_facet = if item.media_type == "series_movie" {
+            owner_title.facet.clone()
+        } else {
+            owner_facet_for_wanted_item(owner_title, item)
+        };
         let absolute_episode = episode
             .and_then(|episode| episode.absolute_number.as_deref())
             .and_then(|value| value.parse::<u32>().ok());
 
         ResolvedReleaseSearchSubject {
-            title_id: title.id.clone(),
-            title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence_for_episode(title, episode),
+            title_id: owner_title.id.clone(),
+            title_tags: owner_title.tags.clone(),
+            title_evidence: canonical_title_evidence_for_episode(search_title, episode),
             queries: query_result.queries,
             imdb_id: query_result.imdb_id,
             tmdb_id: query_result.tmdb_id,
@@ -1177,7 +1225,7 @@ impl AppUseCase {
             mal_id: query_result.mal_id,
             category: query_result.category.clone(),
             owner_facet: owner_facet.clone(),
-            search_facet: title.facet.clone(),
+            search_facet: search_title.facet.clone(),
             id_search_facet: (item.media_type == "series_movie").then_some(MediaFacet::Movie),
             newznab_categories: if item.media_type == "series_movie" {
                 series_movie_newznab_categories(&owner_facet)
@@ -1187,7 +1235,7 @@ impl AppUseCase {
             runtime_minutes: episode
                 .and_then(|episode| episode.duration_seconds)
                 .map(|seconds| (seconds / 60) as i32)
-                .or(title.runtime_minutes),
+                .or(search_title.runtime_minutes),
             season: query_result.season,
             episode: query_result.episode,
             absolute_episode,

@@ -1109,6 +1109,10 @@ export const setEpisodeMonitoredMutation = `mutation SetEpisodeMonitored($input:
   setEpisodeMonitored(input: $input) { id monitored }
 }`;
 
+export const setSeriesMovieMonitoredMutation = `mutation SetSeriesMovieMonitored($input: SetSeriesMovieMonitoredInput!) {
+  setSeriesMovieMonitored(input: $input) { id monitored }
+}`;
+
 export const setTitleMonitoredMutation = `mutation SetTitleMonitored($input: SetTitleMonitoredInput!) {
   setTitleMonitored(input: $input) { id monitored }
 }`;
