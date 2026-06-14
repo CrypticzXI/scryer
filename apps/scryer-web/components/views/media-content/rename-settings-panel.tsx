@@ -797,6 +797,7 @@ export function RenameSettingsPanel({
                 </h3>
               </div>
               <SettingsToggleSwitch
+                id="rename-settings-enabled-toggle"
                 checked={renameEnabled}
                 disabled={mediaSettingsLoading}
                 ariaLabel={renameEnabled ? t("label.enabled") : t("label.disabled")}
@@ -812,6 +813,7 @@ export function RenameSettingsPanel({
                       {t("settings.renameTemplateLabel")}
                     </Label>
                     <TokenAutocompleteInput
+                      id="rename-settings-template-input"
                       inputRef={templateInputRef}
                       value={templateValue}
                       onChange={handleRenameTemplateChange}
@@ -829,7 +831,7 @@ export function RenameSettingsPanel({
                       }
                     />
                     {renameValidationError ? (
-                      <p className="text-xs text-rose-400">{renameValidationError}</p>
+                      <p id="rename-settings-validation-message" className="text-xs text-rose-400">{renameValidationError}</p>
                     ) : null}
                   </div>
 
@@ -839,7 +841,7 @@ export function RenameSettingsPanel({
                     </Label>
                     {renamePreview ? (
                       <div className="rounded border border-border bg-muted px-3 py-1.5">
-                        <p className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
+                        <p id="rename-settings-preview-output" className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
                       </div>
                     ) : (
                       <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
@@ -910,6 +912,7 @@ export function RenameSettingsPanel({
 
           <div className="flex justify-end">
             <Button
+              id="rename-settings-save"
               type="submit"
               disabled={
                 mediaSettingsSaving ||

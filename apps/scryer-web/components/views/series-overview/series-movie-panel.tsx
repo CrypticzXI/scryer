@@ -1,10 +1,16 @@
-import { ExternalLink } from "lucide-react";
 import type { SeriesMovieLink } from "@/components/containers/series-overview-container";
 import { useTranslate } from "@/lib/context/translate-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
 import { localizedTitleStatus } from "../overview-localization";
-import { formatRuntimeFromMinutes, getImdbUrl, getTvdbMovieUrl } from "./helpers";
+import {
+  AnidbExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+} from "@/components/common/external-media-links";
+import { formatRuntimeFromMinutes } from "./helpers";
 
 type SeriesMoviePanelProps = {
   link: SeriesMovieLink;
@@ -14,8 +20,6 @@ type SeriesMoviePanelProps = {
 export function SeriesMoviePanel({ link, hasFile }: SeriesMoviePanelProps) {
   const t = useTranslate();
   const movie = link.movie;
-  const imdbUrl = getImdbUrl(movie.imdbId);
-  const tvdbUrl = getTvdbMovieUrl(movie.tvdbId, movie.slug);
   const runtime = formatRuntimeFromMinutes(movie.runtimeMinutes);
   const posterUrl = selectPosterVariantUrl(movie.posterUrl, "w250");
   const badges = buildMovieBadges(link, hasFile, t);
@@ -63,31 +67,12 @@ export function SeriesMoviePanel({ link, hasFile }: SeriesMoviePanelProps) {
         {link.signalSummary ? (
           <p className="mt-2 text-xs text-muted-foreground/80">{link.signalSummary}</p>
         ) : null}
-        <div className="mt-3 flex flex-wrap gap-2 text-sm">
-          {imdbUrl ? (
-            <a
-              href={imdbUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-xs text-card-foreground hover:bg-muted"
-              aria-label={t("external.openOn", { site: "IMDb" })}
-            >
-              <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-              IMDb
-            </a>
-          ) : null}
-          {tvdbUrl ? (
-            <a
-              href={tvdbUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-xs text-card-foreground hover:bg-muted"
-              aria-label={t("external.openOn", { site: "TVDB" })}
-            >
-              <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-              TVDB
-            </a>
-          ) : null}
+        <div className="mt-3 flex flex-wrap gap-3 text-sm">
+          <ImdbExternalLink imdbId={movie.imdbId} />
+          <TvdbMovieExternalLink tvdbId={movie.tvdbId} slug={movie.slug} />
+          <TmdbExternalLink mediaType="movie" tmdbId={movie.tmdbId} />
+          <MalExternalLink malId={movie.malId} />
+          <AnidbExternalLink anidbId={movie.anidbId} />
         </div>
       </div>
     </div>

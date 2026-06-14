@@ -617,8 +617,6 @@ const ko: LocaleDictionary = {
   "title.movieDetails": "영화 세부 정보",
   "title.searchingReleases": "인덱서에서 릴리스를 검색하는 중…",
   "title.noReleasesFound": "{{name}}에 대한 릴리스를 찾지 못했습니다.",
-  "title.interactiveSearchHint":
-    "대화형 검색으로 설정된 인덱서에서 {{name}} 릴리스를 조회하세요.",
   "title.searchNeedsDownloadClientTitle": "검색에는 다운로드 클라이언트가 필요합니다",
   "title.searchNeedsDownloadClientDescription":
     "이 제목 페이지에서 검색 또는 대화형 검색을 사용하기 전에 다운로드 클라이언트를 하나 이상 구성하세요.",

@@ -45,10 +45,12 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
-
-const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
-const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
-const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
+import {
+  AnidbExternalLink,
+  ImdbExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+} from "@/components/common/external-media-links";
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string) {
@@ -535,6 +537,7 @@ export function MovieOverviewView({
   const imdbId = title.imdbId ?? externalIds.find((e) => e.source === "imdb")?.value;
   const anidbId = externalIds.find((e) => e.source === "anidb")?.value;
   const tmdbId = externalIds.find((e) => e.source === "tmdb")?.value;
+  const tvdbId = externalIds.find((e) => e.source === "tvdb")?.value;
 
   const posterUrl = title.posterUrl;
   const overview = title.overview;
@@ -595,11 +598,7 @@ export function MovieOverviewView({
         <p className="text-sm text-muted-foreground">
           {t("title.noReleasesFound", { name: title.name })}
         </p>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          {t("title.interactiveSearchHint", { name: title.name })}
-        </p>
-      )}
+      ) : null}
     </div>
   ) : null;
   return (
@@ -792,46 +791,10 @@ export function MovieOverviewView({
               ) : null}
 
               <div className="mt-auto flex flex-wrap gap-3 pt-3 text-sm">
-                {imdbId ? (
-                  <a
-                    href={
-                      imdbId.startsWith("tt")
-                        ? `https://www.imdb.com/title/${imdbId}`
-                        : `https://www.imdb.com/find?q=${encodeURIComponent(imdbId)}&s=tt`
-                    }
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "IMDb" })}
-                  >
-                    <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
-                    <span className="text-muted-foreground">IMDb</span>
-                  </a>
-                ) : null}
-                {tmdbId ? (
-                  <a
-                    href={`https://www.themoviedb.org/movie/${tmdbId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TMDB" })}
-                  >
-                    <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TMDB</span>
-                  </a>
-                ) : null}
-                {anidbId ? (
-                  <a
-                    href={`https://anidb.net/anime/${anidbId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "AniDB" })}
-                  >
-                    <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">AniDB</span>
-                  </a>
-                ) : null}
+                <ImdbExternalLink imdbId={imdbId} />
+                <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
+                <TmdbExternalLink mediaType="movie" tmdbId={tmdbId} />
+                <AnidbExternalLink anidbId={anidbId} />
                 {(title.externalIds ?? [])
                   .filter((e) => e.source !== "imdb" && e.source !== "tvdb" && e.source !== "anidb" && e.source !== "tmdb")
                   .map((e) => (

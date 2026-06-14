@@ -642,8 +642,6 @@ const de: LocaleDictionary = {
   "title.movieDetails": "Filmdetails",
   "title.searchingReleases": "Indexer werden nach Releases durchsucht…",
   "title.noReleasesFound": "Keine Releases für {{name}} gefunden.",
-  "title.interactiveSearchHint":
-    "Verwende die interaktive Suche, um deine konfigurierten Indexer nach Releases für {{name}} zu durchsuchen.",
   "title.searchNeedsDownloadClientTitle": "Suche erfordert einen Download-Client",
   "title.searchNeedsDownloadClientDescription":
     "Konfiguriere mindestens einen Download-Client, bevor du auf dieser Titelseite Suche oder interaktive Suche verwendest.",

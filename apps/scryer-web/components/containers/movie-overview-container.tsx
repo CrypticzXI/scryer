@@ -254,6 +254,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [renamePreviewing, setRenamePreviewing] = React.useState(false);
   const [renameApplying, setRenameApplying] = React.useState(false);
+  const renamePlanTitleIdRef = React.useRef<string | null>(null);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
@@ -367,7 +368,15 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());
         setDownloadFeedbackSettled(true);
       }
-      setRenamePlan(null);
+      const nextTitleId = nextTitle?.id ?? null;
+      if (
+        renamePlanTitleIdRef.current !== nextTitleId ||
+        !nextTitle ||
+        !snapshot.hasDownloadClients
+      ) {
+        setRenamePlan(null);
+      }
+      renamePlanTitleIdRef.current = nextTitleId;
     },
     [applyDownloadFeedbackSnapshot, onTitleResolved],
   );
@@ -458,6 +467,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setDownloadFeedbackSettled(false);
       setSubtitleDownloads([]);
       setRenamePlan(null);
+      renamePlanTitleIdRef.current = null;
       setRenamePreviewing(false);
       setRenameApplying(false);
       setHasDownloadClients(true);

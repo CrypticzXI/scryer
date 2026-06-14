@@ -628,8 +628,6 @@ const ja: LocaleDictionary = {
   "title.movieDetails": "映画の詳細",
   "title.searchingReleases": "インデクサーでリリースを検索中…",
   "title.noReleasesFound": "{{name}} のリリースは見つかりませんでした。",
-  "title.interactiveSearchHint":
-    "インタラクティブ検索を使って、設定済みのインデクサーから {{name}} のリリースを検索します。",
   "title.searchNeedsDownloadClientTitle": "検索にはダウンロードクライアントが必要です",
   "title.searchNeedsDownloadClientDescription":
     "このタイトルページで検索またはインタラクティブ検索を使う前に、少なくとも 1 つのダウンロードクライアントを設定してください。",

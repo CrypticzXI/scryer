@@ -71,7 +71,6 @@ import {
   deriveMediaFileQualityLabel,
   formatDate,
   formatFileSize,
-  formatRuntimeFromMinutes,
   formatRuntimeFromSeconds,
   isEpisodeCountableForProgress,
   isSpecialsCollection,
@@ -81,7 +80,6 @@ import { EpisodeDetailsPanel } from "./episode-details-panel";
 import { MediaFilesOnDiskPanel } from "@/components/common/media-files-on-disk-panel";
 import { SeriesMoviePanel } from "./series-movie-panel";
 import { EpisodeBlocklistPanel } from "./episode-blocklist-panel";
-import { localizedTitleStatus } from "../overview-localization";
 
 type TranslateFn = ReturnType<typeof useTranslate>;
 
@@ -911,13 +909,6 @@ function SeriesMovieTimelineContent({
           {t("title.noReleasesFound", { name: link.movie.title })}
         </p>
       ) : null}
-      {!searchBlockedForMovie
-      && !searchLoading
-      && !searchAttempted ? (
-        <p className="text-xs text-muted-foreground">
-          {t("title.interactiveSearchHint", { name: link.movie.title })}
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -980,8 +971,6 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
     mediaFilesBySeriesMovieLink,
   );
   const sizeLabel = getMediaFilesSizeLabel(mediaFiles);
-  const runtimeLabel = formatRuntimeFromMinutes(link.movie.runtimeMinutes);
-  const localizedStatus = localizedTitleStatus(t, link.movie.contentStatus);
   const autoSearchLoading = props.autoSearchSeriesMovieLoadingByLink[link.id] === true;
   const searchLoading = props.seriesMovieSearchLoadingByLink[link.id] === true;
 
@@ -1065,11 +1054,6 @@ export function SeriesMovieTimelineSection(props: SeriesMovieTimelineContentProp
             <p className="truncate text-sm font-semibold text-foreground">
               {link.movie.title}
             </p>
-            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-              {link.movie.year ? <span>{link.movie.year}</span> : null}
-              {runtimeLabel ? <span>{runtimeLabel}</span> : null}
-              {localizedStatus ? <span>{localizedStatus}</span> : null}
-            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">

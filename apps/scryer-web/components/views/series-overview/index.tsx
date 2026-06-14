@@ -51,6 +51,14 @@ import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import {
+  AnidbExternalLink,
+  AnilistExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbSeriesExternalLink,
+} from "@/components/common/external-media-links";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -112,13 +120,6 @@ function coveredEpisodeIdsForQueueItem(
 
   return Array.from(episodeIds);
 }
-
-const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
-const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
-const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
-const malLogoUrl = `${import.meta.env.BASE_URL}media-sites/mal.svg`;
-const anilistLogoUrl = `${import.meta.env.BASE_URL}media-sites/anilist.svg`;
-const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
 
 type Props = {
   canManageTitle: boolean;
@@ -817,80 +818,34 @@ export function SeriesOverviewView({
               ) : null}
 
               <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "imdb"); return e ? (
-                  <a
-                    href={e.value.startsWith("tt") ? `https://www.imdb.com/title/${e.value}` : `https://www.imdb.com/find?q=${encodeURIComponent(e.value)}&s=tt`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "IMDb" })}
-                  >
-                    <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
-                    <span className="text-muted-foreground">IMDb</span>
-                  </a>
-                ) : null; })()}
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tvdb"); return e && title.slug ? (
-                  <a
-                    href={`https://thetvdb.com/series/${title.slug}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TVDB" })}
-                  >
-                    <img src={tvdbLogoUrl} alt="TVDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TVDB</span>
-                  </a>
-                ) : null; })()}
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tmdb"); return e ? (
-                  <a
-                    href={`https://www.themoviedb.org/tv/${e.value}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TMDB" })}
-                  >
-                    <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TMDB</span>
-                  </a>
-                ) : null; })()}
+                {(() => {
+                  const externalIds = title.externalIds ?? [];
+                  return (
+                    <>
+                      <ImdbExternalLink imdbId={externalIds.find((e) => e.source === "imdb")?.value} />
+                      <TvdbSeriesExternalLink
+                        tvdbId={externalIds.find((e) => e.source === "tvdb")?.value}
+                        slug={title.slug}
+                      />
+                      <TmdbExternalLink
+                        mediaType="tv"
+                        tmdbId={externalIds.find((e) => e.source === "tmdb")?.value}
+                      />
+                    </>
+                  );
+                })()}
                 {title.facet === "anime" ? (
                   <>
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "mal"); return e ? (
-                      <a
-                        href={`https://myanimelist.net/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "MyAnimeList" })}
-                      >
-                        <img src={malLogoUrl} alt="MyAnimeList" className="h-8 w-8" />
-                        <span className="text-muted-foreground">MAL</span>
-                      </a>
-                    ) : null; })()}
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anilist"); return e ? (
-                      <a
-                        href={`https://anilist.co/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "AniList" })}
-                      >
-                        <img src={anilistLogoUrl} alt="AniList" className="h-8 w-8" />
-                        <span className="text-muted-foreground">AniList</span>
-                      </a>
-                    ) : null; })()}
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anidb"); return e ? (
-                      <a
-                        href={`https://anidb.net/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "AniDB" })}
-                      >
-                        <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
-                        <span className="text-muted-foreground">AniDB</span>
-                      </a>
-                    ) : null; })()}
+                    {(() => {
+                      const externalIds = title.externalIds ?? [];
+                      return (
+                        <>
+                          <MalExternalLink malId={externalIds.find((e) => e.source === "mal")?.value} />
+                          <AnilistExternalLink anilistId={externalIds.find((e) => e.source === "anilist")?.value} />
+                          <AnidbExternalLink anidbId={externalIds.find((e) => e.source === "anidb")?.value} />
+                        </>
+                      );
+                    })()}
                   </>
                 ) : null}
                 <span className="ml-auto text-xs text-muted-foreground/60">

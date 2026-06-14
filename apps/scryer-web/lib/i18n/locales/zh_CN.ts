@@ -598,8 +598,6 @@ const zh_CN: LocaleDictionary = {
   "title.movieDetails": "电影详情",
   "title.searchingReleases": "正在索引站中搜索发布资源…",
   "title.noReleasesFound": "未找到 {{name}} 的发布资源。",
-  "title.interactiveSearchHint":
-    "使用交互式搜索可在已配置的索引站中查询 {{name}} 的发布资源。",
   "title.searchNeedsDownloadClientTitle": "搜索需要下载客户端",
   "title.searchNeedsDownloadClientDescription":
     "在此标题页面使用搜索或交互式搜索之前，请先配置至少一个下载客户端。",

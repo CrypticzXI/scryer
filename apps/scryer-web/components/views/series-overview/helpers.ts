@@ -44,27 +44,6 @@ export function formatRuntimeFromSeconds(runtimeSeconds: number | null | undefin
   return formatRuntimeFromMinutes(Math.floor(runtimeSeconds / 60));
 }
 
-export function getImdbUrl(imdbId: string | null | undefined) {
-  if (!imdbId) return null;
-  const trimmed = imdbId.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("tt")) {
-    return `https://www.imdb.com/title/${trimmed}`;
-  }
-  return `https://www.imdb.com/find?q=${encodeURIComponent(trimmed)}&s=tt`;
-}
-
-export function getTvdbMovieUrl(tvdbIdValue: string | null | undefined, slugValue?: string | null) {
-  const tvdbId = String(tvdbIdValue ?? "").trim();
-  if (!tvdbId) return null;
-  const slug = slugValue?.trim();
-  const base = "https://www.thetvdb.com";
-  if (slug) {
-    return `${base}/movies/${tvdbId}-${encodeURIComponent(slug)}`;
-  }
-  return `${base}/?id=${encodeURIComponent(tvdbId)}`;
-}
-
 export function dedupeInsensitive(values: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];

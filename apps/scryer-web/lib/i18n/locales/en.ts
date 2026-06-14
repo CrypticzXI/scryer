@@ -831,8 +831,6 @@ const en: LocaleDictionary = {
   "title.movieDetails": "Movie details",
   "title.searchingReleases": "Searching indexers for releases…",
   "title.noReleasesFound": "No releases found for {{name}}.",
-  "title.interactiveSearchHint":
-    "Use interactive search to query your configured indexers for releases of {{name}}.",
   "title.searchNeedsDownloadClientTitle": "Search requires a download client",
   "title.searchNeedsDownloadClientDescription":
     "Configure at least one download client before using search or interactive search from this title page.",

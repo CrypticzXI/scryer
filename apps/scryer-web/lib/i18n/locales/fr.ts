@@ -652,8 +652,6 @@ const fr: LocaleDictionary = {
   "title.searchingReleases":
     "Recherche de publications sur les indexeurs…",
   "title.noReleasesFound": "Aucune publication trouvée pour {{name}}.",
-  "title.interactiveSearchHint":
-    "Utilisez la recherche interactive pour interroger vos indexeurs configurés à la recherche de publications pour {{name}}.",
   "title.searchNeedsDownloadClientTitle": "La recherche nécessite un client de téléchargement",
   "title.searchNeedsDownloadClientDescription":
     "Configurez au moins un client de téléchargement avant d'utiliser la recherche ou la recherche interactive depuis cette page de titre.",
