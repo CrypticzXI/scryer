@@ -305,6 +305,12 @@ mod tests {
             ImportStatus::Pending
         );
 
+        result.skip_reason = Some(ImportSkipReason::UnparseableEpisode);
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Skipped),
+            ImportStatus::Skipped
+        );
+
         result.skip_reason = Some(ImportSkipReason::PolicyMismatch);
         assert_eq!(
             completed_import_status_for_result(&result, ImportStatus::Skipped),

@@ -302,86 +302,249 @@ fn download_queue_identity_key(
         download_client_item_id.to_string(),
     )
 }
+fn download_queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
+    DownloadSourceIdentity::new(
+        Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
+        &item.client_type,
+        &item.download_client_item_id,
+    )
+}
+fn push_source_identity_candidate(
+    identities: &mut Vec<DownloadSourceIdentity>,
+    seen: &mut HashSet<(String, String, String)>,
+    identity: DownloadSourceIdentity,
+) {
+    if identity.client_type.is_empty() || identity.item_id.is_empty() {
+        return;
+    }
+
+    let key = download_queue_identity_key(
+        identity.client_id.as_deref(),
+        &identity.client_type,
+        &identity.item_id,
+    );
+    if seen.insert(key) {
+        identities.push(identity);
+    }
+}
+fn push_submission_lookup_key(
+    keys: &mut Vec<(String, String, String)>,
+    seen: &mut HashSet<(String, String, String)>,
+    identity: &DownloadSourceIdentity,
+) {
+    if identity.client_type.is_empty() || identity.item_id.is_empty() {
+        return;
+    }
+
+    let key = download_queue_identity_key(
+        identity.client_id.as_deref(),
+        &identity.client_type,
+        &identity.item_id,
+    );
+    if seen.insert(key.clone()) {
+        keys.push(key);
+    }
+}
+fn apply_submission_to_queue_item(item: &mut DownloadQueueItem, submission: &DownloadSubmission) {
+    item.is_scryer_origin = true;
+    if item.title_id.is_none() {
+        item.title_id = Some(submission.title_id.clone());
+    }
+    if item.episode_id.is_none() {
+        item.episode_id = submission.scope.episode_id().map(ToString::to_string);
+    }
+    if item.facet.is_none() {
+        item.facet = Some(submission.facet.clone());
+    }
+}
 pub async fn enrich_download_queue_items_from_submissions(
     app: &AppUseCase,
     items: &mut [DownloadQueueItem],
 ) {
-    let client_items = items
-        .iter()
-        .map(|item| {
-            DownloadSourceIdentity::new(
-                Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
-                &item.client_type,
-                &item.download_client_item_id,
-            )
-        })
-        .filter(|identity| !identity.client_type.is_empty() && !identity.item_id.is_empty())
-        .collect::<Vec<_>>();
+    enrich_download_queue_items_from_submissions_with_original_identities(app, items, None).await;
+}
+async fn enrich_download_queue_items_from_submissions_with_original_identities(
+    app: &AppUseCase,
+    items: &mut [DownloadQueueItem],
+    original_source_identities: Option<&[DownloadSourceIdentity]>,
+) {
+    let mut client_items = Vec::new();
+    let mut seen_client_items = HashSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let current = download_queue_item_source_identity(item);
+        push_source_identity_candidate(
+            &mut client_items,
+            &mut seen_client_items,
+            current.clone(),
+        );
+        if current.client_id.is_none() {
+            push_source_identity_candidate(
+                &mut client_items,
+                &mut seen_client_items,
+                DownloadSourceIdentity::new(None, &current.client_type, &current.item_id),
+            );
+        }
 
-    if client_items.is_empty() {
-        return;
+        if let Some(original) = original_source_identities.and_then(|identities| identities.get(index))
+        {
+            push_source_identity_candidate(
+                &mut client_items,
+                &mut seen_client_items,
+                original.clone(),
+            );
+            if original.client_id.is_none() {
+                push_source_identity_candidate(
+                    &mut client_items,
+                    &mut seen_client_items,
+                    DownloadSourceIdentity::new(None, &original.client_type, &original.item_id),
+                );
+            }
+        }
     }
 
-    let submissions = match app
-        .services
-        .workflow
-        .download_submissions
-        .list_for_client_items(&client_items)
-        .await
-    {
-        Ok(submissions) => submissions,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "failed to batch-load download submissions for queue enrichment"
+    let submission_map = if client_items.is_empty() {
+        HashMap::new()
+    } else {
+        let submissions = match app
+            .services
+            .workflow
+            .download_submissions
+            .list_for_client_items(&client_items)
+            .await
+        {
+            Ok(submissions) => submissions,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to batch-load download submissions for queue enrichment"
+                );
+                Vec::new()
+            }
+        };
+
+        submissions
+            .into_iter()
+            .filter(|submission| !submission.title_id.trim().is_empty())
+            .map(|submission| {
+                (
+                    download_queue_identity_key(
+                        submission.download_client_id.as_deref(),
+                        &submission.download_client_type,
+                        &submission.download_client_item_id,
+                    ),
+                    submission,
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    };
+
+    for (index, item) in items.iter_mut().enumerate() {
+        let current = download_queue_item_source_identity(item);
+        let original = original_source_identities.and_then(|identities| identities.get(index));
+        let mut lookup_keys = Vec::new();
+        let mut seen_lookup_keys = HashSet::new();
+        push_submission_lookup_key(&mut lookup_keys, &mut seen_lookup_keys, &current);
+        if let Some(original) = original {
+            push_submission_lookup_key(&mut lookup_keys, &mut seen_lookup_keys, original);
+        }
+        if current.client_id.is_none() {
+            push_submission_lookup_key(
+                &mut lookup_keys,
+                &mut seen_lookup_keys,
+                &DownloadSourceIdentity::new(None, &current.client_type, &current.item_id),
             );
+        }
+        if let Some(original) = original
+            && original.client_id.is_none()
+        {
+            push_submission_lookup_key(
+                &mut lookup_keys,
+                &mut seen_lookup_keys,
+                &DownloadSourceIdentity::new(None, &original.client_type, &original.item_id),
+            );
+        }
+
+        if let Some(submission) = lookup_keys
+            .iter()
+            .find_map(|key| submission_map.get(key))
+            .cloned()
+        {
+            apply_submission_to_queue_item(item, &submission);
+            continue;
+        }
+
+        if let Some(submission) =
+            find_submission_for_queue_item_by_download_id(app, item, original).await
+        {
+            apply_submission_to_queue_item(item, &submission);
+        }
+    }
+}
+async fn find_submission_for_queue_item_by_download_id(
+    app: &AppUseCase,
+    item: &DownloadQueueItem,
+    original: Option<&DownloadSourceIdentity>,
+) -> Option<DownloadSubmission> {
+    let download_id = item.download_id.as_deref().map(str::trim)?;
+    if download_id.is_empty() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_candidate = |client_id: Option<&str>, client_type: &str| {
+        let client_type = client_type.trim();
+        if client_type.is_empty() {
             return;
+        }
+        let key = (normalized_download_client_id(client_id), client_type.to_string());
+        if seen.insert(key.clone()) {
+            candidates.push(key);
         }
     };
 
-    let submission_map = submissions
-        .into_iter()
-        .filter(|submission| !submission.title_id.trim().is_empty())
-        .map(|submission| {
-            (
-                download_queue_identity_key(
-                    submission.download_client_id.as_deref(),
-                    &submission.download_client_type,
-                    &submission.download_client_item_id,
-                ),
-                submission,
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    push_candidate(
+        Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
+        &item.client_type,
+    );
+    if let Some(original) = original {
+        push_candidate(original.client_id.as_deref(), &original.client_type);
+        if original.client_id.is_none() {
+            push_candidate(None, &original.client_type);
+        }
+    }
+    if item.client_id.trim().is_empty() {
+        push_candidate(None, &item.client_type);
+    }
 
-    for item in items {
-        let exact_key = download_queue_identity_key(
-            Some(item.client_id.as_str()),
-            &item.client_type,
-            &item.download_client_item_id,
-        );
-        let legacy_submission = || {
-            item.client_id.trim().is_empty().then(|| {
-                submission_map.get(&download_queue_identity_key(
-                    None,
-                    &item.client_type,
-                    &item.download_client_item_id,
-                ))
-            })?
-        };
-        if let Some(submission) = submission_map.get(&exact_key).or_else(legacy_submission) {
-            item.is_scryer_origin = true;
-            if item.title_id.is_none() {
-                item.title_id = Some(submission.title_id.clone());
+    for (client_id, client_type) in candidates {
+        match app
+            .services
+            .workflow
+            .download_submissions
+            .find_by_download_id(
+                Some(client_id.as_str()).filter(|value| !value.trim().is_empty()),
+                &client_type,
+                download_id,
+            )
+            .await
+        {
+            Ok(Some(submission)) if !submission.title_id.trim().is_empty() => {
+                return Some(submission);
             }
-            if item.episode_id.is_none() {
-                item.episode_id = submission.scope.episode_id().map(ToString::to_string);
-            }
-            if item.facet.is_none() {
-                item.facet = Some(submission.facet.clone());
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    client_id = %client_id,
+                    client_type = %client_type,
+                    "failed to load download submission by download id for queue enrichment"
+                );
             }
         }
     }
+
+    None
 }
 fn config_value_is_empty(value: Option<&serde_json::Value>) -> bool {
     match value {
@@ -452,8 +615,17 @@ impl AppUseCase {
         mut items: Vec<DownloadQueueItem>,
         use_tracked_runtime_snapshot: bool,
     ) -> Vec<DownloadQueueItem> {
+        let original_source_identities = items
+            .iter()
+            .map(download_queue_item_source_identity)
+            .collect::<Vec<_>>();
         canonicalize_download_queue_item_clients(&mut items, enabled_clients);
-        enrich_download_queue_items_from_submissions(self, &mut items).await;
+        enrich_download_queue_items_from_submissions_with_original_identities(
+            self,
+            &mut items,
+            Some(&original_source_identities),
+        )
+        .await;
         let primary_client = enabled_clients.first();
 
         if use_tracked_runtime_snapshot {

@@ -6576,6 +6576,7 @@ async fn graphql_introspection_exposes_import_enums() {
         .collect();
     assert!(import_skip_reason_names.contains(&"password_required"));
     assert!(import_skip_reason_names.contains(&"post_download_rule_blocked"));
+    assert!(import_skip_reason_names.contains(&"unparseable_episode"));
 }
 
 #[tokio::test]

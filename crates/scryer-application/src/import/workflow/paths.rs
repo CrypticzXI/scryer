@@ -870,18 +870,6 @@ pub async fn try_import_completed_downloads(
 
     processed_ids
 }
-fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
-    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
-        && Path::new(&result.source_path).exists()
-    {
-        return true;
-    }
-
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(completed_import_error_message_is_retryable)
-}
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------

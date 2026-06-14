@@ -340,6 +340,7 @@ async fn normalize_movie_file_roles_after_scan(
     title: &Title,
     movie_scope: &MovieScanScope,
     newly_imported_file_count: usize,
+    allow_existing_additional_role_promotion: bool,
 ) -> bool {
     let mut media_files = match app
         .services
@@ -374,8 +375,11 @@ async fn normalize_movie_file_roles_after_scan(
         .iter()
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
-    let should_rank_primary =
-        primary_files.is_empty() || newly_imported_file_count == media_files.len();
+    let should_rank_primary = newly_imported_file_count == media_files.len()
+        || (primary_files.is_empty() && allow_existing_additional_role_promotion);
+    if primary_files.is_empty() && !should_rank_primary {
+        return false;
+    }
     let selected_primary_id = if should_rank_primary {
         let category = crate::post_download_gate::facet_to_category_hint(&title.facet);
         let profile_lookup = crate::catalog::discovery::QualityProfileLookup {
@@ -491,17 +495,23 @@ fn episodic_media_file_coverage_key(file: &crate::EpisodeScopedMediaFile) -> Vec
     episode_ids
 }
 
-fn select_primary_episodic_media_file(files: &[&crate::EpisodeScopedMediaFile]) -> String {
+fn select_primary_episodic_media_file(
+    files: &[&crate::EpisodeScopedMediaFile],
+    allow_existing_additional_role_promotion: bool,
+) -> Option<String> {
     let primary_files = files
         .iter()
         .copied()
         .filter(|file| file.media_file.role.is_primary())
         .collect::<Vec<_>>();
     if let [file] = primary_files.as_slice() {
-        return file.media_file.id.clone();
+        return Some(file.media_file.id.clone());
     }
 
     let mut ranked = if primary_files.is_empty() {
+        if !allow_existing_additional_role_promotion {
+            return None;
+        }
         files.to_vec()
     } else {
         primary_files
@@ -516,13 +526,14 @@ fn select_primary_episodic_media_file(files: &[&crate::EpisodeScopedMediaFile]) 
             .then_with(|| left.media_file.file_path.cmp(&right.media_file.file_path))
             .then_with(|| left.media_file.id.cmp(&right.media_file.id))
     });
-    ranked[0].media_file.id.clone()
+    Some(ranked[0].media_file.id.clone())
 }
 
 async fn normalize_episodic_file_roles_after_scan(
     app: &AppUseCase,
     title: &Title,
     episode_ids: &HashSet<String>,
+    allow_existing_additional_role_promotion: bool,
 ) -> bool {
     if episode_ids.is_empty() {
         return false;
@@ -579,7 +590,12 @@ async fn normalize_episodic_file_roles_after_scan(
             continue;
         }
 
-        let selected_primary_id = select_primary_episodic_media_file(&candidates);
+        let Some(selected_primary_id) = select_primary_episodic_media_file(
+            &candidates,
+            allow_existing_additional_role_promotion,
+        ) else {
+            continue;
+        };
         let additional_file_ids = candidates
             .iter()
             .filter(|file| file.media_file.id != selected_primary_id)
@@ -1124,6 +1140,7 @@ impl AppUseCase {
                     session_id.as_deref(),
                     work.discovered_files,
                     cleanup,
+                    work.mode,
                     cancel_token,
                 )
                 .await
@@ -1148,6 +1165,7 @@ impl AppUseCase {
         session_id: Option<&str>,
         pre_scanned_files: Option<Vec<LibraryFile>>,
         cleanup: LibraryScanMovieCleanupContext,
+        mode: LibraryScanTitleWalkMode,
         cancel_token: Option<CancellationToken>,
     ) -> AppResult<LibraryTitleWalkResult> {
         let started_at = Instant::now();
@@ -1197,9 +1215,14 @@ impl AppUseCase {
         if !library_scan_cancel_requested(cancel_token.as_ref()) {
             let cleanup_updated =
                 cleanup_missing_movie_title_records(self, &title, &cleanup, &movie_scope).await;
-            let roles_updated =
-                normalize_movie_file_roles_after_scan(self, &title, &movie_scope, summary.imported)
-                    .await;
+            let roles_updated = normalize_movie_file_roles_after_scan(
+                self,
+                &title,
+                &movie_scope,
+                summary.imported,
+                mode.allows_existing_additional_role_promotion(),
+            )
+            .await;
             if cleanup_updated || roles_updated {
                 self.emit_title_updated_activity(None, &title).await;
             }
@@ -1794,6 +1817,7 @@ impl AppUseCase {
                 self,
                 &title,
                 &role_normalization_episode_ids,
+                mode.allows_existing_additional_role_promotion(),
             )
             .await
             {

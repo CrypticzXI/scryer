@@ -607,7 +607,7 @@ async fn import_single_episode_file(
             return Ok(EpisodeImportOutcome::Skipped {
                 message: "file has no parseable episode info".to_string(),
                 reason_code: None,
-                skip_reason: Some(ImportSkipReason::NoVideoFiles),
+                skip_reason: Some(ImportSkipReason::UnparseableEpisode),
                 episode_ids: Vec::new(),
             });
         }

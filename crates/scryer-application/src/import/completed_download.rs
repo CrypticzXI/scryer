@@ -17,7 +17,8 @@ use crate::domain_events::{
 };
 use crate::import_workflow::{
     ResolvedCompletedDownloadOriginForImport,
-    block_completed_download_origin_conflict_for_manual_review, import_completed_download,
+    block_completed_download_origin_conflict_for_manual_review,
+    completed_import_result_is_retryable, import_completed_download,
     resolve_completed_download_origin_for_import,
 };
 use crate::tracked_downloads::TrackedDownload;
@@ -1026,7 +1027,7 @@ async fn apply_import_result(
         return false;
     }
 
-    if import_result_is_retryable(&result) {
+    if completed_import_result_is_retryable(&result) {
         let result_json = serde_json::to_string(&result).ok();
         if let Err(err) = app
             .update_import_status_and_notify(&result.import_id, ImportStatus::Pending, result_json)
@@ -1058,34 +1059,6 @@ async fn apply_import_result(
             false
         }
     }
-}
-
-fn import_result_is_retryable(result: &ImportResult) -> bool {
-    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
-        && Path::new(&result.source_path).exists()
-    {
-        return true;
-    }
-
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(error_message_is_retryable)
-}
-
-fn error_message_is_retryable(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    [
-        "active-download marker",
-        "still being unpacked",
-        "still_unpacking",
-        "source changed",
-        "locked",
-        "temporarily",
-        "not found or inaccessible",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
 }
 
 fn retryable_import_result_message(result: &ImportResult) -> String {

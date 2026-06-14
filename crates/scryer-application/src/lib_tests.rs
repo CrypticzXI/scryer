@@ -10023,6 +10023,69 @@ async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_ad
 }
 
 #[tokio::test]
+async fn movie_library_scan_does_not_promote_additional_file_but_title_scan_does() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Additional Only (2026)");
+    std::fs::create_dir(&title_dir).expect("create movie folder");
+    let additional_path = title_dir.join("Additional.Only.2026.1080p.WEB-DL.mkv");
+    std::fs::write(&additional_path, vec![0_u8; 256]).expect("write additional movie file");
+
+    let (app, user, _) = bootstrap_movie_scan_app(
+        tempdir.path(),
+        build_test_library_files(&[additional_path.as_path()]),
+        Arc::new(EmptySearchMetadataGateway),
+    )
+    .await;
+    let title =
+        create_movie_title_with_folder(&app, &user, "Additional Only", title_dir.as_path()).await;
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: additional_path.to_string_lossy().to_string(),
+            size_bytes: 256,
+            role: MediaFileRole::Additional,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("seed additional file");
+
+    app.scan_library(&user, MediaFacet::Movie)
+        .await
+        .expect("scan movie library");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after library scan");
+    assert_eq!(
+        media_file_role_for_path(&files, additional_path.as_path()),
+        MediaFileRole::Additional
+    );
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan movie title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after title scan");
+    assert_eq!(
+        media_file_role_for_path(&files, additional_path.as_path()),
+        MediaFileRole::Primary
+    );
+}
+
+#[tokio::test]
 async fn series_title_scan_imports_episode_file_as_primary() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let title_dir = tempdir.path().join("Fresh Show (2026)");
@@ -10262,6 +10325,157 @@ async fn series_title_scan_marks_duplicate_episode_files_as_additional() {
     assert_eq!(
         media_file_role_for_path(&files, small_episode_path.as_path()),
         MediaFileRole::Additional
+    );
+}
+
+#[tokio::test]
+async fn series_library_scan_does_not_promote_additional_file_but_title_scan_does() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let title_dir = tempdir.path().join("Additional Show (2026)");
+    std::fs::create_dir(&title_dir).expect("create series folder");
+    let episode_path = title_dir.join("Additional Show - 1x01 - Pilot WEBDL-1080p.mkv");
+    std::fs::write(&episode_path, vec![0_u8; 256]).expect("write additional episode file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(build_test_library_files(&[episode_path.as_path()]))
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        unmatched_items,
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile series root");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Additional Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2026),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, title_dir.to_string_lossy().as_ref())
+        .await
+        .expect("set series folder path");
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: Some("1".to_string()),
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+    let episode = app
+        .services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Pilot".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(420),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create episode");
+    let file_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: episode_path.to_string_lossy().to_string(),
+            size_bytes: 256,
+            role: MediaFileRole::Additional,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("seed additional episode file");
+    app.services
+        .library
+        .media_files
+        .link_file_to_episode(&file_id, &episode.id)
+        .await
+        .expect("link additional file to episode");
+
+    app.scan_library(&user, MediaFacet::Series)
+        .await
+        .expect("scan series library");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after library scan");
+    assert_eq!(
+        media_file_role_for_path(&files, episode_path.as_path()),
+        MediaFileRole::Additional
+    );
+
+    app.scan_title_library(&user, &title.id)
+        .await
+        .expect("scan series title");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files after title scan");
+    assert_eq!(
+        media_file_role_for_path(&files, episode_path.as_path()),
+        MediaFileRole::Primary
     );
 }
 

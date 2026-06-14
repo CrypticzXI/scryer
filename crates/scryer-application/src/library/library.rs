@@ -99,6 +99,10 @@ impl LibraryScanTitleWalkMode {
             Self::Full | Self::OneOff => LibraryScanMode::Full,
         }
     }
+
+    fn allows_existing_additional_role_promotion(self) -> bool {
+        matches!(self, Self::OneOff)
+    }
 }
 
 #[derive(Clone, Debug, Default)]

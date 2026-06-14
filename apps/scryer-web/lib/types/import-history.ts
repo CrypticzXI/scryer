@@ -34,6 +34,7 @@ export type ImportSkipReason =
   | "post_download_rule_blocked"
   | "policy_mismatch"
   | "unresolved_identity"
+  | "unparseable_episode"
   | "no_video_files"
   | "disk_full"
   | "permission_denied"
