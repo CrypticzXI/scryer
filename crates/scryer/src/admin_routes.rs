@@ -14,26 +14,35 @@ use serde::{Deserialize, Serialize};
 use crate::middleware::{map_app_error, resolve_actor_with_app_permission};
 use crate::settings_bootstrap::{SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM};
 
-pub(crate) async fn bootstrap_admin_password(app_use_case: &AppUseCase) {
-    let admin = match app_use_case.find_or_create_default_user().await {
-        Ok(user) => user,
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to look up admin user for password bootstrap");
-            return;
-        }
+pub(crate) async fn ensure_admin_password_configured(
+    app_use_case: &AppUseCase,
+) -> Result<(), String> {
+    let admin = app_use_case
+        .find_default_user()
+        .await
+        .map_err(|error| format!("failed to look up admin user: {error}"))?
+        .ok_or_else(|| {
+            "form login is enabled, but the default admin user does not exist; start once with authentication disabled or create an admin user before enabling auth".to_string()
+        })?;
+
+    let Some(password_hash) = admin.password_hash.as_deref() else {
+        return Err(
+            "form login is enabled, but the default admin user does not have a password; set an admin password before enabling auth".to_string(),
+        );
     };
 
-    if admin.password_hash.is_some() {
-        return;
+    let _ = password_hash;
+    if app_use_case
+        .existing_default_admin_uses_bootstrap_password()
+        .await
+        .map_err(|error| format!("failed to validate default admin password state: {error}"))?
+    {
+        return Err(
+            "form login is enabled, but the default admin password is still 'admin'; change it before enabling auth".to_string(),
+        );
     }
 
-    match app_use_case
-        .bootstrap_user_password(&admin.id, "admin")
-        .await
-    {
-        Ok(_) => tracing::info!("admin password bootstrapped (change it in Settings > Users)"),
-        Err(error) => tracing::warn!(error = %error, "failed to set admin password"),
-    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]

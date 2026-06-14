@@ -1364,6 +1364,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
             episode_id: episode.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");
@@ -1430,6 +1431,7 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
             episode_id: episode.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");
@@ -1511,6 +1513,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
             episode_id: episode1.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");

@@ -174,6 +174,17 @@ impl AppUseCase {
         self.validate_password("admin", password_hash)
     }
 
+    pub async fn existing_default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
+        let Some(admin) = self.find_default_user().await? else {
+            return Ok(false);
+        };
+        let Some(password_hash) = admin.password_hash.as_deref() else {
+            return Ok(false);
+        };
+
+        self.validate_password("admin", password_hash)
+    }
+
     pub(crate) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
         if let Some(phc_string) = password_hash.strip_prefix("v2$") {
             let parsed = PasswordHash::new(phc_string)

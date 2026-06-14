@@ -45,6 +45,7 @@ export type ExternalInviteDraft = {
   provider: ExternalAccountProvider;
   connectionId: string;
   providerUserIdentifier: string;
+  providerUserId: string;
 };
 
 export type ExternalInviteUser = {
@@ -187,8 +188,8 @@ function JellyfinProviderUserCombobox({
   placeholder,
   emptyLabel,
   loadingLabel,
-  manualEntryLabel,
   onChange,
+  onSelectOption,
 }: {
   id: string;
   value: string;
@@ -199,8 +200,8 @@ function JellyfinProviderUserCombobox({
   placeholder: string;
   emptyLabel: string;
   loadingLabel: string;
-  manualEntryLabel: (value: string) => string;
   onChange: (value: string) => void;
+  onSelectOption: (option: ExternalInviteProviderUserOption) => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const normalizedValue = value.trim().toLocaleLowerCase();
@@ -220,7 +221,6 @@ function JellyfinProviderUserCombobox({
       return searchable.includes(normalizedValue);
     });
   }, [normalizedValue, options]);
-  const showManualEntry = normalizedValue.length > 0 && !selectedOption;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -291,7 +291,7 @@ function JellyfinProviderUserCombobox({
                 <span>{loadingLabel}</span>
               </div>
             ) : null}
-            {!loading && filteredOptions.length === 0 && !showManualEntry ? (
+            {!loading && filteredOptions.length === 0 ? (
               <CommandEmpty>{emptyLabel}</CommandEmpty>
             ) : null}
             <CommandGroup>
@@ -304,7 +304,7 @@ function JellyfinProviderUserCombobox({
                     key={option.id}
                     value={`${option.username} ${option.displayName ?? ""} ${option.id}`}
                     onSelect={() => {
-                      onChange(option.username);
+                      onSelectOption(option);
                       setOpen(false);
                     }}
                     className="items-center gap-3"
@@ -320,18 +320,6 @@ function JellyfinProviderUserCombobox({
                   </CommandItem>
                 );
               })}
-              {showManualEntry ? (
-                <CommandItem
-                  id={selectorId("settings-external-invite-provider-user-manual", value.trim())}
-                  value={`manual ${value}`}
-                  onSelect={() => {
-                    onChange(value.trim());
-                    setOpen(false);
-                  }}
-                >
-                  <span className="truncate">{manualEntryLabel(value.trim())}</span>
-                </CommandItem>
-              ) : null}
             </CommandGroup>
           </CommandList>
         </Command>
@@ -391,7 +379,9 @@ export function ExternalAccountInvitesPanel({
     externalInviteSubmitting ||
     !externalInviteDraft.userId ||
     !externalInviteDraft.connectionId ||
-    externalInviteDraft.providerUserIdentifier.trim().length === 0;
+    (isJellyfinInvite
+      ? externalInviteDraft.providerUserId.trim().length === 0
+      : externalInviteDraft.providerUserIdentifier.trim().length === 0);
   const usersById = new Map(users.map((user) => [user.id, user.username]));
   const sortedInvites = invites
     .filter((invite) => isVisibleExternalAccountProvider(invite.provider))
@@ -401,18 +391,7 @@ export function ExternalAccountInvitesPanel({
       return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
     });
   const selectedProviderUser = isJellyfinInvite
-    ? providerUserOptions.find((option) =>
-        option.username.localeCompare(
-          externalInviteDraft.providerUserIdentifier,
-          undefined,
-          { sensitivity: "accent" },
-        ) === 0 ||
-        option.id.localeCompare(
-          externalInviteDraft.providerUserIdentifier,
-          undefined,
-          { sensitivity: "accent" },
-        ) === 0,
-      ) ?? null
+    ? providerUserOptions.find((option) => option.id === externalInviteDraft.providerUserId) ?? null
     : null;
 
   return (
@@ -471,6 +450,7 @@ export function ExternalAccountInvitesPanel({
                       provider,
                       connectionId: providerConnections(externalAuthSettings, provider)[0]?.id ?? "",
                       providerUserIdentifier: "",
+                      providerUserId: "",
                     });
                   }}
                   disabled={externalInviteSubmitting}
@@ -499,6 +479,7 @@ export function ExternalAccountInvitesPanel({
                     updateExternalInviteDraft({
                       connectionId,
                       providerUserIdentifier: "",
+                      providerUserId: "",
                     })
                   }
                   disabled={externalInviteSubmitting}
@@ -539,11 +520,14 @@ export function ExternalAccountInvitesPanel({
                   placeholder={providerIdentifierLabelText}
                   emptyLabel={t("settings.jellyfinUserPickerEmpty")}
                   loadingLabel={t("label.loading")}
-                  manualEntryLabel={(manualValue) =>
-                    t("settings.jellyfinUserPickerManualEntry", { value: manualValue })
-                  }
                   onChange={(providerUserIdentifier) =>
-                    updateExternalInviteDraft({ providerUserIdentifier })
+                    updateExternalInviteDraft({ providerUserIdentifier, providerUserId: "" })
+                  }
+                  onSelectOption={(option) =>
+                    updateExternalInviteDraft({
+                      providerUserIdentifier: option.username,
+                      providerUserId: option.id,
+                    })
                   }
                 />
               ) : (

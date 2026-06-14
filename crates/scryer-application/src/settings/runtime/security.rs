@@ -40,6 +40,10 @@ impl AppUseCase {
         let mfa_require_config_step_up = self
             .read_setting_bool_value(MFA_REQUIRE_CONFIG_STEP_UP_KEY, None)
             .await?
+            .or(
+                self.read_setting_bool_value(LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY, None)
+                    .await?,
+            )
             .unwrap_or(false);
         let totp_require_jellyfin_login = self
             .read_setting_bool_value(TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, None)
@@ -48,6 +52,10 @@ impl AppUseCase {
         let mfa_require_password_login = self
             .read_setting_bool_value(MFA_REQUIRE_PASSWORD_LOGIN_KEY, None)
             .await?
+            .or(
+                self.read_setting_bool_value(LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY, None)
+                    .await?,
+            )
             .unwrap_or(false);
 
         Ok(SecuritySettings {

@@ -247,8 +247,43 @@ impl AppUseCase {
         Ok(user)
     }
 
+    async fn ensure_default_admin_actor(&self) -> AppResult<User> {
+        let username = "admin";
+        if let Some(found) = self
+            .services
+            .identity
+            .users
+            .get_by_username(username)
+            .await?
+        {
+            self.ensure_user_admin_permission_masks(&found).await?;
+            self.refresh_cached_jwt_signing_key(&found).await?;
+            return Ok(found);
+        }
+
+        let user = User {
+            id: Id::new().0,
+            username: username.to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: Default::default(),
+        };
+
+        let user = self.services.identity.users.create(user).await?;
+        self.ensure_user_admin_permission_masks(&user).await?;
+        self.cache_jwt_signing_key(&user).await?;
+        self.emit_configuration_changed_event(
+            None,
+            "user",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Saved,
+        )
+        .await;
+        Ok(user)
+    }
+
     pub async fn find_or_create_default_user(&self) -> AppResult<User> {
-        self.ensure_default_admin("admin", "admin").await
+        self.ensure_default_admin_actor().await
     }
 
     pub async fn find_default_user(&self) -> AppResult<Option<User>> {

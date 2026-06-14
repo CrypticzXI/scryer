@@ -147,9 +147,9 @@ impl AppUseCase {
     pub async fn webauthn_register_start(
         &self,
         actor: &User,
-        _form_login_enabled: bool,
+        form_login_enabled: bool,
     ) -> AppResult<WebauthnChallengeStart> {
-        self.ensure_passkey_management_enabled()?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
@@ -220,9 +220,9 @@ impl AppUseCase {
         challenge_id: &str,
         response_json: &str,
         friendly_name: Option<String>,
-        _form_login_enabled: bool,
+        form_login_enabled: bool,
     ) -> AppResult<PasskeySummary> {
-        self.ensure_passkey_management_enabled()?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
         let challenge = self
@@ -585,9 +585,9 @@ impl AppUseCase {
     pub async fn list_my_passkeys(
         &self,
         actor: &User,
-        _form_login_enabled: bool,
+        form_login_enabled: bool,
     ) -> AppResult<Vec<PasskeySummary>> {
-        self.ensure_passkey_management_enabled()?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         let records = self
             .services
             .identity
@@ -601,9 +601,9 @@ impl AppUseCase {
         &self,
         actor: &User,
         credential_record_id: &str,
-        _form_login_enabled: bool,
+        form_login_enabled: bool,
     ) -> AppResult<()> {
-        self.ensure_passkey_management_enabled()?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.services
             .identity
             .webauthn

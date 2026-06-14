@@ -131,6 +131,11 @@ export function AddToCatalogDialog({
       path: root.path,
       isDefault: root.isDefault,
     })) ?? rootFolders;
+  const effectiveRootFolder =
+    draft.rootFolder ||
+    selectedRootFolders.find((rf) => rf.isDefault)?.path ||
+    selectedRootFolders[0]?.path ||
+    "";
   const libraryRequired = libraries.length > 0;
   const qualityProfileSelectionDisabled =
     isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
@@ -147,6 +152,7 @@ export function AddToCatalogDialog({
         ...draft,
         libraryId,
         qualityProfileId: qpId,
+        rootFolder: effectiveRootFolder || undefined,
       });
       if (titleId) {
         onOpenChange(false);
@@ -162,6 +168,7 @@ export function AddToCatalogDialog({
     onAdd,
     onOpenChange,
     result,
+    effectiveRootFolder,
     selectedLibrary,
   ]);
 
@@ -288,12 +295,7 @@ export function AddToCatalogDialog({
                 {t("search.addConfigRootFolder")}
               </span>
               <Select
-                value={
-                  draft.rootFolder ||
-                  selectedRootFolders.find((rf) => rf.isDefault)?.path ||
-                  selectedRootFolders[0]?.path ||
-                  ""
-                }
+                value={effectiveRootFolder}
                 onValueChange={(v) => update({ rootFolder: v })}
                 disabled={isSubmitting}
               >

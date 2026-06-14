@@ -1,5 +1,6 @@
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
 const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
+const MANUAL_IMPORT_ALLOWED_ROOTS_ENV: &str = "SCRYER_MANUAL_IMPORT_ALLOWED_ROOTS";
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
@@ -188,6 +189,133 @@ pub struct ManualImportPreview {
     pub files: Vec<ManualImportFilePreview>,
     pub available_episodes: Vec<scryer_domain::Episode>,
 }
+
+fn configured_path_manual_import_roots() -> Vec<PathBuf> {
+    std::env::var(MANUAL_IMPORT_ALLOWED_ROOTS_ENV)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| {
+            let root = stored_path_to_path_buf(value);
+            let canonical = std::fs::canonicalize(&root).map_err(|error| {
+                tracing::warn!(
+                    path = %root.display(),
+                    error = %error,
+                    "ignoring inaccessible manual import allowed root"
+                );
+            }).ok()?;
+            if canonical.parent().is_none() {
+                tracing::warn!(
+                    path = %canonical.display(),
+                    "ignoring manual import allowed root because filesystem roots are too broad"
+                );
+                return None;
+            }
+            if !canonical.is_dir() {
+                tracing::warn!(
+                    path = %canonical.display(),
+                    "ignoring manual import allowed root because it is not a directory"
+                );
+                return None;
+            }
+            Some(canonical)
+        })
+        .collect()
+}
+
+fn source_path_canonical(source_path: &Path) -> AppResult<PathBuf> {
+    std::fs::canonicalize(source_path).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import path is not accessible: {} ({err})",
+            source_path.display()
+        ))
+    })
+}
+
+fn path_manual_import_trusted_root(source_path: &Path) -> AppResult<Option<PathBuf>> {
+    let roots = configured_path_manual_import_roots();
+    if roots.is_empty() {
+        return Ok(None);
+    }
+
+    let source_canonical = source_path_canonical(source_path)?;
+    roots
+        .into_iter()
+        .filter(|root| source_canonical == *root || source_canonical.starts_with(root))
+        .max_by_key(|root| root.components().count())
+        .map(Some)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "manual import path is outside configured allowed roots: {}",
+                source_path.display()
+            ))
+        })
+}
+
+fn source_entry_location_under_parent(source_path: &Path) -> AppResult<PathBuf> {
+    let parent = source_path.parent().ok_or_else(|| {
+        AppError::Validation(format!(
+            "manual import file must have a parent directory: {}",
+            source_path.display()
+        ))
+    })?;
+    let file_name = source_path.file_name().ok_or_else(|| {
+        AppError::Validation(format!(
+            "manual import file must have a file name: {}",
+            source_path.display()
+        ))
+    })?;
+    let parent = source_path_canonical(parent)?;
+    Ok(parent.join(file_name))
+}
+
+fn validate_manual_import_source_under_trusted_root(
+    source_path: &Path,
+    trusted_root: &Path,
+) -> AppResult<()> {
+    let source_entry_location = source_entry_location_under_parent(source_path)?;
+    if source_entry_location != trusted_root && !source_entry_location.starts_with(trusted_root) {
+        return Err(AppError::Validation(format!(
+            "manual import file path is outside the trusted source root: {}",
+            source_path.display()
+        )));
+    }
+
+    let canonical = std::fs::canonicalize(source_path).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import file is not accessible: {} ({err})",
+            source_path.display()
+        ))
+    })?;
+    if canonical != trusted_root && !canonical.starts_with(trusted_root) {
+        return Err(AppError::Validation(format!(
+            "manual import file is outside the trusted source root: {}",
+            source_path.display()
+        )));
+    }
+
+    let metadata = std::fs::symlink_metadata(source_path).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import file is not accessible: {} ({err})",
+            source_path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn validate_manual_import_video_files(
+    files: &[PathBuf],
+    trusted_root: &Path,
+) -> AppResult<()> {
+    for file in files {
+        validate_manual_import_source_under_trusted_root(file, trusted_root)?;
+    }
+    Ok(())
+}
 /// Scan an arbitrary server-visible path and attempt to auto-match files to episodes.
 pub async fn preview_manual_import_path(
     app: &AppUseCase,
@@ -210,15 +338,21 @@ pub async fn preview_manual_import_path(
     .await?;
 
     let source_path = stored_path_to_path_buf(source_path);
+    let trusted_root = path_manual_import_trusted_root(&source_path)?;
     let video_files = if source_path.is_file() {
         if is_video_file(&source_path) {
             vec![source_path]
         } else {
             Vec::new()
         }
+    } else if trusted_root.is_some() {
+        find_video_files_without_symlinked_dirs(&source_path, false)?
     } else {
         find_video_files(&source_path, false)?
     };
+    if let Some(trusted_root) = trusted_root.as_deref() {
+        validate_manual_import_video_files(&video_files, trusted_root)?;
+    }
 
     let collections = app
         .services
@@ -497,8 +631,9 @@ pub struct ManualImportFileMapping {
 pub(crate) fn validate_path_manual_import_mappings(
     source_path: &str,
     files: &[ManualImportFileMapping],
-) -> AppResult<()> {
+) -> AppResult<Option<PathBuf>> {
     let root = stored_path_to_path_buf(source_path);
+    let trusted_root = path_manual_import_trusted_root(&root)?;
     let root_canonical = std::fs::canonicalize(&root).map_err(|err| {
         AppError::Validation(format!(
             "manual import path is not accessible: {} ({err})",
@@ -538,9 +673,12 @@ pub(crate) fn validate_path_manual_import_mappings(
                 file_path.display()
             )));
         }
+        if let Some(trusted_root) = trusted_root.as_deref() {
+            validate_manual_import_source_under_trusted_root(&file_path, trusted_root)?;
+        }
     }
 
-    Ok(())
+    Ok(trusted_root)
 }
 /// Per-file result of a manual import execution.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -808,6 +946,7 @@ pub async fn execute_manual_import(
     title_id: &str,
     completed: Option<&CompletedDownload>,
     files: Vec<ManualImportFileMapping>,
+    trusted_source_root: Option<PathBuf>,
 ) -> AppResult<Vec<ManualImportFileResult>> {
     let title = app
         .services
@@ -837,6 +976,19 @@ pub async fn execute_manual_import(
 
     for mapping in &files {
         let source = stored_path_to_path_buf(&mapping.file_path);
+        if let Some(trusted_root) = trusted_source_root.as_deref()
+            && let Err(err) = validate_manual_import_source_under_trusted_root(&source, trusted_root)
+        {
+            results.push(ManualImportFileResult {
+                file_path: mapping.file_path.clone(),
+                episode_id: mapping.episode_id.clone(),
+                success: false,
+                dest_path: None,
+                error_code: Some(classify_manual_import_error_message(&err.to_string())),
+                error_message: Some(err.to_string()),
+            });
+            continue;
+        }
 
         // Validate file exists
         if !source.exists() || !source.is_file() {
@@ -1068,8 +1220,12 @@ pub async fn execute_queued_manual_import(
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
+    let mut path_trusted_source_root = None;
     let completed_source = if payload.client_type.eq_ignore_ascii_case("path") {
-        validate_path_manual_import_mappings(&payload.download_client_item_id, &payload.files)?;
+        path_trusted_source_root = validate_path_manual_import_mappings(
+            &payload.download_client_item_id,
+            &payload.files,
+        )?;
         None
     } else {
         let source_resolution = app
@@ -1147,6 +1303,7 @@ pub async fn execute_queued_manual_import(
         title_id,
         completed.as_ref(),
         payload.files.clone(),
+        path_trusted_source_root,
     )
     .await?;
     let (status, error_code, error_message) = manual_import_terminal_status_and_error(&results);
@@ -1169,4 +1326,72 @@ pub async fn execute_queued_manual_import(
     );
 
     Ok((status, result_json))
+}
+
+#[cfg(all(test, unix))]
+mod manual_source_validation_tests {
+    use super::*;
+
+    #[test]
+    fn manual_import_source_validation_accepts_symlink_with_path_and_target_under_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("downloads");
+        std::fs::create_dir_all(&root).expect("create root");
+        let target = root.join("movie.mkv");
+        std::fs::write(&target, b"video").expect("write target");
+        let link = root.join("linked.mkv");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+        let trusted_root = std::fs::canonicalize(&root).expect("canonical root");
+
+        validate_manual_import_source_under_trusted_root(&link, &trusted_root)
+            .expect("symlink inside root should validate");
+    }
+
+    #[test]
+    fn manual_import_source_validation_rejects_symlink_path_outside_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("downloads");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        let target = root.join("movie.mkv");
+        std::fs::write(&target, b"video").expect("write target");
+        let link = outside.join("linked.mkv");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+        let trusted_root = std::fs::canonicalize(&root).expect("canonical root");
+
+        let error =
+            validate_manual_import_source_under_trusted_root(&link, &trusted_root)
+                .expect_err("symlink path outside root should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("file path is outside the trusted source root")
+        );
+    }
+
+    #[test]
+    fn manual_import_source_validation_rejects_symlink_target_outside_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("downloads");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        let target = outside.join("movie.mkv");
+        std::fs::write(&target, b"video").expect("write target");
+        let link = root.join("linked.mkv");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+        let trusted_root = std::fs::canonicalize(&root).expect("canonical root");
+
+        let error =
+            validate_manual_import_source_under_trusted_root(&link, &trusted_root)
+                .expect_err("symlink target outside root should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("file is outside the trusted source root")
+        );
+    }
 }

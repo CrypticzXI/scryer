@@ -64,15 +64,16 @@ use url::Url;
 use webauthn_rs::WebauthnBuilder;
 
 use admin_routes::{
-    AdminSettingsQuery, admin_migrations_handler, admin_settings_list, bootstrap_admin_password,
+    AdminSettingsQuery, admin_migrations_handler, admin_settings_list,
+    ensure_admin_password_configured,
 };
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, CorsConfig, cors_handler, graphql_handler, graphql_ws_handler, health_handler,
-    rate_limit_http_api,
+    AuthState, CorsConfig, WebSocketOriginPolicy, cors_handler, graphql_handler,
+    graphql_ws_handler, health_handler, rate_limit_http_api,
 };
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
@@ -1076,6 +1077,15 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    if let Err(error) = app_use_case
+        .repair_legacy_jellyfin_external_account_invites()
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to repair legacy Jellyfin external account invites"
+        );
+    }
 
     app_use_case.connect_library_scan_tracker().await;
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
@@ -1161,7 +1171,7 @@ async fn bootstrap_application(
     }
     if auth_runtime.snapshot().effective_form_login_enabled {
         tracing::info!("running with authentication enabled");
-        bootstrap_admin_password(&app_use_case).await;
+        ensure_admin_password_configured(&app_use_case).await?;
     } else {
         app_use_case
             .find_or_create_default_user()
@@ -1245,6 +1255,7 @@ async fn bootstrap_application(
         schema: schema.clone(),
         auth_runtime: auth_runtime.clone(),
         rate_limiter: rate_limiter.clone(),
+        ws_origin_policy: WebSocketOriginPolicy::from_env(&cors),
     };
 
     let cors_for_layer = cors.clone();

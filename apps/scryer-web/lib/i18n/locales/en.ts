@@ -157,7 +157,7 @@ const en: LocaleDictionary = {
   "settings.externalAccountInvites": "External account invites",
   "settings.externalAccountInvitesUnavailable":
     "Enable provider login and configure at least one provider connection before creating external account invites.",
-  "settings.externalAccountInviteRequired": "Choose a user, provider connection, and provider identifier.",
+  "settings.externalAccountInviteRequired": "Choose a user, provider connection, and provider account.",
   "settings.externalAccountInviteCreated": "External account invite created.",
   "settings.externalAccountInviteFailed": "Failed to create external account invite.",
   "settings.jellyfinUserSearchFailed": "Jellyfin user search failed.",

@@ -47,6 +47,7 @@ pub struct FilesystemWalker {
     filter_policy: WalkFilterPolicy,
     file_policy: WalkFilePolicy,
     max_depth: Option<usize>,
+    follow_symlinked_directories: bool,
 }
 
 impl Default for FilesystemWalker {
@@ -62,6 +63,7 @@ impl FilesystemWalker {
             filter_policy: WalkFilterPolicy::None,
             file_policy: WalkFilePolicy::All,
             max_depth: None,
+            follow_symlinked_directories: true,
         }
     }
 
@@ -97,6 +99,11 @@ impl FilesystemWalker {
 
     pub fn max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = Some(max_depth);
+        self
+    }
+
+    pub fn skip_symlinked_directories(mut self) -> Self {
+        self.follow_symlinked_directories = false;
         self
     }
 
@@ -181,15 +188,26 @@ impl FilesystemWalker {
             has_visited_root = true;
             self.apply_walk_filter(root, &mut listing);
             if self.max_depth.is_none_or(|max_depth| depth < max_depth) {
-                stack.extend(listing.subdirs.iter().rev().cloned().map(|path| {
-                    let child_visit_key = visit_key_for_child(
-                        &visit_key,
-                        &path,
-                        listing.symlinked_subdirs.contains(&path),
-                    )
-                    .unwrap_or_else(|_| path.clone());
-                    (path, child_visit_key, depth.saturating_add(1))
-                }));
+                stack.extend(
+                    listing
+                        .subdirs
+                        .iter()
+                        .rev()
+                        .filter(|path| {
+                            self.follow_symlinked_directories
+                                || !listing.symlinked_subdirs.contains(*path)
+                        })
+                        .cloned()
+                        .map(|path| {
+                            let child_visit_key = visit_key_for_child(
+                                &visit_key,
+                                &path,
+                                listing.symlinked_subdirs.contains(&path),
+                            )
+                            .unwrap_or_else(|_| path.clone());
+                            (path, child_visit_key, depth.saturating_add(1))
+                        }),
+                );
             }
             if !visitor(listing)? {
                 return Ok(());
@@ -389,6 +407,27 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(files.iter().any(|path| path.ends_with("episode.mkv")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walker_can_skip_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        let link = dir.path().join("linked-target");
+        fs::create_dir_all(&target).expect("target dir");
+        fs::write(target.join("episode.mkv"), b"video").expect("video");
+        symlink(&target, &link).expect("symlink");
+
+        let walked = FilesystemWalker::new()
+            .skip_symlinked_directories()
+            .walk(dir.path())
+            .expect("walk");
+
+        assert!(walked.iter().any(|entry| entry.path == dir.path()));
+        assert!(!walked.iter().any(|entry| entry.path == link));
     }
 
     #[cfg(unix)]

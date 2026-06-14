@@ -12252,6 +12252,43 @@ async fn find_or_create_default_user_dedupes_duplicate_default_library_grants() 
 }
 
 #[tokio::test]
+async fn find_or_create_default_user_creates_passwordless_default_actor() {
+    let (app, _) = bootstrap();
+
+    let admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create default admin actor");
+
+    assert_eq!(admin.username, "admin");
+    assert!(admin.password_hash.is_none());
+    assert!(
+        !app.existing_default_admin_uses_bootstrap_password()
+            .await
+            .expect("check default admin password")
+    );
+}
+
+#[tokio::test]
+async fn existing_default_admin_uses_bootstrap_password_detects_admin_password() {
+    let (app, _) = bootstrap();
+    let mut admin = User::new_admin("admin");
+    admin.password_hash = Some(app.hash_password("admin").expect("hash admin password"));
+    app.services
+        .identity
+        .users
+        .create(admin)
+        .await
+        .expect("seed default admin");
+
+    assert!(
+        app.existing_default_admin_uses_bootstrap_password()
+            .await
+            .expect("check default admin password")
+    );
+}
+
+#[tokio::test]
 async fn update_default_library_roots_updates_all_facet_root_read_paths() {
     let (app, user) = bootstrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
@@ -18460,7 +18497,11 @@ async fn import_series_download_skipped_by_import_checks_keeps_episode_id_and_re
         .await
         .expect("completed series import should run");
 
-    assert_eq!(result.decision, scryer_domain::ImportDecision::Skipped);
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "unexpected import result: {result:?}"
+    );
     assert_eq!(
         result.episode_ids,
         vec![episode.id.clone()],
@@ -27406,11 +27447,13 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
         .find(|link| link.movie.title == "Stoneguard: Crimson Bow and Arrow")
         .expect("recap movie link");
     assert_eq!(recap.movie_form.as_deref(), Some("recap"));
+    assert!(recap.linked_episode_id.is_none());
     let ordered = links
         .iter()
         .find(|link| link.movie.title == "Mugen Train")
         .expect("ordered movie link");
     assert_eq!(ordered.continuity_status.as_deref(), Some("canon"));
+    assert!(ordered.linked_episode_id.is_none());
 }
 
 #[tokio::test]
@@ -28173,6 +28216,38 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
         .await
         .expect("authenticate existing short password");
     assert_eq!(authenticated.id, user.id);
+}
+
+#[tokio::test]
+async fn security_settings_read_legacy_totp_mfa_keys_when_new_keys_are_unset() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
+            "true",
+        )
+        .await;
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY,
+            "true",
+        )
+        .await;
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+
+    let loaded = app
+        .security_settings()
+        .await
+        .expect("load security settings");
+
+    assert!(loaded.mfa_require_config_step_up);
+    assert!(loaded.mfa_require_password_login);
 }
 
 #[tokio::test]
@@ -29326,6 +29401,44 @@ async fn passkey_registration_requires_password_backed_user() {
         Err(error) => panic!("expected password-backed validation error, got {error}"),
         Ok(_) => panic!("expected password-backed validation error"),
     }
+}
+
+#[tokio::test]
+async fn passkey_management_requires_enabled_form_login() {
+    let users = Arc::new(MockUserRepo::default());
+    let user = User {
+        id: "passkey-form-login-user".to_string(),
+        username: "passkey_form_login".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    users.create(user.clone()).await.expect("create user");
+
+    let (mut app, _) = bootstrap_with_user_repo(users);
+    let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
+    let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
+        .expect("valid WebAuthn builder")
+        .build()
+        .expect("valid WebAuthn runtime");
+    app.webauthn = services::RuntimeFeature::enabled(Arc::new(webauthn));
+
+    fn assert_form_login_required<T>(result: AppResult<T>) {
+        match result {
+            Err(AppError::Validation(message)) => {
+                assert_eq!(
+                    message,
+                    "passkey authentication is unavailable while form login is disabled"
+                );
+            }
+            Err(error) => panic!("expected form-login validation error, got {error}"),
+            Ok(_) => panic!("expected form-login validation error"),
+        }
+    }
+
+    assert_form_login_required(app.webauthn_register_start(&user, false).await);
+    assert_form_login_required(app.list_my_passkeys(&user, false).await);
+    assert_form_login_required(app.delete_my_passkey(&user, "credential-id", false).await);
 }
 
 #[tokio::test]

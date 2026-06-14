@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::net::IpAddr;
 
 use super::{normalized_base_path_from_env, synthesize_local_title_image_url};
 use async_trait::async_trait;
@@ -11,7 +12,8 @@ use scryer_application::{
     TitleImageVariantRecord, TitleImageVariantSpec,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    no_redirect_reqwest_client,
 };
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
@@ -30,7 +32,7 @@ impl HttpTitleImageProcessor {
     pub fn new() -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                generic_reqwest_client(),
+                no_redirect_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
             max_source_bytes: MAX_SOURCE_BYTES,
@@ -42,7 +44,7 @@ impl HttpTitleImageProcessor {
     pub(crate) fn new_for_tests(avif_enabled: bool) -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                generic_reqwest_client(),
+                no_redirect_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
             max_source_bytes: MAX_SOURCE_BYTES,
@@ -55,6 +57,7 @@ impl HttpTitleImageProcessor {
         source_url: &str,
     ) -> AppResult<(String, Vec<u8>, Option<String>, Option<String>)> {
         let source_url = normalize_title_image_source_url(source_url)?;
+        validate_title_image_destination(&source_url).await?;
         let scope = title_image_scope(&source_url);
         let response = self
             .outbound_http
@@ -82,6 +85,12 @@ impl HttpTitleImageProcessor {
                     AppError::Repository(format!("failed to fetch title image: {source}"))
                 }
             })?;
+
+        if response.status().is_redirection() {
+            return Err(AppError::Validation(
+                "title image redirects are not allowed".into(),
+            ));
+        }
 
         if !response.status().is_success() {
             return Err(AppError::Repository(format!(
@@ -235,6 +244,66 @@ fn normalize_title_image_source_url(source_url: &str) -> AppResult<String> {
     parsed.set_path(&format!("/{normalized_path}"));
 
     Ok(parsed.to_string())
+}
+
+async fn validate_title_image_destination(source_url: &str) -> AppResult<()> {
+    let parsed = reqwest::Url::parse(source_url)
+        .map_err(|error| AppError::Validation(format!("invalid title image URL: {error}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::Validation("title image URL must include a host".into()))?;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return validate_public_title_image_ip(ip, host);
+    }
+
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| AppError::Validation("title image URL must include a port".into()))?;
+    let mut resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to resolve title image host {host}: {error}"
+            ))
+        })?;
+    let mut saw_address = false;
+    for addr in &mut resolved {
+        saw_address = true;
+        validate_public_title_image_ip(addr.ip(), host)?;
+    }
+    if !saw_address {
+        return Err(AppError::Repository(format!(
+            "title image host did not resolve: {host}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_public_title_image_ip(ip: IpAddr, host: &str) -> AppResult<()> {
+    if title_image_ip_is_forbidden(ip) {
+        return Err(AppError::Validation(format!(
+            "title image host resolves to a private or local address: {host}"
+        )));
+    }
+    Ok(())
+}
+
+fn title_image_ip_is_forbidden(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_unspecified()
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+        }
+    }
 }
 
 fn title_image_scope(source_url: &str) -> String {
@@ -672,6 +741,31 @@ mod tests {
             .expect("absolute TVDB URL should normalize"),
             "https://artworks.thetvdb.com/banners/posters/example.jpg"
         );
+    }
+
+    #[test]
+    fn title_image_ip_guard_blocks_local_and_private_addresses() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.0.5",
+            "192.168.1.5",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            let ip = ip.parse().expect("valid ip");
+            assert!(title_image_ip_is_forbidden(ip), "{ip} should be blocked");
+        }
+    }
+
+    #[test]
+    fn title_image_ip_guard_allows_public_addresses() {
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            let ip = ip.parse().expect("valid ip");
+            assert!(!title_image_ip_is_forbidden(ip), "{ip} should be allowed");
+        }
     }
 
     #[test]

@@ -296,7 +296,7 @@ pub fn smg_reqwest_client() -> Client {
 }
 
 pub fn blocking_plugin_host_client(extra_ca_bundle_pem: &str) -> Result<BlockingClient, String> {
-    let mut builder = blocking_reqwest_client_builder();
+    let mut builder = blocking_reqwest_client_builder().redirect(reqwest::redirect::Policy::none());
     if !extra_ca_bundle_pem.trim().is_empty() {
         builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
     }

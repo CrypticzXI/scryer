@@ -35,6 +35,7 @@ const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
   provider: "jellyfin",
   connectionId: "",
   providerUserIdentifier: "",
+  providerUserId: "",
 };
 
 const EXTERNAL_ACCOUNT_INVITE_SOURCES_CHANGED_EVENT =
@@ -199,6 +200,7 @@ export function ExternalAccountInvitesContainer() {
         providerUserIdentifier: providerChanged || connectionChanged
           ? ""
           : previous.providerUserIdentifier,
+        providerUserId: providerChanged || connectionChanged ? "" : previous.providerUserId,
       };
     });
   }, [externalAuthSettings, users]);
@@ -279,8 +281,16 @@ export function ExternalAccountInvitesContainer() {
     const userId = externalInviteDraft.userId.trim();
     const connectionId = externalInviteDraft.connectionId.trim();
     const providerUserIdentifier = externalInviteDraft.providerUserIdentifier.trim();
+    const providerUserId =
+      externalInviteDraft.provider === "jellyfin"
+        ? externalInviteDraft.providerUserId.trim()
+        : null;
 
-    if (!userId || !connectionId || !providerUserIdentifier) {
+    if (
+      !userId ||
+      !connectionId ||
+      (externalInviteDraft.provider === "jellyfin" ? !providerUserId : !providerUserIdentifier)
+    ) {
       setGlobalStatus(t("settings.externalAccountInviteRequired"));
       return;
     }
@@ -294,6 +304,7 @@ export function ExternalAccountInvitesContainer() {
             provider: externalInviteDraft.provider,
             connectionId,
             providerUserIdentifier,
+            providerUserId,
           },
         })
         .toPromise();
@@ -301,6 +312,7 @@ export function ExternalAccountInvitesContainer() {
       setExternalInviteDraft((previous) => ({
         ...previous,
         providerUserIdentifier: "",
+        providerUserId: "",
       }));
       setGlobalStatus(t("settings.externalAccountInviteCreated"));
       await refreshExternalInvites();

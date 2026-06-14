@@ -1223,7 +1223,7 @@ pub(crate) fn configured_title_folder_path(
     PathBuf::from(media_root).join(if folder_name.is_empty() {
         tokens
             .get("title")
-            .cloned()
+            .map(|value| sanitize_filesystem_component(value))
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "untitled".to_string())
     } else {

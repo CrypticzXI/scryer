@@ -1,4 +1,7 @@
-use super::keys::{RENAME_ENABLED_KEY, default_indexer_routing_categories_for_scope};
+use super::keys::{
+    LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY, LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY,
+    RENAME_ENABLED_KEY, default_indexer_routing_categories_for_scope,
+};
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;

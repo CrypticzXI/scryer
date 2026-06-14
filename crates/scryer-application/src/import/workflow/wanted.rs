@@ -234,6 +234,51 @@ async fn execute_resolved_episode_import(
             )
         }
     };
+    let precheck_ext = source_video
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("mkv")
+        .to_string();
+    let precheck_quality_label = quality_override
+        .as_deref()
+        .and_then(|value| non_empty_string(Some(value.to_string())))
+        .or_else(|| parsed.quality.clone());
+    let precheck_parsed =
+        parsed_with_quality_override(parsed, precheck_quality_label.as_deref());
+    let precheck_dest_path = episode_import_dest_path(
+        title,
+        &precheck_parsed,
+        &precheck_ext,
+        source_video,
+        title_folder_path,
+        rename_enabled,
+        rename_template,
+        rename_season,
+        rename_episode_number,
+        rename_absolute_number,
+        rename_episode_title,
+        precheck_quality_label.as_deref(),
+    );
+
+    let check_ctx = crate::import_checks::ImportCheckContext {
+        source_path: source_video,
+        dest_path: &precheck_dest_path,
+        source_size: source_size as u64,
+        parsed: &precheck_parsed,
+        existing_files: &existing_files,
+    };
+    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
+        crate::import_checks::run_import_checks(&check_ctx)
+    {
+        tracing::debug!(file = %precheck_dest_path.display(), %code, %reason, "skipping episode file");
+        return Ok(EpisodeImportOutcome::Skipped {
+            message: reason,
+            reason_code: Some(code.to_string()),
+            skip_reason: Some(skip_reason_for_import_check_code(code)),
+            episode_ids: target_episode_ids.clone(),
+        });
+    }
+
     let prepared = match crate::post_download_gate::prepare_import_candidate(
         app,
         title,
@@ -289,11 +334,7 @@ async fn execute_resolved_episode_import(
         });
     }
 
-    let ext = source_video
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("mkv")
-        .to_string();
+    let ext = precheck_ext;
     let effective_quality_label = quality_override
         .as_deref()
         .and_then(|value| non_empty_string(Some(value.to_string())))
@@ -314,26 +355,6 @@ async fn execute_resolved_episode_import(
         rename_episode_title,
         effective_quality_label.as_deref(),
     );
-
-    let check_ctx = crate::import_checks::ImportCheckContext {
-        source_path: source_video,
-        dest_path: &dest_path,
-        source_size: source_size as u64,
-        parsed: &prepared.parsed,
-        existing_files: &existing_files,
-    };
-    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
-        crate::import_checks::run_import_checks(&check_ctx)
-    {
-        tracing::debug!(file = %dest_path.display(), %code, %reason, "skipping episode file");
-        return Ok(EpisodeImportOutcome::Skipped {
-            message: reason,
-            reason_code: Some(code.to_string()),
-            skip_reason: Some(skip_reason_for_import_check_code(code)),
-            episode_ids: target_episode_ids.clone(),
-        });
-    }
-
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;

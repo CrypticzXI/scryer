@@ -62,7 +62,7 @@ semver = { workspace = true }
 metrics = { workspace = true }
 base64 = "0.22"
 brotli = { version = "8", optional = true }
-weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false, optional = true }
+weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.5.3", default-features = false, optional = true }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 tar = { version = "0.4", optional = true }

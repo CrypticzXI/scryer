@@ -87,6 +87,13 @@ fn configured_title_folder_path_disarms_reserved_device_title() {
 }
 
 #[test]
+fn configured_title_folder_path_sanitizes_empty_template_fallback_title() {
+    let title = test_movie_title("../Escape");
+    let path = configured_title_folder_path("/library", &title, "", None);
+    assert_eq!(path, std::path::Path::new("/library/Escape"));
+}
+
+#[test]
 fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
     let mut title = test_movie_title("Movie");
     title.year = Some(2024);

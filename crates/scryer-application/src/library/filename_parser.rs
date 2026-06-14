@@ -224,6 +224,24 @@ pub(crate) fn parse_library_filename(
     let mut fallback = parse_release_fallback(input, &raw_name);
     release_fallback_used = true;
     let fallback_episode = fallback.episode.clone();
+    if fallback_episode.is_some()
+        && !raw_name_has_explicit_episode_marker(&raw_name)
+        && let Some(series_movie) = resolve_series_movie_from_name(input, &raw_name, fallback.year)
+    {
+        let episode_identity = series_movie
+            .linked_episode
+            .as_ref()
+            .map(parsed_episode_metadata_from_episode);
+        fallback.episode = episode_identity.clone();
+        return LibraryFilenameParse {
+            query_evidence: query_build.evidence,
+            parsed_release: fallback,
+            episode_identity,
+            target: LibraryFilenameTarget::SeriesMovie(Box::new(series_movie)),
+            strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
+            release_fallback_used,
+        };
+    }
     if let Some(episode_identity) = fallback_episode.clone() {
         if let Some(series_movie) =
             resolve_series_movie_from_episode_identity(input, &episode_identity)
@@ -774,6 +792,24 @@ fn normalized_key_contains_phrase(haystack: &str, needle: &str) -> bool {
     let haystack = format!(" {haystack} ");
     let needle = format!(" {needle} ");
     haystack.contains(&needle)
+}
+
+fn raw_name_has_explicit_episode_marker(raw_name: &str) -> bool {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS
+        .get_or_init(|| {
+            [
+                r"(?i)(^|[^a-z0-9])s\d{1,2}e\d{1,3}(e\d{1,3})?([^a-z0-9]|$)",
+                r"(?i)(^|[^a-z0-9])\d{1,2}x\d{1,3}([^a-z0-9]|$)",
+                r"(?i)(^|[^a-z0-9])s\d{1,2}[-_. ]+\d{1,3}([^a-z0-9]|$)",
+                r"(?i)(^|[^a-z0-9])season[-_. ]*\d{1,2}[-_. ]*(episode|ep)[-_. ]*\d{1,3}([^a-z0-9]|$)",
+            ]
+            .into_iter()
+            .map(|pattern| Regex::new(pattern).expect("valid explicit episode marker regex"))
+            .collect()
+        })
+        .iter()
+        .any(|pattern| pattern.is_match(raw_name))
 }
 
 fn library_name_match_key(value: &str) -> String {
@@ -1490,6 +1526,45 @@ mod tests {
             vec!["ep-1-1"]
         );
         assert_eq!(parse.target_series_movie_link_id(), None);
+    }
+
+    #[test]
+    fn title_scan_prefers_unlinked_series_movie_title_over_weak_episode_identity() {
+        let title = title("Psycho-Pass", MediaFacet::Anime);
+        let episodes = vec![episode("ep-1-3", "1", "3")];
+        let series_movie_links = vec![series_movie_link(
+            "Psycho-Pass: Sinners of the System - Case.3 In the Realm Beyond Is ____",
+            None,
+        )];
+        let input = LibraryFilenameParseInput {
+            path: Path::new(
+                "/library/Psycho-Pass (2024)/Psycho-Pass.Sinners.of.the.System.Case.3.In.the.Realm.Beyond.Is.2024.720p.WEB-DL.AV1.mkv",
+            ),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: Some(&title),
+            facet: Some(&title.facet),
+            collections: &[],
+            series_movie_links: &series_movie_links,
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::ReleaseParserFallback
+        );
+        assert_eq!(parse.target_episodes(), Vec::<Episode>::new());
+        assert_eq!(parse.episode_identity, None);
+        assert_eq!(parse.parsed_release.episode, None);
+        assert_eq!(
+            parse.target_series_movie_link_id(),
+            Some(series_movie_links[0].id.as_str())
+        );
     }
 
     #[test]

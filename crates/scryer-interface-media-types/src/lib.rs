@@ -2427,6 +2427,7 @@ pub struct CreateExternalAccountInviteInput {
     pub connection_id: String,
     pub provider: ExternalAccountProviderValue,
     pub provider_user_identifier: String,
+    pub provider_user_id: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

@@ -736,6 +736,7 @@ jobs:
           cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Codesign binary
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           CERT_P12: ${{ secrets.APPLE_SIGNING_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_CERT_PASSWORD }}
@@ -1087,13 +1088,13 @@ jobs:
 
   docker-publish-pr-rc:
     name: docker-publish-pr-rc
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
     permissions:
       contents: read
-      packages: write
+      packages: read
     steps:
       - uses: actions/checkout@v6
 
