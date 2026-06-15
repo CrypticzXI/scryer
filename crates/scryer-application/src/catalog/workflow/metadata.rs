@@ -164,11 +164,6 @@ impl AppUseCase {
             .get_by_id(title_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-        if title.facet != MediaFacet::Movie {
-            return Err(AppError::Validation(
-                "primary movie file can only be set for movie titles".to_string(),
-            ));
-        }
         self.require_library_permission(
             actor,
             &title.library_id,
@@ -186,6 +181,36 @@ impl AppUseCase {
             .iter()
             .find(|file| file.id == file_id)
             .ok_or_else(|| AppError::NotFound(format!("media file {file_id}")))?;
+        if title.facet != MediaFacet::Movie {
+            let series_movie_link_id = selected_file
+                .series_movie_link_ids
+                .first()
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "primary movie file can only be set for movie titles or series movie files"
+                            .to_string(),
+                    )
+                })?;
+            let additional_file_ids = media_files
+                .iter()
+                .filter(|file| file.id != selected_file.id)
+                .filter(|file| {
+                    file.series_movie_link_ids
+                        .iter()
+                        .any(|link_id| link_id == series_movie_link_id)
+                })
+                .map(|file| file.id.clone())
+                .collect::<Vec<_>>();
+
+            self.services
+                .library
+                .media_files
+                .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
+                .await?;
+            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+                .await;
+            return Ok(title);
+        }
         let movie_scope =
             crate::library::movie_scan_scope::MovieScanScope::from_title_folder_or_file(
                 title.folder_path.as_deref(),

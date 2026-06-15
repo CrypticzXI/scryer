@@ -826,6 +826,8 @@ type SeriesMovieTimelineContentProps = {
   onAutoSearchSeriesMovie?: (link: SeriesMovieLink) => void;
   onSetSeriesMovieMonitored?: (seriesMovieLinkId: string, monitored: boolean) => Promise<void>;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
+  primaryMovieFileUpdatingId?: string | null;
   autoSearchSeriesMovieLoadingByLink: Record<string, boolean>;
 };
 
@@ -842,6 +844,8 @@ function SeriesMovieTimelineContent({
   onQueueFromSeriesMovieSearch,
   onQueueAdditionalFromSeriesMovieSearch,
   onDeleteFile,
+  onMakePrimaryFile,
+  primaryMovieFileUpdatingId = null,
 }: SeriesMovieTimelineContentProps) {
   const t = useTranslate();
   const searchBlockedForMovie = searchBlockedBySeriesMovie[link.id] === true;
@@ -867,10 +871,13 @@ function SeriesMovieTimelineContent({
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={onRefreshSubtitles}
         onDeleteFile={onDeleteFile}
+        onMakePrimaryFile={onMakePrimaryFile}
+        primaryFileUpdatingId={primaryMovieFileUpdatingId}
         showPrimaryRoleBadge
         fileRowIdPrefix="series-overview-series-movie-file"
         subtitleSearchIdPrefix="series-overview-series-movie-search-subtitles"
         deleteFileIdPrefix="series-overview-series-movie-delete-file"
+        makePrimaryFileIdPrefix="series-overview-series-movie-make-primary-file"
       />
       {searchBlockedForMovie ? <TitleSearchDownloadClientNotice /> : null}
       {!searchBlockedForMovie && searchLoading ? (

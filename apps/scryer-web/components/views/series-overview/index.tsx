@@ -168,6 +168,8 @@ type Props = {
   onRequestDeleteTitle?: () => void;
   deleteLoading?: boolean;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
+  primaryMovieFileUpdatingId?: string | null;
   onOpenFixMatch?: () => void;
 };
 
@@ -218,6 +220,8 @@ export function SeriesOverviewView({
   onRequestDeleteTitle,
   deleteLoading = false,
   onDeleteFile,
+  onMakePrimaryFile,
+  primaryMovieFileUpdatingId = null,
   onOpenFixMatch,
 }: Props) {
   const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
@@ -933,6 +937,8 @@ export function SeriesOverviewView({
                       onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
                       onSetSeriesMovieMonitored={canManageTitle ? onSetSeriesMovieMonitored : undefined}
                       onDeleteFile={canManageTitle ? onDeleteFile : undefined}
+                      onMakePrimaryFile={canManageTitle ? onMakePrimaryFile : undefined}
+                      primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
                       autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
                     />
                   );

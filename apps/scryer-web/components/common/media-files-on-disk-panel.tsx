@@ -80,15 +80,27 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
     [subtitleDownloads],
   );
   const canSearchSubtitles = showSubtitleSearch && Boolean(onRefreshSubtitles);
+  const orderedMediaFiles = React.useMemo(
+    () =>
+      mediaFiles
+        .map((file, index) => ({ file, index }))
+        .sort((left, right) => {
+          const roleDelta =
+            mediaFileRoleSortRank(left.file.role) - mediaFileRoleSortRank(right.file.role);
+          return roleDelta !== 0 ? roleDelta : left.index - right.index;
+        })
+        .map(({ file }) => file),
+    [mediaFiles],
+  );
 
   return (
     <div>
       {title ? (
         <p className="mb-1 text-xs font-medium text-muted-foreground">{title}</p>
       ) : null}
-      {mediaFiles.length > 0 ? (
+      {orderedMediaFiles.length > 0 ? (
         <div className="space-y-2">
-          {mediaFiles.map((file) => {
+          {orderedMediaFiles.map((file) => {
             const downloads = subtitleDownloadsByMediaFile[file.id] ?? [];
             const role = file.role?.toLowerCase() ?? "";
             const isAdditionalFile = role === "additional";
@@ -259,6 +271,17 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
       ) : null}
     </div>
   );
+}
+
+function mediaFileRoleSortRank(role: string | null | undefined) {
+  const normalized = role?.toLowerCase() ?? "";
+  if (normalized === "primary") {
+    return 0;
+  }
+  if (normalized === "additional") {
+    return 1;
+  }
+  return 2;
 }
 
 function formatMediaFileDate(iso: string | null | undefined) {

@@ -14,6 +14,7 @@ import {
   queueBestReleaseMutation,
   queueExistingMutation,
   setEpisodeMonitoredMutation,
+  setPrimaryMovieFileMutation,
   setSeriesMovieMonitoredMutation,
   setTitleMonitoredMutation,
   triggerTitleWantedSearchMutation,
@@ -344,6 +345,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [mediaFileToDelete, setMediaFileToDelete] =
     React.useState<EpisodeMediaFile | null>(null);
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
+  const [primaryMovieFileUpdatingId, setPrimaryMovieFileUpdatingId] =
+    React.useState<string | null>(null);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
@@ -942,6 +945,29 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     t,
   ]);
 
+  const handleMakePrimaryMovieFile = React.useCallback(
+    async (fileId: string) => {
+      if (!title) return;
+      setPrimaryMovieFileUpdatingId(fileId);
+      try {
+        const { error } = await client.mutation(setPrimaryMovieFileMutation, {
+          input: {
+            titleId: title.id,
+            fileId,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.primaryMovieFileUpdated"));
+        await refreshTitleDetail();
+      } catch (error: unknown) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.apiError")));
+      } finally {
+        setPrimaryMovieFileUpdatingId(null);
+      }
+    },
+    [client, refreshTitleDetail, setGlobalStatus, t, title],
+  );
+
   const deleteTitleConfirmDisabled =
     deleteFilesOnDisk &&
     (titleDeletePreviewLoading ||
@@ -1180,6 +1206,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onRequestDeleteTitle={handleRequestDeleteTitle}
         deleteLoading={deleteLoading}
         onDeleteFile={handleDeleteMediaFile}
+        onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
+        primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         onOpenFixMatch={() => setFixMatchOpen(true)}
       />
       <FixTitleMatchDialog
