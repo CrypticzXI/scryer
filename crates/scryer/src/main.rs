@@ -90,6 +90,7 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
+const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -189,6 +190,7 @@ struct AuthModeConfig {
     env_override_form_login_enabled: Option<bool>,
     env_override_description: Option<String>,
     used_legacy_dev_auto_login: bool,
+    recovery_admin_password_set: bool,
 }
 
 impl AuthModeConfig {
@@ -199,6 +201,10 @@ impl AuthModeConfig {
     fn effective_form_login_enabled(&self, saved_form_login_enabled: bool) -> bool {
         self.env_override_form_login_enabled
             .unwrap_or(saved_form_login_enabled)
+    }
+
+    fn recovery_active(&self) -> bool {
+        self.recovery_admin_password_set
     }
 }
 
@@ -1131,11 +1137,29 @@ async fn bootstrap_application(
     let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
         .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
 
+    let auth_mode = resolve_auth_mode_from_env();
+    app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
+    if auth_mode.recovery_active() {
+        let recovery_password = normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV)
+            .ok_or_else(|| format!("{RECOVERY_ADMIN_PASSWORD_ENV} was set but empty"))?;
+        tracing::warn!(
+            env = RECOVERY_ADMIN_PASSWORD_ENV,
+            "instance recovery mode is active; authentication is disabled for this boot and the reserved recovery-admin account will be created or repaired"
+        );
+        app_use_case
+            .recover_reserved_admin_access(&recovery_password)
+            .await
+            .map_err(|error| format!("failed to recover recovery-admin access: {error}"))?;
+        tracing::warn!(
+            env = RECOVERY_ADMIN_PASSWORD_ENV,
+            "instance recovery mode created or repaired recovery-admin; remove this environment variable and restart after regaining control"
+        );
+    }
+
     let saved_security_settings = app_use_case
         .security_settings()
         .await
         .map_err(|error| format!("failed to load security settings: {error}"))?;
-    let auth_mode = resolve_auth_mode_from_env();
     let effective_form_login_enabled =
         auth_mode.effective_form_login_enabled(saved_security_settings.form_login_enabled);
     let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
@@ -1721,25 +1745,40 @@ fn parse_env_bool_value(raw: &str) -> Option<bool> {
 fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
+    recovery_admin_password_raw: Option<&str>,
 ) -> AuthModeConfig {
+    let used_legacy_dev_auto_login = matches!(
+        legacy_dev_auto_login_raw.and_then(parse_env_bool_value),
+        Some(true)
+    );
+
+    if recovery_admin_password_raw
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return AuthModeConfig {
+            env_override_form_login_enabled: Some(false),
+            env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
+            used_legacy_dev_auto_login,
+            recovery_admin_password_set: true,
+        };
+    }
+
     if let Some(auth_enabled) = auth_enabled_raw.and_then(parse_env_bool_value) {
         return AuthModeConfig {
             env_override_form_login_enabled: Some(auth_enabled),
             env_override_description: Some(format!("SCRYER_AUTH_ENABLED={auth_enabled}")),
             used_legacy_dev_auto_login: false,
+            recovery_admin_password_set: false,
         };
     }
-
-    let used_legacy_dev_auto_login = matches!(
-        legacy_dev_auto_login_raw.and_then(parse_env_bool_value),
-        Some(true)
-    );
 
     AuthModeConfig {
         env_override_form_login_enabled: used_legacy_dev_auto_login.then_some(false),
         env_override_description: used_legacy_dev_auto_login
             .then_some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
         used_legacy_dev_auto_login,
+        recovery_admin_password_set: false,
     }
 }
 
@@ -1747,6 +1786,7 @@ fn resolve_auth_mode_from_env() -> AuthModeConfig {
     resolve_auth_mode(
         normalize_env_option("SCRYER_AUTH_ENABLED").as_deref(),
         normalize_env_option("SCRYER_DEV_AUTO_LOGIN").as_deref(),
+        normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV).as_deref(),
     )
 }
 
@@ -2235,9 +2275,9 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, SelfRestartController, bootstrap_plugin_installations,
-        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
-        restart_spec_from_parts, title_image_handler,
+        AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV, SelfRestartController,
+        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
+        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2346,11 +2386,12 @@ mod tests {
     #[test]
     fn auth_defaults_to_disabled() {
         assert_eq!(
-            resolve_auth_mode(None, None),
+            resolve_auth_mode(None, None, None),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
             }
         );
     }
@@ -2358,11 +2399,12 @@ mod tests {
     #[test]
     fn explicit_auth_enabled_wins() {
         assert_eq!(
-            resolve_auth_mode(Some("true"), Some("true")),
+            resolve_auth_mode(Some("true"), Some("true"), None),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(true),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
             }
         );
     }
@@ -2700,11 +2742,12 @@ mod tests {
     #[test]
     fn explicit_auth_disabled_wins_over_legacy_alias() {
         assert_eq!(
-            resolve_auth_mode(Some("false"), Some("true")),
+            resolve_auth_mode(Some("false"), Some("true"), None),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=false".to_string()),
                 used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
             }
         );
     }
@@ -2712,11 +2755,12 @@ mod tests {
     #[test]
     fn legacy_dev_auto_login_disables_auth_when_new_flag_absent() {
         assert_eq!(
-            resolve_auth_mode(None, Some("true")),
+            resolve_auth_mode(None, Some("true"), None),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
                 used_legacy_dev_auto_login: true,
+                recovery_admin_password_set: false,
             }
         );
     }
@@ -2724,11 +2768,25 @@ mod tests {
     #[test]
     fn invalid_auth_flag_falls_back_to_default_disabled() {
         assert_eq!(
-            resolve_auth_mode(Some("garbage"), None),
+            resolve_auth_mode(Some("garbage"), None, None),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
+            }
+        );
+    }
+
+    #[test]
+    fn recovery_admin_password_implies_auth_disabled_and_wins_over_auth_enabled() {
+        assert_eq!(
+            resolve_auth_mode(Some("true"), None, Some("new-password")),
+            AuthModeConfig {
+                env_override_form_login_enabled: Some(false),
+                env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
+                used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: true,
             }
         );
     }

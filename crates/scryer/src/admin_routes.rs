@@ -17,21 +17,6 @@ use crate::settings_bootstrap::{SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM};
 pub(crate) async fn ensure_admin_password_configured(
     app_use_case: &AppUseCase,
 ) -> Result<(), String> {
-    let admin = app_use_case
-        .find_default_user()
-        .await
-        .map_err(|error| format!("failed to look up admin user: {error}"))?
-        .ok_or_else(|| {
-            "form login is enabled, but the default admin user does not exist; start once with authentication disabled or create an admin user before enabling auth".to_string()
-        })?;
-
-    let Some(password_hash) = admin.password_hash.as_deref() else {
-        return Err(
-            "form login is enabled, but the default admin user does not have a password; set an admin password before enabling auth".to_string(),
-        );
-    };
-
-    let _ = password_hash;
     if app_use_case
         .existing_default_admin_uses_bootstrap_password()
         .await
@@ -39,6 +24,16 @@ pub(crate) async fn ensure_admin_password_configured(
     {
         return Err(
             "form login is enabled, but the default admin password is still 'admin'; change it before enabling auth".to_string(),
+        );
+    }
+
+    if !app_use_case
+        .usable_admin_login_exists()
+        .await
+        .map_err(|error| format!("failed to validate admin login state: {error}"))?
+    {
+        return Err(
+            "form login is enabled, but no local full-admin user has a usable password; start with SCRYER_RECOVERY_ADMIN_PASSWORD set to recover the instance".to_string(),
         );
     }
 

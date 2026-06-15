@@ -12302,6 +12302,136 @@ async fn existing_default_admin_uses_bootstrap_password_detects_admin_password()
 }
 
 #[tokio::test]
+async fn usable_admin_login_accepts_non_default_full_admin() {
+    let users = Arc::new(MockUserRepo::default());
+    let (app, _) = bootstrap_with_user_repo(users.clone());
+    let mut owner = User::new_admin("owner");
+    owner.password_hash = Some(
+        app.hash_password("correct horse battery staple")
+            .expect("hash owner password"),
+    );
+    let owner = users.create(owner).await.expect("seed owner");
+    app.services
+        .catalog
+        .libraries
+        .set_app_permission_mask_for_user(
+            &owner.id,
+            scryer_domain::UserAuthorization::full_admin().app,
+        )
+        .await
+        .expect("grant full admin permissions");
+
+    assert!(
+        app.usable_admin_login_exists()
+            .await
+            .expect("check usable admin login")
+    );
+}
+
+#[tokio::test]
+async fn usable_admin_login_rejects_passwordless_default_admin_only() {
+    let (app, _) = bootstrap();
+    app.find_or_create_default_user()
+        .await
+        .expect("create passwordless default admin");
+
+    assert!(
+        !app.usable_admin_login_exists()
+            .await
+            .expect("check usable admin login")
+    );
+}
+
+#[tokio::test]
+async fn recover_reserved_admin_access_creates_recovery_admin() {
+    let (app, _) = bootstrap();
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            None,
+            "true".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed config step-up setting");
+
+    let recovery_admin = app
+        .recover_reserved_admin_access("new recovery password")
+        .await
+        .expect("recover reserved admin access");
+    assert_eq!(recovery_admin.username, "recovery-admin");
+
+    let stored_recovery_admin = app
+        .services
+        .identity
+        .users
+        .get_by_username("recovery-admin")
+        .await
+        .expect("load recovery admin")
+        .expect("recovery admin created during recovery");
+    assert_eq!(stored_recovery_admin.id, recovery_admin.id);
+    let password_hash = recovery_admin
+        .password_hash
+        .as_deref()
+        .expect("recovery admin password hash");
+    assert!(
+        app.validate_password("new recovery password", password_hash)
+            .expect("validate recovery admin password")
+    );
+    assert!(matches!(
+        app.authenticate_credentials("recovery-admin", "new recovery password")
+            .await,
+        Err(AppError::Unauthorized(_))
+    ));
+    app.set_recovery_admin_login_enabled(true);
+    assert_eq!(
+        app.authenticate_credentials("recovery-admin", "new recovery password")
+            .await
+            .expect("authenticate recovery admin while recovery is enabled")
+            .id,
+        recovery_admin.id
+    );
+    assert!(
+        app.services
+            .identity
+            .totp
+            .get_credential_for_user(&recovery_admin.id)
+            .await
+            .expect("load recovery admin TOTP")
+            .is_none()
+    );
+    assert!(
+        app.services
+            .identity
+            .webauthn
+            .list_credentials_for_user(&recovery_admin.id)
+            .await
+            .expect("load recovery admin passkeys")
+            .is_empty()
+    );
+
+    let authorization = app
+        .load_user_authorization(&recovery_admin)
+        .await
+        .expect("load recovery admin authorization");
+    assert!(
+        authorization
+            .app
+            .contains(scryer_domain::UserAuthorization::full_admin().app)
+    );
+    assert!(
+        !app.security_settings()
+            .await
+            .expect("load security settings")
+            .mfa_require_config_step_up
+    );
+}
+
+#[tokio::test]
 async fn update_default_library_roots_updates_all_facet_root_read_paths() {
     let (app, user) = bootstrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
@@ -16672,6 +16802,23 @@ async fn create_user_rejects_duplicate_username() {
     .await;
 
     assert!(second.is_err());
+}
+
+#[tokio::test]
+async fn create_user_rejects_recovery_admin_username() {
+    let (app, user) = bootstrap();
+
+    let result = app
+        .create_user(
+            &user,
+            "recovery-admin".to_string(),
+            "password123".to_string(),
+            AppPermissionMask::NONE,
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(AppError::Validation(_))));
 }
 
 #[tokio::test]

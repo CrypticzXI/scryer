@@ -911,6 +911,11 @@ impl AppUseCase {
             Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
             return Err(AppError::Validation("password is required".into()));
         }
+        if Self::is_reserved_recovery_username(username) && !self.recovery_admin_login_enabled() {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
 
         let Some(user) = self
             .services

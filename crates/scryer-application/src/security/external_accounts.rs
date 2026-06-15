@@ -697,18 +697,22 @@ impl AppUseCase {
     async fn unique_auto_added_username(&self, provider_username: &str) -> AppResult<String> {
         let base = provider_username.trim();
         let base = if base.is_empty() { "media-user" } else { base };
-        if self
-            .services
-            .identity
-            .users
-            .get_by_username(base)
-            .await?
-            .is_none()
+        if !Self::is_reserved_recovery_username(base)
+            && self
+                .services
+                .identity
+                .users
+                .get_by_username(base)
+                .await?
+                .is_none()
         {
             return Ok(base.to_string());
         }
         for suffix in 2..=9999 {
             let candidate = format!("{base}-{suffix}");
+            if Self::is_reserved_recovery_username(&candidate) {
+                continue;
+            }
             if self
                 .services
                 .identity
@@ -1435,6 +1439,24 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn auto_added_username_skips_reserved_recovery_admin() {
+        let app = test_app_with_identity(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![regular_user(
+                "recovery-admin-2",
+            )])),
+            Arc::new(TestExternalAccountRepository::default()),
+        );
+
+        let username = app
+            .unique_auto_added_username("recovery-admin")
+            .await
+            .expect("allocate auto-added username");
+
+        assert_eq!(username, "recovery-admin-3");
     }
 
     #[tokio::test]
