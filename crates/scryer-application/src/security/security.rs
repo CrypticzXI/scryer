@@ -104,7 +104,7 @@ impl AppUseCase {
     fn login_failure_delay_range_ms(class: LoginFailureTimingClass) -> (u64, u64) {
         match class {
             LoginFailureTimingClass::PasswordBackedLocal => (400, 700),
-            LoginFailureTimingClass::FastMasked => (500, 800),
+            LoginFailureTimingClass::FastMasked => (400, 700),
         }
     }
 

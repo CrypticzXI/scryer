@@ -47,6 +47,16 @@ struct FileFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectoryFingerprint {
+    #[cfg(not(unix))]
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ImportSourceKind {
     Regular,
     Symlink {
@@ -278,6 +288,24 @@ fn fingerprint_from_metadata(metadata: &std::fs::Metadata) -> AppResult<FileFing
     })
 }
 
+fn directory_fingerprint_from_metadata(
+    metadata: &std::fs::Metadata,
+) -> AppResult<DirectoryFingerprint> {
+    if !metadata.is_dir() {
+        return Err(AppError::Repository(
+            "import destination parent is not a directory".into(),
+        ));
+    }
+    Ok(DirectoryFingerprint {
+        #[cfg(not(unix))]
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(unix)]
+        ino: metadata.ino(),
+    })
+}
+
 fn ensure_same_source(path: &Path, expected: &ImportSourceFingerprint) -> AppResult<()> {
     let actual = fingerprint_import_source(path)?;
     if &actual != expected {
@@ -445,10 +473,23 @@ fn force_copy_attempt_error(
     Ok(())
 }
 
+struct ImportDestinationGuard {
+    requested_path: PathBuf,
+    parent_path: PathBuf,
+    approved_parent_canonical: PathBuf,
+    approved_parent_fingerprint: DirectoryFingerprint,
+}
+
+fn destination_parent_for_guard(dest: &Path) -> &Path {
+    dest.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 fn prepare_import_destination(
     source: &Path,
     dest: &Path,
-) -> AppResult<(ImportSourceFingerprint, u64)> {
+) -> AppResult<(ImportSourceFingerprint, u64, ImportDestinationGuard)> {
     let source_fingerprint = fingerprint_import_source(source)?;
     let size = source_fingerprint.file.len;
     if size == 0 {
@@ -458,17 +499,102 @@ fn prepare_import_destination(
         )));
     }
 
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
+    let parent = destination_parent_for_guard(dest);
+    std::fs::create_dir_all(parent).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to create destination directory {}: {}",
+            parent.display(),
+            e
+        ))
+    })?;
+    let approved_parent_canonical = std::fs::canonicalize(parent).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to inspect destination directory {}: {}",
+            parent.display(),
+            e
+        ))
+    })?;
+    let approved_parent_fingerprint = std::fs::metadata(parent)
+        .map_err(|e| {
             AppError::Repository(format!(
-                "failed to create destination directory {}: {}",
+                "failed to stat destination directory {}: {}",
                 parent.display(),
                 e
             ))
-        })?;
+        })
+        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+
+    Ok((
+        source_fingerprint,
+        size,
+        ImportDestinationGuard {
+            requested_path: dest.to_path_buf(),
+            parent_path: parent.to_path_buf(),
+            approved_parent_canonical,
+            approved_parent_fingerprint,
+        },
+    ))
+}
+
+fn validate_import_destination_guard(
+    guard: &ImportDestinationGuard,
+    returned_dest: &Path,
+) -> AppResult<()> {
+    if returned_dest != guard.requested_path {
+        return Err(AppError::Repository(format!(
+            "import destination changed during placement: expected {} got {}",
+            guard.requested_path.display(),
+            returned_dest.display()
+        )));
     }
 
-    Ok((source_fingerprint, size))
+    let current_parent_canonical = std::fs::canonicalize(&guard.parent_path).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to re-check destination directory {}: {}",
+            guard.parent_path.display(),
+            e
+        ))
+    })?;
+    if current_parent_canonical != guard.approved_parent_canonical {
+        return Err(AppError::Repository(format!(
+            "import destination parent changed during placement: {} resolved to {} before import and {} after import",
+            guard.parent_path.display(),
+            guard.approved_parent_canonical.display(),
+            current_parent_canonical.display()
+        )));
+    }
+    let current_parent_fingerprint = std::fs::metadata(&guard.parent_path)
+        .map_err(|e| {
+            AppError::Repository(format!(
+                "failed to stat destination directory {} after placement: {}",
+                guard.parent_path.display(),
+                e
+            ))
+        })
+        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+    if current_parent_fingerprint != guard.approved_parent_fingerprint {
+        return Err(AppError::Repository(format!(
+            "import destination parent changed during placement: {}",
+            guard.parent_path.display()
+        )));
+    }
+
+    let metadata = std::fs::symlink_metadata(&guard.requested_path).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to inspect imported destination {}: {}",
+            guard.requested_path.display(),
+            e
+        ))
+    })?;
+    let file_type = metadata.file_type();
+    if !file_type.is_file() && !file_type.is_symlink() {
+        return Err(AppError::Repository(format!(
+            "import destination is not a file or symlink: {}",
+            guard.requested_path.display()
+        )));
+    }
+
+    Ok(())
 }
 
 fn import_symlink_source(
@@ -792,10 +918,11 @@ fn import_hardlink_or_copy_blocking(
     options: ImportFileOptions,
     source_cleanup_required: bool,
 ) -> AppResult<ImportFileResult> {
-    let (source_fingerprint, size) = prepare_import_destination(&source, &dest)?;
+    let (source_fingerprint, size, destination_guard) = prepare_import_destination(&source, &dest)?;
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
         import_symlink_source(&source, &dest, &source_fingerprint, size)?;
+        validate_import_destination_guard(&destination_guard, &dest)?;
         let source_cleanup = cleanup_guard_after_placement(
             source_cleanup_required,
             &source,
@@ -823,6 +950,7 @@ fn import_hardlink_or_copy_blocking(
                 }
                 match std::fs::metadata(&dest) {
                     Ok(dest_meta) if dest_meta.len() == size => {
+                        validate_import_destination_guard(&destination_guard, &dest)?;
                         let source_cleanup = cleanup_guard_after_placement(
                             source_cleanup_required,
                             &source,
@@ -873,6 +1001,7 @@ fn import_hardlink_or_copy_blocking(
     }
 
     copy_regular_source_to_destination(&source, &dest, &source_fingerprint, size, options)?;
+    validate_import_destination_guard(&destination_guard, &dest)?;
 
     let source_cleanup = cleanup_guard_after_placement(
         source_cleanup_required,
@@ -967,6 +1096,30 @@ mod tests {
         assert_eq!(
             std::fs::read(&dest).expect("read dest"),
             b"fake video bytes"
+        );
+    }
+
+    #[test]
+    fn destination_guard_rejects_parent_replacement_after_approval() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let parent = dir.path().join("library");
+        let dest = parent.join("Imported.Movie.mkv");
+        let (_source_fingerprint, _size, guard) =
+            prepare_import_destination(&source, &dest).expect("prepare destination");
+
+        let old_parent = dir.path().join("library-old");
+        std::fs::rename(&parent, &old_parent).expect("replace approved parent");
+        std::fs::create_dir_all(&parent).expect("create replacement parent");
+        std::fs::write(&dest, b"fake video bytes").expect("write destination");
+
+        let error = validate_import_destination_guard(&guard, &dest)
+            .expect_err("changed parent should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("import destination parent changed during placement")
         );
     }
 

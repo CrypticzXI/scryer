@@ -15,7 +15,8 @@ use scryer_application::{
 
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, to_gql_error, to_login_gql_error, to_login_gql_error_after_timing,
+    mfa_verification_from_ctx, require_config_step_up, to_gql_error, to_login_gql_error,
+    to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
@@ -347,21 +348,6 @@ async fn login_mfa_enrollment_payload_from_user(
         mfa_verified_until: None,
         mfa_enrollment_required: true,
     })
-}
-
-async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<()> {
-    if !auth_runtime_from_ctx(ctx)
-        .snapshot()
-        .effective_form_login_enabled
-    {
-        return Ok(());
-    }
-    let app = app_from_ctx(ctx)?;
-    let actor = actor_from_ctx(ctx)?;
-    let mfa = mfa_verification_from_ctx(ctx);
-    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
-        .await
-        .map_err(to_gql_error)
 }
 
 fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {

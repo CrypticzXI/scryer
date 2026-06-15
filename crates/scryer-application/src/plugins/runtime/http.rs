@@ -12,7 +12,7 @@ enum PluginHttpClientProfile {
 }
 fn build_plugin_http_client() -> Result<OutboundHttpClient, String> {
     Ok(OutboundHttpClient::new(
-        generic_reqwest_client(),
+        no_redirect_reqwest_client(),
         PLUGIN_HTTP_RATE_LIMITS.clone(),
     ))
 }
@@ -48,13 +48,22 @@ async fn fetch_plugin_bytes(
     label: &str,
     scope: impl Into<String>,
 ) -> AppResult<Vec<u8>> {
+    let target = scryer_outbound_http::prepare_untrusted_public_http_target(url, "plugin artifact")
+        .await
+        .map_err(|error| AppError::Validation(error.to_string()))?;
     let outbound_http = plugin_http_client(PluginHttpClientProfile::DefaultFetch)?;
     let response = outbound_http
         .send(plugin_request_policy(scope, label), || {
-            outbound_http.client().get(url)
+            target.client().get(target.url().clone())
         })
         .await
-        .map_err(|error| map_plugin_outbound_error(label, error))?
+        .map_err(|error| map_plugin_outbound_error(label, error))?;
+    if response.status().is_redirection() {
+        return Err(AppError::Validation(format!(
+            "plugin artifact redirects are not allowed for {label}"
+        )));
+    }
+    let response = response
         .error_for_status()
         .map_err(|error| AppError::Repository(format!("failed to download {label}: {error}")))?;
     let bytes = response

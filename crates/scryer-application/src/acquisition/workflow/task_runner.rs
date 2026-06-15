@@ -301,6 +301,23 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             .await;
     }
 }
+fn submission_blocks_search_for_wanted_item(
+    submission: &DownloadSubmission,
+    item: &WantedItem,
+    episode_collection_id: Option<&str>,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> bool {
+    if !submission_blocks_wanted_item(submission, item, episode_collection_id) {
+        return false;
+    }
+
+    if submission_is_active(submission, dl_snapshot) {
+        return true;
+    }
+
+    submission_is_completed(submission, dl_snapshot) && item.current_score.is_none()
+}
+
 impl AppUseCase {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn run_acquisition_cycle_once(&self) {
@@ -390,12 +407,16 @@ async fn process_single_wanted_item(
         .unwrap_or_default();
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
-    let has_blocking_active_or_completed_submission = submissions.iter().any(|submission| {
-        submission_is_active_or_completed(submission, dl_snapshot)
-            && submission_blocks_wanted_item(submission, item, episode_collection_id.as_deref())
+    let has_blocking_download_submission = submissions.iter().any(|submission| {
+        submission_blocks_search_for_wanted_item(
+            submission,
+            item,
+            episode_collection_id.as_deref(),
+            dl_snapshot,
+        )
     });
 
-    if has_blocking_active_or_completed_submission {
+    if has_blocking_download_submission {
         info!(
             title = title.name.as_str(),
             media_type = item.media_type.as_str(),
@@ -1856,6 +1877,81 @@ mod task_runner_tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    fn episode_submission(title_id: &str, episode_id: &str, job_id: &str) -> DownloadSubmission {
+        DownloadSubmission {
+            title_id: title_id.to_string(),
+            purpose: DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: job_id.to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Episode {
+                episode_id: episode_id.to_string(),
+            },
+        }
+    }
+
+    fn snapshot_with_job(job_id: &str, completed: bool) -> DownloadClientSnapshot {
+        let key = download_client_item_identity(Some("primary"), job_id);
+        let mut snapshot = DownloadClientSnapshot {
+            active_titles: Default::default(),
+            active_client_ids: Default::default(),
+            active_raw_item_id_counts: Default::default(),
+            completed_client_ids: Default::default(),
+            completed_raw_item_id_counts: Default::default(),
+            failed_by_download_id: Default::default(),
+        };
+        if completed {
+            snapshot.completed_client_ids.insert(key);
+        } else {
+            snapshot.active_client_ids.insert(key);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn completed_submission_blocks_initial_wanted_search() {
+        let item = wanted_episode_item("title-bluey", "Bluey", 1);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-baseline");
+        let snapshot = snapshot_with_job("job-baseline", true);
+
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
+    }
+
+    #[test]
+    fn completed_submission_does_not_block_upgrade_search() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-baseline");
+        let snapshot = snapshot_with_job("job-baseline", true);
+
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
+    }
+
+    #[test]
+    fn active_submission_still_blocks_upgrade_search() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-upgrade");
+        let snapshot = snapshot_with_job("job-upgrade", false);
+
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
     }
 
     #[test]

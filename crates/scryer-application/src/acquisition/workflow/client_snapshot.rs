@@ -301,26 +301,43 @@ impl DownloadClientSnapshot {
             .or_else(|| self.failed_by_download_id.get(download_client_item_id))
     }
 
-    fn has_active_or_completed_client_item(
+    fn has_active_client_item(
         &self,
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> bool {
         let exact_key = download_client_item_identity(client_id, download_client_item_id);
         self.active_client_ids.contains(&exact_key)
-            || self.completed_client_ids.contains(&exact_key)
             || self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
+    }
+
+    fn has_completed_client_item(
+        &self,
+        client_id: Option<&str>,
+        download_client_item_id: &str,
+    ) -> bool {
+        let exact_key = download_client_item_identity(client_id, download_client_item_id);
+        self.completed_client_ids.contains(&exact_key)
             || self
                 .completed_raw_item_id_counts
                 .get(download_client_item_id)
                 == Some(&1)
     }
 }
-fn submission_is_active_or_completed(
+fn submission_is_active(
     submission: &DownloadSubmission,
     dl_snapshot: &DownloadClientSnapshot,
 ) -> bool {
-    dl_snapshot.has_active_or_completed_client_item(
+    dl_snapshot.has_active_client_item(
+        submission.download_client_id.as_deref(),
+        &submission.download_client_item_id,
+    )
+}
+fn submission_is_completed(
+    submission: &DownloadSubmission,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> bool {
+    dl_snapshot.has_completed_client_item(
         submission.download_client_id.as_deref(),
         &submission.download_client_item_id,
     )

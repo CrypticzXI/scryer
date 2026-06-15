@@ -38,25 +38,21 @@ impl AppUseCase {
             .await?
             .unwrap_or(false);
         let mfa_require_config_step_up = self
-            .read_setting_bool_value(MFA_REQUIRE_CONFIG_STEP_UP_KEY, None)
-            .await?
-            .or(
-                self.read_setting_bool_value(LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY, None)
-                    .await?,
+            .load_mfa_setting_with_legacy_migration(
+                MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+                LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
             )
-            .unwrap_or(false);
+            .await?;
         let totp_require_jellyfin_login = self
             .read_setting_bool_value(TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, None)
             .await?
             .unwrap_or(false);
         let mfa_require_password_login = self
-            .read_setting_bool_value(MFA_REQUIRE_PASSWORD_LOGIN_KEY, None)
-            .await?
-            .or(
-                self.read_setting_bool_value(LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY, None)
-                    .await?,
+            .load_mfa_setting_with_legacy_migration(
+                MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+                LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY,
             )
-            .unwrap_or(false);
+            .await?;
 
         Ok(SecuritySettings {
             form_login_enabled,
@@ -66,6 +62,29 @@ impl AppUseCase {
             mfa_require_password_login,
             totp_require_jellyfin_login,
         })
+    }
+}
+
+impl AppUseCase {
+    async fn load_mfa_setting_with_legacy_migration(
+        &self,
+        key_name: &'static str,
+        legacy_key_name: &'static str,
+    ) -> AppResult<bool> {
+        if let Some(value) = self.read_setting_bool_value(key_name, None).await? {
+            return Ok(value);
+        }
+
+        let Some(legacy_value) = self
+            .read_setting_bool_value(legacy_key_name, None)
+            .await?
+        else {
+            return Ok(false);
+        };
+
+        self.upsert_system_setting_json(key_name, &legacy_value, None)
+            .await?;
+        Ok(legacy_value)
     }
 }
 impl AppUseCase {

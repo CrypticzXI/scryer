@@ -2116,10 +2116,8 @@ pub struct AddTitleInput {
     pub source_kind: Option<DownloadSourceKindValue>,
     pub source_title: Option<String>,
     pub min_availability: Option<String>,
-    // Metadata fields the frontend can supply from the search result so the
-    // title is created with rich data immediately, without relying on a
-    // separate hydration round-trip to the metadata gateway.
-    pub poster_url: Option<String>,
+    // Non-artwork metadata fields the frontend can supply from the search result.
+    // Poster and fanart URLs are sourced from server-side SMG metadata.
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub sort_title: Option<String>,
@@ -2135,7 +2133,6 @@ pub struct SubmitMediaRequestInput {
     pub facet: MediaFacetValue,
     pub title: String,
     pub external_ids: Vec<ExternalIdInput>,
-    pub poster_url: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub sort_title: Option<String>,

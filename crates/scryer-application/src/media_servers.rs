@@ -385,7 +385,7 @@ impl AppUseCase {
         }
         let api_key = connection.api_key.as_deref().ok_or_else(|| {
             AppError::Validation(
-                "Jellyfin user listing requires a saved API key; enter the user manually instead"
+                "Jellyfin user listing requires a saved API key; save an API key to load Jellyfin users"
                     .into(),
             )
         })?;
@@ -1438,6 +1438,26 @@ mod tests {
             matches!(error, AppError::Unauthorized(_)),
             "expected unauthorized error, got {error:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn jellyfin_user_listing_without_api_key_points_to_picker_setup() {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.api_key = None;
+        let app = app_with_connection(connection);
+        let user = user_with_permissions(
+            "manage-users",
+            AppPermissionMask::from_permissions([AppPermission::ManageUsers]),
+        );
+
+        let error = app
+            .list_jellyfin_server_users(&user, "jellyfin-main", None)
+            .await
+            .expect_err("missing Jellyfin API key should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("save an API key to load Jellyfin users"));
+        assert!(!message.contains("manually"));
     }
 
     #[tokio::test]

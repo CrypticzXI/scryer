@@ -122,7 +122,6 @@ pub(crate) fn map_add_input(input: AddTitleInput) -> GqlResult<NewTitle> {
         source_kind: _,
         source_title: _,
         min_availability,
-        poster_url,
         year,
         overview,
         sort_title,
@@ -152,7 +151,7 @@ pub(crate) fn map_add_input(input: AddTitleInput) -> GqlResult<NewTitle> {
             })
             .collect(),
         min_availability,
-        poster_url,
+        poster_url: None,
         year,
         overview,
         sort_title,

@@ -15,20 +15,31 @@ impl AppUseCase {
             .await?;
 
         let fields = self.indexer_config_fields_for_provider_type(provider_type)?;
-        let persisted_config_json = if let Some(indexer_id) = indexer_id {
+        let persisted_config = if let Some(indexer_id) = indexer_id {
             self.services
                 .integrations
                 .indexer_configs
                 .get_by_id(indexer_id)
                 .await?
-                .and_then(|config| config.config_json)
         } else {
             None
         };
+        let persisted_config_json = persisted_config
+            .as_ref()
+            .filter(|config| {
+                persisted_indexer_config_can_restore_secrets(
+                    &fields,
+                    provider_type,
+                    config.provider_type.as_str(),
+                    config_json,
+                    config.config_json.as_deref(),
+                )
+            })
+            .and_then(|config| config.config_json.as_deref());
         let normalized_config_json = crate::app_usecase_integration::normalize_indexer_config_json(
             &fields,
             config_json,
-            persisted_config_json.as_deref(),
+            persisted_config_json,
         )?;
         let base_url = crate::app_usecase_integration::derive_indexer_base_url_from_config_fields(
             &fields,
@@ -279,6 +290,80 @@ fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
         ));
     }
     Ok(url)
+}
+
+fn persisted_indexer_config_can_restore_secrets(
+    fields: &[scryer_domain::ConfigFieldDef],
+    requested_provider_type: &str,
+    persisted_provider_type: &str,
+    requested_config_json: Option<&str>,
+    persisted_config_json: Option<&str>,
+) -> bool {
+    if !requested_provider_type
+        .trim()
+        .eq_ignore_ascii_case(persisted_provider_type.trim())
+    {
+        return false;
+    }
+
+    let Some(requested_origin) =
+        indexer_connection_origin_from_config(fields, requested_config_json)
+    else {
+        return true;
+    };
+    let Some(persisted_origin) =
+        indexer_connection_origin_from_config(fields, persisted_config_json)
+    else {
+        return false;
+    };
+
+    requested_origin == persisted_origin
+}
+
+fn indexer_connection_origin_from_config(
+    fields: &[scryer_domain::ConfigFieldDef],
+    config_json: Option<&str>,
+) -> Option<String> {
+    let raw = config_connection_url_value(fields, config_json)?;
+    let base_url = if raw.field_key_contains_feed_or_rss {
+        url::Url::parse(&raw.value)
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or(raw.value)
+    } else {
+        raw.value
+    };
+    let url = validate_test_flight_url(&base_url).ok()?;
+    Some(url.origin().ascii_serialization())
+}
+
+struct IndexerConnectionUrlValue {
+    value: String,
+    field_key_contains_feed_or_rss: bool,
+}
+
+fn config_connection_url_value(
+    fields: &[scryer_domain::ConfigFieldDef],
+    config_json: Option<&str>,
+) -> Option<IndexerConnectionUrlValue> {
+    let raw = config_json?;
+    let object = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()?
+        .as_object()
+        .cloned()?;
+    let field = fields
+        .iter()
+        .find(|field| field.role == Some(scryer_domain::ConfigFieldRole::ConnectionUrl))?;
+    let value = object
+        .get(&field.key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+
+    Some(IndexerConnectionUrlValue {
+        value,
+        field_key_contains_feed_or_rss: field.key.contains("feed") || field.key.contains("rss"),
+    })
 }
 
 fn format_preflight_transport_error(url: &url::Url, origin: &str, error: &str) -> String {
@@ -983,6 +1068,20 @@ mod tests {
     }
 
     #[test]
+    fn validate_test_flight_url_allows_operator_homelab_addresses() {
+        for raw in [
+            "http://localhost:9696",
+            "http://127.0.0.1:9696",
+            "http://192.168.1.10:9696",
+            "http://10.42.0.20:9696",
+            "http://prowlarr:9696",
+        ] {
+            validate_test_flight_url(raw)
+                .unwrap_or_else(|error| panic!("{raw} should be valid: {error}"));
+        }
+    }
+
+    #[test]
     fn preflight_transport_error_hints_when_https_service_lacks_tls() {
         let url = validate_test_flight_url("https://localhost:9696").expect("valid URL");
         let message = format_preflight_transport_error(
@@ -1346,6 +1445,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_indexer_connection_requires_secret_when_origin_changes() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#.to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "nzbgeek",
+            vec![
+                string_field(
+                    "base_url",
+                    "Base URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                ),
+                password_field("api_key", "API Key"),
+            ],
+            searchable_capabilities(),
+            Arc::new(RecordingIndexerClient::new(false)),
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .test_indexer_connection(
+                &test_admin(),
+                "nzbgeek",
+                Some(r#"{"base_url":"https://mirror.nzbgeek.info","api_key":""}"#),
+                Some("cfg-1"),
+            )
+            .await
+            .expect_err("changed origin should require an explicit API key");
+
+        assert_eq!(error.to_string(), "validation: API Key is required");
+        assert!(provider.seen_configs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn create_indexer_config_saves_managed_parent_before_background_sync_failure() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
@@ -1497,6 +1656,39 @@ mod tests {
         assert!(calls[0].query.is_empty());
         assert!(calls[0].ids.is_empty());
         assert_eq!(calls[0].facet, None);
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_accepts_operator_private_lan_url() {
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "newznab",
+            Some(r#"{"base_url":"http://192.168.1.10:9696"}"#),
+            None,
+        )
+        .await
+        .expect("operator LAN indexer URL should test successfully");
+
+        let seen = provider.seen_configs.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].base_url, "http://192.168.1.10:9696");
     }
 
     #[tokio::test]

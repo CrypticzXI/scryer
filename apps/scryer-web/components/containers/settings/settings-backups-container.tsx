@@ -82,6 +82,7 @@ type DeleteBackupMutationResult = {
 type PrepareBackupDownloadMutationResult = {
   prepareBackupDownload?: {
     downloadUrl: string;
+    downloadAuthorizationToken: string;
     expiresAt: string;
   };
 };
@@ -470,13 +471,16 @@ export function SettingsBackupsContainer() {
         })
         .toPromise();
       const downloadUrl = data?.prepareBackupDownload?.downloadUrl;
-      if (error || !downloadUrl) {
+      const downloadAuthorizationToken = data?.prepareBackupDownload?.downloadAuthorizationToken;
+      if (error || !downloadUrl || !downloadAuthorizationToken) {
         throw error ?? new Error(t("status.failedToLoad"));
       }
 
-      const response = await scryerFetch(
-        buildAppUrl(downloadUrl),
-      );
+      const response = await scryerFetch(buildAppUrl(downloadUrl), {
+        headers: {
+          Authorization: `Bearer ${downloadAuthorizationToken}`,
+        },
+      });
       if (!response.ok) {
         throw new Error(
           await readResponseErrorMessage(response, t("status.failedToLoad")),

@@ -3093,6 +3093,14 @@ impl StoredSettingsRepo {
         );
     }
 
+    async fn get_value(&self, scope: &str, key_name: &str) -> Option<String> {
+        self.values
+            .lock()
+            .await
+            .get(&(scope.to_string(), key_name.to_string(), None))
+            .cloned()
+    }
+
     async fn set_scoped_value(&self, scope: &str, key_name: &str, scope_id: &str, value: &str) {
         self.values.lock().await.insert(
             (
@@ -6474,6 +6482,11 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let wanted_items = Arc::new(TrackingWantedItemRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let metadata_gateway = Arc::new(MockMetadataGateway {
+        movies: (9000..9100)
+            .map(|tvdb_id| (tvdb_id, make_movie_metadata(tvdb_id, "Glass Harbor")))
+            .collect(),
+    });
 
     let services = AppServices::builder(
         titles.clone(),
@@ -6491,6 +6504,7 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     .with_domain_events(domain_events.clone())
     .with_libraries(libraries.clone())
     .with_media_requests(media_requests.clone())
+    .with_metadata_gateway(metadata_gateway)
     .with_wanted_items(wanted_items.clone())
     .with_pending_releases(pending_releases.clone())
     .with_download_submissions(download_submissions.clone())
@@ -6546,7 +6560,6 @@ fn media_request_input(library_id: impl Into<String>, tvdb_id: i64) -> SubmitMed
         title: "Glass Harbor".to_string(),
         sort_title: Some("Glass Harbor".to_string()),
         slug: Some("glass-harbor".to_string()),
-        poster_url: Some("https://example.test/glass-harbor.jpg".to_string()),
         year: Some(2026),
         overview: Some("A test request subject".to_string()),
         runtime_minutes: Some(101),
@@ -7587,7 +7600,7 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
     assert_eq!(title.year, Some(2026));
     assert_eq!(
         title.poster_url.as_deref(),
-        Some("https://example.test/glass-harbor.jpg")
+        Some("https://example.com/9022.jpg")
     );
     assert!(
         title
@@ -28135,22 +28148,22 @@ fn login_failure_delay_targets_stay_in_configured_ranges() {
     );
     assert_eq!(
         AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 0,),
-        Duration::from_millis(500),
+        Duration::from_millis(400),
     );
     assert_eq!(
         AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 300,),
-        Duration::from_millis(800),
+        Duration::from_millis(700),
     );
 }
 
 #[test]
-fn login_failure_delay_ranges_overlap_and_do_not_go_negative() {
+fn login_failure_delay_ranges_match_and_do_not_go_negative() {
     assert_eq!(
         AppUseCase::login_failure_delay_target_for_random(
             LoginFailureTimingClass::PasswordBackedLocal,
-            200,
+            123,
         ),
-        AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 100),
+        AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 123),
     );
     assert_eq!(
         AppUseCase::login_failure_remaining_delay_for_elapsed(
@@ -28221,6 +28234,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
 #[tokio::test]
 async fn security_settings_read_legacy_totp_mfa_keys_when_new_keys_are_unset() {
     let settings = Arc::new(StoredSettingsRepo::default());
+    let settings_handle = settings.clone();
     settings
         .set_value(
             SETTINGS_SCOPE_SYSTEM,
@@ -28248,6 +28262,93 @@ async fn security_settings_read_legacy_totp_mfa_keys_when_new_keys_are_unset() {
 
     assert!(loaded.mfa_require_config_step_up);
     assert!(loaded.mfa_require_password_login);
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn security_settings_do_not_overwrite_new_mfa_keys_with_legacy_values() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let settings_handle = settings.clone();
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            "false",
+        )
+        .await;
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::LEGACY_TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
+            "true",
+        )
+        .await;
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+            "false",
+        )
+        .await;
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            settings::keys::LEGACY_TOTP_REQUIRE_PASSWORD_LOGIN_KEY,
+            "true",
+        )
+        .await;
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+
+    let loaded = app
+        .security_settings()
+        .await
+        .expect("load security settings");
+
+    assert!(!loaded.mfa_require_config_step_up);
+    assert!(!loaded.mfa_require_password_login);
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("false")
+    );
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("false")
+    );
 }
 
 #[tokio::test]

@@ -646,6 +646,7 @@ export const createBackupMutation = `mutation CreateBackup($password: String) {
 export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($filename: String!) {
   prepareBackupDownload(filename: $filename) {
     downloadUrl
+    downloadAuthorizationToken
     expiresAt
   }
 }`;

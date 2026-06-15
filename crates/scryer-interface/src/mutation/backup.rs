@@ -54,6 +54,7 @@ struct RestoreApplyPayload {
 #[derive(Clone, SimpleObject)]
 struct BackupDownloadUrlPayload {
     download_url: String,
+    download_authorization_token: String,
     expires_at: String,
 }
 
@@ -89,12 +90,10 @@ impl BackupMutations {
             .await
             .map_err(to_gql_error)?;
         let encoded_filename = encode_path_segment(&filename);
-        let query = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("ticket", &ticket.token)
-            .finish();
 
         Ok(BackupDownloadUrlPayload {
-            download_url: format!("/admin/backups/{encoded_filename}/download?{query}"),
+            download_url: format!("/admin/backups/{encoded_filename}/download"),
+            download_authorization_token: ticket.token,
             expires_at: ticket.expires_at,
         })
     }

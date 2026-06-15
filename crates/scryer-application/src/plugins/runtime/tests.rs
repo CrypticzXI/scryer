@@ -418,7 +418,8 @@ mod signature_bundle_decode_tests {
 
 #[cfg(test)]
 mod plugin_http_client_tests {
-    use super::{PluginHttpClientProfile, plugin_http_client};
+    use super::{PluginHttpClientProfile, fetch_plugin_bytes, plugin_http_client};
+    use crate::AppError;
 
     #[test]
     fn plugin_http_client_profiles_are_cached() {
@@ -437,6 +438,23 @@ mod plugin_http_client_tests {
         assert_eq!(default_a, default_b);
         assert_eq!(rule_pack_a, rule_pack_b);
         assert_ne!(default_a, rule_pack_a);
+    }
+
+    #[tokio::test]
+    async fn plugin_artifact_fetch_rejects_private_destinations() {
+        let error = fetch_plugin_bytes(
+            "http://127.0.0.1/plugin.wasm",
+            "test plugin artifact",
+            "test-plugin-artifact",
+        )
+        .await
+        .expect_err("private plugin artifact URL should be rejected");
+
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "expected validation error, got {error:?}"
+        );
+        assert!(error.to_string().contains("private or local address"));
     }
 }
 #[cfg(all(test, feature = "runtime-plugin-trust"))]

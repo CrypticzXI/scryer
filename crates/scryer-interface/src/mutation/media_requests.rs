@@ -30,7 +30,6 @@ impl MediaRequestMutations {
                     title: input.title,
                     sort_title: input.sort_title,
                     slug: input.slug,
-                    poster_url: input.poster_url,
                     year: input.year,
                     overview: input.overview,
                     runtime_minutes: input.runtime_minutes,

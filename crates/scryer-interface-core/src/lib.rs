@@ -367,6 +367,23 @@ pub async fn require_app_permission(
     Ok(actor)
 }
 
+pub async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<User> {
+    if !auth_runtime_from_ctx(ctx)
+        .snapshot()
+        .effective_form_login_enabled
+    {
+        return actor_from_ctx(ctx);
+    }
+
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    let mfa = mfa_verification_from_ctx(ctx);
+    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+        .await
+        .map_err(to_gql_error)?;
+    Ok(actor)
+}
+
 pub async fn actor_has_app_permission(
     ctx: &Context<'_>,
     permission: AppPermission,

@@ -17,7 +17,6 @@ pub struct SubmitMediaRequestInput {
     pub title: String,
     pub sort_title: Option<String>,
     pub slug: Option<String>,
-    pub poster_url: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub runtime_minutes: Option<i32>,
@@ -107,6 +106,9 @@ impl AppUseCase {
             .await?;
         let requested_monitor_type =
             normalize_requested_monitor_type(&input.facet, input.requested_monitor_type)?;
+        let poster_url = self
+            .smg_media_request_poster_url(&input.facet, &external_ids)
+            .await;
 
         let request = NewMediaRequest {
             id: Id::new().0,
@@ -116,7 +118,7 @@ impl AppUseCase {
             title,
             sort_title: normalized_optional_string(input.sort_title),
             slug: normalized_optional_string(input.slug),
-            poster_url: normalized_optional_string(input.poster_url),
+            poster_url,
             year: input.year,
             overview: normalized_optional_string(input.overview),
             runtime_minutes: input.runtime_minutes,
@@ -925,6 +927,49 @@ fn group_external_id_values_by_source(external_ids: &[ExternalId]) -> Vec<(Strin
 
 fn is_smg_request_correlation_external_id(external_id: &ExternalId) -> bool {
     matches!(external_id.source.as_str(), "tvdb" | "imdb" | "tmdb")
+}
+
+impl AppUseCase {
+    async fn smg_media_request_poster_url(
+        &self,
+        facet: &MediaFacet,
+        external_ids: &[ExternalId],
+    ) -> Option<String> {
+        let tvdb_id = external_ids
+            .iter()
+            .find(|external_id| external_id.source == "tvdb")
+            .and_then(|external_id| external_id.value.trim().parse::<i64>().ok())?;
+        let language = self.metadata_language().await;
+        let result = match facet {
+            MediaFacet::Movie => self
+                .services
+                .library
+                .metadata_gateway
+                .get_movie(tvdb_id, &language)
+                .await
+                .map(|metadata| metadata.poster_url),
+            MediaFacet::Series | MediaFacet::Anime => self
+                .services
+                .library
+                .metadata_gateway
+                .get_series(tvdb_id, &language)
+                .await
+                .map(|metadata| metadata.poster_url),
+        };
+
+        match result {
+            Ok(poster_url) => normalized_optional_string(Some(poster_url)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    tvdb_id,
+                    facet = facet.as_str(),
+                    "failed to resolve media request poster from SMG metadata"
+                );
+                None
+            }
+        }
+    }
 }
 
 fn media_request_resolved_event_data(

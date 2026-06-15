@@ -4248,6 +4248,7 @@ async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
         mutation PrepareBackupDownload {
           prepareBackupDownload(filename: "backup_20260515_abcd1234.tar.zst") {
             downloadUrl
+            downloadAuthorizationToken
             expiresAt
           }
         }
@@ -4260,10 +4261,15 @@ async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
     let download_url = body["data"]["prepareBackupDownload"]["downloadUrl"]
         .as_str()
         .expect("download url should be present");
-    assert!(
-        download_url
-            .starts_with("/admin/backups/backup_20260515_abcd1234.tar.zst/download?ticket=")
+    assert_eq!(
+        download_url,
+        "/admin/backups/backup_20260515_abcd1234.tar.zst/download"
     );
+    let token = body["data"]["prepareBackupDownload"]["downloadAuthorizationToken"]
+        .as_str()
+        .expect("download authorization token should be present");
+    assert!(!token.trim().is_empty());
+    assert!(!download_url.contains("ticket="));
     assert!(
         body["data"]["prepareBackupDownload"]["expiresAt"]
             .as_str()
@@ -4309,6 +4315,7 @@ async fn prepare_backup_download_percent_encodes_reserved_filename_characters() 
         mutation PrepareBackupDownload {{
           prepareBackupDownload(filename: {filename_literal}) {{
             downloadUrl
+            downloadAuthorizationToken
             expiresAt
           }}
         }}
@@ -4321,10 +4328,14 @@ async fn prepare_backup_download_percent_encodes_reserved_filename_characters() 
     let download_url = body["data"]["prepareBackupDownload"]["downloadUrl"]
         .as_str()
         .expect("download url should be present");
+    assert_eq!(
+        download_url, "/admin/backups/backup%202026%20%23%25%3F.tar.zst/download",
+        "expected percent-encoded path segment without query ticket"
+    );
     assert!(
-        download_url
-            .starts_with("/admin/backups/backup%202026%20%23%25%3F.tar.zst/download?ticket="),
-        "expected percent-encoded path segment: {download_url}"
+        body["data"]["prepareBackupDownload"]["downloadAuthorizationToken"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
     );
 }
 
