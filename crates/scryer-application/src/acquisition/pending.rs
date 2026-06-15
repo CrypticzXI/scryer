@@ -501,8 +501,29 @@ impl AppUseCase {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
+        let existing_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
+        let analyzed_cutoff_quality =
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing_files,
+                wanted.episode_id.as_deref(),
+                wanted.series_movie_link_id.as_deref(),
+            );
         let upgrade_context = self
-            .resolve_upgrade_context_for_title(&title, wanted.grabbed_release.as_deref())
+            .resolve_upgrade_context_for_title_with_category_and_quality(
+                &title,
+                wanted.grabbed_release.as_deref(),
+                None,
+                analyzed_cutoff_quality,
+            )
             .await;
 
         if upgrade_context.cutoff_reached {

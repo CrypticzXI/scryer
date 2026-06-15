@@ -5758,6 +5758,40 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(720));
     assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
 
+    sqlx::query(
+        "UPDATE wanted_items SET status = ?, current_score = ?, grabbed_release = ? WHERE id = ?",
+    )
+    .bind("wanted")
+    .bind(720i64)
+    .bind("Negative Score Release")
+    .bind("wanted-episode")
+    .execute(services.pool())
+    .await
+    .expect("wanted item should reset for negative scored completion");
+
+    workflow
+        .complete_wanted_item_for_title(
+            "title-series",
+            None,
+            Some("2026-04-20T02:00:00Z"),
+            Some(-15),
+        )
+        .await
+        .expect("negative scored completion should succeed");
+
+    let row = sqlx::query(
+        "SELECT current_score, grabbed_release
+         FROM wanted_items
+         WHERE id = ?",
+    )
+    .bind("wanted-episode")
+    .fetch_one(services.pool())
+    .await
+    .expect("wanted item should load after negative scored completion");
+
+    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(-15));
+    assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
+
     let _ = std::fs::remove_file(db);
 }
 

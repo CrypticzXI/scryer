@@ -842,11 +842,18 @@ impl AppUseCase {
             .collect::<Vec<_>>();
         let delay_profiles = self.load_delay_profiles().await;
         let now = Utc::now();
+        let analyzed_cutoff_quality =
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing_files,
+                subject.submission_scope.episode_id(),
+                subject.submission_scope.series_movie_link_id(),
+            );
         let upgrade_context = self
-            .resolve_upgrade_context_for_title_with_category(
+            .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
+                analyzed_cutoff_quality,
             )
             .await;
 
@@ -1516,6 +1523,30 @@ mod tests {
             &existing,
             Some("episode-2")
         ));
+    }
+
+    #[test]
+    fn analyzed_cutoff_quality_matches_the_current_scope() {
+        let mut title_file = make_media_file("Nightfall.2022.1080p.WEB-DL", None);
+        title_file.quality_label = Some("1080p".to_string());
+        title_file.acquisition_score = Some(900);
+        let episode_file = make_media_file("Nightfall.S01E01.1080p.WEB-DL", Some("episode-1"));
+        let existing = vec![title_file, episode_file];
+
+        assert_eq!(
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing,
+                Some("episode-1"),
+                None,
+            ),
+            Some("720p")
+        );
+        assert_eq!(
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing, None, None,
+            ),
+            Some("1080p")
+        );
     }
 
     #[test]

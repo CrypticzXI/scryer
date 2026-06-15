@@ -1,6 +1,6 @@
 use crate::acquisition_search_queries::tvdb_id_from_external_ids;
 use crate::{
-    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, WantedItem,
+    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, TitleMediaFile, WantedItem,
     app_usecase_discovery::QualityProfileLookup, default_quality_profile_for_search,
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -88,21 +88,56 @@ pub(crate) fn upgrade_context_category<'a>(
         .unwrap_or_else(|| title.facet.as_str())
 }
 
-impl AppUseCase {
-    pub(crate) async fn resolve_upgrade_context_for_title(
-        &self,
-        title: &Title,
-        grabbed_release: Option<&str>,
-    ) -> ResolvedUpgradeContext {
-        self.resolve_upgrade_context_for_title_with_category(title, grabbed_release, None)
-            .await
-    }
+pub(crate) fn analyzed_cutoff_quality_for_scope<'a>(
+    existing_files: &'a [TitleMediaFile],
+    episode_id: Option<&str>,
+    series_movie_link_id: Option<&str>,
+) -> Option<&'a str> {
+    existing_files
+        .iter()
+        .filter(|file| file.role.is_primary())
+        .filter(|file| media_file_matches_cutoff_scope(file, episode_id, series_movie_link_id))
+        .filter(|file| {
+            file.quality_label
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        })
+        .max_by(|left, right| {
+            left.acquisition_score
+                .unwrap_or(i32::MIN)
+                .cmp(&right.acquisition_score.unwrap_or(i32::MIN))
+                .then_with(|| left.created_at.cmp(&right.created_at))
+        })
+        .and_then(|file| file.quality_label.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
 
-    pub(crate) async fn resolve_upgrade_context_for_title_with_category(
+fn media_file_matches_cutoff_scope(
+    file: &TitleMediaFile,
+    episode_id: Option<&str>,
+    series_movie_link_id: Option<&str>,
+) -> bool {
+    if let Some(episode_id) = episode_id {
+        return file.episode_id.as_deref() == Some(episode_id);
+    }
+    if let Some(series_movie_link_id) = series_movie_link_id {
+        return file
+            .series_movie_link_ids
+            .iter()
+            .any(|link_id| link_id == series_movie_link_id);
+    }
+    file.episode_id.is_none() && file.series_movie_link_ids.is_empty()
+}
+
+impl AppUseCase {
+    pub(crate) async fn resolve_upgrade_context_for_title_with_category_and_quality(
         &self,
         title: &Title,
         grabbed_release: Option<&str>,
         category_hint: Option<&str>,
+        analyzed_quality: Option<&str>,
     ) -> ResolvedUpgradeContext {
         let category = upgrade_context_category(title, category_hint);
         let grabbed_release = if grabbed_release
@@ -124,7 +159,8 @@ impl AppUseCase {
             .await
             .unwrap_or_else(|_| default_quality_profile_for_search());
 
-        let cutoff_reached = crate::quality_profile::has_reached_cutoff(
+        let cutoff_reached = crate::quality_profile::has_reached_cutoff_from_quality_or_release(
+            analyzed_quality,
             grabbed_release,
             profile.criteria.cutoff_tier.as_deref(),
             &profile.criteria.quality_tiers,

@@ -923,12 +923,29 @@ async fn process_single_wanted_item(
         .filter_map(|e| e.source_title)
         .map(|t| t.to_ascii_lowercase())
         .collect();
+    let existing_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|file| file.role.is_primary())
+        .collect::<Vec<_>>();
+    let analyzed_cutoff_quality =
+        crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+            &existing_files,
+            subject.submission_scope.episode_id(),
+            subject.submission_scope.series_movie_link_id(),
+        );
 
     let upgrade_context = app
-        .resolve_upgrade_context_for_title_with_category(
+        .resolve_upgrade_context_for_title_with_category_and_quality(
             &search_title,
             item.grabbed_release.as_deref(),
             Some(subject.category.as_str()),
+            analyzed_cutoff_quality,
         )
         .await;
     let profile = &upgrade_context.profile;

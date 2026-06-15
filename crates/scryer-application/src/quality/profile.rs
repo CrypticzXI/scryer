@@ -579,6 +579,25 @@ pub fn quality_meets_or_exceeds_cutoff(
     }
 }
 
+pub fn has_reached_cutoff_from_quality_or_release(
+    analyzed_quality: Option<&str>,
+    grabbed_release: Option<&str>,
+    cutoff_tier: Option<&str>,
+    quality_tiers: &[String],
+) -> bool {
+    if let Some(current_quality) = analyzed_quality
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let Some(cutoff) = cutoff_tier else {
+            return false;
+        };
+        return quality_meets_or_exceeds_cutoff(current_quality, cutoff, quality_tiers);
+    }
+
+    has_reached_cutoff(grabbed_release, cutoff_tier, quality_tiers)
+}
+
 /// Check whether the currently grabbed release has reached the cutoff quality tier.
 ///
 /// Returns `true` when the existing file's quality is at or above the cutoff tier
@@ -1234,6 +1253,30 @@ mod tests {
     use crate::scoring_weights::{
         ScoringOverrides, ScoringPersona, balanced_weights, build_weights,
     };
+
+    #[test]
+    fn cutoff_prefers_analyzed_quality_over_grabbed_release_text() {
+        let tiers = vec!["1080P".to_string(), "720P".to_string()];
+
+        assert!(!has_reached_cutoff_from_quality_or_release(
+            Some("720p"),
+            Some("Example.S01E01.1080p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+        assert!(has_reached_cutoff_from_quality_or_release(
+            Some("1080p"),
+            Some("Example.S01E01.720p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+        assert!(has_reached_cutoff_from_quality_or_release(
+            None,
+            Some("Example.S01E01.1080p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+    }
 
     #[test]
     fn parse_profile_json() {

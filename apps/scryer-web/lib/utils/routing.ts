@@ -75,7 +75,7 @@ export function buildViewPath(
   nextActivitySection?: ActivitySection,
 ) {
   const base = `/${nextView}`;
-  if (nextView === "settings" && nextSettingsSection && nextSettingsSection !== "profile") {
+  if (nextView === "settings" && nextSettingsSection) {
     return `${base}/${SETTINGS_SECTION_PATH[nextSettingsSection]}`;
   }
   if (nextView === "system" && nextSystemSection && nextSystemSection !== "overview") {

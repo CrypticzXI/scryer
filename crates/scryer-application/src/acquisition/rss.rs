@@ -1020,11 +1020,18 @@ impl AppUseCase {
             .into_iter()
             .filter(|file| file.role.is_primary())
             .collect::<Vec<_>>();
+        let analyzed_cutoff_quality =
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing_files,
+                subject.submission_scope.episode_id(),
+                subject.submission_scope.series_movie_link_id(),
+            );
         let upgrade_context = self
-            .resolve_upgrade_context_for_title_with_category(
+            .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 wanted.grabbed_release.as_deref(),
                 Some(subject.owner_facet.as_str()),
+                analyzed_cutoff_quality,
             )
             .await;
         if upgrade_context.cutoff_reached {
