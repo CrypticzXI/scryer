@@ -199,6 +199,8 @@ fn from_auth_runtime_state(
         env_override_active: auth_runtime.env_override_active,
         mfa_require_password_login: auth_runtime.effective_form_login_enabled
             && security_settings.mfa_require_password_login,
+        mfa_require_config_step_up: auth_runtime.effective_form_login_enabled
+            && security_settings.mfa_require_config_step_up,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_jellyfin_login,
     }

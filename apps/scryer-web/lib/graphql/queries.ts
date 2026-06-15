@@ -239,7 +239,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
       seriesMovieLinkId
     }`;
 
-  const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
+const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
     }
     seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
@@ -249,7 +249,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     wantedItems {${WANTED_ITEM_FIELDS}
     }`;
 
-  const TITLE_EVENT_FIELDS = `
+const TITLE_EVENT_FIELDS = `
     id
     titleId
     episodeId
@@ -266,7 +266,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     occurredAt
     createdAt`;
 
-  const TITLE_RELEASE_BLOCKLIST_FIELDS = `
+const TITLE_RELEASE_BLOCKLIST_FIELDS = `
     id
     sourceHint
     sourceTitle
@@ -303,7 +303,7 @@ const EXTERNAL_SUBTITLE_BLOCKLIST_FIELDS = `
     reason
     createdAt`;
 
-  const IMPORT_HISTORY_FIELDS = `
+const IMPORT_HISTORY_FIELDS = `
     id
     sourceSystem
     sourceRef
@@ -1066,13 +1066,10 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
-        const titleAcquisitionDiagnosticsAlias =
-          `titleOverviewDiagnosticsAction${index}`;
+        const titleAcquisitionDiagnosticsAlias = `titleOverviewDiagnosticsAction${index}`;
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
-        const titleReleaseBlocklistAlias =
-          `titleOverviewBlocklistAction${index}`;
-        const externalSubtitlesAlias =
-          `titleOverviewExternalSubtitlesAction${index}`;
+        const titleReleaseBlocklistAlias = `titleOverviewBlocklistAction${index}`;
+        const externalSubtitlesAlias = `titleOverviewExternalSubtitlesAction${index}`;
         const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
@@ -1112,8 +1109,7 @@ export function buildReactiveRefreshQuery(
       case "titleOverviewDownloadFeedback": {
         const titleIdVariableName = `titleOverviewDownloadFeedbackId${index}`;
         const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
-        const completedDownloadQueueItemsAlias =
-          `titleOverviewCompletedDownloadQueueAction${index}`;
+        const completedDownloadQueueItemsAlias = `titleOverviewCompletedDownloadQueueAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
         fields.push(
@@ -1148,7 +1144,9 @@ export function buildReactiveRefreshQuery(
       }
       default: {
         const exhaustiveCheck: never = action;
-        throw new Error(`unsupported reactive refresh action: ${exhaustiveCheck}`);
+        throw new Error(
+          `unsupported reactive refresh action: ${exhaustiveCheck}`,
+        );
       }
     }
   });
@@ -1974,6 +1972,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     passkeyEnabled
     envOverrideActive
     mfaRequirePasswordLogin
+    mfaRequireConfigStepUp
     totpRequireJellyfinLogin
   }
 }`;

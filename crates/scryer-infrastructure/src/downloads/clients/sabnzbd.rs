@@ -1745,10 +1745,7 @@ mod tests {
             None,
         );
 
-        assert!(fields.contains(&(
-            "ma_username",
-            "http://sonarr:8989".to_string()
-        )));
+        assert!(fields.contains(&("ma_username", "http://sonarr:8989".to_string())));
         assert!(fields.contains(&("ma_password", "arr-secret".to_string())));
     }
 

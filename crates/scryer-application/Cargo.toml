@@ -67,7 +67,7 @@ sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zs
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
-zstd = { version = "0.13", optional = true }
+zstd = { version = "0.13", default-features = false, optional = true }
 lzma-rs = { version = "0.3", optional = true }
 tempfile = "3"
 chardetng = { version = "1", optional = true }
@@ -77,10 +77,10 @@ whatlang = { version = "0.18.0", optional = true }
 regex = "1"
 blake3 = "1"
 const-oid = { version = "0.10.2", features = ["db"] }
-sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"], optional = true }
+sigstore = { version = "0.14", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"], optional = true }
 rustls-pki-types = { version = "1", optional = true }
 rustls-webpki = { version = "0.103", optional = true }
-x509-cert = { version = "0.2", optional = true }
+x509-cert = { version = "0.2", default-features = false, features = ["pem", "std"], optional = true }
 url = "2"
 rustls-pemfile = "2"
 

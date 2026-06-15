@@ -1,4 +1,12 @@
 import { Button } from "@/components/ui/button";
+import { TotpCodeForm } from "@/components/auth/totp-code-form";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -10,8 +18,8 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
-import type { FormEvent } from "react";
-import { QRCode } from "react-qr-code";
+import { useEffect, useState, type FormEvent } from "react";
+import { TotpQrCode } from "@/components/common/totp-qr-code";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
@@ -25,6 +33,8 @@ import type {
 import { selectorId } from "@/lib/utils/dom-ids";
 
 const TOTP_CODE_LENGTH = 6;
+
+type TotpProfileAction = "regenerateRecoveryCodes" | "disable" | null;
 
 type Props = {
   username?: string;
@@ -70,7 +80,6 @@ type Props = {
   onTotpEnrollmentCodeChange: (value: string) => void;
   onCompleteTotpEnrollment: () => void;
   onTotpActionCodeChange: (value: string) => void;
-  onVerifyTotpStepUp: () => void;
   onDisableTotp: () => void;
   onRegenerateTotpRecoveryCodes: () => void;
   onStartLinkAccount: (provider: ExternalAccountProvider) => void;
@@ -174,7 +183,6 @@ export function SettingsProfileSection({
   onTotpEnrollmentCodeChange,
   onCompleteTotpEnrollment,
   onTotpActionCodeChange,
-  onVerifyTotpStepUp,
   onDisableTotp,
   onRegenerateTotpRecoveryCodes,
   onStartLinkAccount,
@@ -187,6 +195,8 @@ export function SettingsProfileSection({
   onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
+  const [pendingTotpAction, setPendingTotpAction] = useState<TotpProfileAction>(null);
+  const [submittedTotpAction, setSubmittedTotpAction] = useState(false);
   const passwordMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
   const canSubmit =
     (!requiresCurrentPassword || currentPassword.length > 0) &&
@@ -211,6 +221,41 @@ export function SettingsProfileSection({
     linkAccountPassword.length > 0 &&
     !linkAccountBusy;
   const canSubmitPlexLink = Boolean(linkAccountConnectionId) && !linkAccountBusy;
+  const closeTotpActionDialog = () => {
+    setPendingTotpAction(null);
+    setSubmittedTotpAction(false);
+    onTotpActionCodeChange("");
+  };
+  const openTotpActionDialog = (action: Exclude<TotpProfileAction, null>) => {
+    setPendingTotpAction(action);
+    setSubmittedTotpAction(false);
+    onTotpActionCodeChange("");
+  };
+  const handleSubmitTotpAction = () => {
+    if (!pendingTotpAction || totpActionCode.length !== TOTP_CODE_LENGTH) {
+      return;
+    }
+
+    setSubmittedTotpAction(true);
+    if (pendingTotpAction === "regenerateRecoveryCodes") {
+      onRegenerateTotpRecoveryCodes();
+      return;
+    }
+
+    onDisableTotp();
+  };
+
+  useEffect(() => {
+    if (
+      pendingTotpAction &&
+      submittedTotpAction &&
+      !totpBusy &&
+      totpActionCode.length === 0
+    ) {
+      setPendingTotpAction(null);
+      setSubmittedTotpAction(false);
+    }
+  }, [pendingTotpAction, submittedTotpAction, totpActionCode.length, totpBusy]);
 
   return (
     <div id="settings-profile-section" className="space-y-6 text-sm">
@@ -396,57 +441,84 @@ export function SettingsProfileSection({
               </div>
             ) : null}
 
-            <div className="grid max-w-sm gap-2">
-              <Label htmlFor="totp-action-code">{t("profile.totpCode")}</Label>
-              <Input
-                id="totp-action-code"
-                {...integerInputProps}
-                inputMode="numeric"
-                maxLength={TOTP_CODE_LENGTH}
-                autoComplete="one-time-code"
-                value={totpActionCode}
-                onChange={(event) => onTotpActionCodeChange(event.target.value)}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  id={selectorId("settings-profile-totp-step-up")}
-                  type="button"
-                  variant="outline"
-                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
-                  onClick={onVerifyTotpStepUp}
-                >
-                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  {t("profile.mfaVerifyStepUp")}
-                </Button>
-                <Button
-                  id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
-                  type="button"
-                  variant="outline"
-                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
-                  onClick={onRegenerateTotpRecoveryCodes}
-                >
-                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  {t("profile.totpRegenerateRecoveryCodes")}
-                </Button>
-                <Button
-                  id={selectorId("settings-profile-totp-disable")}
-                  type="button"
-                  variant="destructive"
-                  disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
-                  onClick={onDisableTotp}
-                >
-                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  {t("profile.totpDisable")}
-                </Button>
-              </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
+                type="button"
+                variant="outline"
+                disabled={totpBusy}
+                onClick={() => openTotpActionDialog("regenerateRecoveryCodes")}
+              >
+                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.totpRegenerateRecoveryCodes")}
+              </Button>
+              <Button
+                id={selectorId("settings-profile-totp-disable")}
+                type="button"
+                variant="destructive"
+                disabled={totpBusy}
+                onClick={() => openTotpActionDialog("disable")}
+              >
+                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.totpDisable")}
+              </Button>
             </div>
+
+            <Dialog
+              open={pendingTotpAction !== null}
+              onOpenChange={(open) => {
+                if (!open) {
+                  closeTotpActionDialog();
+                }
+              }}
+            >
+              <DialogContent
+                id="settings-profile-totp-action-dialog"
+                className="sm:max-w-md"
+                onInteractOutside={(event) => event.preventDefault()}
+              >
+                <DialogHeader>
+                  <DialogTitle>
+                    {pendingTotpAction === "regenerateRecoveryCodes"
+                      ? t("profile.totpRegenerateRecoveryCodes")
+                      : t("profile.totpDisable")}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t("profile.totpActionDescription")}
+                  </DialogDescription>
+                </DialogHeader>
+                <TotpCodeForm
+                  inputId="totp-action-code"
+                  submitId={
+                    pendingTotpAction === "regenerateRecoveryCodes"
+                      ? selectorId("settings-profile-totp-regenerate-recovery-codes-confirm")
+                      : selectorId("settings-profile-totp-disable-confirm")
+                  }
+                  cancelId={selectorId("settings-profile-totp-action-cancel")}
+                  code={totpActionCode}
+                  title={t("profile.totpCode")}
+                  description={t("profile.totpActionDescription")}
+                  submitLabel={
+                    pendingTotpAction === "regenerateRecoveryCodes"
+                      ? t("profile.totpRegenerateRecoveryCodes")
+                      : t("profile.totpDisable")
+                  }
+                  cancelLabel={t("label.cancel")}
+                  busy={totpBusy}
+                  onCodeChange={onTotpActionCodeChange}
+                  onSubmit={handleSubmitTotpAction}
+                  onCancel={closeTotpActionDialog}
+                />
+              </DialogContent>
+            </Dialog>
           </div>
         ) : totpEnrollment ? (
           <div className="space-y-4 rounded-md border border-border bg-background/60 p-4">
             <div className="flex flex-col gap-4 sm:flex-row">
-              <div className="w-fit rounded-md bg-white p-3">
-                <QRCode value={totpEnrollment.otpauthUrl} size={168} />
-              </div>
+              <TotpQrCode
+                id={selectorId("settings-profile-totp-qr-code")}
+                value={totpEnrollment.otpauthUrl}
+              />
               <div className="min-w-0 space-y-3">
                 <a
                   id={selectorId("settings-profile-totp-setup-link")}

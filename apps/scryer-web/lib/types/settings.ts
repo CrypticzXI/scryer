@@ -154,6 +154,7 @@ export type AuthRuntimeState = {
   passkeyEnabled: boolean;
   envOverrideActive: boolean;
   mfaRequirePasswordLogin: boolean;
+  mfaRequireConfigStepUp: boolean;
   totpRequireJellyfinLogin: boolean;
 };
 

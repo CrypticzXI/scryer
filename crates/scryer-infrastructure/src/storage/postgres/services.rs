@@ -118,7 +118,7 @@ mod tests {
         UserRepository, default_quality_profile_for_search,
     };
     use scryer_domain::{
-        Collection, CollectionType, ExternalId, Id, LibraryGrant, LibraryPermission,
+        Collection, CollectionType, ExternalId, Id, Library, LibraryGrant, LibraryPermission,
         LibraryPermissionMask, MediaFacet, Title, User,
     };
     use sqlx::Row;
@@ -1038,6 +1038,18 @@ mod tests {
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let users = user_store(&services);
             let libraries = library_store(&services);
+            let now = chrono::Utc::now();
+            let movie_library = Library {
+                id: "movie_default_library".to_string(),
+                facet: MediaFacet::Movie,
+                name: "Default movie".to_string(),
+                slug: "movies".to_string(),
+                is_default: true,
+                roots: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            };
+            LibraryRepository::create(&libraries, movie_library, Vec::new()).await?;
             let user = UserRepository::create(&users, User::new_admin("admin-concurrency")).await?;
             let user_id = user.id.clone();
             let permissions = LibraryPermissionMask::from_permissions([

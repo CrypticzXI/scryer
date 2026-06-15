@@ -181,7 +181,7 @@ impl AppUseCase {
         let normalized_code = normalize_totp_code(code, profile.digits)?;
         let secret = base32_decode(&challenge.secret_base32)?;
         let now = Utc::now();
-        let Some(step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
+        let Some(_step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
             return Err(AppError::TotpInvalidCode(
                 "TOTP code did not match the enrollment secret".into(),
             ));
@@ -194,10 +194,10 @@ impl AppUseCase {
             algorithm: profile.algorithm.storage_value().to_string(),
             digits: profile.digits,
             period_seconds: profile.period_seconds,
-            last_accepted_step: Some(step),
+            last_accepted_step: None,
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
-            last_used_at: Some(now.to_rfc3339()),
+            last_used_at: None,
         };
         self.services
             .identity
@@ -562,12 +562,16 @@ fn timestamp_expired(value: &str) -> bool {
 
 fn totp_otpauth_url(username: &str, secret_base32: &str) -> String {
     let issuer = "Scryer";
+    let profile = DEFAULT_TOTP_PROFILE;
     format!(
-        "otpauth://totp/{}:{}?secret={}&issuer={}",
+        "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm={}&digits={}&period={}",
         percent_encode_component(issuer),
         percent_encode_component(username),
         secret_base32,
-        percent_encode_component(issuer)
+        percent_encode_component(issuer),
+        profile.algorithm.storage_value(),
+        profile.digits,
+        profile.period_seconds
     )
 }
 
@@ -679,11 +683,11 @@ mod tests {
     }
 
     #[test]
-    fn otpauth_url_uses_1password_default_parameters() {
+    fn otpauth_url_uses_explicit_1password_parameters() {
         let url = totp_otpauth_url("jen@example.test", "JBSWY3DPEHPK3PXP");
         assert_eq!(
             url,
-            "otpauth://totp/Scryer:jen%40example.test?secret=JBSWY3DPEHPK3PXP&issuer=Scryer"
+            "otpauth://totp/Scryer:jen%40example.test?secret=JBSWY3DPEHPK3PXP&issuer=Scryer&algorithm=SHA1&digits=6&period=30"
         );
     }
 

@@ -322,7 +322,10 @@ async fn replace_library_grants_tx(
         tx.execute(
             "INSERT INTO user_library_permission_masks
              (user_id, library_id, permission_mask, updated_at)
-             VALUES ({}, {}, {}, {})",
+             VALUES ({}, {}, {}, {})
+             ON CONFLICT(user_id, library_id) DO UPDATE SET
+                permission_mask = excluded.permission_mask,
+                updated_at = excluded.updated_at",
             &[
                 SqlArg::Text(user_id.to_string()),
                 SqlArg::Text(grant.library_id),

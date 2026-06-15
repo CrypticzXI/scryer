@@ -4,7 +4,8 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::{
-    actor_from_ctx, app_from_ctx, require_app_permission, restore_context_from_ctx, to_gql_error,
+    app_from_ctx, require_app_permission, require_config_step_up, restore_context_from_ctx,
+    to_gql_error,
 };
 use crate::mappers::from_backup_info;
 use crate::types::{BackupInfoPayload, BackupRowCountPayload};
@@ -70,7 +71,7 @@ impl BackupMutations {
     ) -> GqlResult<BackupInfoPayload> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let info = app
             .create_backup(&actor, password.as_deref())
             .await
@@ -83,7 +84,8 @@ impl BackupMutations {
         ctx: &Context<'_>,
         filename: String,
     ) -> GqlResult<BackupDownloadUrlPayload> {
-        let actor = require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let actor = require_config_step_up(ctx).await?;
         let app = app_from_ctx(ctx)?;
         let ticket = app
             .prepare_backup_download(&actor, &filename)
@@ -101,7 +103,7 @@ impl BackupMutations {
     async fn delete_backup(&self, ctx: &Context<'_>, filename: String) -> GqlResult<bool> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_backup(&actor, &filename)
             .await
             .map_err(to_gql_error)

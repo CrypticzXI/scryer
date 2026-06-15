@@ -5,7 +5,7 @@ use chrono::Utc;
 use scryer_application::{AppError, LoginFailureTimingClass};
 
 use crate::context::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, require_config_step_up, to_gql_error,
     to_login_gql_error_after_timing,
 };
 use crate::mappers::{from_linked_account, from_user_with_auth_factor_status};
@@ -80,7 +80,7 @@ impl UserMutations {
         input: CreateUserInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let app_permissions = scryer_domain::AppPermissionMask::from_permissions(
             input
                 .app_permissions
@@ -129,6 +129,9 @@ impl UserMutations {
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        if input.user_id != actor.id {
+            require_config_step_up(ctx).await?;
+        }
         let user = if input.user_id == actor.id {
             if let Some(current_password) = input.current_password {
                 app.change_own_password(&actor, input.password, current_password)
@@ -157,7 +160,7 @@ impl UserMutations {
         input: SetUserAppPermissionsInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let permissions = scryer_domain::AppPermissionMask::from_permissions(
             input
                 .permissions
@@ -181,7 +184,7 @@ impl UserMutations {
         input: SetUserLibraryPermissionsInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let grants = input
             .grants
             .into_iter()
@@ -213,7 +216,7 @@ impl UserMutations {
 
     async fn delete_user(&self, ctx: &Context<'_>, input: DeleteUserInput) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_user(&actor, &input.user_id)
             .await
             .map(|_| true)
@@ -226,7 +229,7 @@ impl UserMutations {
         input: ResetUserMfaInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let user = app
             .reset_user_mfa(&actor, &input.user_id)
             .await
@@ -244,7 +247,7 @@ impl UserMutations {
         input: CreateExternalAccountInviteInput,
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.create_external_account_invite(
             &actor,
             &input.user_id,

@@ -63,9 +63,9 @@ fn test_base32_decode_no_pad(input: &str) -> Vec<u8> {
     decoded
 }
 
-fn test_totp_code(secret_base32: &str) -> String {
+fn test_totp_code_for_step_offset(secret_base32: &str, step_offset: i64) -> String {
     let secret = test_base32_decode_no_pad(secret_base32);
-    let step = Utc::now().timestamp() / 30;
+    let step = Utc::now().timestamp() / 30 + step_offset;
     let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, &secret);
     let tag = hmac::sign(&key, &(step as u64).to_be_bytes());
     let digest = tag.as_ref();
@@ -76,6 +76,10 @@ fn test_totp_code(secret_base32: &str) -> String {
         | u32::from(digest[offset + 3]);
 
     format!("{:06}", value % 1_000_000)
+}
+
+fn test_totp_code(secret_base32: &str) -> String {
+    test_totp_code_for_step_offset(secret_base32, 0)
 }
 
 /// Execute a GraphQL operation directly against the schema, without going
@@ -138,6 +142,14 @@ fn first_graphql_error_message_and_code(body: &Value) -> (String, String) {
     (message, code)
 }
 
+fn assert_mfa_step_up_required(body: &Value) {
+    let (_message, code) = first_graphql_error_message_and_code(body);
+    assert_eq!(
+        code, "MFA_STEP_UP_REQUIRED",
+        "expected MFA_STEP_UP_REQUIRED GraphQL error: {body}"
+    );
+}
+
 fn manage_users_actor(username: &str) -> User {
     User {
         id: Id::new().0,
@@ -153,17 +165,90 @@ fn manage_users_actor(username: &str) -> User {
     }
 }
 
-async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
+async fn enroll_totp_for_test_and_current_code(ctx: &TestContext, user: &User) -> String {
     let enrollment = ctx
         .app
         .totp_enrollment_start(user)
         .await
         .expect("start TOTP enrollment");
-    let code = test_totp_code(&enrollment.secret_base32);
+    let code = test_totp_code_for_step_offset(&enrollment.secret_base32, -1);
     ctx.app
         .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
         .await
         .expect("complete TOTP enrollment");
+    test_totp_code(&enrollment.secret_base32)
+}
+
+async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
+    enroll_totp_for_test_and_current_code(ctx, user).await;
+}
+
+async fn enable_form_login_with_config_step_up(
+    ctx: &TestContext,
+    username: &str,
+    password: &str,
+) -> (User, String, String) {
+    seed_typed_settings_definitions(ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, password.to_string())
+        .await
+        .expect("set initial default admin password");
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.form_login_enabled",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.skip_login_for_local_ips",
+            None,
+            "false",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.mfa.require_config_step_up",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.auth_runtime.apply_saved_security_settings(true, false);
+    let totp_code = enroll_totp_for_test_and_current_code(ctx, &admin).await;
+
+    let login = gql(
+        ctx,
+        r#"
+        mutation Login($username: String!, $password: String!) {
+          login(input: { username: $username, password: $password }) {
+            token
+          }
+        }
+        "#,
+        json!({ "username": username, "password": password }),
+    )
+    .await;
+    assert_no_errors(&login);
+    let token = login["data"]["login"]["token"]
+        .as_str()
+        .expect("login token")
+        .to_string();
+    (admin, token, totp_code)
 }
 
 async fn seed_test_passkey(ctx: &TestContext, user_id: &str, credential_id: &str) {
@@ -4030,6 +4115,7 @@ async fn graphql_auth_runtime_state_is_public() {
             effectiveFormLoginEnabled
             skipLoginForLocalIps
             passkeyEnabled
+            mfaRequireConfigStepUp
           }
         }
         "#,
@@ -4047,6 +4133,55 @@ async fn graphql_auth_runtime_state_is_public() {
         false
     );
     assert_eq!(body["data"]["authRuntimeState"]["passkeyEnabled"], false);
+    assert_eq!(
+        body["data"]["authRuntimeState"]["mfaRequireConfigStepUp"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn graphql_auth_runtime_state_exposes_config_step_up_without_manage_users() {
+    let ctx = TestContext::new().await;
+    let (_admin, _token, _totp_code) =
+        enable_form_login_with_config_step_up(&ctx, "admin", "admin-pass1").await;
+    let settings_actor = User {
+        id: Id::new().0,
+        username: "catalog-settings-manager".to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            libraries: HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    };
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        query AuthRuntimeState {
+          authRuntimeState {
+            effectiveFormLoginEnabled
+            mfaRequireConfigStepUp
+          }
+        }
+        "#,
+        Some(settings_actor),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["authRuntimeState"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        body["data"]["authRuntimeState"]["mfaRequireConfigStepUp"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -4130,7 +4265,7 @@ async fn graphql_passkey_authenticate_start_is_public() {
 }
 
 #[tokio::test]
-async fn graphql_passkey_management_remains_available_when_form_login_is_disabled() {
+async fn graphql_passkey_management_requires_form_login_when_disabled() {
     let mut ctx = TestContext::new().await;
     let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
     let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
@@ -4163,26 +4298,13 @@ async fn graphql_passkey_management_remains_available_when_form_login_is_disable
         Some(admin.clone()),
     )
     .await;
-    assert_no_errors(&list_body);
-    assert_eq!(list_body["data"]["myPasskeys"], json!([]));
-
-    let start_body = schema_exec(
-        &ctx,
-        r#"
-        mutation PasskeyRegisterStart {
-          webauthnRegisterStart {
-            challengeId
-          }
-        }
-        "#,
-        Some(admin),
-    )
-    .await;
-    assert_no_errors(&start_body);
-    assert!(
-        start_body["data"]["webauthnRegisterStart"]["challengeId"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
+    let errors = list_body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(
+        message,
+        "validation: passkey authentication is unavailable while form login is disabled"
     );
 }
 
@@ -4569,6 +4691,17 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
         update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
         false
     );
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.mfa.require_config_step_up",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
 
     let runtime = schema_exec(
         &ctx,
@@ -4577,6 +4710,7 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
           authRuntimeState {
             effectiveFormLoginEnabled
             mfaRequirePasswordLogin
+            mfaRequireConfigStepUp
             totpRequireJellyfinLogin
           }
         }
@@ -4598,6 +4732,10 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
         runtime["data"]["authRuntimeState"]["mfaRequirePasswordLogin"],
         false
     );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["mfaRequireConfigStepUp"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -4607,9 +4745,9 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let admin = ctx
         .app
-        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
         .await
-        .expect("change default admin password");
+        .expect("set initial default admin password");
 
     let update = schema_exec(
         &ctx,
@@ -10110,9 +10248,9 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let admin = ctx
         .app
-        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
         .await
-        .expect("change default admin password");
+        .expect("set initial default admin password");
     let update = schema_exec(
         &ctx,
         r#"
@@ -10252,6 +10390,208 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
     ctx.auth_runtime.apply_saved_security_settings(true, true);
 
     set_folder_template(&ctx, "movie", "{title} ({year})").await;
+}
+
+#[tokio::test]
+async fn graphql_totp_enrollment_code_can_immediately_step_up() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let enrollment = ctx
+        .app
+        .totp_enrollment_start(&admin)
+        .await
+        .expect("start TOTP enrollment");
+    let code = test_totp_code(&enrollment.secret_base32);
+    ctx.app
+        .totp_enrollment_complete(&admin, &enrollment.challenge_id, &code)
+        .await
+        .expect("complete TOTP enrollment");
+
+    ctx.app
+        .mfa_verify_step_up(&admin, &code)
+        .await
+        .expect("enrollment code should still be accepted for immediate step-up");
+}
+
+#[tokio::test]
+async fn graphql_settings_mutations_require_config_step_up() {
+    let ctx = TestContext::new().await;
+    let (admin, token, _totp_code) =
+        enable_form_login_with_config_step_up(&ctx, "admin", "admin-pass1").await;
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "step_up_target".to_string(),
+            "target-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create target user");
+    let library_root = ctx
+        .app_data_dir
+        .path()
+        .join("step-up-library-root")
+        .to_string_lossy()
+        .to_string();
+
+    let cases = vec![
+        (
+            "createRuleSet",
+            r#"mutation($input: CreateRuleSetInput!) { createRuleSet(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "name": "Step-up rule",
+                    "description": "requires step-up",
+                    "regoSource": "package scryer\nallow := true",
+                    "appliedFacets": ["movie"]
+                }
+            }),
+        ),
+        (
+            "validateRuleSet",
+            r#"mutation($input: ValidateRuleSetInput!) { validateRuleSet(input: $input) { valid } }"#,
+            json!({ "input": { "regoSource": "package scryer\nallow := true" } }),
+        ),
+        (
+            "createIndexerConfig",
+            r#"mutation($input: CreateIndexerConfigInput!) { createIndexerConfig(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "name": "Step-up indexer",
+                    "providerType": "newznab",
+                    "configJson": "{}"
+                }
+            }),
+        ),
+        (
+            "createUser",
+            r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "username": "blocked_new_user",
+                    "password": "blocked-pass1",
+                    "appPermissions": [],
+                    "libraryPermissions": []
+                }
+            }),
+        ),
+        (
+            "setUserPassword for another user",
+            r#"mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "userId": target.id,
+                    "password": "target-pass2"
+                }
+            }),
+        ),
+        (
+            "createBackup",
+            r#"mutation { createBackup { filename } }"#,
+            json!({}),
+        ),
+        (
+            "beginInstallPlugin",
+            r#"mutation($input: InstallPluginInput!) { beginInstallPlugin(input: $input) { pluginId } }"#,
+            json!({ "input": { "pluginId": "missing-plugin" } }),
+        ),
+        (
+            "createNotificationChannel",
+            r#"mutation($input: CreateNotificationChannelInput!) { createNotificationChannel(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "name": "Step-up notification",
+                    "channelType": "webhook",
+                    "configJson": "{}"
+                }
+            }),
+        ),
+        (
+            "restoreRecycledItem",
+            r#"mutation($id: String!) { restoreRecycledItem(id: $id) }"#,
+            json!({ "id": "missing-recycled-item" }),
+        ),
+        (
+            "createLibrary",
+            r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "facet": "movie",
+                    "name": "Step-up Library",
+                    "roots": [{ "path": library_root, "isDefault": true }]
+                }
+            }),
+        ),
+    ];
+
+    for (name, query, variables) in cases {
+        let body = gql_with_token(&ctx, query, variables, &token).await;
+        assert_mfa_step_up_required(&body);
+        assert!(
+            body["data"].is_null() || body["data"][name].is_null(),
+            "blocked mutation should not return data for {name}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_config_step_up_token_satisfies_protected_settings_mutation() {
+    let ctx = TestContext::new().await;
+    let (_admin, token, totp_code) =
+        enable_form_login_with_config_step_up(&ctx, "admin", "admin-pass1").await;
+    let step_up = gql_with_token(
+        &ctx,
+        r#"mutation($code: String!) { mfaVerifyStepUp(input: { code: $code }) { token } }"#,
+        json!({ "code": totp_code }),
+        &token,
+    )
+    .await;
+    assert_no_errors(&step_up);
+    let step_up_token = step_up["data"]["mfaVerifyStepUp"]["token"]
+        .as_str()
+        .expect("step-up token");
+
+    let body = gql_with_token(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id username } }"#,
+        json!({
+            "input": {
+                "username": "stepped_up_user",
+                "password": "stepped-pass1",
+                "appPermissions": [],
+                "libraryPermissions": []
+            }
+        }),
+        step_up_token,
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["createUser"]["username"], "stepped_up_user");
+}
+
+#[tokio::test]
+async fn graphql_set_own_password_does_not_require_config_step_up() {
+    let ctx = TestContext::new().await;
+    let (admin, token, _totp_code) =
+        enable_form_login_with_config_step_up(&ctx, "admin", "admin-pass1").await;
+
+    let body = gql_with_token(
+        &ctx,
+        r#"mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) { id username } }"#,
+        json!({
+            "input": {
+                "userId": admin.id,
+                "password": "admin-pass2",
+                "currentPassword": "admin-pass1"
+            }
+        }),
+        &token,
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["setUserPassword"]["username"], "admin");
 }
 
 #[tokio::test]
@@ -13780,9 +14120,9 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let admin = ctx
         .app
-        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
         .await
-        .expect("change default admin password");
+        .expect("set initial default admin password");
 
     let create_body = schema_exec(
         &ctx,
@@ -13920,9 +14260,9 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let admin = ctx
         .app
-        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
         .await
-        .expect("change default admin password");
+        .expect("set initial default admin password");
 
     let create_body = schema_exec(
         &ctx,

@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { constants as zlibConstants } from "node:zlib";
 import { compression, defineAlgorithm } from "vite-plugin-compression2";
 import path from "path";
@@ -61,12 +62,10 @@ function matchesChunkModule(id: string, modules: readonly string[]) {
 export default defineConfig(({ command, mode }) => ({
   base: command === "serve" ? "/" : "./",
   plugins: [
-    react({
-      babel:
-        mode === "production"
-          ? { plugins: ["babel-plugin-react-compiler"] }
-          : undefined,
-    }),
+    react(),
+    ...(mode === "production"
+      ? [babel({ presets: [reactCompilerPreset()] })]
+      : []),
     compression({
       include: /\.(js|css|svg|webmanifest|json)$/i,
       exclude: /service-worker\.js$/,

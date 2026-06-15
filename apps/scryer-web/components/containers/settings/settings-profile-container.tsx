@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, type FormEvent } from "react";
 import { useClient } from "urql";
 import { notifyExternalAccountInviteSourcesChanged } from "@/components/containers/settings/external-account-invites-container";
-import { sanitizeDigits } from "@/components/ui/input";
+import { sanitizeTotpCode } from "@/components/auth/totp-code-form";
 import { SettingsProfileSection } from "@/components/views/settings/settings-profile-section";
 import {
   deleteMyPasskeyMutation,
@@ -12,7 +12,6 @@ import {
   totpEnrollmentCompleteMutation,
   totpEnrollmentStartMutation,
   totpRegenerateRecoveryCodesMutation,
-  mfaVerifyStepUpMutation,
   unlinkExternalAccountMutation,
 } from "@/lib/graphql/mutations";
 import {
@@ -63,10 +62,6 @@ const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
 
 const TOTP_CODE_LENGTH = 6;
 
-function sanitizeTotpCode(value: string): string {
-  return sanitizeDigits(value).slice(0, TOTP_CODE_LENGTH);
-}
-
 function connectionsForProvider(
   settings: ExternalAuthRuntimeSettings,
   provider: ExternalAccountProvider,
@@ -82,7 +77,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { adoptSession, login, user: authUser } = useAuth();
+  const { login, user: authUser } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -483,31 +478,6 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     }
   }, [client, setGlobalStatus, t, totpActionCode]);
 
-  const handleVerifyTotpStepUp = useCallback(async () => {
-    if (totpActionCode.length !== TOTP_CODE_LENGTH) return;
-
-    setTotpBusy(true);
-    try {
-      const result = await client
-        .mutation<
-          { mfaVerifyStepUp?: { token: string; user: AuthUser | null } },
-          { input: { code: string } }
-        >(mfaVerifyStepUpMutation, { input: { code: totpActionCode } })
-        .toPromise();
-      if (result.error || !result.data?.mfaVerifyStepUp) {
-        setGlobalStatus(result.error?.message ?? t("profile.totpOperationFailed"));
-        return;
-      }
-      adoptSession(result.data.mfaVerifyStepUp.token, result.data.mfaVerifyStepUp.user);
-      setTotpActionCode("");
-      setGlobalStatus(t("profile.mfaStepUpVerified"));
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("profile.totpOperationFailed"));
-    } finally {
-      setTotpBusy(false);
-    }
-  }, [adoptSession, client, setGlobalStatus, t, totpActionCode]);
-
   const handleRegenerateTotpRecoveryCodes = useCallback(async () => {
     if (totpActionCode.length !== TOTP_CODE_LENGTH) return;
 
@@ -731,7 +701,6 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onTotpEnrollmentCodeChange={(value) => setTotpEnrollmentCode(sanitizeTotpCode(value))}
       onCompleteTotpEnrollment={handleCompleteTotpEnrollment}
       onTotpActionCodeChange={(value) => setTotpActionCode(sanitizeTotpCode(value))}
-      onVerifyTotpStepUp={handleVerifyTotpStepUp}
       onDisableTotp={handleDisableTotp}
       onRegenerateTotpRecoveryCodes={handleRegenerateTotpRecoveryCodes}
       onStartLinkAccount={handleStartLinkAccount}

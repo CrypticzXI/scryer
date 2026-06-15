@@ -25,6 +25,8 @@ export function setGraphqlLanguage(lang: string) {
 
 let onBackendRestarting: (() => void) | null = null;
 
+export const MFA_STEP_UP_REQUIRED_EVENT = "scryer:mfa-step-up-required";
+
 export function setOnBackendRestarting(cb: (() => void) | null) {
   onBackendRestarting = cb;
 }
@@ -45,6 +47,27 @@ function isAuthenticationRequiredResponse(body: unknown): boolean {
 
     return error.message.trim().toLowerCase() === "authentication required";
   });
+}
+
+function responseHasGraphQlErrorCode(body: unknown, code: string): boolean {
+  if (!isRecord(body) || !Array.isArray(body.errors)) {
+    return false;
+  }
+
+  return body.errors.some((error) => {
+    if (!isRecord(error) || !isRecord(error.extensions)) {
+      return false;
+    }
+    return error.extensions.code === code;
+  });
+}
+
+function dispatchMfaStepUpRequired() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(MFA_STEP_UP_REQUIRED_EVENT));
 }
 
 function getLoginRedirectTarget() {
@@ -127,6 +150,9 @@ export const scryerFetch: typeof fetch = async (input, init) => {
     if (isAuthenticationRequiredResponse(body)) {
       redirectToLogin();
       throw new TypeError("Authentication required");
+    }
+    if (responseHasGraphQlErrorCode(body, "MFA_STEP_UP_REQUIRED")) {
+      dispatchMfaStepUpRequired();
     }
   }
 

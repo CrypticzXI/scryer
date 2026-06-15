@@ -12,7 +12,7 @@ host-runtime = ["dep:extism"]
 
 [dependencies]
 base64 = "0.22"
-extism-manifest = "1.21"
+extism-manifest = { version = "1.21", default-features = false }
 schemars = "1"
 semver = { workspace = true }
 serde = { workspace = true }

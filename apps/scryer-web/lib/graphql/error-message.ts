@@ -5,6 +5,8 @@ const GRAPHQL_PREFIX_PATTERNS: RegExp[] = [
   /^repository:\s*/i,
   /^validation:\s*/i,
 ];
+const CONFIG_STEP_UP_REQUIRED_MESSAGE =
+  "Settings verification expired. Enter an authenticator code to continue.";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -25,6 +27,23 @@ function firstGraphQlErrorMessage(error: CombinedError | unknown): string | null
   }
 
   return null;
+}
+
+function hasGraphQlErrorCode(error: CombinedError | unknown, code: string): boolean {
+  if (!isRecord(error) || !Array.isArray(error.graphQLErrors)) {
+    return false;
+  }
+
+  return error.graphQLErrors.some((graphQlError) => {
+    if (!isRecord(graphQlError) || !isRecord(graphQlError.extensions)) {
+      return false;
+    }
+    return graphQlError.extensions.code === code;
+  });
+}
+
+export function isMfaStepUpRequiredError(error: unknown): boolean {
+  return hasGraphQlErrorCode(error, "MFA_STEP_UP_REQUIRED");
 }
 
 function fallbackErrorMessage(error: unknown): string | null {
@@ -56,7 +75,15 @@ export function normalizeGraphQlErrorMessage(message: string): string {
     }
   }
 
-  return normalized.trim();
+  normalized = normalized.trim();
+  if (
+    normalized.toLowerCase() ===
+    "mfa verification is required before changing system configuration"
+  ) {
+    return CONFIG_STEP_UP_REQUIRED_MESSAGE;
+  }
+
+  return normalized;
 }
 
 export function userFacingGraphQlErrorMessage(error: unknown, fallback: string): string {

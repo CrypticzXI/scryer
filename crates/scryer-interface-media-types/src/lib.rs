@@ -1947,6 +1947,7 @@ pub struct AuthRuntimeStatePayload {
     pub passkey_enabled: bool,
     pub env_override_active: bool,
     pub mfa_require_password_login: bool,
+    pub mfa_require_config_step_up: bool,
     pub totp_require_jellyfin_login: bool,
 }
 
