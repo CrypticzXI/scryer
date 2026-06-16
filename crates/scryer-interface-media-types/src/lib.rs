@@ -2490,6 +2490,32 @@ pub struct JellyfinServerUserPayload {
     pub avatar_url: Option<String>,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum MediaServerUserGroupStatusValue {
+    Ready,
+    MissingCredentials,
+    Error,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerUserPayload {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerUserGroupPayload {
+    pub connection_id: String,
+    pub connection_name: String,
+    pub provider: ExternalAccountProviderValue,
+    pub status: MediaServerUserGroupStatusValue,
+    pub error_message: Option<String>,
+    pub users: Vec<MediaServerUserPayload>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct PlexServerDiscoveryPayload {
     pub id: String,

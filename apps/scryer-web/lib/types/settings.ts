@@ -91,6 +91,27 @@ export type PlexServerDiscovery = {
   name: string;
 };
 
+export type MediaServerUserGroupStatus =
+  | "ready"
+  | "missing_credentials"
+  | "error";
+
+export type MediaServerUser = {
+  id: string;
+  username: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+};
+
+export type MediaServerUserGroup = {
+  connectionId: string;
+  connectionName: string;
+  provider: ExternalAccountProvider;
+  status: MediaServerUserGroupStatus;
+  errorMessage: string | null;
+  users: MediaServerUser[];
+};
+
 export type MediaServerConnectionDraft = {
   provider: MediaServerProvider;
   displayName: string;

@@ -15,7 +15,8 @@ use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
-    MediaServerConnectionRepository, PlexServerDiscovery, SuccessfulGrabCommit, WantedItemsQuery,
+    MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser, SuccessfulGrabCommit,
+    WantedItemsQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -1922,6 +1923,12 @@ impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
         _: &str,
         _: Option<&str>,
     ) -> AppResult<Vec<JellyfinServerUser>> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn list_plex_users(&self, _: &str, _: Option<&str>) -> AppResult<Vec<PlexServerUser>> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
         ))

@@ -564,6 +564,61 @@ pub struct JellyfinServerUser {
     pub avatar_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlexServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl From<JellyfinServerUser> for MediaServerUser {
+    fn from(user: JellyfinServerUser) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+impl From<PlexServerUser> for MediaServerUser {
+    fn from(user: PlexServerUser) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaServerUserGroupStatus {
+    Ready,
+    MissingCredentials,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaServerUserGroup {
+    pub connection_id: String,
+    pub connection_name: String,
+    pub provider: scryer_domain::ExternalAccountProvider,
+    pub status: MediaServerUserGroupStatus,
+    pub error_message: Option<String>,
+    pub users: Vec<MediaServerUser>,
+}
+
 #[async_trait]
 pub trait ExternalIdentityVerifier: Send + Sync {
     async fn verify_plex(
@@ -601,6 +656,11 @@ pub trait ExternalIdentityVerifier: Send + Sync {
         api_key: &str,
         search: Option<&str>,
     ) -> AppResult<Vec<JellyfinServerUser>>;
+    async fn list_plex_users(
+        &self,
+        plex_auth_token: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<PlexServerUser>>;
 }
 
 #[async_trait]

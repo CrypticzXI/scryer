@@ -1441,6 +1441,22 @@ export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId
   }
 }`;
 
+export const mediaServerUsersQuery = `query MediaServerUsers($search: String) {
+  mediaServerUsers(search: $search) {
+    connectionId
+    connectionName
+    provider
+    status
+    errorMessage
+    users {
+      id
+      username
+      displayName
+      avatarUrl
+    }
+  }
+}`;
+
 export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }

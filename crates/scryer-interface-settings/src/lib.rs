@@ -7,9 +7,9 @@ use scryer_interface_core::{
 use scryer_interface_media::mappers::{
     from_download_client_config, from_download_client_routing_entry,
     from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
-    from_library_paths_settings, from_media_server_connection, from_media_settings,
-    from_quality_profile_settings, from_service_settings, from_subtitle_provider_config,
-    from_user_with_auth_factor_status,
+    from_library_paths_settings, from_media_server_connection, from_media_server_user_group,
+    from_media_settings, from_quality_profile_settings, from_service_settings,
+    from_subtitle_provider_config, from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -376,6 +376,24 @@ impl SettingsQueries {
         app.list_jellyfin_server_users(&actor, &connection_id, search.as_deref())
             .await
             .map(|users| users.into_iter().map(from_jellyfin_server_user).collect())
+            .map_err(to_gql_error)
+    }
+
+    async fn media_server_users(
+        &self,
+        ctx: &Context<'_>,
+        search: Option<String>,
+    ) -> GqlResult<Vec<MediaServerUserGroupPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_media_server_users(&actor, search.as_deref())
+            .await
+            .map(|groups| {
+                groups
+                    .into_iter()
+                    .map(from_media_server_user_group)
+                    .collect()
+            })
             .map_err(to_gql_error)
     }
 

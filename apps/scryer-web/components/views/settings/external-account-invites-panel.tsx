@@ -8,7 +8,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Popover,
@@ -37,6 +36,8 @@ import type {
   ExternalAuthRuntimeConnection,
   ExternalAuthRuntimeSettings,
   LinkedAccount,
+  MediaServerUser,
+  MediaServerUserGroup,
 } from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -53,25 +54,28 @@ export type ExternalInviteUser = {
   username: string;
 };
 
-export type ExternalInviteProviderUserOption = {
-  id: string;
-  username: string;
-  displayName: string | null;
-  avatarUrl: string | null;
+export type ExternalInviteMediaServerUserGroup = MediaServerUserGroup;
+
+type ExternalInviteMediaServerUserOption = MediaServerUser & {
+  provider: ExternalAccountProvider;
+  connectionId: string;
+  connectionName: string;
 };
 
 type ExternalAccountInvitesPanelProps = {
   users: ExternalInviteUser[];
   invites: LinkedAccount[];
-  providerUserOptions: ExternalInviteProviderUserOption[];
-  providerUserSearchLoading: boolean;
-  providerUserLookupError: string | null;
+  mediaServerUserGroups: ExternalInviteMediaServerUserGroup[];
+  mediaServerUserSearchLoading: boolean;
+  mediaServerUserLookupError: string | null;
   externalAuthSettings: ExternalAuthRuntimeSettings;
   loading: boolean;
   externalInviteDraft: ExternalInviteDraft;
   externalInviteSubmitting: boolean;
   updateExternalInviteDraft: (patch: Partial<ExternalInviteDraft>) => void;
-  createExternalAccountInvite: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
+  createExternalAccountInvite: (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => Promise<void> | void;
 };
 
 function providerLabel(provider: ExternalAccountProvider): string {
@@ -94,7 +98,9 @@ function providerConnections(
   );
 }
 
-function providerConnectionLabel(connection: ExternalAuthRuntimeConnection): string {
+function providerConnectionLabel(
+  connection: ExternalAuthRuntimeConnection,
+): string {
   return connection.displayName;
 }
 
@@ -112,28 +118,6 @@ function inviteConnectionLabel(
   return invite.provider === "jellyfin"
     ? providerLabel(invite.provider)
     : invite.connectionId;
-}
-
-function providerIdentifierLabel(provider: ExternalAccountProvider, t: ReturnType<typeof useTranslate>): string {
-  return provider === "jellyfin"
-    ? t("settings.jellyfinUsername")
-    : t("settings.plexUserId");
-}
-
-function inviteProviderOptions(settings: ExternalAuthRuntimeSettings): ExternalAccountProvider[] {
-  const providers: ExternalAccountProvider[] = [];
-  for (const connection of settings.connections) {
-    if (
-      !connection.loginEnabled ||
-      !settings.loginProviders.includes(connection.provider) ||
-      !isVisibleExternalAccountProvider(connection.provider) ||
-      providers.includes(connection.provider)
-    ) {
-      continue;
-    }
-    providers.push(connection.provider);
-  }
-  return providers;
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -178,50 +162,73 @@ function ProviderAvatar({
   );
 }
 
-function JellyfinProviderUserCombobox({
+function mediaServerUserGroupLabel(
+  group: ExternalInviteMediaServerUserGroup,
+): string {
+  return `${providerLabel(group.provider)} - ${group.connectionName}`;
+}
+
+function MediaServerUserCombobox({
   id,
   value,
-  options,
+  groups,
   selectedOption,
   loading,
   disabled,
   placeholder,
   emptyLabel,
+  serverEmptyLabel,
   loadingLabel,
   onChange,
   onSelectOption,
 }: {
   id: string;
   value: string;
-  options: ExternalInviteProviderUserOption[];
-  selectedOption: ExternalInviteProviderUserOption | null;
+  groups: ExternalInviteMediaServerUserGroup[];
+  selectedOption: ExternalInviteMediaServerUserOption | null;
   loading: boolean;
   disabled: boolean;
   placeholder: string;
   emptyLabel: string;
+  serverEmptyLabel: string;
   loadingLabel: string;
   onChange: (value: string) => void;
-  onSelectOption: (option: ExternalInviteProviderUserOption) => void;
+  onSelectOption: (option: ExternalInviteMediaServerUserOption) => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const normalizedValue = value.trim().toLocaleLowerCase();
-  const filteredOptions = React.useMemo(() => {
-    if (!normalizedValue) {
-      return options;
-    }
+  const filteredGroups = React.useMemo(
+    () =>
+      groups
+        .map((group) => {
+          if (group.status !== "ready" || !normalizedValue) {
+            return group;
+          }
 
-    return options.filter((option) => {
-      const searchable = [
-        option.username,
-        option.id,
-        option.displayName ?? "",
-      ]
-        .join(" ")
-        .toLocaleLowerCase();
-      return searchable.includes(normalizedValue);
-    });
-  }, [normalizedValue, options]);
-
+          return {
+            ...group,
+            users: group.users.filter((option) => {
+              const searchable = [
+                option.username,
+                option.id,
+                option.displayName ?? "",
+                group.connectionName,
+                providerLabel(group.provider),
+              ]
+                .join(" ")
+                .toLocaleLowerCase();
+              return searchable.includes(normalizedValue);
+            }),
+          };
+        })
+        .filter(
+          (group) =>
+            group.status !== "ready" ||
+            group.users.length > 0 ||
+            !normalizedValue,
+        ),
+    [groups, normalizedValue],
+  );
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -243,13 +250,11 @@ function JellyfinProviderUserCombobox({
             ) : null}
             <span
               className={
-                value.trim()
-                  ? "truncate"
-                  : "truncate text-muted-foreground"
+                value.trim() ? "truncate" : "truncate text-muted-foreground"
               }
             >
               {selectedOption
-                ? selectedOption.displayName ?? selectedOption.username
+                ? `${selectedOption.displayName ?? selectedOption.username} (${providerLabel(selectedOption.provider)} - ${selectedOption.connectionName})`
                 : value.trim() || placeholder}
             </span>
           </span>
@@ -279,7 +284,7 @@ function JellyfinProviderUserCombobox({
                 data-1p-ignore="true"
                 data-lpignore="true"
                 data-form-type="other"
-                name="jellyfin-provider-user-search"
+                name="media-server-user-search"
                 className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
               />
             </div>
@@ -291,36 +296,79 @@ function JellyfinProviderUserCombobox({
                 <span>{loadingLabel}</span>
               </div>
             ) : null}
-            {!loading && filteredOptions.length === 0 ? (
+            {!loading && filteredGroups.length === 0 ? (
               <CommandEmpty>{emptyLabel}</CommandEmpty>
             ) : null}
-            <CommandGroup>
-              {filteredOptions.map((option) => {
-                const label = option.displayName ?? option.username;
-                const selected = selectedOption?.id === option.id;
-                return (
-                  <CommandItem
-                    id={selectorId("settings-external-invite-provider-user-option", option.username)}
-                    key={option.id}
-                    value={`${option.username} ${option.displayName ?? ""} ${option.id}`}
-                    onSelect={() => {
-                      onSelectOption(option);
-                      setOpen(false);
-                    }}
-                    className="items-center gap-3"
+            {filteredGroups.map((group) => (
+              <CommandGroup
+                key={group.connectionId}
+                heading={mediaServerUserGroupLabel(group)}
+              >
+                {group.status !== "ready" ? (
+                  <div
+                    id={selectorId(
+                      "settings-external-invite-media-server-user-group-status",
+                      group.provider,
+                      group.connectionId,
+                    )}
+                    className="px-2 py-2 text-xs text-muted-foreground"
                   >
-                    <ProviderAvatar avatarUrl={option.avatarUrl} label={label} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{label}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {option.username}
-                      </span>
-                    </span>
-                    {selected ? <Check className="h-4 w-4 text-primary" /> : null}
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
+                    {group.errorMessage ?? emptyLabel}
+                  </div>
+                ) : group.users.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-muted-foreground">
+                    {serverEmptyLabel}
+                  </div>
+                ) : (
+                  group.users.map((user) => {
+                    const label = user.displayName ?? user.username;
+                    const selected =
+                      selectedOption?.id === user.id &&
+                      selectedOption.connectionId === group.connectionId &&
+                      selectedOption.provider === group.provider;
+                    const option: ExternalInviteMediaServerUserOption = {
+                      ...user,
+                      provider: group.provider,
+                      connectionId: group.connectionId,
+                      connectionName: group.connectionName,
+                    };
+                    return (
+                      <CommandItem
+                        id={selectorId(
+                          "settings-external-invite-provider-user-option",
+                          group.provider,
+                          group.connectionId,
+                          user.username,
+                        )}
+                        key={`${group.connectionId}:${user.id}`}
+                        value={`${user.username} ${user.displayName ?? ""} ${user.id} ${group.connectionName} ${group.provider}`}
+                        onSelect={() => {
+                          onSelectOption(option);
+                          setOpen(false);
+                        }}
+                        className="items-center gap-3"
+                      >
+                        <ProviderAvatar
+                          avatarUrl={user.avatarUrl}
+                          label={label}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">
+                            {label}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {user.username}
+                          </span>
+                        </span>
+                        {selected ? (
+                          <Check className="h-4 w-4 text-primary" />
+                        ) : null}
+                      </CommandItem>
+                    );
+                  })
+                )}
+              </CommandGroup>
+            ))}
           </CommandList>
         </Command>
       </PopoverContent>
@@ -328,7 +376,10 @@ function JellyfinProviderUserCombobox({
   );
 }
 
-function inviteStatus(account: LinkedAccount, t: ReturnType<typeof useTranslate>) {
+function inviteStatus(
+  account: LinkedAccount,
+  t: ReturnType<typeof useTranslate>,
+) {
   if (account.status === "disabled") {
     return {
       label: t("settings.externalAccountInviteStatusDisabled"),
@@ -339,14 +390,16 @@ function inviteStatus(account: LinkedAccount, t: ReturnType<typeof useTranslate>
   if (account.lastLoginAt) {
     return {
       label: t("settings.externalAccountInviteStatusLoggedIn"),
-      className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+      className:
+        "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
     };
   }
 
   if (account.status === "pending_claim") {
     return {
       label: t("settings.externalAccountInviteStatusPending"),
-      className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      className:
+        "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
     };
   }
 
@@ -359,9 +412,9 @@ function inviteStatus(account: LinkedAccount, t: ReturnType<typeof useTranslate>
 export function ExternalAccountInvitesPanel({
   users,
   invites,
-  providerUserOptions,
-  providerUserSearchLoading,
-  providerUserLookupError,
+  mediaServerUserGroups,
+  mediaServerUserSearchLoading,
+  mediaServerUserLookupError,
   externalAuthSettings,
   loading,
   externalInviteDraft,
@@ -370,35 +423,60 @@ export function ExternalAccountInvitesPanel({
   createExternalAccountInvite,
 }: ExternalAccountInvitesPanelProps) {
   const t = useTranslate();
-  const inviteProviders = inviteProviderOptions(externalAuthSettings);
-  const inviteConnections = providerConnections(externalAuthSettings, externalInviteDraft.provider);
-  const providerIdentifierLabelText = providerIdentifierLabel(externalInviteDraft.provider, t);
-  const isJellyfinInvite = externalInviteDraft.provider === "jellyfin";
-  const inviteUnavailable = inviteProviders.length === 0 || users.length === 0;
+  const inviteUnavailable =
+    users.length === 0 ||
+    (!loading &&
+      !mediaServerUserSearchLoading &&
+      mediaServerUserGroups.length === 0 &&
+      !mediaServerUserLookupError);
   const inviteCreateDisabled =
     externalInviteSubmitting ||
     !externalInviteDraft.userId ||
     !externalInviteDraft.connectionId ||
-    (isJellyfinInvite
-      ? externalInviteDraft.providerUserId.trim().length === 0
-      : externalInviteDraft.providerUserIdentifier.trim().length === 0);
+    externalInviteDraft.providerUserId.trim().length === 0;
   const usersById = new Map(users.map((user) => [user.id, user.username]));
   const sortedInvites = invites
     .filter((invite) => isVisibleExternalAccountProvider(invite.provider))
     .sort((left, right) => {
       const rightTime = new Date(right.createdAt).getTime();
       const leftTime = new Date(left.createdAt).getTime();
-      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+      return (
+        (Number.isNaN(rightTime) ? 0 : rightTime) -
+        (Number.isNaN(leftTime) ? 0 : leftTime)
+      );
     });
-  const selectedProviderUser = isJellyfinInvite
-    ? providerUserOptions.find((option) => option.id === externalInviteDraft.providerUserId) ?? null
+  const selectedMediaServerUser =
+    mediaServerUserGroups
+      .find(
+        (group) =>
+          group.provider === externalInviteDraft.provider &&
+          group.connectionId === externalInviteDraft.connectionId,
+      )
+      ?.users.find((user) => user.id === externalInviteDraft.providerUserId) ??
+    null;
+  const selectedMediaServerUserOption = selectedMediaServerUser
+    ? {
+        ...selectedMediaServerUser,
+        provider: externalInviteDraft.provider,
+        connectionId: externalInviteDraft.connectionId,
+        connectionName:
+          mediaServerUserGroups.find(
+            (group) =>
+              group.provider === externalInviteDraft.provider &&
+              group.connectionId === externalInviteDraft.connectionId,
+          )?.connectionName ?? externalInviteDraft.connectionId,
+      }
     : null;
 
   return (
     <div className="space-y-4 rounded-lg border border-border bg-card/50 p-4">
       <div className="flex items-center gap-2">
-        <h3 className="text-base font-medium">{t("settings.externalAccountInvites")}</h3>
-        {loading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+        <h3 className="text-base font-medium">
+          {t("settings.externalAccountInvites")}
+        </h3>
+        {loading ? (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        ) : null}
       </div>
 
       {inviteUnavailable ? (
@@ -411,145 +489,85 @@ export function ExternalAccountInvitesPanel({
           className="space-y-4"
           onSubmit={createExternalAccountInvite}
         >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,18rem)_minmax(0,1fr)_auto]">
             <div className="space-y-1.5">
               <Label htmlFor="settings-external-invite-user">
                 {t("settings.user")}
               </Label>
               <Select
                 value={externalInviteDraft.userId}
-                onValueChange={(userId) => updateExternalInviteDraft({ userId })}
+                onValueChange={(userId) =>
+                  updateExternalInviteDraft({ userId })
+                }
                 disabled={externalInviteSubmitting}
               >
-                <SelectTrigger id="settings-external-invite-user" className="w-full">
+                <SelectTrigger
+                  id="settings-external-invite-user"
+                  className="w-full"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                {users.map((user) => (
-                  <SelectItem
-                    id={selectorId("settings-external-invite-user-option", user.username)}
-                    key={user.id}
-                    value={user.id}
-                  >
-                    {user.username}
-                  </SelectItem>
-                ))}
+                  {users.map((user) => (
+                    <SelectItem
+                      id={selectorId(
+                        "settings-external-invite-user-option",
+                        user.username,
+                      )}
+                      key={user.id}
+                      value={user.id}
+                    >
+                      {user.username}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-            {inviteProviders.length > 1 ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="settings-external-invite-provider">
-                  {t("settings.provider")}
-                </Label>
-                <Select
-                  value={externalInviteDraft.provider}
-                  onValueChange={(value) => {
-                    const provider = value as ExternalAccountProvider;
-                    updateExternalInviteDraft({
-                      provider,
-                      connectionId: providerConnections(externalAuthSettings, provider)[0]?.id ?? "",
-                      providerUserIdentifier: "",
-                      providerUserId: "",
-                    });
-                  }}
-                  disabled={externalInviteSubmitting}
-                >
-                  <SelectTrigger id="settings-external-invite-provider" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                  {inviteProviders.map((provider) => (
-                    <SelectItem key={provider} value={provider}>
-                      {providerLabel(provider)}
-                    </SelectItem>
-                  ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-            {inviteConnections.length > 1 ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="settings-external-invite-connection">
-                  {t("profile.linkedAccountConnection")}
-                </Label>
-                <Select
-                  value={externalInviteDraft.connectionId}
-                  onValueChange={(connectionId) =>
-                    updateExternalInviteDraft({
-                      connectionId,
-                      providerUserIdentifier: "",
-                      providerUserId: "",
-                    })
-                  }
-                  disabled={externalInviteSubmitting}
-                >
-                  <SelectTrigger id="settings-external-invite-connection" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                  {inviteConnections.map((connection) => (
-                    <SelectItem key={connection.id} value={connection.id}>
-                      {providerConnectionLabel(connection)}
-                    </SelectItem>
-                  ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <Label htmlFor="settings-external-invite-provider-identifier">
-                  {providerIdentifierLabelText}
+                  {t("settings.mediaServerUser")}
                 </Label>
-                {isJellyfinInvite && providerUserSearchLoading ? (
+                {mediaServerUserSearchLoading ? (
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" />
                     {t("label.loading")}
                   </span>
                 ) : null}
               </div>
-              {isJellyfinInvite ? (
-                <JellyfinProviderUserCombobox
-                  id="settings-external-invite-provider-identifier"
-                  value={externalInviteDraft.providerUserIdentifier}
-                  options={providerUserOptions}
-                  selectedOption={selectedProviderUser}
-                  loading={providerUserSearchLoading}
-                  disabled={externalInviteSubmitting}
-                  placeholder={providerIdentifierLabelText}
-                  emptyLabel={t("settings.jellyfinUserPickerEmpty")}
-                  loadingLabel={t("label.loading")}
-                  onChange={(providerUserIdentifier) =>
-                    updateExternalInviteDraft({ providerUserIdentifier, providerUserId: "" })
-                  }
-                  onSelectOption={(option) =>
-                    updateExternalInviteDraft({
-                      providerUserIdentifier: option.username,
-                      providerUserId: option.id,
-                    })
-                  }
-                />
-              ) : (
-                <Input
-                  id="settings-external-invite-provider-identifier"
-                  type="text"
-                  value={externalInviteDraft.providerUserIdentifier}
-                  onChange={(event) =>
-                    updateExternalInviteDraft({ providerUserIdentifier: event.target.value })
-                  }
-                  disabled={externalInviteSubmitting}
-                  placeholder={providerIdentifierLabelText}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-form-type="other"
-                  name="external-provider-user-identifier"
-                  required
-                />
-              )}
-              {isJellyfinInvite && providerUserLookupError ? (
-                <p className="text-xs text-destructive">{providerUserLookupError}</p>
+              <MediaServerUserCombobox
+                id="settings-external-invite-provider-identifier"
+                value={externalInviteDraft.providerUserIdentifier}
+                groups={mediaServerUserGroups}
+                selectedOption={selectedMediaServerUserOption}
+                loading={mediaServerUserSearchLoading}
+                disabled={externalInviteSubmitting}
+                placeholder={t("settings.mediaServerUserSearchPlaceholder")}
+                emptyLabel={t("settings.mediaServerUserPickerEmpty")}
+                serverEmptyLabel={t(
+                  "settings.mediaServerUserPickerServerEmpty",
+                )}
+                loadingLabel={t("label.loading")}
+                onChange={(providerUserIdentifier) =>
+                  updateExternalInviteDraft({
+                    providerUserIdentifier,
+                    connectionId: "",
+                    providerUserId: "",
+                  })
+                }
+                onSelectOption={(option) =>
+                  updateExternalInviteDraft({
+                    provider: option.provider,
+                    connectionId: option.connectionId,
+                    providerUserIdentifier: option.username,
+                    providerUserId: option.id,
+                  })
+                }
+              />
+              {mediaServerUserLookupError ? (
+                <p className="text-xs text-destructive">
+                  {mediaServerUserLookupError}
+                </p>
               ) : null}
             </div>
             <div className="space-y-1.5">
@@ -565,7 +583,9 @@ export function ExternalAccountInvitesPanel({
                 ) : (
                   <Plus className="h-4 w-4" />
                 )}
-                {externalInviteSubmitting ? t("label.saving") : t("settings.createInvite")}
+                {externalInviteSubmitting
+                  ? t("label.saving")
+                  : t("settings.createInvite")}
               </Button>
             </div>
           </div>
@@ -573,7 +593,9 @@ export function ExternalAccountInvitesPanel({
       )}
 
       <div className="space-y-3">
-        <h4 className="text-sm font-medium">{t("settings.previousExternalAccountInvites")}</h4>
+        <h4 className="text-sm font-medium">
+          {t("settings.previousExternalAccountInvites")}
+        </h4>
         <div className="rounded border border-border">
           <div className="overflow-x-auto">
             <Table id="settings-external-account-invites-table">
@@ -582,10 +604,16 @@ export function ExternalAccountInvitesPanel({
                   <TableHead>{t("settings.user")}</TableHead>
                   <TableHead>{t("settings.provider")}</TableHead>
                   <TableHead>{t("profile.linkedAccountConnection")}</TableHead>
-                  <TableHead>{t("settings.externalAccountInviteProviderUser")}</TableHead>
+                  <TableHead>
+                    {t("settings.externalAccountInviteProviderUser")}
+                  </TableHead>
                   <TableHead>{t("profile.linkedAccountStatus")}</TableHead>
-                  <TableHead>{t("settings.externalAccountInviteCreatedAt")}</TableHead>
-                  <TableHead>{t("settings.externalAccountInviteLastLogin")}</TableHead>
+                  <TableHead>
+                    {t("settings.externalAccountInviteCreatedAt")}
+                  </TableHead>
+                  <TableHead>
+                    {t("settings.externalAccountInviteLastLogin")}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -614,9 +642,13 @@ export function ExternalAccountInvitesPanel({
                           invite.username,
                         )}
                       >
-                        <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
+                        <TableCell>
+                          {usersById.get(invite.userId) ?? invite.userId}
+                        </TableCell>
                         <TableCell>{providerLabel(invite.provider)}</TableCell>
-                        <TableCell>{inviteConnectionLabel(externalAuthSettings, invite)}</TableCell>
+                        <TableCell>
+                          {inviteConnectionLabel(externalAuthSettings, invite)}
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <ProviderAvatar
@@ -633,8 +665,12 @@ export function ExternalAccountInvitesPanel({
                             {status.label}
                           </span>
                         </TableCell>
-                        <TableCell>{formatTimestamp(invite.createdAt)}</TableCell>
-                        <TableCell>{formatTimestamp(invite.lastLoginAt)}</TableCell>
+                        <TableCell>
+                          {formatTimestamp(invite.createdAt)}
+                        </TableCell>
+                        <TableCell>
+                          {formatTimestamp(invite.lastLoginAt)}
+                        </TableCell>
                       </TableRow>
                     );
                   })

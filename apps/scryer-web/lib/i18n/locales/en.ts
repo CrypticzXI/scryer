@@ -174,12 +174,17 @@ const en: LocaleDictionary = {
   "settings.plexMachineId": "Machine ID",
   "settings.externalAccountInvites": "External account invites",
   "settings.externalAccountInvitesUnavailable":
-    "Enable provider login and configure at least one provider connection before creating external account invites.",
+    "Enable media server login and configure at least one Jellyfin or Plex connection before creating external account invites.",
   "settings.externalAccountInviteRequired":
-    "Choose a user, provider connection, and provider account.",
+    "Choose a user and media server account.",
   "settings.externalAccountInviteCreated": "External account invite created.",
   "settings.externalAccountInviteFailed":
     "Failed to create external account invite.",
+  "settings.mediaServerUser": "Media server user",
+  "settings.mediaServerUserSearchPlaceholder": "Search media server users",
+  "settings.mediaServerUserSearchFailed": "Media server user search failed.",
+  "settings.mediaServerUserPickerEmpty": "No media server users found.",
+  "settings.mediaServerUserPickerServerEmpty": "No users found on this server.",
   "settings.jellyfinUserSearchFailed": "Jellyfin user search failed.",
   "settings.jellyfinUserPickerEmpty": "No Jellyfin users found.",
   "settings.jellyfinUserPickerManualEntry": 'Use "{{value}}"',

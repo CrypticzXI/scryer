@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(not(test))]
+const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[derive(Clone, Debug)]
 pub struct MediaServerConnectionDraft {
     pub provider: MediaServerProvider,
@@ -394,6 +399,81 @@ impl AppUseCase {
             .external_identity_verifier
             .list_jellyfin_users(&connection.base_url, api_key, search)
             .await
+    }
+
+    pub async fn list_media_server_users(
+        &self,
+        actor: &User,
+        search: Option<&str>,
+    ) -> AppResult<Vec<MediaServerUserGroup>> {
+        self.require_app_permission(actor, AppPermission::ManageUsers)
+            .await?;
+        let search = search.map(str::trim).filter(|value| !value.is_empty());
+        let mut connections = self
+            .services
+            .integrations
+            .media_server_connections
+            .list(None)
+            .await?;
+        connections.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| {
+                    left.display_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.display_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut tasks = tokio::task::JoinSet::new();
+        let verifier = Arc::clone(&self.services.integrations.external_identity_verifier);
+        let search = search.map(ToString::to_string);
+        for connection in connections {
+            if !connection.enabled || !connection.login_enabled {
+                continue;
+            }
+
+            let Some(provider) = external_account_provider_for_media_server(&connection.provider)
+            else {
+                continue;
+            };
+
+            let verifier = Arc::clone(&verifier);
+            let search = search.clone();
+            tasks.spawn(async move {
+                list_media_server_user_group_with_timeout(verifier, connection, provider, search)
+                    .await
+            });
+        }
+
+        let mut groups = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(group) => groups.push(group),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "media server user lookup task failed before returning a group"
+                    );
+                }
+            }
+        }
+
+        groups.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| {
+                    left.connection_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.connection_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.connection_id.cmp(&right.connection_id))
+        });
+
+        Ok(groups)
     }
 
     async fn require_media_server_permission(
@@ -928,6 +1008,151 @@ fn default_media_server_display_name(provider: &MediaServerProvider) -> &'static
     }
 }
 
+async fn list_media_server_user_group_with_timeout(
+    verifier: Arc<dyn ExternalIdentityVerifier>,
+    connection: MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+    search: Option<String>,
+) -> MediaServerUserGroup {
+    let timeout_group = empty_media_server_user_group(&connection, provider.clone());
+    match tokio::time::timeout(
+        MEDIA_SERVER_USER_LIST_TIMEOUT,
+        list_media_server_user_group(verifier, connection, provider, search),
+    )
+    .await
+    {
+        Ok(group) => group,
+        Err(_) => {
+            let mut group = timeout_group;
+            group.status = MediaServerUserGroupStatus::Error;
+            group.error_message = Some(format!(
+                "Timed out after {} loading users from this server",
+                media_server_user_list_timeout_label()
+            ));
+            group
+        }
+    }
+}
+
+fn media_server_user_list_timeout_label() -> String {
+    let seconds = MEDIA_SERVER_USER_LIST_TIMEOUT.as_secs();
+    if seconds > 0 {
+        return format!("{seconds} seconds");
+    }
+    format!(
+        "{} milliseconds",
+        MEDIA_SERVER_USER_LIST_TIMEOUT.as_millis()
+    )
+}
+
+async fn list_media_server_user_group(
+    verifier: Arc<dyn ExternalIdentityVerifier>,
+    connection: MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+    search: Option<String>,
+) -> MediaServerUserGroup {
+    let mut group = empty_media_server_user_group(&connection, provider.clone());
+    match provider {
+        scryer_domain::ExternalAccountProvider::Jellyfin => {
+            let Some(api_key) = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                group.status = MediaServerUserGroupStatus::MissingCredentials;
+                group.error_message =
+                    Some("Save a Jellyfin API key to load users from this server".into());
+                return group;
+            };
+
+            match verifier
+                .list_jellyfin_users(&connection.base_url, api_key, search.as_deref())
+                .await
+            {
+                Ok(users) => {
+                    group.users = users.into_iter().map(MediaServerUser::from).collect();
+                }
+                Err(error) => {
+                    group.status = MediaServerUserGroupStatus::Error;
+                    group.error_message = Some(error.to_string());
+                }
+            }
+        }
+        scryer_domain::ExternalAccountProvider::Plex => {
+            if connection
+                .machine_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                group.status = MediaServerUserGroupStatus::Error;
+                group.error_message =
+                    Some("Discover and select a Plex server before loading users".into());
+                return group;
+            }
+
+            let Some(plex_auth_token) = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                group.status = MediaServerUserGroupStatus::MissingCredentials;
+                group.error_message =
+                    Some("Save a Plex token to load users from this server".into());
+                return group;
+            };
+
+            match verifier
+                .list_plex_users(plex_auth_token, search.as_deref())
+                .await
+            {
+                Ok(users) => {
+                    group.users = users.into_iter().map(MediaServerUser::from).collect();
+                }
+                Err(error) => {
+                    group.status = MediaServerUserGroupStatus::Error;
+                    group.error_message = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    group.users.sort_by(|left, right| {
+        left.username
+            .to_ascii_lowercase()
+            .cmp(&right.username.to_ascii_lowercase())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    group
+}
+
+fn empty_media_server_user_group(
+    connection: &MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+) -> MediaServerUserGroup {
+    MediaServerUserGroup {
+        connection_id: connection.id.clone(),
+        connection_name: connection.display_name.clone(),
+        provider,
+        status: MediaServerUserGroupStatus::Ready,
+        error_message: None,
+        users: Vec::new(),
+    }
+}
+
+fn external_account_provider_for_media_server(
+    provider: &MediaServerProvider,
+) -> Option<scryer_domain::ExternalAccountProvider> {
+    match provider {
+        MediaServerProvider::Jellyfin => Some(scryer_domain::ExternalAccountProvider::Jellyfin),
+        MediaServerProvider::Plex => Some(scryer_domain::ExternalAccountProvider::Plex),
+        MediaServerProvider::Emby => None,
+    }
+}
+
 fn normalize_media_server_base_url(
     provider: &MediaServerProvider,
     value: String,
@@ -1206,6 +1431,14 @@ mod tests {
             _: &str,
             _: Option<&str>,
         ) -> AppResult<Vec<JellyfinServerUser>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_plex_users(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<PlexServerUser>> {
             Ok(Vec::new())
         }
     }

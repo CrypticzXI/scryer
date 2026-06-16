@@ -1617,6 +1617,42 @@ pub fn from_jellyfin_server_user(
     }
 }
 
+pub fn from_media_server_user(user: scryer_application::MediaServerUser) -> MediaServerUserPayload {
+    MediaServerUserPayload {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+    }
+}
+
+pub fn from_media_server_user_group(
+    group: scryer_application::MediaServerUserGroup,
+) -> MediaServerUserGroupPayload {
+    MediaServerUserGroupPayload {
+        connection_id: group.connection_id,
+        connection_name: group.connection_name,
+        provider: ExternalAccountProviderValue::from_domain(group.provider),
+        status: match group.status {
+            scryer_application::MediaServerUserGroupStatus::Ready => {
+                MediaServerUserGroupStatusValue::Ready
+            }
+            scryer_application::MediaServerUserGroupStatus::MissingCredentials => {
+                MediaServerUserGroupStatusValue::MissingCredentials
+            }
+            scryer_application::MediaServerUserGroupStatus::Error => {
+                MediaServerUserGroupStatusValue::Error
+            }
+        },
+        error_message: group.error_message,
+        users: group
+            .users
+            .into_iter()
+            .map(from_media_server_user)
+            .collect(),
+    }
+}
+
 pub fn from_plex_server_discovery(
     server: scryer_application::PlexServerDiscovery,
 ) -> PlexServerDiscoveryPayload {
