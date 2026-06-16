@@ -55,7 +55,7 @@ body:
   - type: input
     id: installation-version
     attributes:
-      label: Srcyer Version
+      label: Scryer Version
       description: The version of your instance
     validations:
       required: false
