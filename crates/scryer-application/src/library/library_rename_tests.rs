@@ -87,6 +87,13 @@ fn configured_title_folder_path_disarms_reserved_device_title() {
 }
 
 #[test]
+fn configured_title_folder_path_sanitizes_empty_template_fallback_title() {
+    let title = test_movie_title("../Escape");
+    let path = configured_title_folder_path("/library", &title, "", None);
+    assert_eq!(path, std::path::Path::new("/library/Escape"));
+}
+
+#[test]
 fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
     let mut title = test_movie_title("Movie");
     title.year = Some(2024);
@@ -258,6 +265,7 @@ fn fingerprint_deterministic() {
     let items = vec![RenamePlanItem {
         collection_id: None,
         media_file_id: None,
+        series_movie_link_ids: Vec::new(),
         current_path: "/data/movie.mkv".to_string(),
         proposed_path: Some("/data/Movie (2024).mkv".to_string()),
         normalized_filename: Some("Movie (2024).mkv".to_string()),
@@ -386,9 +394,6 @@ fn test_movie_collection(path: &str) -> Collection {
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: Utc::now(),
     }
@@ -399,6 +404,8 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         id: "media-1".to_string(),
         title_id: "title-1".to_string(),
         episode_id: None,
+        series_movie_link_ids: Vec::new(),
+        role: crate::MediaFileRole::Primary,
         file_path: path.to_string(),
         size_bytes: 1_000,
         source_signature_scheme: None,

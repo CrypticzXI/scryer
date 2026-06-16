@@ -189,6 +189,13 @@ impl AppUseCase {
         self.read_setting_json_value(SMG_VERSION_COMPATIBILITY_NOTICE_KEY, None)
             .await
     }
+
+    pub async fn smg_scryer_update_notice(
+        &self,
+    ) -> AppResult<Option<crate::SmgScryerUpdateNotice>> {
+        self.read_setting_json_value(SMG_SCRYER_UPDATE_NOTICE_KEY, None)
+            .await
+    }
 }
 impl AppUseCase {
     pub(crate) async fn upsert_system_setting_json<T: Serialize>(

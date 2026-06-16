@@ -3,7 +3,13 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_graphql::{BatchRequest, BatchResponse, ErrorExtensionValues, Response, ServerError};
+use async_graphql::{
+    BatchRequest, BatchResponse, ErrorExtensionValues, Response, ServerError,
+    parser::{
+        parse_query,
+        types::{ExecutableDocument, OperationType, Selection, SelectionSet},
+    },
+};
 use governor::clock::Clock;
 use governor::{DefaultKeyedRateLimiter, Quota};
 
@@ -178,9 +184,7 @@ pub(crate) fn classify_graphql(batch: &BatchRequest) -> GraphqlRateLimitClass {
 }
 
 pub(crate) fn should_precheck_graphql_login(batch: &BatchRequest) -> bool {
-    batch
-        .iter()
-        .any(|request| query_contains_webauthn_authenticate_start(&request.query))
+    classify_graphql(batch) == GraphqlRateLimitClass::Login
 }
 
 pub(crate) fn rate_limited_graphql_response(decision: &RateLimitDecision) -> BatchResponse {
@@ -206,27 +210,85 @@ pub(crate) fn rate_limited_message(class: GraphqlRateLimitClass) -> String {
 
 fn classify_query(query: &str) -> GraphqlRateLimitClass {
     let compact = query.split_whitespace().collect::<String>();
-    let lower = compact.to_ascii_lowercase();
-    if lower.contains("mutation")
-        && (lower.contains("login")
-            || lower.contains("webauthnauthenticatestart")
-            || lower.contains("webauthnauthenticatecomplete"))
+    let document = parse_query(query).ok();
+    if document
+        .as_ref()
+        .is_some_and(document_contains_login_mutation_field)
     {
         return GraphqlRateLimitClass::Login;
     }
     if contains_expensive_field(&compact) {
         return GraphqlRateLimitClass::Search;
     }
-    if lower.contains("mutation") {
+    if document.as_ref().map_or_else(
+        || compact.to_ascii_lowercase().contains("mutation"),
+        document_contains_mutation,
+    ) {
         return GraphqlRateLimitClass::Mutation;
     }
     GraphqlRateLimitClass::Api
 }
 
-fn query_contains_webauthn_authenticate_start(query: &str) -> bool {
-    let compact = query.split_whitespace().collect::<String>();
-    let lower = compact.to_ascii_lowercase();
-    lower.contains("mutation") && lower.contains("webauthnauthenticatestart")
+fn document_contains_login_mutation_field(document: &ExecutableDocument) -> bool {
+    document.operations.iter().any(|(_, operation)| {
+        operation.node.ty == OperationType::Mutation
+            && selection_set_contains_login_mutation_field(
+                document,
+                &operation.node.selection_set.node,
+                0,
+            )
+    })
+}
+
+fn document_contains_mutation(document: &ExecutableDocument) -> bool {
+    document
+        .operations
+        .iter()
+        .any(|(_, operation)| operation.node.ty == OperationType::Mutation)
+}
+
+fn selection_set_contains_login_mutation_field(
+    document: &ExecutableDocument,
+    selection_set: &SelectionSet,
+    depth: usize,
+) -> bool {
+    if depth > 16 {
+        return false;
+    }
+
+    selection_set
+        .items
+        .iter()
+        .any(|selection| match &selection.node {
+            Selection::Field(field) => is_login_mutation_field(field.node.name.node.as_str()),
+            Selection::FragmentSpread(spread) => document
+                .fragments
+                .get(&spread.node.fragment_name.node)
+                .is_some_and(|fragment| {
+                    selection_set_contains_login_mutation_field(
+                        document,
+                        &fragment.node.selection_set.node,
+                        depth + 1,
+                    )
+                }),
+            Selection::InlineFragment(fragment) => selection_set_contains_login_mutation_field(
+                document,
+                &fragment.node.selection_set.node,
+                depth + 1,
+            ),
+        })
+}
+
+fn is_login_mutation_field(name: &str) -> bool {
+    matches!(
+        name,
+        "login"
+            | "loginWithJellyfin"
+            | "loginWithPlex"
+            | "completeLoginMfaEnrollment"
+            | "webauthnAuthenticateStart"
+            | "webauthnAuthenticateComplete"
+    )
 }
 
 fn contains_expensive_field(query: &str) -> bool {
@@ -386,7 +448,51 @@ mod tests {
             classify_graphql(&complete_batch),
             GraphqlRateLimitClass::Login
         );
-        assert!(!should_precheck_graphql_login(&complete_batch));
+        assert!(should_precheck_graphql_login(&complete_batch));
+    }
+
+    #[test]
+    fn security_settings_login_named_fields_use_mutation_bucket() {
+        let batch = BatchRequest::Single(async_graphql::Request::new(
+            r#"mutation UpdateSecuritySettings($input: SecuritySettingsInput!) {
+              updateSecuritySettings(input: $input) {
+                formLoginEnabled
+                mfaRequirePasswordLogin
+                totpRequireJellyfinLogin
+                effectiveFormLoginEnabled
+              }
+            }"#,
+        ));
+        assert_eq!(classify_graphql(&batch), GraphqlRateLimitClass::Mutation);
+        assert!(!should_precheck_graphql_login(&batch));
+    }
+
+    #[test]
+    fn media_server_connection_login_named_fields_use_mutation_bucket() {
+        let batch = BatchRequest::Single(async_graphql::Request::new(
+            r#"mutation CreateMediaServerConnection($input: CreateMediaServerConnectionInput!) {
+              createMediaServerConnection(input: $input) {
+                id
+                loginEnabled
+                lastLoginAt
+              }
+            }"#,
+        ));
+        assert_eq!(classify_graphql(&batch), GraphqlRateLimitClass::Mutation);
+        assert!(!should_precheck_graphql_login(&batch));
+    }
+
+    #[test]
+    fn operation_name_login_does_not_make_mutation_a_login_attempt() {
+        let batch = BatchRequest::Single(async_graphql::Request::new(
+            r#"mutation Login($input: SecuritySettingsInput!) {
+              updateSecuritySettings(input: $input) {
+                formLoginEnabled
+              }
+            }"#,
+        ));
+        assert_eq!(classify_graphql(&batch), GraphqlRateLimitClass::Mutation);
+        assert!(!should_precheck_graphql_login(&batch));
     }
 
     #[test]

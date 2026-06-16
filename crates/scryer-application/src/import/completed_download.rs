@@ -15,7 +15,12 @@ use std::path::Path;
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
-use crate::import_workflow::import_completed_download;
+use crate::import_workflow::{
+    ResolvedCompletedDownloadOriginForImport,
+    block_completed_download_origin_conflict_for_manual_review,
+    completed_import_result_is_retryable, import_completed_download,
+    resolve_completed_download_origin_for_import,
+};
 use crate::tracked_downloads::TrackedDownload;
 use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
 use crate::{
@@ -340,6 +345,38 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
         );
         td.state = TrackedDownloadState::ImportPending;
         return false;
+    };
+    let completed = match resolve_completed_download_origin_for_import(
+        app,
+        &completed,
+        Some(&td.client_item),
+    )
+    .await
+    {
+        Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => completed,
+        Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
+        Ok(ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }) => {
+            block_completed_download_origin_conflict_for_manual_review(
+                app, &completed, reason, &detail,
+            )
+            .await;
+            td.state = TrackedDownloadState::ImportBlocked;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![format!(
+                "Download origin scope conflicts with the matched submission ({reason}). Manual confirmation required before import."
+            )];
+            return false;
+        }
+        Err(error) => {
+            tracing::warn!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                error = %error,
+                "import: completed download origin resolution failed, will retry"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+            return false;
+        }
     };
 
     tracing::info!(
@@ -990,7 +1027,7 @@ async fn apply_import_result(
         return false;
     }
 
-    if import_result_is_retryable(&result) {
+    if completed_import_result_is_retryable(&result) {
         let result_json = serde_json::to_string(&result).ok();
         if let Err(err) = app
             .update_import_status_and_notify(&result.import_id, ImportStatus::Pending, result_json)
@@ -1022,34 +1059,6 @@ async fn apply_import_result(
             false
         }
     }
-}
-
-fn import_result_is_retryable(result: &ImportResult) -> bool {
-    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
-        && Path::new(&result.source_path).exists()
-    {
-        return true;
-    }
-
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(error_message_is_retryable)
-}
-
-fn error_message_is_retryable(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    [
-        "active-download marker",
-        "still being unpacked",
-        "still_unpacking",
-        "source changed",
-        "locked",
-        "temporarily",
-        "not found or inaccessible",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
 }
 
 fn retryable_import_result_message(result: &ImportResult) -> String {
@@ -1602,6 +1611,38 @@ mod tests {
 
     #[async_trait]
     impl ShowRepository for TestShowRepo {
+        async fn list_series_movie_links_for_title(
+            &self,
+            _: &str,
+        ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+            Ok(vec![])
+        }
+
+        async fn get_series_movie_link_by_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+
+        async fn find_series_movie_link_by_legacy_collection_id(
+            &self,
+            _: &str,
+        ) -> AppResult<Option<scryer_domain::SeriesMovieLink>> {
+            Ok(None)
+        }
+
+        async fn upsert_series_movie_link(
+            &self,
+            link: scryer_domain::SeriesMovieLink,
+        ) -> AppResult<scryer_domain::SeriesMovieLink> {
+            Ok(link)
+        }
+
+        async fn delete_stale_series_movie_links(&self, _: &str, _: &[String]) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
             let collections = self.collections.lock().await;
             Ok(collections
@@ -1659,30 +1700,6 @@ mod tests {
 
         async fn update_collection(&self, _: &str, _: CollectionUpdate) -> AppResult<Collection> {
             Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_collection_interstitial_movie(
-            &self,
-            _: &str,
-            _: scryer_domain::InterstitialMovieMetadata,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_collection_specials_movies(
-            &self,
-            _: &str,
-            _: Vec<scryer_domain::InterstitialMovieMetadata>,
-        ) -> AppResult<Collection> {
-            Err(AppError::Repository("not needed in test".into()))
-        }
-
-        async fn update_interstitial_season_episode(
-            &self,
-            _: &str,
-            _: Option<String>,
-        ) -> AppResult<()> {
-            Ok(())
         }
 
         async fn set_collection_episodes_monitored(&self, _: &str, _: bool) -> AppResult<()> {
@@ -2057,6 +2074,8 @@ mod tests {
             &self,
             title_id: &str,
             request_signature: &str,
+            purpose: crate::DownloadSubmissionPurpose,
+            scope: &crate::SubmissionScope,
         ) -> AppResult<Option<DownloadSubmission>> {
             Ok(self
                 .rows
@@ -2066,6 +2085,8 @@ mod tests {
                 .find(|(submission, _)| {
                     submission.title_id == title_id
                         && submission.request_signature.as_deref() == Some(request_signature)
+                        && submission.purpose == purpose
+                        && &submission.scope == scope
                 })
                 .map(|(submission, _)| submission.clone()))
         }
@@ -2674,9 +2695,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         }
@@ -3038,6 +3056,7 @@ mod tests {
         download_submissions
             .record_submission(DownloadSubmission {
                 title_id: String::new(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
                 download_client_id: Some("client-1".to_string()),
                 download_client_type: "nzbget".to_string(),
@@ -3448,6 +3467,7 @@ mod tests {
             .record_submission_with_identity(
                 DownloadSubmission {
                     title_id: title.id.clone(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
                     facet: title.facet.as_str().to_string(),
                     download_client_id: Some("client-1".to_string()),
                     download_client_type: "qbittorrent".to_string(),

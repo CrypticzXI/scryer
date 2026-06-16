@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-12T03:57:01.302524+00:00";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-12";
 
 pub static SERVICE_ALIAS_RULES: &[ServiceAliasRule] = &[
     ServiceAliasRule {

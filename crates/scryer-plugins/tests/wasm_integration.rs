@@ -83,6 +83,7 @@ async fn test_indexer_search() {
             None,
             None,
             None,
+            None,
             SearchMode::Auto,
             None,
             None,
@@ -280,6 +281,7 @@ async fn newznab_builtin_rss_search_uses_category_only_request() {
             std::collections::HashMap::new(),
             None,
             Some("series".to_string()),
+            None,
             Some(vec!["5000".to_string()]),
             None,
             scryer_application::SearchMode::Auto,
@@ -449,6 +451,7 @@ async fn newznab_builtin_full_search_canonicalizes_query_bearing_connection_urls
             None,
             None,
             None,
+            None,
             scryer_application::SearchMode::Interactive,
             None,
             None,
@@ -513,6 +516,7 @@ async fn run_newznab_builtin_full_search(additional_params: Option<&str>) -> Str
         .search(
             "scryer connection test".to_string(),
             std::collections::HashMap::new(),
+            None,
             None,
             None,
             None,
@@ -664,10 +668,15 @@ fn dynamic_client_cache_miss_on_updated_at() {
     // Change updated_at to simulate a config update
     config1.updated_at = Utc::now() + chrono::Duration::seconds(10);
     let c2 = dynamic.client_for_provider(&config1).unwrap();
+    let c3 = dynamic.client_for_provider(&config1).unwrap();
 
     assert!(
         !Arc::ptr_eq(&c1, &c2),
         "different updated_at should produce a new client"
+    );
+    assert!(
+        Arc::ptr_eq(&c2, &c3),
+        "rebuilt revision should become the cached client"
     );
 }
 

@@ -77,6 +77,7 @@ type SettingsMediaServersSectionProps = {
 
 const PROVIDERS: Array<{ value: VisibleMediaServerProvider; label: string }> = [
   { value: "jellyfin", label: "Jellyfin" },
+  { value: "plex", label: "Plex" },
 ];
 
 const DEFAULT_BASE_URL_BY_PROVIDER: Record<MediaServerProvider, string> = {
@@ -96,7 +97,7 @@ function providerLabel(provider: MediaServerProvider): string {
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
-  return provider === "jellyfin";
+  return provider === "jellyfin" || provider === "plex";
 }
 
 function updateLibraryGrant(
@@ -513,7 +514,11 @@ export function SettingsMediaServersSection({
                           </SelectTrigger>
                           <SelectContent>
                             {plexServerOptions.map((server) => (
-                              <SelectItem key={server.id} value={server.id}>
+                              <SelectItem
+                                id={selectorId("settings-media-server-plex-server-option", server.id)}
+                                key={server.id}
+                                value={server.id}
+                              >
                                 {server.name}
                               </SelectItem>
                             ))}

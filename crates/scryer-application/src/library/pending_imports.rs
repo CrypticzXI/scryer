@@ -1062,6 +1062,7 @@ impl AppUseCase {
                 file,
                 parsed,
                 target_episodes,
+                series_movie_link_id: None,
                 snapshot,
                 record: PlannedTitleScanRecord::New,
             },

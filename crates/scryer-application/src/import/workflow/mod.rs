@@ -1,6 +1,6 @@
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, DownloadSubmission,
+    AppError, AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionIdentity, ImportArtifact, ParsedEpisodeMetadata, ParsedReleaseMetadata,
     SubmissionScope, WantedCompleteTransition, WantedItemsQuery,
     activity::NotificationMediaUpdate,
@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 include!("poller.rs");
 include!("completed.rs");
 include!("movie.rs");
-include!("interstitial.rs");
+include!("series_movie.rs");
 include!("series.rs");
 include!("paths.rs");
 include!("metadata.rs");

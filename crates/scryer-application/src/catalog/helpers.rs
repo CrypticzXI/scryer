@@ -1,5 +1,5 @@
 use super::*;
-use scryer_domain::InterstitialMovieMetadata;
+use scryer_domain::{MovieEntity, SeriesMovieLink};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DownloadClientRoutingEntry {
@@ -189,35 +189,71 @@ pub(crate) fn release_is_recent_for_queue_priority(
     (0..=recent_queue_priority_window_days).contains(&age_days)
 }
 
-pub(crate) fn interstitial_movie_from_anime_movie(movie: &AnimeMovie) -> InterstitialMovieMetadata {
-    InterstitialMovieMetadata {
-        tvdb_id: movie
-            .movie_tvdb_id
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        name: movie.name.clone(),
-        slug: movie.slug.clone(),
+pub(crate) fn movie_entity_from_anime_movie(movie: &AnimeMovie) -> MovieEntity {
+    let now = Utc::now();
+    MovieEntity {
+        id: Id::new().0,
+        title: movie.name.clone(),
+        sort_title: non_empty_owned(movie.sort_title.as_str()),
+        slug: non_empty_owned(movie.slug.as_str()),
         year: movie.year,
-        content_status: movie.content_status.clone(),
-        overview: movie.overview.clone(),
-        poster_url: movie.poster_url.clone(),
-        language: movie.language.clone(),
-        runtime_minutes: movie.runtime_minutes,
-        sort_title: movie.sort_title.clone(),
-        imdb_id: movie.imdb_id.clone(),
+        overview: non_empty_owned(movie.overview.as_str()),
+        poster_url: non_empty_owned(movie.poster_url.as_str()),
+        background_url: None,
+        language: non_empty_owned(movie.language.as_str()),
+        runtime_minutes: (movie.runtime_minutes > 0).then_some(movie.runtime_minutes),
+        content_status: non_empty_owned(movie.content_status.as_str()),
         genres: movie.genres.clone(),
-        studio: movie.studio.clone(),
+        studio: non_empty_owned(movie.studio.as_str()),
         digital_release_date: movie.digital_release_date.clone(),
-        association_confidence: Some(movie.association_confidence.clone()),
-        continuity_status: Some(movie.continuity_status.clone()),
-        movie_form: Some(movie.movie_form.clone()),
-        confidence: Some(movie.confidence.clone()),
-        signal_summary: Some(movie.signal_summary.clone()),
-        placement: Some(movie.placement.clone()),
-        movie_tmdb_id: movie.movie_tmdb_id.map(|id| id.to_string()),
-        movie_mal_id: movie.movie_mal_id.map(|id| id.to_string()),
-        movie_anidb_id: movie.movie_anidb_id.map(|id| id.to_string()),
+        imdb_id: movie
+            .movie_imdb_id
+            .as_deref()
+            .and_then(non_empty_owned)
+            .or_else(|| non_empty_owned(movie.imdb_id.as_str())),
+        tvdb_id: movie.movie_tvdb_id.map(|id| id.to_string()),
+        tmdb_id: movie.movie_tmdb_id.map(|id| id.to_string()),
+        mal_id: movie.movie_mal_id.map(|id| id.to_string()),
+        anidb_id: movie.movie_anidb_id.map(|id| id.to_string()),
+        created_at: now,
+        updated_at: now,
     }
+}
+
+pub(crate) fn series_movie_link_from_anime_movie(
+    title_id: &str,
+    anime_movie: &AnimeMovie,
+    movie_entity: MovieEntity,
+    narrative_order: String,
+    after_season: i32,
+    linked_episode_id: Option<String>,
+) -> SeriesMovieLink {
+    let now = Utc::now();
+    SeriesMovieLink {
+        id: Id::new().0,
+        series_title_id: title_id.to_string(),
+        movie: movie_entity,
+        placement: non_empty_owned(anime_movie.placement.as_str()),
+        narrative_order: Some(narrative_order),
+        after_season: Some(after_season),
+        before_season: None,
+        linked_episode_id,
+        association_confidence: non_empty_owned(anime_movie.association_confidence.as_str()),
+        continuity_status: non_empty_owned(anime_movie.continuity_status.as_str()),
+        movie_form: non_empty_owned(anime_movie.movie_form.as_str()),
+        confidence: non_empty_owned(anime_movie.confidence.as_str()),
+        signal_summary: non_empty_owned(anime_movie.signal_summary.as_str()),
+        source: Some("anibridge".to_string()),
+        monitored: true,
+        legacy_collection_id: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn non_empty_owned(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 pub(crate) fn anime_movie_identity_keys(movie: &AnimeMovie) -> Vec<String> {
@@ -337,11 +373,11 @@ mod routing_tests {
 
 #[cfg(test)]
 mod anime_movie_mapping_tests {
-    use super::interstitial_movie_from_anime_movie;
+    use super::{movie_entity_from_anime_movie, series_movie_link_from_anime_movie};
     use crate::AnimeMovie;
 
     #[test]
-    fn interstitial_movies_preserve_classification_metadata() {
+    fn series_movies_split_metadata_from_timeline_classification() {
         let movie = AnimeMovie {
             movie_tvdb_id: Some(200),
             movie_tmdb_id: Some(300),
@@ -369,13 +405,26 @@ mod anime_movie_mapping_tests {
             signal_summary: "TVDB marked special as critical to story".into(),
         };
 
-        let mapped = interstitial_movie_from_anime_movie(&movie);
-        assert_eq!(mapped.tvdb_id, "200");
-        assert_eq!(mapped.continuity_status.as_deref(), Some("canon"));
-        assert_eq!(mapped.association_confidence.as_deref(), Some("high"));
-        assert_eq!(mapped.confidence.as_deref(), Some("high"));
-        assert_eq!(mapped.placement.as_deref(), Some("ordered"));
-        assert_eq!(mapped.movie_tmdb_id.as_deref(), Some("300"));
-        assert_eq!(mapped.movie_mal_id.as_deref(), Some("400"));
+        let entity = movie_entity_from_anime_movie(&movie);
+        assert_eq!(entity.tvdb_id.as_deref(), Some("200"));
+        assert_eq!(entity.tmdb_id.as_deref(), Some("300"));
+        assert_eq!(entity.mal_id.as_deref(), Some("400"));
+        assert_eq!(entity.imdb_id.as_deref(), Some("tt123"));
+
+        let link = series_movie_link_from_anime_movie(
+            "title-1",
+            &movie,
+            entity,
+            "1.5".to_string(),
+            1,
+            Some("episode-1".to_string()),
+        );
+        assert_eq!(link.series_title_id, "title-1");
+        assert_eq!(link.linked_episode_id.as_deref(), Some("episode-1"));
+        assert_eq!(link.continuity_status.as_deref(), Some("canon"));
+        assert_eq!(link.association_confidence.as_deref(), Some("high"));
+        assert_eq!(link.confidence.as_deref(), Some("high"));
+        assert_eq!(link.placement.as_deref(), Some("ordered"));
+        assert_eq!(link.narrative_order.as_deref(), Some("1.5"));
     }
 }

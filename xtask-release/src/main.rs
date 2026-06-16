@@ -400,11 +400,10 @@ struct ReleaseDryRunCache {
     next_version: String,
     tag_name: String,
     catalog_url: String,
-    catalog_checksum_sha256: Option<String>,
     validated_steps: Vec<String>,
     cached_builtins_dir: Option<String>,
     #[serde(default)]
-    cached_builtins_sha256: BTreeMap<String, String>,
+    catalog_builtin_wasm_blake3: BTreeMap<String, String>,
     failure_message: Option<String>,
 }
 
@@ -415,7 +414,6 @@ struct ReleaseDryRunExpectations<'a> {
     latest_tag_seen: Option<&'a str>,
     next_version: &'a str,
     tag_name: &'a str,
-    catalog_checksum_sha256: &'a str,
 }
 
 fn main() -> Result<()> {
@@ -1077,21 +1075,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .join("")
 }
 
-fn fetch_catalog_checksum(url: &str) -> Result<String> {
-    let response = reqwest::blocking::get(url)
-        .with_context(|| format!("failed to fetch published plugin catalog from {url}"))?
-        .error_for_status()
-        .with_context(|| format!("published plugin catalog returned error status for {url}"))?;
-    let body = response
-        .bytes()
-        .context("failed to read published plugin catalog body")?;
-    Ok(sha256_hex(&body))
-}
-
-fn cache_builtin_artifacts(
-    cache_dir: &Path,
-    builtins: &[PathBuf],
-) -> Result<BTreeMap<String, String>> {
+fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()> {
     if cache_dir.exists() {
         fs::remove_dir_all(cache_dir)
             .with_context(|| format!("failed to clear {}", cache_dir.display()))?;
@@ -1099,7 +1083,6 @@ fn cache_builtin_artifacts(
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("failed to create {}", cache_dir.display()))?;
 
-    let mut digests = BTreeMap::new();
     for built_wasm in builtins {
         let file_name = built_wasm
             .file_name()
@@ -1107,7 +1090,6 @@ fn cache_builtin_artifacts(
         let file_name = file_name.to_string_lossy().into_owned();
         let bytes = fs::read(built_wasm)
             .with_context(|| format!("failed to read builtin {}", built_wasm.display()))?;
-        digests.insert(file_name.clone(), sha256_hex(&bytes));
         let cached = cache_dir.join(file_name);
         fs::write(&cached, bytes).with_context(|| {
             format!(
@@ -1118,7 +1100,7 @@ fn cache_builtin_artifacts(
         })?;
     }
 
-    Ok(digests)
+    Ok(())
 }
 
 fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
@@ -1131,43 +1113,49 @@ fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
         })
 }
 
-fn builtin_cache_matches_digests(
+fn builtin_cache_matches_catalog_wasm_blake3(
+    ctx: &TaskContext,
     cache_dir: &Path,
-    builtins: &[PathBuf],
     expected_digests: &BTreeMap<String, String>,
 ) -> bool {
+    let builtins = builtin_plugin_paths(ctx);
     !expected_digests.is_empty()
-        && builtin_cache_complete(cache_dir, builtins)
-        && builtins.iter().all(|built_wasm| {
-            let Some(file_name) = built_wasm
+        && builtin_cache_complete(cache_dir, &builtins)
+        && BUILTIN_PLUGINS.iter().all(|spec| {
+            let paths = builtin_asset_paths(ctx, spec);
+            let Some(file_name) = paths
+                .wasm
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
             else {
                 return false;
             };
-            let Some(expected) = expected_digests.get(&file_name) else {
+            let Some(expected) = expected_digests.get(spec.plugin_id) else {
                 return false;
             };
             fs::read(cache_dir.join(&file_name))
-                .map(|bytes| sha256_hex(&bytes) == *expected)
+                .ok()
+                .and_then(|bytes| zstd::decode_all(bytes.as_slice()).ok())
+                .map(|wasm_bytes| blake3_hex(&wasm_bytes).eq_ignore_ascii_case(expected))
                 .unwrap_or(false)
         })
 }
 
 fn restore_builtin_artifacts_from_cache(
+    ctx: &TaskContext,
     cache_dir: &Path,
-    builtins: &[PathBuf],
     expected_digests: &BTreeMap<String, String>,
 ) -> Result<()> {
-    if !builtin_cache_complete(cache_dir, builtins) {
+    let builtins = builtin_plugin_paths(ctx);
+    if !builtin_cache_complete(cache_dir, &builtins) {
         bail!(
             "cached builtin artifacts are missing or incomplete under {}",
             cache_dir.display()
         );
     }
-    if !builtin_cache_matches_digests(cache_dir, builtins, expected_digests) {
+    if !builtin_cache_matches_catalog_wasm_blake3(ctx, cache_dir, expected_digests) {
         bail!(
-            "cached builtin artifacts under {} differ from dry-run metadata",
+            "cached builtin artifacts under {} differ from catalog wasm digests",
             cache_dir.display()
         );
     }
@@ -1177,7 +1165,7 @@ fn restore_builtin_artifacts_from_cache(
             .file_name()
             .ok_or_else(|| anyhow!("missing builtin file name for {}", output_wasm.display()))?;
         let cached = cache_dir.join(file_name);
-        fs::copy(&cached, output_wasm).with_context(|| {
+        fs::copy(&cached, &output_wasm).with_context(|| {
             format!(
                 "failed to restore cached builtin {} to {}",
                 cached.display(),
@@ -1212,9 +1200,6 @@ fn release_dry_run_cache_rejection_reason(
     if cache.tag_name != expected.tag_name {
         return Some("computed release tag changed since dry run".to_string());
     }
-    if cache.catalog_checksum_sha256.as_deref() != Some(expected.catalog_checksum_sha256) {
-        return Some("published plugin catalog checksum changed since dry run".to_string());
-    }
     let validated_steps = cache
         .validated_steps
         .iter()
@@ -1232,7 +1217,7 @@ fn release_dry_run_cache_rejection_reason(
         ));
     }
     if !builtins_present {
-        return Some("cached builtin artifacts are missing or digest-mismatched".to_string());
+        return Some("cached builtin artifacts are missing or BLAKE3-mismatched".to_string());
     }
     None
 }
@@ -1527,6 +1512,11 @@ struct BuiltinAssetPaths {
     wasm: PathBuf,
     descriptor_json: PathBuf,
     description: PathBuf,
+}
+
+struct BuiltinRefresh {
+    paths: Vec<PathBuf>,
+    catalog_wasm_blake3: BTreeMap<String, String>,
 }
 
 fn builtin_asset_paths(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> BuiltinAssetPaths {
@@ -1938,7 +1928,7 @@ fn manifest_asset_url(manifest_url: &str, asset: &str) -> Result<String> {
     Ok(format!("{base}/{asset}"))
 }
 
-fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()> {
+fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
     let catalog_signer = RequiredSignerV2 {
         github_repository: OFFICIAL_PLUGIN_REPO.to_string(),
         github_workflow: Some(OFFICIAL_RELEASE_WORKFLOW.to_string()),
@@ -2061,7 +2051,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
         "synced builtin {} {} from official catalog",
         spec.plugin_id, manifest.version
     ));
-    Ok(())
+    Ok(manifest.wasm_digest)
 }
 
 fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
@@ -2090,15 +2080,20 @@ fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
     Ok(())
 }
 
-fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<BuiltinRefresh> {
     step("Syncing embedded plugin builtins from the official catalog");
+    let mut catalog_wasm_blake3 = BTreeMap::new();
     for spec in BUILTIN_PLUGINS {
-        sync_builtin_plugin(ctx, spec)
+        let wasm_digest = sync_builtin_plugin(ctx, spec)
             .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
+        catalog_wasm_blake3.insert(spec.plugin_id.to_string(), wasm_digest);
     }
     remove_stale_builtin_assets(ctx)?;
     ok("Embedded plugin builtins refreshed");
-    Ok(builtin_plugin_paths(ctx))
+    Ok(BuiltinRefresh {
+        paths: builtin_plugin_paths(ctx),
+        catalog_wasm_blake3,
+    })
 }
 
 fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
@@ -2280,63 +2275,50 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 next_version: next_version.to_string(),
                 tag_name: tag_name.clone(),
                 catalog_url: catalog_url.clone(),
-                catalog_checksum_sha256: None,
                 validated_steps: Vec::new(),
                 cached_builtins_dir: Some(initial_cache_dir_relative.clone()),
-                cached_builtins_sha256: BTreeMap::new(),
+                catalog_builtin_wasm_blake3: BTreeMap::new(),
                 failure_message: Some("dry run did not complete".to_string()),
             },
         )?;
     } else if worktree_clean_at_start && release_dry_run_cache_path(ctx).is_file() {
         match load_release_dry_run_cache(ctx) {
             Ok(cache) => {
-                let expected_checksum = match fetch_catalog_checksum(&catalog_url) {
-                    Ok(checksum) => Some(checksum),
-                    Err(error) => {
-                        println!(
-                            "   {YELLOW}Skipping dry-run cache reuse: failed to fetch published plugin catalog checksum ({error:#}){RESET}"
-                        );
-                        None
-                    }
+                let next_version_text = next_version.to_string();
+                let cached_builtins_dir = cache
+                    .cached_builtins_dir
+                    .as_deref()
+                    .map(|dir| ctx.path(dir));
+                let builtins_present = cached_builtins_dir.as_ref().is_some_and(|dir| {
+                    builtin_cache_matches_catalog_wasm_blake3(
+                        ctx,
+                        dir,
+                        &cache.catalog_builtin_wasm_blake3,
+                    )
+                });
+                let expected = ReleaseDryRunExpectations {
+                    git_commit: &git_commit,
+                    release_args: &release_args,
+                    latest_tag_seen: latest_tag.as_deref(),
+                    next_version: &next_version_text,
+                    tag_name: &tag_name,
                 };
-                if let Some(expected_checksum) = expected_checksum {
-                    let next_version_text = next_version.to_string();
-                    let cached_builtins_dir = cache
-                        .cached_builtins_dir
-                        .as_deref()
-                        .map(|dir| ctx.path(dir));
-                    let builtins_present = cached_builtins_dir.as_ref().is_some_and(|dir| {
-                        builtin_cache_matches_digests(
-                            dir,
-                            &builtin_plugin_paths,
-                            &cache.cached_builtins_sha256,
-                        )
-                    });
-                    let expected = ReleaseDryRunExpectations {
-                        git_commit: &git_commit,
-                        release_args: &release_args,
-                        latest_tag_seen: latest_tag.as_deref(),
-                        next_version: &next_version_text,
-                        tag_name: &tag_name,
-                        catalog_checksum_sha256: &expected_checksum,
-                    };
-                    if let Some(reason) =
-                        release_dry_run_cache_rejection_reason(&cache, &expected, builtins_present)
-                    {
-                        println!("   {YELLOW}Skipping dry-run cache reuse: {reason}{RESET}");
-                    } else {
-                        let cached_builtins_dir = cached_builtins_dir.ok_or_else(|| {
-                            anyhow!("dry-run cache did not record builtin artifact directory")
-                        })?;
-                        step("Restoring bundled plugins from dry-run cache");
-                        restore_builtin_artifacts_from_cache(
-                            &cached_builtins_dir,
-                            &builtin_plugin_paths,
-                            &cache.cached_builtins_sha256,
-                        )?;
-                        ok("Reused dry-run cache; skipping builtin rebuild and validations");
-                        reused_dry_run_cache = true;
-                    }
+                if let Some(reason) =
+                    release_dry_run_cache_rejection_reason(&cache, &expected, builtins_present)
+                {
+                    println!("   {YELLOW}Skipping dry-run cache reuse: {reason}{RESET}");
+                } else {
+                    let cached_builtins_dir = cached_builtins_dir.ok_or_else(|| {
+                        anyhow!("dry-run cache did not record builtin artifact directory")
+                    })?;
+                    step("Restoring bundled plugins from dry-run cache");
+                    restore_builtin_artifacts_from_cache(
+                        ctx,
+                        &cached_builtins_dir,
+                        &cache.catalog_builtin_wasm_blake3,
+                    )?;
+                    ok("Reused dry-run cache; skipping builtin rebuild and validations");
+                    reused_dry_run_cache = true;
                 }
             }
             Err(error) => {
@@ -2346,7 +2328,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     }
 
     if !reused_dry_run_cache {
-        let refreshed_builtin_paths = refresh_builtin_plugins(ctx)?;
+        let refreshed_builtins = refresh_builtin_plugins(ctx)?;
         let validation_result = {
             step("Running web and Rust validation in parallel");
             let (web_tx, web_rx) = mpsc::channel();
@@ -2377,8 +2359,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             rust_result?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
             ok("Parallel validation passed");
-            Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
-                refreshed_builtin_paths,
+            Ok::<(BuiltinRefresh, Vec<String>), anyhow::Error>((
+                refreshed_builtins,
                 REQUIRED_SCRYER_DRY_RUN_STEPS
                     .iter()
                     .map(|step| (*step).to_string())
@@ -2388,7 +2370,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
 
         if args.dry_run {
             match validation_result {
-                Ok((refreshed_builtin_paths, validated_steps)) => {
+                Ok((refreshed_builtins, validated_steps)) => {
                     let prep_changed_paths = git_tracked_dirty_paths(ctx)?;
                     let final_git_commit = if !prep_changed_paths.is_empty() {
                         step("Committing release-prep changes");
@@ -2413,9 +2395,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                         &tag_name,
                     );
                     let final_cache_dir_relative = relative_to_repo_root(ctx, &final_cache_dir)?;
-                    let catalog_checksum_sha256 = fetch_catalog_checksum(&catalog_url)?;
-                    let cached_builtins_sha256 =
-                        cache_builtin_artifacts(&final_cache_dir, &refreshed_builtin_paths)?;
+                    cache_builtin_artifacts(&final_cache_dir, &refreshed_builtins.paths)?;
                     write_release_dry_run_cache(
                         ctx,
                         &ReleaseDryRunCache {
@@ -2429,10 +2409,9 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                             next_version: next_version.to_string(),
                             tag_name: tag_name.clone(),
                             catalog_url: catalog_url.clone(),
-                            catalog_checksum_sha256: Some(catalog_checksum_sha256),
                             validated_steps,
                             cached_builtins_dir: Some(final_cache_dir_relative),
-                            cached_builtins_sha256,
+                            catalog_builtin_wasm_blake3: refreshed_builtins.catalog_wasm_blake3,
                             failure_message: None,
                         },
                     )?;
@@ -3299,16 +3278,15 @@ mod tests {
             next_version: "0.13.2".to_string(),
             tag_name: "scryer-v0.13.2".to_string(),
             catalog_url: OFFICIAL_PLUGIN_CATALOG_URL.to_string(),
-            catalog_checksum_sha256: Some("deadbeef".to_string()),
             validated_steps: REQUIRED_SCRYER_DRY_RUN_STEPS
                 .iter()
                 .map(|step| (*step).to_string())
                 .collect(),
             cached_builtins_dir: Some("tmp/cache".to_string()),
-            cached_builtins_sha256: BTreeMap::from([(
-                "nzbgeek.wasm".to_string(),
-                "abc123".to_string(),
-            )]),
+            catalog_builtin_wasm_blake3: BTreeMap::from([
+                ("newznab".to_string(), "blake3:newznab".to_string()),
+                ("torznab".to_string(), "blake3:torznab".to_string()),
+            ]),
             failure_message: None,
         }
     }
@@ -3320,7 +3298,6 @@ mod tests {
             latest_tag_seen: Some("scryer-v0.13.1"),
             next_version: "0.13.2",
             tag_name: "scryer-v0.13.2",
-            catalog_checksum_sha256: "deadbeef",
         }
     }
 
@@ -3574,21 +3551,6 @@ mod tests {
     }
 
     #[test]
-    fn release_dry_run_cache_rejects_catalog_checksum_mismatch() {
-        let mut cache = sample_release_dry_run_cache();
-        cache.catalog_checksum_sha256 = Some("cafebabe".to_string());
-        let reason = release_dry_run_cache_rejection_reason(
-            &cache,
-            &sample_release_dry_run_expectations(),
-            true,
-        );
-        assert_eq!(
-            reason.as_deref(),
-            Some("published plugin catalog checksum changed since dry run")
-        );
-    }
-
-    #[test]
     fn release_dry_run_cache_rejects_missing_cached_builtins() {
         let cache = sample_release_dry_run_cache();
         let reason = release_dry_run_cache_rejection_reason(
@@ -3598,7 +3560,7 @@ mod tests {
         );
         assert_eq!(
             reason.as_deref(),
-            Some("cached builtin artifacts are missing or digest-mismatched")
+            Some("cached builtin artifacts are missing or BLAKE3-mismatched")
         );
     }
 
@@ -3611,6 +3573,51 @@ mod tests {
             true,
         );
         assert!(reason.is_none());
+    }
+
+    fn write_test_builtin_cache(ctx: &TaskContext, cache_dir: &Path) -> BTreeMap<String, String> {
+        let mut digests = BTreeMap::new();
+        for spec in BUILTIN_PLUGINS {
+            let paths = builtin_asset_paths(ctx, spec);
+            let wasm_bytes = format!("{} wasm", spec.plugin_id).into_bytes();
+            let compressed = zstd::encode_all(wasm_bytes.as_slice(), 0).unwrap();
+            let wasm_file = paths.wasm.file_name().unwrap();
+            fs::write(cache_dir.join(wasm_file), compressed).unwrap();
+            digests.insert(spec.plugin_id.to_string(), blake3_hex(&wasm_bytes));
+
+            for sidecar in [paths.descriptor_json, paths.description] {
+                let file_name = sidecar.file_name().unwrap();
+                fs::write(cache_dir.join(file_name), b"sidecar").unwrap();
+            }
+        }
+        digests
+    }
+
+    #[test]
+    fn builtin_cache_matches_catalog_wasm_blake3_from_decompressed_wasm() {
+        let ctx = TaskContext::new();
+        let temp = tempfile::tempdir().unwrap();
+        let digests = write_test_builtin_cache(&ctx, temp.path());
+
+        assert!(builtin_cache_matches_catalog_wasm_blake3(
+            &ctx,
+            temp.path(),
+            &digests
+        ));
+    }
+
+    #[test]
+    fn builtin_cache_rejects_catalog_wasm_blake3_mismatch() {
+        let ctx = TaskContext::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut digests = write_test_builtin_cache(&ctx, temp.path());
+        digests.insert("newznab".to_string(), "blake3:wrong".to_string());
+
+        assert!(!builtin_cache_matches_catalog_wasm_blake3(
+            &ctx,
+            temp.path(),
+            &digests
+        ));
     }
 
     #[test]

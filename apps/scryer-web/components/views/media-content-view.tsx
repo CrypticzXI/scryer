@@ -34,6 +34,7 @@ import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
 import { TitleTableActionButton } from "./media-content/title-table-shared";
+import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
 import {
   hasActiveTitleQuickFilters,
   TitleQuickFilterBar,
@@ -140,6 +141,10 @@ export function MediaContentView({
     setCategoryRenameTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    categoryRenameEnabled: Record<ViewCategoryId, string>;
+    setCategoryRenameEnabled: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
     categoryRenameCollisionPolicies: Record<ViewCategoryId, string>;
     setCategoryRenameCollisionPolicies: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -217,6 +222,7 @@ export function MediaContentView({
     toggleTitleMonitored: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
     runInteractiveSearchForTitle: (title: TitleRecord) => Promise<Release[]> | Release[];
     queueExistingFromRelease: (title: TitleRecord, release: Release) => Promise<void> | void;
+    queueAdditionalFromRelease: (title: TitleRecord, release: Release) => Promise<void> | void;
     isTogglingTitleMonitoredById: Record<string, boolean>;
     downloadClients: DownloadClientRecord[];
     activeScopeRouting: ScopeRoutingRecord;
@@ -303,6 +309,8 @@ export function MediaContentView({
     setCategoryFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
+    categoryRenameEnabled,
+    setCategoryRenameEnabled,
     categoryRenameCollisionPolicies,
     setCategoryRenameCollisionPolicies,
     categoryRenameMissingMetadataPolicies,
@@ -358,6 +366,7 @@ export function MediaContentView({
     toggleTitleMonitored,
     runInteractiveSearchForTitle,
     queueExistingFromRelease,
+    queueAdditionalFromRelease,
     isTogglingTitleMonitoredById,
     downloadClients,
     activeScopeRouting,
@@ -683,6 +692,13 @@ export function MediaContentView({
           handleFolderTemplateChange={handleFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}
           handleRenameTemplateChange={handleRenameTemplateChange}
+          categoryRenameEnabled={categoryRenameEnabled}
+          handleRenameEnabledChange={(checked) =>
+            setCategoryRenameEnabled((previous) => ({
+              ...previous,
+              [activeQualityScopeId]: checked ? "true" : "false",
+            }))
+          }
           categoryRenameCollisionPolicies={categoryRenameCollisionPolicies}
           handleRenameCollisionPolicyChange={handleRenameCollisionPolicyChange}
           categoryRenameMissingMetadataPolicies={categoryRenameMissingMetadataPolicies}
@@ -805,6 +821,7 @@ export function MediaContentView({
                     aria-label={t("title.viewModeToggle")}
                   >
                     <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "compact")}
                       value="compact"
                       size="sm"
                       aria-label={t("title.viewModeCompact")}
@@ -814,6 +831,7 @@ export function MediaContentView({
                       <CompactTableIcon />
                     </ToggleGroupItem>
                     <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "poster-table")}
                       value="poster-table"
                       size="sm"
                       aria-label={t("title.viewModePosterTable")}
@@ -823,6 +841,7 @@ export function MediaContentView({
                       <LayoutList className="h-4 w-4" />
                     </ToggleGroupItem>
                     <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "poster")}
                       value="poster"
                       size="sm"
                       aria-label={t("title.viewModePoster")}
@@ -967,6 +986,7 @@ export function MediaContentView({
                       onToggleMonitored={toggleTitleMonitored}
                       onInteractiveSearch={runInteractiveSearchForTitle}
                       onQueueFromInteractive={queueExistingFromRelease}
+                      onQueueAdditionalFromInteractive={queueAdditionalFromRelease}
                       isDeletingById={isDeletingCatalogTitleById}
                       isTogglingMonitoredById={isTogglingTitleMonitoredById}
                       selectedTitleIds={selectedTitleIds}
@@ -1001,6 +1021,7 @@ export function MediaContentView({
                     onToggleMonitored={toggleTitleMonitored}
                     onInteractiveSearch={runInteractiveSearchForTitle}
                     onQueueFromInteractive={queueExistingFromRelease}
+                    onQueueAdditionalFromInteractive={queueAdditionalFromRelease}
                     isDeletingById={isDeletingCatalogTitleById}
                     isTogglingMonitoredById={isTogglingTitleMonitoredById}
                     showScanLibraryAction={showEmptyStateActions && showInitialScanAction}

@@ -239,6 +239,42 @@ pub fn default_quality_profile_for_search() -> QualityProfile {
     }
 }
 
+pub fn default_quality_profile_8k_for_search() -> QualityProfile {
+    QualityProfile {
+        id: "8k".to_string(),
+        name: "8K".to_string(),
+        criteria: QualityProfileCriteria {
+            quality_tiers: vec![
+                "4320P".to_string(),
+                "2160P".to_string(),
+                "1080P".to_string(),
+                "720P".to_string(),
+            ],
+            archival_quality: Some("4320P".to_string()),
+            allow_unknown_quality: false,
+            source_allowlist: Vec::new(),
+            source_blocklist: Vec::new(),
+            video_codec_allowlist: Vec::new(),
+            video_codec_blocklist: Vec::new(),
+            audio_codec_allowlist: Vec::new(),
+            audio_codec_blocklist: Vec::new(),
+            atmos_preferred: false,
+            dolby_vision_allowed: true,
+            detected_hdr_allowed: true,
+            prefer_remux: false,
+            allow_bd_disk: false,
+            allow_upgrades: true,
+            prefer_dual_audio: false,
+            required_audio_languages: vec![],
+            scoring_persona: ScoringPersona::default(),
+            scoring_overrides: ScoringOverrides::default(),
+            cutoff_tier: None,
+            min_score_to_grab: None,
+            facet_persona_overrides: HashMap::new(),
+        },
+    }
+}
+
 pub fn default_quality_profile_1080p_for_search() -> QualityProfile {
     QualityProfile {
         id: "1080p".to_string(),
@@ -541,6 +577,25 @@ pub fn quality_meets_or_exceeds_cutoff(
         Some(current_pos) => current_pos <= cutoff_pos,
         None => false,
     }
+}
+
+pub fn has_reached_cutoff_from_quality_or_release(
+    analyzed_quality: Option<&str>,
+    grabbed_release: Option<&str>,
+    cutoff_tier: Option<&str>,
+    quality_tiers: &[String],
+) -> bool {
+    if let Some(current_quality) = analyzed_quality
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let Some(cutoff) = cutoff_tier else {
+            return false;
+        };
+        return quality_meets_or_exceeds_cutoff(current_quality, cutoff, quality_tiers);
+    }
+
+    has_reached_cutoff(grabbed_release, cutoff_tier, quality_tiers)
 }
 
 /// Check whether the currently grabbed release has reached the cutoff quality tier.
@@ -1007,6 +1062,7 @@ fn normalize_media_size_category(category_hint: Option<&str>) -> MediaSizeCatego
 fn expected_bitrate_mbps(quality: Option<&str>, media_category: MediaSizeCategory) -> f64 {
     match media_category {
         MediaSizeCategory::Movie => match quality {
+            Some("4320P") => 142.5,
             Some("2160P") => 57.0,
             Some("1080P") => 9.1,
             Some("720P") => 3.4,
@@ -1014,6 +1070,7 @@ fn expected_bitrate_mbps(quality: Option<&str>, media_category: MediaSizeCategor
             _ => 6.8,
         },
         MediaSizeCategory::Series => match quality {
+            Some("4320P") => 55.0,
             Some("2160P") => 22.0,
             Some("1080P") => 8.5,
             Some("720P") => 3.3,
@@ -1021,6 +1078,7 @@ fn expected_bitrate_mbps(quality: Option<&str>, media_category: MediaSizeCategor
             _ => 5.5,
         },
         MediaSizeCategory::Anime => match quality {
+            Some("4320P") => 70.0,
             Some("2160P") => 28.0,
             Some("1080P") => 8.5,
             Some("720P") => 3.4,
@@ -1195,6 +1253,30 @@ mod tests {
     use crate::scoring_weights::{
         ScoringOverrides, ScoringPersona, balanced_weights, build_weights,
     };
+
+    #[test]
+    fn cutoff_prefers_analyzed_quality_over_grabbed_release_text() {
+        let tiers = vec!["1080P".to_string(), "720P".to_string()];
+
+        assert!(!has_reached_cutoff_from_quality_or_release(
+            Some("720p"),
+            Some("Example.S01E01.1080p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+        assert!(has_reached_cutoff_from_quality_or_release(
+            Some("1080p"),
+            Some("Example.S01E01.720p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+        assert!(has_reached_cutoff_from_quality_or_release(
+            None,
+            Some("Example.S01E01.1080p.WEB-DL"),
+            Some("1080P"),
+            &tiers,
+        ));
+    }
 
     #[test]
     fn parse_profile_json() {

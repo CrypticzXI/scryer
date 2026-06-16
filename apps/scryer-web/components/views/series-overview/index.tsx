@@ -13,7 +13,7 @@ import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import {
   searchForEpisodeQuery,
-  searchForInterstitialMovieQuery,
+  searchForSeriesMovieQuery,
 } from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
 import {
@@ -23,6 +23,7 @@ import {
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
+  SeriesMovieLink,
   TitleCollection,
   TitleDetail,
   TitleHistoryEvent,
@@ -36,6 +37,7 @@ import {
   initialEpisodePanelState,
 } from "./episode-panel-reducer";
 import {
+  buildSeriesTimelineItems,
   sortDbCollections,
   findLatestSeasonKey,
   episodeSortValue,
@@ -45,10 +47,18 @@ import {
 import { OverviewControlPanel } from "../overview-control-panel";
 import { OverviewBackLink } from "../overview-back-link";
 import { TitleSettingsPanel } from "./title-settings-panel";
-import { SeasonSection } from "./season-section";
+import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import { localizedTitleStatus } from "../overview-localization";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import {
+  AnidbExternalLink,
+  AnilistExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbSeriesExternalLink,
+} from "@/components/common/external-media-links";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -111,22 +121,17 @@ function coveredEpisodeIdsForQueueItem(
   return Array.from(episodeIds);
 }
 
-const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
-const tvdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tvdb.svg`;
-const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
-const malLogoUrl = `${import.meta.env.BASE_URL}media-sites/mal.svg`;
-const anilistLogoUrl = `${import.meta.env.BASE_URL}media-sites/anilist.svg`;
-const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
-
 type Props = {
   canManageTitle: boolean;
   loading: boolean;
   hydrating: boolean;
   title: TitleDetail | null;
   collections: TitleCollection[];
+  seriesMovieLinks: SeriesMovieLink[];
   events: TitleHistoryEvent[];
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
+  mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
   downloadQueueItems?: DownloadQueueItem[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -137,13 +142,15 @@ type Props = {
   onBackToList?: () => void;
   onSetCollectionMonitored?: (collectionId: string, monitored: boolean) => Promise<void>;
   onSetEpisodeMonitored?: (episodeId: string, monitored: boolean) => Promise<void>;
+  onSetSeriesMovieMonitored?: (seriesMovieLinkId: string, monitored: boolean) => Promise<void>;
   onSetTitleMonitored?: (monitored: boolean) => Promise<void>;
   onSearchMonitored?: () => Promise<void> | void;
   onRefreshAndScan?: () => Promise<void> | void;
   onAutoSearchEpisode?: (episode: CollectionEpisode) => Promise<void> | void;
-  onAutoSearchInterstitialMovie?: (collection: TitleCollection) => Promise<void> | void;
+  onAutoSearchSeriesMovie?: (link: SeriesMovieLink) => Promise<void> | void;
   qualityProfiles?: { id: string; name: string }[];
   defaultRootFolder?: string;
+  renameEnabled?: boolean;
   rootFolders?: { path: string; isDefault: boolean }[];
   onUpdateTitleOptions?: (options: TitleOptionUpdates) => Promise<void>;
   completedDownloads?: DownloadQueueItem[];
@@ -161,6 +168,8 @@ type Props = {
   onRequestDeleteTitle?: () => void;
   deleteLoading?: boolean;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
+  primaryMovieFileUpdatingId?: string | null;
   onOpenFixMatch?: () => void;
 };
 
@@ -170,9 +179,11 @@ export function SeriesOverviewView({
   hydrating,
   title,
   collections,
+  seriesMovieLinks,
   events: _events,
   episodesByCollection,
   mediaFilesByEpisode,
+  mediaFilesBySeriesMovieLink,
   downloadQueueItems = [],
   subtitleDownloads,
   onRefreshSubtitles,
@@ -183,13 +194,15 @@ export function SeriesOverviewView({
   onBackToList,
   onSetCollectionMonitored,
   onSetEpisodeMonitored,
+  onSetSeriesMovieMonitored,
   onSetTitleMonitored,
   onSearchMonitored,
   onRefreshAndScan,
   onAutoSearchEpisode,
-  onAutoSearchInterstitialMovie,
+  onAutoSearchSeriesMovie,
   qualityProfiles,
   defaultRootFolder,
+  renameEnabled,
   rootFolders,
   onUpdateTitleOptions,
   completedDownloads,
@@ -207,6 +220,8 @@ export function SeriesOverviewView({
   onRequestDeleteTitle,
   deleteLoading = false,
   onDeleteFile,
+  onMakePrimaryFile,
+  primaryMovieFileUpdatingId = null,
   onOpenFixMatch,
 }: Props) {
   const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
@@ -238,6 +253,11 @@ export function SeriesOverviewView({
     [emptyEpisodes, episodesByCollection, sortedCollections],
   );
 
+  const timelineItems = React.useMemo(
+    () => buildSeriesTimelineItems(sortedCollections, seriesMovieLinks),
+    [seriesMovieLinks, sortedCollections],
+  );
+
   const [expandedKeys, setExpandedKeys] = React.useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historyEpisodeScope, setHistoryEpisodeScope] = React.useState<{
@@ -247,13 +267,14 @@ export function SeriesOverviewView({
   const [episodePanel, dispatchEpisodePanel] = React.useReducer(episodePanelReducer, initialEpisodePanelState);
   const [searchBlockedByEpisode, setSearchBlockedByEpisode] = React.useState<Record<string, boolean>>({});
   const [searchBlockedByCollection, setSearchBlockedByCollection] = React.useState<Record<string, boolean>>({});
-  const [interstitialSearchResultsByCollection, setInterstitialSearchResultsByCollection] =
+  const [searchBlockedBySeriesMovie, setSearchBlockedBySeriesMovie] = React.useState<Record<string, boolean>>({});
+  const [seriesMovieSearchResultsByLink, setSeriesMovieSearchResultsByLink] =
     React.useState<Record<string, Release[]>>({});
-  const [interstitialSearchLoadingByCollection, setInterstitialSearchLoadingByCollection] =
+  const [seriesMovieSearchLoadingByLink, setSeriesMovieSearchLoadingByLink] =
     React.useState<Record<string, boolean>>({});
-  const [interstitialSearchAttemptedByCollection, setInterstitialSearchAttemptedByCollection] =
+  const [seriesMovieSearchAttemptedByLink, setSeriesMovieSearchAttemptedByLink] =
     React.useState<Record<string, boolean>>({});
-  const [autoSearchInterstitialMovieLoadingByCollection, setAutoSearchInterstitialMovieLoadingByCollection] =
+  const [autoSearchSeriesMovieLoadingByLink, setAutoSearchSeriesMovieLoadingByLink] =
     React.useState<Record<string, boolean>>({});
   const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
@@ -282,10 +303,11 @@ export function SeriesOverviewView({
   React.useEffect(() => {
     setSearchBlockedByEpisode({});
     setSearchBlockedByCollection({});
-    setInterstitialSearchResultsByCollection({});
-    setInterstitialSearchLoadingByCollection({});
-    setInterstitialSearchAttemptedByCollection({});
-    setAutoSearchInterstitialMovieLoadingByCollection({});
+    setSearchBlockedBySeriesMovie({});
+    setSeriesMovieSearchResultsByLink({});
+    setSeriesMovieSearchLoadingByLink({});
+    setSeriesMovieSearchAttemptedByLink({});
+    setAutoSearchSeriesMovieLoadingByLink({});
   }, [title?.id]);
 
   React.useEffect(() => {
@@ -333,7 +355,9 @@ export function SeriesOverviewView({
 
     if (latestKey) {
       initializedRef.current = true;
-      setExpandedKeys(new Set([latestKey]));
+      const nextExpanded = new Set<string>();
+      nextExpanded.add(latestKey);
+      setExpandedKeys(nextExpanded);
     }
   }, [latestKey, initialEpisodeId, episodesByCollection]);
 
@@ -437,6 +461,38 @@ export function SeriesOverviewView({
     [onTitleChanged, client, confirmReplaceConflict, setGlobalStatus, t, title],
   );
 
+  const handleQueueAdditionalFromEpisodeSearch = React.useCallback(
+    async (episode: CollectionEpisode, release: Release) => {
+      if (!title) return;
+
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+
+      try {
+        const { data, error: mutationError } = await client.mutation(queueExistingMutation, {
+          input: {
+            titleId: title.id,
+            scope: { episode: episode.id },
+            candidateToken: release.candidateToken,
+            purpose: "ADDITIONAL_FILE",
+          },
+        }).toPromise();
+        if (mutationError) throw mutationError;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this episode.",
+        );
+        setGlobalStatus(t("status.queuedLatest", { name: title.name }));
+        await onTitleChanged?.();
+      } catch (error: unknown) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+      }
+    },
+    [onTitleChanged, client, setGlobalStatus, t, title],
+  );
+
   const handleAutoSearchEpisode = React.useCallback(
     (episode: CollectionEpisode) => {
       if (!hasDownloadClients) {
@@ -465,66 +521,66 @@ export function SeriesOverviewView({
     [hasDownloadClients, onAutoSearchEpisode, setGlobalStatus, t],
   );
 
-  const handleRunInterstitialMovieSearch = React.useCallback(
-    (collection: TitleCollection) => {
-      if (!title || !collection.interstitialMovie) return;
+  const handleRunSeriesMovieSearch = React.useCallback(
+    (link: SeriesMovieLink) => {
+      if (!title) return;
 
       if (!hasDownloadClients) {
-        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
-        setInterstitialSearchLoadingByCollection((prev) => ({
+        setSearchBlockedBySeriesMovie((prev) => ({ ...prev, [link.id]: true }));
+        setSeriesMovieSearchLoadingByLink((prev) => ({
           ...prev,
-          [collection.id]: false,
+          [link.id]: false,
         }));
         return;
       }
 
-      setSearchBlockedByCollection((prev) => {
-        if (!prev[collection.id]) return prev;
+      setSearchBlockedBySeriesMovie((prev) => {
+        if (!prev[link.id]) return prev;
         const next = { ...prev };
-        delete next[collection.id];
+        delete next[link.id];
         return next;
       });
-      setInterstitialSearchLoadingByCollection((prev) => ({
+      setSeriesMovieSearchLoadingByLink((prev) => ({
         ...prev,
-        [collection.id]: true,
+        [link.id]: true,
       }));
-      setInterstitialSearchAttemptedByCollection((prev) => ({
+      setSeriesMovieSearchAttemptedByLink((prev) => ({
         ...prev,
-        [collection.id]: true,
+        [link.id]: true,
       }));
 
       client
-        .query(searchForInterstitialMovieQuery, {
+        .query(searchForSeriesMovieQuery, {
           titleId: title.id,
-          collectionId: collection.id,
+          seriesMovieLinkId: link.id,
         })
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
-          setInterstitialSearchResultsByCollection((prev) => ({
+          setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
-            [collection.id]: data?.searchReleases ?? [],
+            [link.id]: data?.searchReleases ?? [],
           }));
         })
         .catch(() => {
-          setInterstitialSearchResultsByCollection((prev) => ({
+          setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
-            [collection.id]: [],
+            [link.id]: [],
           }));
         })
         .finally(() => {
-          setInterstitialSearchLoadingByCollection((prev) => ({
+          setSeriesMovieSearchLoadingByLink((prev) => ({
             ...prev,
-            [collection.id]: false,
+            [link.id]: false,
           }));
         });
     },
     [client, hasDownloadClients, title],
   );
 
-  const handleQueueFromInterstitialMovieSearch = React.useCallback(
-    (collection: TitleCollection, release: Release) => {
-      if (!title || !collection.interstitialMovie) return Promise.resolve();
+  const handleQueueFromSeriesMovieSearch = React.useCallback(
+    (link: SeriesMovieLink, release: Release) => {
+      if (!title) return Promise.resolve();
 
       if (!release.candidateToken) {
         setGlobalStatus(t("status.releaseMissingCandidateToken"));
@@ -533,7 +589,7 @@ export function SeriesOverviewView({
 
       const input = {
         titleId: title.id,
-        scope: releaseQueueScopeInput(release, { collection: collection.id }),
+        scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
         candidateToken: release.candidateToken,
       };
       return retryWithReplaceOnConflict(
@@ -547,16 +603,16 @@ export function SeriesOverviewView({
           if (mutationError) throw mutationError;
           return data?.queueExistingTitleDownload;
         },
-        "A download is already in progress for this collection.",
+        "A download is already in progress for this series movie.",
         confirmReplaceConflict,
       )
         .then(async (payload) => {
           assertNoReplaceConflict(
             payload,
-            "A download is already in progress for this collection.",
+            "A download is already in progress for this series movie.",
           );
           setGlobalStatus(
-            t("status.queuedLatest", { name: collection.interstitialMovie?.name ?? title.name }),
+            t("status.queuedLatest", { name: link.movie.title }),
           );
           await onTitleChanged?.();
         })
@@ -567,35 +623,69 @@ export function SeriesOverviewView({
     [client, confirmReplaceConflict, onTitleChanged, setGlobalStatus, t, title],
   );
 
-  const handleAutoSearchInterstitialMovie = React.useCallback(
-    (collection: TitleCollection) => {
-      if (!hasDownloadClients) {
-        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
+  const handleQueueAdditionalFromSeriesMovieSearch = React.useCallback(
+    async (link: SeriesMovieLink, release: Release) => {
+      if (!title) return;
+
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
         return;
       }
-      if (!onAutoSearchInterstitialMovie) return;
-      setSearchBlockedByCollection((prev) => {
-        if (!prev[collection.id]) return prev;
+
+      try {
+        const { data, error: mutationError } = await client
+          .mutation(queueExistingMutation, {
+            input: {
+              titleId: title.id,
+              scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
+              candidateToken: release.candidateToken,
+              purpose: "ADDITIONAL_FILE",
+            },
+          })
+          .toPromise();
+        if (mutationError) throw mutationError;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this series movie.",
+        );
+        setGlobalStatus(t("status.queueSuccess", { name: release.title }));
+        await onTitleChanged?.();
+      } catch (error: unknown) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+      }
+    },
+    [client, onTitleChanged, setGlobalStatus, t, title],
+  );
+
+  const handleAutoSearchSeriesMovie = React.useCallback(
+    (link: SeriesMovieLink) => {
+      if (!hasDownloadClients) {
+        setSearchBlockedBySeriesMovie((prev) => ({ ...prev, [link.id]: true }));
+        return;
+      }
+      if (!onAutoSearchSeriesMovie) return;
+      setSearchBlockedBySeriesMovie((prev) => {
+        if (!prev[link.id]) return prev;
         const next = { ...prev };
-        delete next[collection.id];
+        delete next[link.id];
         return next;
       });
-      setAutoSearchInterstitialMovieLoadingByCollection((prev) => ({
+      setAutoSearchSeriesMovieLoadingByLink((prev) => ({
         ...prev,
-        [collection.id]: true,
+        [link.id]: true,
       }));
-      Promise.resolve(onAutoSearchInterstitialMovie(collection))
+      Promise.resolve(onAutoSearchSeriesMovie(link))
         .catch((error: unknown) => {
           setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         })
         .finally(() => {
-          setAutoSearchInterstitialMovieLoadingByCollection((prev) => ({
+          setAutoSearchSeriesMovieLoadingByLink((prev) => ({
             ...prev,
-            [collection.id]: false,
+            [link.id]: false,
           }));
         });
     },
-    [hasDownloadClients, onAutoSearchInterstitialMovie, setGlobalStatus, t],
+    [hasDownloadClients, onAutoSearchSeriesMovie, setGlobalStatus, t],
   );
 
   if (loading) {
@@ -732,80 +822,34 @@ export function SeriesOverviewView({
               ) : null}
 
               <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "imdb"); return e ? (
-                  <a
-                    href={e.value.startsWith("tt") ? `https://www.imdb.com/title/${e.value}` : `https://www.imdb.com/find?q=${encodeURIComponent(e.value)}&s=tt`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "IMDb" })}
-                  >
-                    <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
-                    <span className="text-muted-foreground">IMDb</span>
-                  </a>
-                ) : null; })()}
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tvdb"); return e && title.slug ? (
-                  <a
-                    href={`https://thetvdb.com/series/${title.slug}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TVDB" })}
-                  >
-                    <img src={tvdbLogoUrl} alt="TVDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TVDB</span>
-                  </a>
-                ) : null; })()}
-                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tmdb"); return e ? (
-                  <a
-                    href={`https://www.themoviedb.org/tv/${e.value}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TMDB" })}
-                  >
-                    <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TMDB</span>
-                  </a>
-                ) : null; })()}
+                {(() => {
+                  const externalIds = title.externalIds ?? [];
+                  return (
+                    <>
+                      <ImdbExternalLink imdbId={externalIds.find((e) => e.source === "imdb")?.value} />
+                      <TvdbSeriesExternalLink
+                        tvdbId={externalIds.find((e) => e.source === "tvdb")?.value}
+                        slug={title.slug}
+                      />
+                      <TmdbExternalLink
+                        mediaType="tv"
+                        tmdbId={externalIds.find((e) => e.source === "tmdb")?.value}
+                      />
+                    </>
+                  );
+                })()}
                 {title.facet === "anime" ? (
                   <>
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "mal"); return e ? (
-                      <a
-                        href={`https://myanimelist.net/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "MyAnimeList" })}
-                      >
-                        <img src={malLogoUrl} alt="MyAnimeList" className="h-8 w-8" />
-                        <span className="text-muted-foreground">MAL</span>
-                      </a>
-                    ) : null; })()}
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anilist"); return e ? (
-                      <a
-                        href={`https://anilist.co/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "AniList" })}
-                      >
-                        <img src={anilistLogoUrl} alt="AniList" className="h-8 w-8" />
-                        <span className="text-muted-foreground">AniList</span>
-                      </a>
-                    ) : null; })()}
-                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anidb"); return e ? (
-                      <a
-                        href={`https://anidb.net/anime/${e.value}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                        aria-label={t("external.openOn", { site: "AniDB" })}
-                      >
-                        <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
-                        <span className="text-muted-foreground">AniDB</span>
-                      </a>
-                    ) : null; })()}
+                    {(() => {
+                      const externalIds = title.externalIds ?? [];
+                      return (
+                        <>
+                          <MalExternalLink malId={externalIds.find((e) => e.source === "mal")?.value} />
+                          <AnilistExternalLink anilistId={externalIds.find((e) => e.source === "anilist")?.value} />
+                          <AnidbExternalLink anidbId={externalIds.find((e) => e.source === "anidb")?.value} />
+                        </>
+                      );
+                    })()}
                   </>
                 ) : null}
                 <span className="ml-auto text-xs text-muted-foreground/60">
@@ -836,6 +880,7 @@ export function SeriesOverviewView({
                 title={title}
                 qualityProfiles={qualityProfiles}
                 defaultRootFolder={defaultRootFolder}
+                renameEnabled={renameEnabled !== false}
                 rootFolders={rootFolders ?? []}
                 onUpdateTitleOptions={onUpdateTitleOptions}
                 onTitleChanged={onTitleChanged}
@@ -868,24 +913,52 @@ export function SeriesOverviewView({
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {sortedCollections.length > 0 ? (
-              sortedCollections.map((collection) => {
-                const key = `s-${collection.id}`;
+            {timelineItems.length > 0 ? (
+              <>
+              {timelineItems.map((item) => {
+                if (item.kind === "seriesMovie") {
+                  return (
+                    <SeriesMovieTimelineSection
+                      key={item.key}
+                      link={item.link}
+                      expanded={expandedKeys.has(item.key)}
+                      onToggle={() => toggleKey(item.key)}
+                      mediaFilesByEpisode={mediaFilesByEpisode}
+                      mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
+                      subtitleDownloads={subtitleDownloads}
+                      onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
+                      seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
+                      seriesMovieSearchLoadingByLink={seriesMovieSearchLoadingByLink}
+                      seriesMovieSearchAttemptedByLink={seriesMovieSearchAttemptedByLink}
+                      searchBlockedBySeriesMovie={searchBlockedBySeriesMovie}
+                      onRunSeriesMovieSearch={canManageTitle ? handleRunSeriesMovieSearch : undefined}
+                      onQueueFromSeriesMovieSearch={canManageTitle ? handleQueueFromSeriesMovieSearch : undefined}
+                      onQueueAdditionalFromSeriesMovieSearch={canManageTitle ? handleQueueAdditionalFromSeriesMovieSearch : undefined}
+                      onAutoSearchSeriesMovie={canManageTitle && onAutoSearchSeriesMovie ? handleAutoSearchSeriesMovie : undefined}
+                      onSetSeriesMovieMonitored={canManageTitle ? onSetSeriesMovieMonitored : undefined}
+                      onDeleteFile={canManageTitle ? onDeleteFile : undefined}
+                      onMakePrimaryFile={canManageTitle ? onMakePrimaryFile : undefined}
+                      primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
+                      autoSearchSeriesMovieLoadingByLink={autoSearchSeriesMovieLoadingByLink}
+                    />
+                  );
+                }
+
+                const { collection } = item;
                 const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
 
-                // Hide specials section when it has no episodes and no movies
-                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0 && collection.specialsMovies.length === 0) {
+                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0) {
                   return null;
                 }
 
                 return (
                   <SeasonSection
-                    key={key}
+                    key={item.key}
                     collection={collection}
                     episodes={sortedEpisodes}
                     facet={title.facet}
-                    expanded={expandedKeys.has(key)}
-                    onToggle={() => toggleKey(key)}
+                    expanded={expandedKeys.has(item.key)}
+                    onToggle={() => toggleKey(item.key)}
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
@@ -903,6 +976,9 @@ export function SeriesOverviewView({
                     onRunEpisodeSearch={canManageTitle ? handleRunEpisodeSearch : undefined}
                     onOpenEpisodeHistory={canManageTitle ? handleOpenEpisodeHistory : undefined}
                     onQueueFromEpisodeSearch={canManageTitle ? handleQueueFromEpisodeSearch : undefined}
+                    onQueueAdditionalFromEpisodeSearch={
+                      canManageTitle ? handleQueueAdditionalFromEpisodeSearch : undefined
+                    }
                     onAutoSearchEpisode={canManageTitle ? handleAutoSearchEpisode : undefined}
                     onSetCollectionMonitored={canManageTitle ? onSetCollectionMonitored : undefined}
                     onSetEpisodeMonitored={canManageTitle ? onSetEpisodeMonitored : undefined}
@@ -924,16 +1000,10 @@ export function SeriesOverviewView({
                     searchBlocked={searchBlockedByCollection[collection.id] === true}
                     onQueueFromSeasonSearch={canManageTitle ? onQueueFromSeasonSearch : undefined}
                     onDeleteFile={canManageTitle ? onDeleteFile : undefined}
-                    interstitialSearchResults={interstitialSearchResultsByCollection[collection.id]}
-                    interstitialSearchLoading={interstitialSearchLoadingByCollection[collection.id] === true}
-                    interstitialSearchAttempted={interstitialSearchAttemptedByCollection[collection.id] === true}
-                    onRunInterstitialMovieSearch={canManageTitle ? handleRunInterstitialMovieSearch : undefined}
-                    onQueueFromInterstitialMovieSearch={canManageTitle ? handleQueueFromInterstitialMovieSearch : undefined}
-                    onAutoSearchInterstitialMovie={canManageTitle && onAutoSearchInterstitialMovie ? handleAutoSearchInterstitialMovie : undefined}
-                    autoSearchInterstitialMovieLoading={autoSearchInterstitialMovieLoadingByCollection[collection.id] === true}
                   />
                 );
-              })
+              })}
+              </>
             ) : (
               <p className="text-sm text-muted-foreground">
                 {t("title.noTrackedSeasons")}

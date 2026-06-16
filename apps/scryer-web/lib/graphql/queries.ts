@@ -44,29 +44,46 @@ export const TITLE_CORE_FIELDS = `
     recapPolicy
     createdAt`;
 
-const INTERSTITIAL_MOVIE_FIELDS = `
-      tvdbId
-      name
-      slug
-      year
-      contentStatus
-      overview
-      posterUrl
-      language
-      runtimeMinutes
-      sortTitle
-      imdbId
-      genres
-      studio
-      digitalReleaseDate
+const SERIES_MOVIE_LINK_FIELDS = `
+      id
+      seriesTitleId
+      placement
+      narrativeOrder
+      afterSeason
+      beforeSeason
+      linkedEpisodeId
       associationConfidence
       continuityStatus
       movieForm
       confidence
       signalSummary
-      placement
-      movieTmdbId
-      movieMalId`;
+      source
+      monitored
+      createdAt
+      updatedAt
+      movie {
+        id
+        title
+        sortTitle
+      slug
+      year
+        overview
+        posterUrl
+        backgroundUrl
+        language
+        runtimeMinutes
+      contentStatus
+      imdbId
+        tvdbId
+        tmdbId
+        malId
+        anidbId
+      genres
+      studio
+      digitalReleaseDate
+        createdAt
+        updatedAt
+      }`;
 
 const COLLECTION_EPISODE_FIELDS = `
       id
@@ -100,11 +117,6 @@ const TITLE_COLLECTION_FIELDS = `
       fileSizeBytes
       firstEpisodeNumber
       lastEpisodeNumber
-      interstitialMovie {${INTERSTITIAL_MOVIE_FIELDS}
-      }
-      specialsMovies {${INTERSTITIAL_MOVIE_FIELDS}
-      }
-      interstitialSeasonEpisode
       monitored
       createdAt
       episodes {${COLLECTION_EPISODE_FIELDS}
@@ -114,6 +126,8 @@ const TITLE_MEDIA_FILE_FIELDS = `
       id
       titleId
       episodeId
+      seriesMovieLinkIds
+      role
       filePath
       sizeBytes
       qualityLabel
@@ -222,17 +236,20 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
       episodeId
       episodeIds
       collectionId
+      seriesMovieLinkId
     }`;
 
-  const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
+const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
+    }
+    seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
     }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
     wantedItems {${WANTED_ITEM_FIELDS}
     }`;
 
-  const TITLE_EVENT_FIELDS = `
+const TITLE_EVENT_FIELDS = `
     id
     titleId
     episodeId
@@ -249,7 +266,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     occurredAt
     createdAt`;
 
-  const TITLE_RELEASE_BLOCKLIST_FIELDS = `
+const TITLE_RELEASE_BLOCKLIST_FIELDS = `
     id
     sourceHint
     sourceTitle
@@ -286,7 +303,7 @@ const EXTERNAL_SUBTITLE_BLOCKLIST_FIELDS = `
     reason
     createdAt`;
 
-  const IMPORT_HISTORY_FIELDS = `
+const IMPORT_HISTORY_FIELDS = `
     id
     sourceSystem
     sourceRef
@@ -445,6 +462,8 @@ export const titleDetailQuery = `query TitleDetail($id: String!) {
   title(id: $id) {${TITLE_CORE_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
     }
+    seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
+    }
   }
   titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
   }
@@ -587,6 +606,7 @@ export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: Strin
       episodeId
       episodeIds
       collectionId
+      seriesMovieLinkId
     }
     sourceKind
     sizeBytes
@@ -699,10 +719,10 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
   }
 }`;
 
-export const searchForInterstitialMovieQuery = `query SearchIndexersForInterstitialMovie($titleId: String!, $collectionId: String!) {
+export const searchForSeriesMovieQuery = `query SearchIndexersForSeriesMovie($titleId: String!, $seriesMovieLinkId: String!) {
   searchReleases(input: {
     titleId: $titleId,
-    collectionId: $collectionId
+    seriesMovieLinkId: $seriesMovieLinkId
   }) {
     source
     title
@@ -714,6 +734,7 @@ export const searchForInterstitialMovieQuery = `query SearchIndexersForInterstit
       episodeId
       episodeIds
       collectionId
+      seriesMovieLinkId
     }
     sourceKind
     sizeBytes
@@ -1045,13 +1066,10 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `titleOverviewId${index}`;
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
-        const titleAcquisitionDiagnosticsAlias =
-          `titleOverviewDiagnosticsAction${index}`;
+        const titleAcquisitionDiagnosticsAlias = `titleOverviewDiagnosticsAction${index}`;
         const titleEventsAlias = `titleOverviewEventsAction${index}`;
-        const titleReleaseBlocklistAlias =
-          `titleOverviewBlocklistAction${index}`;
-        const externalSubtitlesAlias =
-          `titleOverviewExternalSubtitlesAction${index}`;
+        const titleReleaseBlocklistAlias = `titleOverviewBlocklistAction${index}`;
+        const externalSubtitlesAlias = `titleOverviewExternalSubtitlesAction${index}`;
         const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
@@ -1091,8 +1109,7 @@ export function buildReactiveRefreshQuery(
       case "titleOverviewDownloadFeedback": {
         const titleIdVariableName = `titleOverviewDownloadFeedbackId${index}`;
         const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
-        const completedDownloadQueueItemsAlias =
-          `titleOverviewCompletedDownloadQueueAction${index}`;
+        const completedDownloadQueueItemsAlias = `titleOverviewCompletedDownloadQueueAction${index}`;
 
         variableDefinitions.push(`$${titleIdVariableName}: String!`);
         fields.push(
@@ -1127,7 +1144,9 @@ export function buildReactiveRefreshQuery(
       }
       default: {
         const exhaustiveCheck: never = action;
-        throw new Error(`unsupported reactive refresh action: ${exhaustiveCheck}`);
+        throw new Error(
+          `unsupported reactive refresh action: ${exhaustiveCheck}`,
+        );
       }
     }
   });
@@ -1162,6 +1181,7 @@ export const mediaRenamePreviewQuery = `query MediaRenamePreview($input: MediaRe
     errors
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       normalizedFilename
@@ -1421,6 +1441,22 @@ export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId
   }
 }`;
 
+export const mediaServerUsersQuery = `query MediaServerUsers($search: String) {
+  mediaServerUsers(search: $search) {
+    connectionId
+    connectionName
+    provider
+    status
+    errorMessage
+    users {
+      id
+      username
+      displayName
+      avatarUrl
+    }
+  }
+}`;
+
 export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
@@ -1567,6 +1603,7 @@ const mediaSettingsFieldSelection = `
     }
     requiredAudioLanguages
     folderTemplate
+    renameEnabled
     renameTemplate
     renameCollisionPolicy
     renameMissingMetadataPolicy
@@ -1951,6 +1988,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     passkeyEnabled
     envOverrideActive
     mfaRequirePasswordLogin
+    mfaRequireConfigStepUp
     totpRequireJellyfinLogin
   }
 }`;
@@ -2086,6 +2124,18 @@ export const smgVersionCompatibilityNoticeQuery = `query SmgVersionCompatibility
     yourVersion
     message
     upgradeDeadline
+  }
+}`;
+
+export const smgScryerUpdateNoticeQuery = `query SmgScryerUpdateNotice {
+  smgScryerUpdateNotice {
+    available
+    currentVersion
+    latestVersion
+    latestTag
+    releaseUrl
+    publishedAt
+    checkedAt
   }
 }`;
 

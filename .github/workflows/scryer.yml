@@ -595,7 +595,7 @@ jobs:
           cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE} scryer
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
 
       - name: Show sccache stats
         if: always()
@@ -736,6 +736,7 @@ jobs:
           cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Codesign binary
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           CERT_P12: ${{ secrets.APPLE_SIGNING_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_CERT_PASSWORD }}
@@ -759,7 +760,7 @@ jobs:
           security delete-keychain "$KEYCHAIN"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE} scryer
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
 
       - name: Show sccache stats
         if: always()

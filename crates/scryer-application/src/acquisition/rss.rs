@@ -3,7 +3,7 @@ use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
     canonical_title_evidence, evaluate_auto_candidate, parsed_release_matches_title_evidence,
-    serialize_decision_explanation,
+    serialize_decision_explanation, series_movie_search_title,
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
@@ -321,6 +321,7 @@ impl AppUseCase {
                 HashMap::new(),
                 None, // no category filter
                 None, // no facet hint
+                None, // no ID-search facet override
                 rss_categories,
                 None, // no routing filter
                 SearchMode::Auto,
@@ -458,6 +459,16 @@ impl AppUseCase {
             if has_episodes {
                 // For series: match each release to a specific episode's wanted item
                 self.process_rss_series_releases(
+                    &title,
+                    releases,
+                    &dl_snapshot,
+                    &delay_profiles,
+                    &mut grabbed_urls,
+                    &mut report,
+                    &now,
+                )
+                .await;
+                self.process_rss_series_movie_releases(
                     &title,
                     releases,
                     &dl_snapshot,
@@ -744,6 +755,151 @@ impl AppUseCase {
         }
     }
 
+    /// Process RSS releases matched to series-owned movies.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS series-movie processing carries wanted, scoring, and queue state together"
+    )]
+    async fn process_rss_series_movie_releases(
+        &self,
+        title: &Title,
+        releases: &[IndexerSearchResult],
+        dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        delay_profiles: &[DelayProfile],
+        grabbed_urls: &mut HashSet<String>,
+        report: &mut RssSyncReport,
+        now: &DateTime<Utc>,
+    ) {
+        let wanted_items = match self
+            .services
+            .workflow
+            .wanted_items
+            .list_wanted_items(WantedItemsQuery {
+                statuses: vec!["wanted".into(), "grabbed".into()],
+                media_types: vec!["series_movie".into()],
+                title_id: Some(title.id.clone()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
+            .await
+        {
+            Ok(items) => items,
+            Err(err) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %err,
+                    "RSS sync: failed to load series-movie wanted items"
+                );
+                return;
+            }
+        };
+
+        for wanted in wanted_items {
+            let Some(link_id) = wanted.series_movie_link_id.as_deref() else {
+                continue;
+            };
+            let link = match self
+                .services
+                .catalog
+                .shows
+                .get_series_movie_link_by_id(link_id)
+                .await
+            {
+                Ok(Some(link)) if link.series_title_id == title.id => link,
+                Ok(_) => continue,
+                Err(err) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        series_movie_link_id = link_id,
+                        error = %err,
+                        "RSS sync: failed to load series-movie link"
+                    );
+                    continue;
+                }
+            };
+
+            let search_title = series_movie_search_title(title, &link);
+            let subject = self
+                .resolve_release_search_subject_for_wanted_item(title, &search_title, &wanted, None)
+                .await;
+            let matched_releases = releases
+                .iter()
+                .filter(|release| {
+                    let parsed = parse_release_metadata_for_target(
+                        &release.title,
+                        &subject.title_evidence.parse_context,
+                    );
+                    if let (Some(parsed_year), Some(title_year)) =
+                        (parsed.year, subject.title_evidence.year)
+                        && parsed_year != title_year
+                    {
+                        return false;
+                    }
+                    parsed_release_matches_title_evidence(&parsed, &subject.title_evidence)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if matched_releases.is_empty() {
+                continue;
+            }
+
+            let quality_profile_lookup = crate::app_usecase_discovery::QualityProfileLookup {
+                title_tags: &subject.title_tags,
+                library_id: Some(title.library_id.as_str()),
+                imdb_id: subject.imdb_id.as_deref(),
+                tvdb_id: subject.tvdb_id.as_deref(),
+                category_hint: Some(subject.owner_facet.as_str()),
+            };
+            let quality_profile = match self.resolve_quality_profile(quality_profile_lookup).await {
+                Ok(profile) => profile,
+                Err(err) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        series_movie_link_id = link.id.as_str(),
+                        error = %err,
+                        "RSS sync: failed to resolve series-movie quality profile"
+                    );
+                    continue;
+                }
+            };
+            let scope_id = self.quality_profile_scope_id(quality_profile_lookup);
+            let indexer_routing = self
+                .resolve_indexer_routing(Some(title.library_id.as_str()), scope_id.as_deref())
+                .await;
+            let scored = self
+                .score_release_results(
+                    matched_releases,
+                    &quality_profile,
+                    &subject.title_id,
+                    Some(title.library_id.as_str()),
+                    scope_id.as_deref(),
+                    indexer_routing.as_ref(),
+                    Some(subject.category.as_str()),
+                    &subject.title_tags,
+                    subject.runtime_minutes,
+                    &subject.title_evidence.parse_context,
+                    subject.season,
+                    subject.episode,
+                    subject.absolute_episode,
+                )
+                .await;
+
+            self.try_grab_rss_release(
+                title,
+                &wanted,
+                &scored,
+                &subject.category,
+                dl_snapshot,
+                delay_profiles,
+                grabbed_urls,
+                report,
+                now,
+            )
+            .await;
+        }
+    }
+
     /// Score a batch of RSS releases against the quality profile.
     #[expect(
         clippy::too_many_arguments,
@@ -814,7 +970,7 @@ impl AppUseCase {
         title: &Title,
         wanted: &WantedItem,
         scored: &[IndexerSearchResult],
-        category: &str,
+        _category: &str,
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
@@ -843,8 +999,16 @@ impl AppUseCase {
                 .flatten(),
             None => None,
         };
+        let search_title = self
+            .release_search_title_for_wanted_item(title, wanted, episode.as_ref())
+            .await;
         let subject = self
-            .resolve_release_search_subject_for_wanted_item(title, wanted, episode.as_ref())
+            .resolve_release_search_subject_for_wanted_item(
+                title,
+                &search_title,
+                wanted,
+                episode.as_ref(),
+            )
             .await;
         let existing_files = self
             .services
@@ -852,12 +1016,22 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
+        let analyzed_cutoff_quality =
+            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+                &existing_files,
+                subject.submission_scope.episode_id(),
+                subject.submission_scope.series_movie_link_id(),
+            );
         let upgrade_context = self
-            .resolve_upgrade_context_for_title_with_category(
+            .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 wanted.grabbed_release.as_deref(),
-                Some(category),
+                Some(subject.owner_facet.as_str()),
+                analyzed_cutoff_quality,
             )
             .await;
         if upgrade_context.cutoff_reached {
@@ -1049,6 +1223,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
@@ -1129,6 +1304,7 @@ impl AppUseCase {
                     .record_submission_with_identity(
                         DownloadSubmission {
                             title_id: title.id.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
                             download_client_type: grab.client_type.clone(),

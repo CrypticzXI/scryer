@@ -3263,6 +3263,18 @@ fn extend_title_connector_variants(
         push_side_title_variant(variants, tokens, right);
     }
 
+    for split_index in subtitle_split_positions(tokens, title_indices) {
+        let left = &title_indices[..split_index];
+        let right = &title_indices[split_index..];
+        push_side_title_variant(variants, tokens, left);
+        push_side_title_variant(variants, tokens, right);
+        if let Some(prefix) = leading_connector_segment(tokens, left)
+            && prefix.len() < left.len()
+        {
+            push_combined_title_variant(variants, tokens, prefix, right);
+        }
+    }
+
     if let Some(without_part) = remove_part_connector_variant(tokens, title_indices) {
         push_unique_title_variant(variants, without_part);
     }
@@ -3276,6 +3288,38 @@ fn push_side_title_variant(variants: &mut Vec<String>, tokens: &[Token], side: &
         return;
     };
     push_unique_title_variant(variants, title);
+}
+
+fn push_combined_title_variant(
+    variants: &mut Vec<String>,
+    tokens: &[Token],
+    left: &[usize],
+    right: &[usize],
+) {
+    if left.is_empty() || right.is_empty() {
+        return;
+    }
+    let combined = left.iter().chain(right.iter()).copied().collect::<Vec<_>>();
+    push_side_title_variant(variants, tokens, &combined);
+}
+
+fn leading_connector_segment<'a>(tokens: &[Token], indices: &'a [usize]) -> Option<&'a [usize]> {
+    let split_offset = indices
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(offset, token_index)| {
+            tokens
+                .get(*token_index)
+                .is_some_and(|token| {
+                    matches!(
+                        token.separator_before,
+                        SeparatorKind::Other | SeparatorKind::Slash
+                    )
+                })
+                .then_some(offset)
+        })?;
+    Some(&indices[..split_offset]).filter(|segment| !segment.is_empty())
 }
 
 fn push_unique_title_variant(variants: &mut Vec<String>, title: String) {
@@ -3366,6 +3410,20 @@ fn slash_split_positions(tokens: &[Token], indices: &[usize]) -> Vec<usize> {
             tokens
                 .get(*token_index)
                 .is_some_and(|token| token.separator_before == SeparatorKind::Slash)
+                .then_some(offset)
+        })
+        .collect()
+}
+
+fn subtitle_split_positions(tokens: &[Token], indices: &[usize]) -> Vec<usize> {
+    indices
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(offset, token_index)| {
+            tokens
+                .get(*token_index)
+                .is_some_and(|token| token.separator_before == SeparatorKind::Other)
                 .then_some(offset)
         })
         .collect()

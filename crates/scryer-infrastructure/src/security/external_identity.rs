@@ -5,7 +5,7 @@ use quick_xml::events::Event;
 use reqwest::StatusCode;
 use scryer_application::{
     AppError, AppResult, ExternalIdentityVerifier, JellyfinServerUser, PlexServerDiscovery,
-    VerifiedExternalIdentity,
+    PlexServerUser, VerifiedExternalIdentity,
 };
 use scryer_domain::ExternalAccountProvider;
 use scryer_outbound_http::generic_reqwest_client;
@@ -552,6 +552,43 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         }
         Ok(users)
     }
+
+    async fn list_plex_users(
+        &self,
+        plex_auth_token: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<PlexServerUser>> {
+        let token = plex_auth_token.trim();
+        if token.is_empty() {
+            return Err(AppError::Unauthorized("Plex auth token is required".into()));
+        }
+        let response = self
+            .client
+            .get(self.plex_url("api/users/")?)
+            .header("Accept", "application/xml")
+            .header("X-Plex-Token", token)
+            .send()
+            .await
+            .map_err(|error| AppError::Repository(format!("failed to list Plex users: {error}")))?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(AppError::Unauthorized(
+                    "Plex token is invalid or cannot list users".into(),
+                ));
+            }
+            status => {
+                return Err(AppError::Repository(format!(
+                    "Plex user listing failed with status {status}"
+                )));
+            }
+        }
+
+        let users_xml = response.text().await.map_err(|error| {
+            AppError::Repository(format!("invalid Plex user list response: {error}"))
+        })?;
+        plex_server_users(&users_xml, search)
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -657,6 +694,104 @@ fn json_value_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
+struct ParsedPlexServerUser {
+    user: PlexServerUser,
+    email: Option<String>,
+}
+
+fn plex_server_users(users_xml: &str, search: Option<&str>) -> AppResult<Vec<PlexServerUser>> {
+    let mut users = Vec::new();
+    let mut reader = Reader::from_str(users_xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
+                if element.name().as_ref() != b"User" {
+                    continue;
+                }
+                let mut id = None;
+                let mut username = None;
+                let mut title = None;
+                let mut email = None;
+                let mut thumb = None;
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| {
+                        AppError::Repository(format!("invalid Plex users XML: {error}"))
+                    })?;
+                    let value = attribute
+                        .normalized_value(XmlVersion::Implicit1_0)
+                        .map_err(|error| {
+                            AppError::Repository(format!("invalid Plex users XML: {error}"))
+                        })?
+                        .trim()
+                        .to_string();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    match attribute.key.as_ref() {
+                        b"id" => id = Some(value),
+                        b"username" => username = Some(value),
+                        b"title" => title = Some(value),
+                        b"email" => email = Some(value),
+                        b"thumb" => thumb = Some(value),
+                        _ => {}
+                    }
+                }
+
+                let Some(id) = id else {
+                    continue;
+                };
+                let username = username
+                    .or_else(|| title.clone())
+                    .or_else(|| email.clone())
+                    .unwrap_or_else(|| id.clone());
+                let display_name = title.clone().or_else(|| Some(username.clone()));
+                users.push(ParsedPlexServerUser {
+                    user: PlexServerUser {
+                        id,
+                        username,
+                        display_name,
+                        avatar_url: thumb,
+                    },
+                    email,
+                });
+            }
+            Ok(Event::Eof) => {
+                if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
+                    let search = search.to_ascii_lowercase();
+                    users.retain(|entry| {
+                        [
+                            entry.user.id.as_str(),
+                            entry.user.username.as_str(),
+                            entry.user.display_name.as_deref().unwrap_or_default(),
+                            entry.email.as_deref().unwrap_or_default(),
+                        ]
+                        .into_iter()
+                        .any(|value| value.to_ascii_lowercase().contains(&search))
+                    });
+                }
+                let mut users = users
+                    .into_iter()
+                    .map(|entry| entry.user)
+                    .collect::<Vec<_>>();
+                users.sort_by(|left, right| {
+                    left.username
+                        .to_ascii_lowercase()
+                        .cmp(&right.username.to_ascii_lowercase())
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                return Ok(users);
+            }
+            Err(error) => {
+                return Err(AppError::Repository(format!(
+                    "invalid Plex users XML: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDiscovery>> {
     let mut servers = Vec::new();
     let mut reader = Reader::from_str(resources_xml);
@@ -686,7 +821,7 @@ fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDisco
                         continue;
                     }
                     match attribute.key.as_ref() {
-                        b"machineIdentifier" => machine_id = Some(value),
+                        b"machineIdentifier" | b"clientIdentifier" => machine_id = Some(value),
                         b"name" => name = Some(value),
                         b"product" => product = Some(value),
                         b"provides" => provides = Some(value),
@@ -737,7 +872,10 @@ fn plex_resources_include_machine(resources_xml: &str, machine_id: &str) -> AppR
                     let attribute = attribute.map_err(|error| {
                         AppError::Repository(format!("invalid Plex resources XML: {error}"))
                     })?;
-                    if attribute.key.as_ref() == b"machineIdentifier" {
+                    if matches!(
+                        attribute.key.as_ref(),
+                        b"machineIdentifier" | b"clientIdentifier"
+                    ) {
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .map_err(|error| {
@@ -999,6 +1137,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plex_user_listing_returns_shared_users() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users/"))
+            .and(header("x-plex-token", "token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<MediaContainer>
+                    <User id="42" username="plexfriend" title="Plex Friend" thumb="https://plex.tv/friend.jpg" email="friend@example.test" />
+                    <User id="99" title="Title Fallback" />
+                </MediaContainer>"#,
+            ))
+            .mount(&server)
+            .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
+
+        let users = verifier
+            .list_plex_users("token", Some("friend@example"))
+            .await
+            .expect("list plex users");
+
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].id, "42");
+        assert_eq!(users[0].username, "plexfriend");
+        assert_eq!(users[0].display_name.as_deref(), Some("Plex Friend"));
+        assert_eq!(
+            users[0].avatar_url.as_deref(),
+            Some("https://plex.tv/friend.jpg")
+        );
+    }
+
+    #[tokio::test]
+    async fn plex_user_listing_invalid_token_is_unauthorized() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users/"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
+
+        let result = verifier.list_plex_users("bad-token", None).await;
+
+        assert!(matches!(result, Err(AppError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
     async fn plex_machine_match_succeeds() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1022,6 +1206,44 @@ mod tests {
             .verify_plex("plex-main", Some("machine-1"), "token")
             .await
             .expect("machine should match");
+    }
+
+    #[tokio::test]
+    async fn plex_client_identifier_machine_match_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/users/account.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "user": { "id": "plex-user", "username": "plexuser" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/resources"))
+            .and(query_param("includeHttps", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<MediaContainer><Device clientIdentifier="machine-1" provides="server" /></MediaContainer>"#,
+            ))
+            .mount(&server)
+            .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
+
+        verifier
+            .verify_plex("plex-main", Some("machine-1"), "token")
+            .await
+            .expect("client identifier should match");
+    }
+
+    #[test]
+    fn plex_server_discovery_uses_client_identifier() {
+        let servers = plex_server_discoveries(
+            r#"<MediaContainer><Device clientIdentifier="machine-1" name="E2E Plex" provides="server" /></MediaContainer>"#,
+        )
+        .expect("resources should parse");
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "machine-1");
+        assert_eq!(servers[0].name, "E2E Plex");
     }
 
     #[tokio::test]

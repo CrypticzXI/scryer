@@ -7,6 +7,7 @@ pub(crate) struct SearchQueryResult {
     pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
+    pub(crate) mal_id: Option<String>,
     pub(crate) category: String,
     pub(crate) season: Option<u32>,
     pub(crate) episode: Option<u32>,
@@ -22,6 +23,7 @@ pub(crate) fn build_search_queries(
     let tmdb_id = tmdb_id_from_external_ids(&title.external_ids);
     let tvdb_id = tvdb_id_from_external_ids(&title.external_ids);
     let anidb_id = anidb_id_from_external_ids(&title.external_ids);
+    let mal_id = mal_id_from_external_ids(&title.external_ids);
 
     let category = facet_registry
         .get(&title.facet)
@@ -29,32 +31,7 @@ pub(crate) fn build_search_queries(
         .unwrap_or_else(|| "series".to_string());
 
     match item.media_type.as_str() {
-        "movie" => {
-            let mut queries = Vec::new();
-            if !title.name.is_empty() {
-                let query = if let Some(year) = title.year {
-                    format!("{} {}", title.name, year)
-                } else {
-                    title.name.clone()
-                };
-                queries.push(query);
-            }
-            let mut seen = std::collections::HashSet::new();
-            queries.retain(|query| seen.insert(query.to_ascii_lowercase()));
-            if queries.is_empty() && imdb_id.is_some() {
-                queries.push(String::new());
-            }
-            SearchQueryResult {
-                queries,
-                imdb_id,
-                tmdb_id,
-                tvdb_id,
-                anidb_id,
-                category,
-                season: None,
-                episode: None,
-            }
-        }
+        "movie" | "series_movie" => build_movie_search_queries(title, &item.media_type, category),
         "episode" => {
             let mut queries = Vec::new();
             let mut season_param: Option<u32> = None;
@@ -134,35 +111,10 @@ pub(crate) fn build_search_queries(
                 tmdb_id,
                 tvdb_id,
                 anidb_id,
+                mal_id,
                 category,
                 season: season_param,
                 episode: episode_param,
-            }
-        }
-        "interstitial_movie" => {
-            let mut queries = Vec::new();
-            if !title.name.is_empty() {
-                let query = if let Some(year) = title.year {
-                    format!("{} {}", title.name, year)
-                } else {
-                    title.name.clone()
-                };
-                queries.push(query);
-            }
-            let mut seen = std::collections::HashSet::new();
-            queries.retain(|query| seen.insert(query.to_ascii_lowercase()));
-            if queries.is_empty() && imdb_id.is_some() {
-                queries.push(String::new());
-            }
-            SearchQueryResult {
-                queries,
-                imdb_id,
-                tmdb_id,
-                tvdb_id,
-                anidb_id,
-                category: "movies".to_string(),
-                season: None,
-                episode: None,
             }
         }
         _ => SearchQueryResult {
@@ -171,10 +123,49 @@ pub(crate) fn build_search_queries(
             tmdb_id: None,
             tvdb_id: None,
             anidb_id: None,
+            mal_id: None,
             category,
             season: None,
             episode: None,
         },
+    }
+}
+
+pub(crate) fn build_movie_search_queries(
+    title: &Title,
+    _media_type: &str,
+    category: String,
+) -> SearchQueryResult {
+    let imdb_id = imdb_id_from_title(title);
+    let tmdb_id = tmdb_id_from_external_ids(&title.external_ids);
+    let tvdb_id = tvdb_id_from_external_ids(&title.external_ids);
+    let anidb_id = anidb_id_from_external_ids(&title.external_ids);
+    let mal_id = mal_id_from_external_ids(&title.external_ids);
+    let mut queries = Vec::new();
+    let query_title = title.name.trim().to_string();
+    if !query_title.is_empty() {
+        let query = if let Some(year) = title.year {
+            format!("{query_title} {year}")
+        } else {
+            query_title
+        };
+        queries.push(query);
+    }
+    let mut seen = std::collections::HashSet::new();
+    queries.retain(|query| seen.insert(query.to_ascii_lowercase()));
+    if queries.is_empty() && imdb_id.is_some() {
+        queries.push(String::new());
+    }
+    SearchQueryResult {
+        queries,
+        imdb_id,
+        tmdb_id,
+        tvdb_id,
+        anidb_id,
+        mal_id,
+        category,
+        season: None,
+        episode: None,
     }
 }
 
@@ -198,6 +189,14 @@ pub(crate) fn anidb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<
         .iter()
         .find(|id| id.source.eq_ignore_ascii_case("anidb"))
         .map(|id| id.value.clone())
+}
+
+pub(crate) fn mal_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
+    external_ids
+        .iter()
+        .find(|id| id.source.eq_ignore_ascii_case("mal"))
+        .map(|id| id.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn imdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {

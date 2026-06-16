@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { FolderOpen, HardDrive, Loader2, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
+import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,11 +25,12 @@ import type {
   TitleHistoryEvent,
   TitleMediaFile,
 } from "@/components/containers/movie-overview-container";
-import { MediaInfoBadges } from "@/components/common/media-info-badges";
+import { MediaFilesOnDiskPanel } from "@/components/common/media-files-on-disk-panel";
 import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-panel";
 import { MovieOverviewDownloadList } from "@/components/common/download-queue-overview";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
+import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { OverviewControlPanel } from "@/components/views/overview-control-panel";
 import { OverviewBackLink } from "@/components/views/overview-back-link";
 import {
@@ -37,24 +38,19 @@ import {
   localizedWantedPhase,
   localizedWantedStatus,
 } from "@/components/views/overview-localization";
-import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import type { WantedSearchPhase, WantedStatus } from "@/lib/types";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
-import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
-import { selectorId } from "@/lib/utils/dom-ids";
-import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
-
-const imdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/imdb.svg`;
-const tmdbLogoUrl = `${import.meta.env.BASE_URL}media-sites/tmdb.svg`;
-const anidbLogoUrl = `${import.meta.env.BASE_URL}media-sites/anidb.png`;
-const boxedTextActionButtonBaseClass =
-  "h-9 border px-3 shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[color,background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:shadow-[0_10px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.85)] dark:shadow-none dark:hover:translate-y-0 dark:hover:shadow-none";
-
+import {
+  AnidbExternalLink,
+  ImdbExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+} from "@/components/common/external-media-links";
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string) {
@@ -88,15 +84,6 @@ function formatRuntime(minutes: number | null | undefined) {
   const m = minutes % 60;
   if (h === 0) return `${m}m`;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-function formatFileSize(sizeBytes: string | number | null | undefined) {
-  const bytes = typeof sizeBytes === "number" ? sizeBytes : Number.parseFloat(sizeBytes ?? "");
-  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(2)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-  return `${bytes.toFixed(0)} B`;
 }
 
 function prettifyTagValue(raw: string) {
@@ -425,6 +412,7 @@ type Props = {
   hasDownloadClients: boolean;
   showSearchPrerequisiteNotice: boolean;
   renamePlan: MediaRenamePlan | null;
+  renameEnabled: boolean;
   renamePreviewing: boolean;
   renameApplying: boolean;
   interactiveSearchAttempted: boolean;
@@ -433,6 +421,7 @@ type Props = {
   deleteLoading: boolean;
   onSearch: () => void;
   onQueue: (r: Release) => void;
+  onQueueAdditional?: (r: Release) => void;
   onSearchMonitored: () => void;
   onRefreshAndScan: () => void;
   onTitleChanged?: () => Promise<void> | void;
@@ -457,7 +446,9 @@ type Props = {
   mediaFiles: TitleMediaFile[];
   downloadQueueItems: DownloadQueueItem[];
   subtitleDownloads: ExternalSubtitleRecord[];
+  primaryMovieFileUpdatingId?: string | null;
   onDeleteFile?: (fileId: string) => void;
+  onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   onRefreshSubtitles?: () => void;
   onOpenFixMatch?: () => void;
 };
@@ -473,6 +464,7 @@ export function MovieOverviewView({
   hasDownloadClients,
   showSearchPrerequisiteNotice,
   renamePlan,
+  renameEnabled,
   renamePreviewing,
   renameApplying,
   interactiveSearchAttempted,
@@ -481,6 +473,7 @@ export function MovieOverviewView({
   deleteLoading,
   onSearch,
   onQueue,
+  onQueueAdditional,
   onSearchMonitored,
   onRefreshAndScan,
   onTitleChanged,
@@ -505,16 +498,14 @@ export function MovieOverviewView({
   mediaFiles = [],
   downloadQueueItems = [],
   subtitleDownloads = [],
+  primaryMovieFileUpdatingId = null,
   onDeleteFile,
+  onMakePrimaryFile,
   onRefreshSubtitles,
   onOpenFixMatch,
 }: Props) {
   const t = useTranslate();
   const [historyOpen, setHistoryOpen] = React.useState(false);
-  const [subtitleSearchTarget, setSubtitleSearchTarget] = React.useState<{
-    mediaFileId: string;
-    filePath: string;
-  } | null>(null);
   if (loading) {
     return (
       <div className="space-y-4">
@@ -546,6 +537,7 @@ export function MovieOverviewView({
   const imdbId = title.imdbId ?? externalIds.find((e) => e.source === "imdb")?.value;
   const anidbId = externalIds.find((e) => e.source === "anidb")?.value;
   const tmdbId = externalIds.find((e) => e.source === "tmdb")?.value;
+  const tvdbId = externalIds.find((e) => e.source === "tvdb")?.value;
 
   const posterUrl = title.posterUrl;
   const overview = title.overview;
@@ -553,7 +545,15 @@ export function MovieOverviewView({
   const runtime = formatRuntime(title.runtimeMinutes);
   const year = title.year;
   const studio = title.studio;
-  const hasMediaFiles = mediaFiles.length > 0;
+  const sortedMediaFiles = mediaFiles
+    .map((file, index) => ({ file, index }))
+    .sort((left, right) => {
+      const leftRank = left.file.role === "primary" ? 0 : 1;
+      const rightRank = right.file.role === "primary" ? 0 : 1;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map(({ file }) => file);
+  const hasMediaFiles = sortedMediaFiles.length > 0;
   const orphanCollections = collections.filter(
     (collection) => !collection.orderedPath || !mediaFiles.some((file) => file.filePath === collection.orderedPath),
   );
@@ -588,27 +588,19 @@ export function MovieOverviewView({
         <SearchResultBuckets
           results={searchResults}
           onQueue={onQueue}
+          onQueueAdditional={onQueueAdditional}
+          canQueueAdditional={(release) =>
+            releaseSupportsAdditionalFileQueue(release, title.facet)
+          }
           requireCandidateToken
         />
       ) : interactiveSearchAttempted ? (
         <p className="text-sm text-muted-foreground">
           {t("title.noReleasesFound", { name: title.name })}
         </p>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          {t("title.interactiveSearchHint", { name: title.name })}
-        </p>
-      )}
+      ) : null}
     </div>
   ) : null;
-  const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, ExternalSubtitleRecord[]>>(
-    (grouped, download) => {
-      (grouped[download.mediaFileId] ??= []).push(download);
-      return grouped;
-    },
-    {},
-  );
-
   return (
     <div className="space-y-4">
       <OverviewBackLink
@@ -799,46 +791,10 @@ export function MovieOverviewView({
               ) : null}
 
               <div className="mt-auto flex flex-wrap gap-3 pt-3 text-sm">
-                {imdbId ? (
-                  <a
-                    href={
-                      imdbId.startsWith("tt")
-                        ? `https://www.imdb.com/title/${imdbId}`
-                        : `https://www.imdb.com/find?q=${encodeURIComponent(imdbId)}&s=tt`
-                    }
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "IMDb" })}
-                  >
-                    <img src={imdbLogoUrl} alt="IMDb" className="h-8 w-8" />
-                    <span className="text-muted-foreground">IMDb</span>
-                  </a>
-                ) : null}
-                {tmdbId ? (
-                  <a
-                    href={`https://www.themoviedb.org/movie/${tmdbId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "TMDB" })}
-                  >
-                    <img src={tmdbLogoUrl} alt="TMDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">TMDB</span>
-                  </a>
-                ) : null}
-                {anidbId ? (
-                  <a
-                    href={`https://anidb.net/anime/${anidbId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-card/45 px-3 py-2 text-base hover:bg-muted"
-                    aria-label={t("external.openOn", { site: "AniDB" })}
-                  >
-                    <img src={anidbLogoUrl} alt="AniDB" className="h-8 w-8" />
-                    <span className="text-muted-foreground">AniDB</span>
-                  </a>
-                ) : null}
+                <ImdbExternalLink imdbId={imdbId} />
+                <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
+                <TmdbExternalLink mediaType="movie" tmdbId={tmdbId} />
+                <AnidbExternalLink anidbId={anidbId} />
                 {(title.externalIds ?? [])
                   .filter((e) => e.source !== "imdb" && e.source !== "tvdb" && e.source !== "anidb" && e.source !== "tmdb")
                   .map((e) => (
@@ -907,7 +863,7 @@ export function MovieOverviewView({
                 <FolderOpen className="h-4 w-4" />
               {t("title.filesOnDisk")}
               </CardTitle>
-            {canManageTitle ? (
+            {canManageTitle && renameEnabled ? (
               <Button
                 id="movie-overview-rename-preview"
                 className="w-full sm:w-auto"
@@ -922,12 +878,13 @@ export function MovieOverviewView({
           </div>
         </CardHeader>
         <CardContent>
-          {mediaFiles.length === 0 && orphanCollections.length === 0 ? (
-            <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                {t("title.noFilesTracked")} {t("title.noFilesTrackedHint")}
-              </p>
-              {canManageTitle ? (
+          {sortedMediaFiles.length === 0 && orphanCollections.length === 0 ? (
+            <MediaFilesOnDiskPanel<TitleMediaFile>
+              emptyMessage={t("title.noFilesTracked")}
+              emptyHint={t("title.noFilesTrackedHint")}
+              mediaFiles={[]}
+              showSubtitleSearch={false}
+              emptyAction={canManageTitle ? (
                 <Button
                   id="movie-overview-files-refresh-and-scan"
                   size="sm"
@@ -937,87 +894,28 @@ export function MovieOverviewView({
                   {t("settings.libraryScanButton")}
                 </Button>
               ) : null}
-            </div>
+            />
           ) : (
             <div className="space-y-2">
-              {mediaFiles.map((mediaFile) => {
-                return (
-                  <div
-                    key={mediaFile.id}
-                    id={selectorId("movie-overview-media-file", mediaFile.id)}
-                    className="rounded bg-card/60 px-3 py-3 text-sm"
-                  >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <div className="flex items-start gap-3">
-                          <HardDrive className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-                          <div className="min-w-0 flex-1 space-y-1.5">
-                            <p className="break-all font-mono text-sm text-muted-foreground">{mediaFile.filePath}</p>
-                            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground/60">
-                              {mediaFile.acquisitionScore != null ? (
-                                <span title={mediaFile.scoringLog ?? undefined}>
-                                  {t("mediaFile.score", { score: mediaFile.acquisitionScore })}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                        <MediaInfoBadges file={mediaFile} />
-                        <ExternalSubtitleSection
-                          downloads={subtitleDownloadsByMediaFile[mediaFile.id] ?? []}
-                          onChanged={canManageTitle
-                            ? () => {
-                                onRefreshSubtitles?.();
-                              }
-                            : undefined}
-                        />
-                      </div>
-                      <div className="flex shrink-0 items-center gap-3 sm:self-center sm:pl-4">
-                        <div className="text-left sm:text-right">
-                          <div
-                            className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl"
-                            style={{
-                              fontFamily:
-                                "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
-                            }}
-                          >
-                            {formatFileSize(mediaFile.sizeBytes)}
-                          </div>
-                        </div>
-                        {canManageTitle ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            id={selectorId("movie-overview-search-subtitles", mediaFile.id)}
-                            className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
-                            onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
-                            title={t("subtitle.search")}
-                            aria-label={t("subtitle.search")}
-                          >
-                            <Search className="mr-1.5 h-3.5 w-3.5" />
-                            {t("subtitle.search")}
-                          </Button>
-                        ) : null}
-                        {canManageTitle && onDeleteFile ? (
-                          <Button
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            id={selectorId("movie-overview-delete-file", mediaFile.id)}
-                            onClick={() => onDeleteFile(mediaFile.id)}
-                            className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
-                            title={t("mediaFile.delete")}
-                            aria-label={t("mediaFile.delete")}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {sortedMediaFiles.length > 0 ? (
+                <MediaFilesOnDiskPanel<TitleMediaFile>
+                  emptyMessage={t("title.noFilesTracked")}
+                  mediaFiles={sortedMediaFiles}
+                  subtitleDownloads={subtitleDownloads}
+                  onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
+                  onDeleteFile={canManageTitle ? onDeleteFile : undefined}
+                  onMakePrimaryFile={canManageTitle ? onMakePrimaryFile : undefined}
+                  primaryFileUpdatingId={primaryMovieFileUpdatingId}
+                  showPrimaryRoleBadge
+                  showSubtitleSearch={canManageTitle}
+                  fileRowIdPrefix="movie-overview-media-file"
+                  filePathIdPrefix="movie-overview-media-file-path"
+                  roleIdPrefix="movie-overview-media-file-role"
+                  subtitleSearchIdPrefix="movie-overview-search-subtitles"
+                  deleteFileIdPrefix="movie-overview-delete-file"
+                  makePrimaryFileIdPrefix="movie-overview-make-primary-file"
+                />
+              ) : null}
 
               {orphanCollections.map((collection) => {
                 const qualityHint = collection.label ?? null;
@@ -1058,18 +956,8 @@ export function MovieOverviewView({
               />
             </div>
           ) : null}
-        </CardContent>
-      </Card>
-      {canManageTitle && subtitleSearchTarget ? (
-        <SubtitleSearchModal
-          open={true}
-          onOpenChange={(open) => { if (!open) setSubtitleSearchTarget(null); }}
-          mediaFileId={subtitleSearchTarget.mediaFileId}
-          filePath={subtitleSearchTarget.filePath}
-          downloads={subtitleDownloadsByMediaFile[subtitleSearchTarget.mediaFileId] ?? []}
-          onChanged={() => { onRefreshSubtitles?.(); }}
-        />
-      ) : null}
+          </CardContent>
+        </Card>
 
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">

@@ -688,6 +688,76 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub async fn set_series_movie_monitored(
+        &self,
+        actor: &User,
+        series_movie_link_id: &str,
+        monitored: bool,
+    ) -> AppResult<SeriesMovieLink> {
+        let mut link = self
+            .services
+            .catalog
+            .shows
+            .get_series_movie_link_by_id(series_movie_link_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("series movie {}", series_movie_link_id)))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&link.series_title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", link.series_title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+
+        if link.monitored == monitored {
+            return Ok(link);
+        }
+
+        link.monitored = monitored;
+        let link = self.services.catalog.shows.upsert_series_movie_link(link).await?;
+        let mut final_title = Some(title);
+
+        if monitored {
+            if let Some(existing_title) = final_title.as_ref() {
+                if !existing_title.monitored {
+                    final_title = Some(
+                        self.persist_title_monitoring(&existing_title.id, true)
+                            .await?,
+                    );
+                } else {
+                    self.sync_title_for_immediate_acquisition(existing_title)
+                        .await;
+                }
+            }
+        } else if let Err(err) = self
+            .services
+            .workflow
+            .wanted_items
+            .delete_wanted_items_for_series_movie_link(&link.id)
+            .await
+        {
+            warn!(
+                series_movie_link_id = link.id.as_str(),
+                error = %err,
+                "failed to delete wanted items after disabling series movie monitoring"
+            );
+        }
+
+        if let Some(title) = final_title {
+            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+                .await;
+        }
+
+        Ok(link)
+    }
+}
+impl AppUseCase {
     pub async fn set_title_monitored(
         &self,
         actor: &User,

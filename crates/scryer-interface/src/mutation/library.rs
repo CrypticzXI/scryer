@@ -3,7 +3,7 @@ use scryer_application::DeleteExecutionConfirmation;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, require_config_step_up, to_gql_error};
 use crate::mappers::{
     from_cancel_library_scan_result, from_ignore_pending_import_result, from_library,
     from_library_scan_session, from_library_scan_summary, from_media_rename_apply,
@@ -103,7 +103,7 @@ impl LibraryMutations {
         input: CreateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let roots = input
             .roots
             .into_iter()
@@ -131,7 +131,7 @@ impl LibraryMutations {
         input: UpdateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let roots = input.roots.map(|roots| {
             roots
                 .into_iter()
@@ -160,7 +160,7 @@ impl LibraryMutations {
         input: DeleteLibraryInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_library(&actor, &input.library_id)
             .await
             .map_err(to_gql_error)

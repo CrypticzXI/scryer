@@ -4,8 +4,8 @@ use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 use crate::mappers::{
     from_collection, from_download_queue_item, from_episode, from_library_settings,
-    from_pending_release, from_release_decision, from_submission_scope, from_title,
-    from_title_media_file, from_wanted_item,
+    from_pending_release, from_release_decision, from_series_movie_link, from_submission_scope,
+    from_title, from_title_media_file, from_wanted_item,
 };
 use crate::types::*;
 
@@ -103,6 +103,19 @@ impl TitlePayload {
             .await
             .map_err(to_gql_error)?;
         Ok(collections.into_iter().map(from_collection).collect())
+    }
+
+    async fn series_movie_links(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<SeriesMovieLinkPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let links = app
+            .list_series_movie_links(&actor, &self.id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(links.into_iter().map(from_series_movie_link).collect())
     }
 
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
@@ -406,6 +419,7 @@ impl DownloadQueueItemPayload {
                     episode_id: Some(episode_id.clone()),
                     episode_ids: Vec::new(),
                     collection_id: None,
+                    series_movie_link_id: None,
                 }));
         }
 
@@ -430,6 +444,7 @@ impl DownloadQueueItemPayload {
                     episode_id: Some(episode_id.clone()),
                     episode_ids: Vec::new(),
                     collection_id: None,
+                    series_movie_link_id: None,
                 })
         }))
     }

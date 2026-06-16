@@ -108,6 +108,9 @@ enum SabApiAuth {
     Credentials { username: String, password: String },
 }
 
+const SAB_ADDFILE_UPLOAD_FIELD: &str = "nzbfile";
+const SAB_SECRET_QUERY_KEYS: &[&str] = &["apikey", "api_key", "ma_password", "password"];
+
 #[derive(Clone)]
 enum SabAddfilePayload {
     File { path: PathBuf, len: u64 },
@@ -459,33 +462,14 @@ impl SabnzbdDownloadClient {
                         AppError::Repository(format!("sabnzbd multipart build failed: {err}"))
                     })?;
 
-                    let mut query_params = vec![
-                        ("mode".to_string(), "addfile".to_string()),
-                        ("output".to_string(), "json".to_string()),
-                        ("nzbname".to_string(), nzb_name),
-                        ("priority".to_string(), queue_priority),
-                    ];
-                    match auth {
-                        SabApiAuth::ApiKey(api_key) => {
-                            query_params.push(("apikey".to_string(), api_key));
-                        }
-                        SabApiAuth::Credentials {
-                            username,
-                            password: auth_password,
-                        } => {
-                            query_params.push(("ma_username".to_string(), username));
-                            query_params.push(("ma_password".to_string(), auth_password));
-                        }
-                    }
-
-                    if let Some(cat) = cat {
-                        query_params.push(("cat".to_string(), cat));
-                    }
-                    if let Some(password) = password {
-                        query_params.push(("password".to_string(), password));
-                    }
-
-                    let form = multipart::Form::new().part("nzbfile", nzb_part);
+                    let query_params = sab_addfile_query_params(
+                        &auth,
+                        &nzb_name,
+                        &queue_priority,
+                        cat.as_deref(),
+                        password.as_deref(),
+                    );
+                    let form = multipart::Form::new().part(SAB_ADDFILE_UPLOAD_FIELD, nzb_part);
                     let request_builder =
                         self.outbound_http.client().post(&url).query(&query_params);
 
@@ -1203,10 +1187,81 @@ fn map_sabnzbd_outbound_error(operation: &str, error: OutboundHttpError) -> AppE
                 None => format!("{operation} was rate limited"),
             },
         ),
-        OutboundHttpError::Transport { source, .. } => {
-            AppError::Repository(format!("{operation} failed: {source}"))
+        OutboundHttpError::Transport { source, .. } => AppError::Repository(format!(
+            "{operation} failed: {}",
+            redact_sab_secret_values(&source.to_string())
+        )),
+    }
+}
+
+fn sab_addfile_query_params(
+    auth: &SabApiAuth,
+    nzb_name: &str,
+    queue_priority: &str,
+    cat: Option<&str>,
+    password: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut fields = vec![
+        ("mode", "addfile".to_string()),
+        ("output", "json".to_string()),
+        ("nzbname", nzb_name.to_string()),
+        ("priority", queue_priority.to_string()),
+    ];
+    match auth {
+        SabApiAuth::ApiKey(api_key) => {
+            fields.push(("apikey", api_key.clone()));
+        }
+        SabApiAuth::Credentials { username, password } => {
+            fields.push(("ma_username", username.clone()));
+            fields.push(("ma_password", password.clone()));
         }
     }
+    if let Some(cat) = cat {
+        fields.push(("cat", cat.to_string()));
+    }
+    if let Some(password) = password {
+        fields.push(("password", password.to_string()));
+    }
+    fields
+}
+
+fn redact_sab_secret_values(message: &str) -> String {
+    SAB_SECRET_QUERY_KEYS
+        .iter()
+        .fold(message.to_string(), |redacted, key| {
+            redact_key_value(&redacted, key)
+        })
+}
+
+fn redact_key_value(input: &str, key: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let needle = format!("{key}=");
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    let mut search_from = 0;
+
+    while let Some(relative_start) = lower[search_from..].find(&needle) {
+        let start = search_from + relative_start;
+        let value_start = start + needle.len();
+        output.push_str(&input[cursor..value_start]);
+        output.push_str("<redacted>");
+
+        let value_end = input[value_start..]
+            .char_indices()
+            .find(|(_, ch)| {
+                matches!(
+                    ch,
+                    '&' | '#' | ' ' | '\t' | '\r' | '\n' | '\'' | '"' | ')' | '(' | '<' | '>'
+                )
+            })
+            .map(|(idx, _)| value_start + idx)
+            .unwrap_or(input.len());
+        cursor = value_end;
+        search_from = value_end;
+    }
+
+    output.push_str(&input[cursor..]);
+    output
 }
 
 fn map_sabnzbd_auth_validation_error(error: AppError) -> AppError {
@@ -1604,8 +1659,9 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SabApiResponseEvaluation, build_sab_api_urls, evaluate_sab_api_response,
-        extract_sabnzbd_category, sab_api_mode_matches_response,
+        SAB_ADDFILE_UPLOAD_FIELD, SabApiAuth, SabApiResponseEvaluation, build_sab_api_urls,
+        evaluate_sab_api_response, extract_sabnzbd_category, redact_sab_secret_values,
+        sab_addfile_query_params, sab_api_mode_matches_response,
     };
     use reqwest::StatusCode;
     use serde_json::json;
@@ -1645,6 +1701,66 @@ mod tests {
                 "http://example.test/altmount/sabnzbd/api".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn sab_addfile_uses_common_sab_upload_field() {
+        assert_eq!(SAB_ADDFILE_UPLOAD_FIELD, "nzbfile");
+    }
+
+    #[test]
+    fn sab_addfile_query_params_include_api_key() {
+        let fields = sab_addfile_query_params(
+            &SabApiAuth::ApiKey("secret-key".to_string()),
+            "release-name",
+            "1",
+            Some("movies"),
+            Some("archive-password"),
+        );
+
+        assert_eq!(
+            fields,
+            vec![
+                ("mode", "addfile".to_string()),
+                ("output", "json".to_string()),
+                ("nzbname", "release-name".to_string()),
+                ("priority", "1".to_string()),
+                ("apikey", "secret-key".to_string()),
+                ("cat", "movies".to_string()),
+                ("password", "archive-password".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sab_addfile_query_params_include_arr_credentials() {
+        let fields = sab_addfile_query_params(
+            &SabApiAuth::Credentials {
+                username: "http://sonarr:8989".to_string(),
+                password: "arr-secret".to_string(),
+            },
+            "release-name",
+            "0",
+            None,
+            None,
+        );
+
+        assert!(fields.contains(&("ma_username", "http://sonarr:8989".to_string())));
+        assert!(fields.contains(&("ma_password", "arr-secret".to_string())));
+    }
+
+    #[test]
+    fn sab_error_redaction_removes_secret_query_values() {
+        let message = "request failed for http://sab/api?mode=addfile&apikey=secret-key&ma_password=arr-secret&password=archive#frag";
+
+        let redacted = redact_sab_secret_values(message);
+
+        assert!(!redacted.contains("secret-key"));
+        assert!(!redacted.contains("arr-secret"));
+        assert!(!redacted.contains("archive"));
+        assert!(redacted.contains("apikey=<redacted>"));
+        assert!(redacted.contains("ma_password=<redacted>"));
+        assert!(redacted.contains("password=<redacted>"));
     }
 
     #[test]

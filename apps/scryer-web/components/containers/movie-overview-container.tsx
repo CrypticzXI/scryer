@@ -14,6 +14,7 @@ import {
   deleteTitleMutation,
   queueExistingMutation,
   scanTitleLibraryMutation,
+  setPrimaryMovieFileMutation,
   setTitleMonitoredMutation,
   triggerTitleWantedSearchMutation,
   triggerTitleMismatchRecoverySearchMutation,
@@ -129,6 +130,7 @@ export type TitleMediaFile = {
   id: string;
   titleId: string;
   episodeId: string | null;
+  role: string;
   filePath: string;
   sizeBytes: string;
   qualityLabel: string | null;
@@ -171,6 +173,7 @@ export type TitleMediaFile = {
 
 export type MediaRenamePlanItem = {
   collectionId: string | null;
+  seriesMovieLinkIds: string[];
   currentPath: string;
   proposedPath: string | null;
   normalizedFilename: string | null;
@@ -248,8 +251,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [interactiveSearchAttempted, setInteractiveSearchAttempted] = React.useState(false);
   const [searching, setSearching] = React.useState(false);
   const [renamePlan, setRenamePlan] = React.useState<MediaRenamePlan | null>(null);
+  const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [renamePreviewing, setRenamePreviewing] = React.useState(false);
   const [renameApplying, setRenameApplying] = React.useState(false);
+  const renamePlanTitleIdRef = React.useRef<string | null>(null);
   const [titleLookupAttempted, setTitleLookupAttempted] = React.useState(false);
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
@@ -279,6 +284,8 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     initialItems: downloadQueueSeed,
   });
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
+  const [primaryMovieFileUpdatingId, setPrimaryMovieFileUpdatingId] =
+    React.useState<string | null>(null);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
@@ -361,7 +368,15 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());
         setDownloadFeedbackSettled(true);
       }
-      setRenamePlan(null);
+      const nextTitleId = nextTitle?.id ?? null;
+      if (
+        renamePlanTitleIdRef.current !== nextTitleId ||
+        !nextTitle ||
+        !snapshot.hasDownloadClients
+      ) {
+        setRenamePlan(null);
+      }
+      renamePlanTitleIdRef.current = nextTitleId;
     },
     [applyDownloadFeedbackSnapshot, onTitleResolved],
   );
@@ -452,6 +467,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setDownloadFeedbackSettled(false);
       setSubtitleDownloads([]);
       setRenamePlan(null);
+      renamePlanTitleIdRef.current = null;
       setRenamePreviewing(false);
       setRenameApplying(false);
       setHasDownloadClients(true);
@@ -515,6 +531,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         );
         const folder = (data.mediaSettings?.libraryPath ?? "").trim();
         if (folder) setDefaultRootFolder(folder);
+        setRenameEnabled(data.mediaSettings?.renameEnabled !== false);
       } catch {
         // Settings fetch is best-effort
       }
@@ -744,6 +761,59 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       }
     },
     [title, client, confirmReplaceConflict, t, setGlobalStatus, refreshTitleDetail],
+  );
+
+  const queueAdditionalRelease = React.useCallback(
+    async (release: Release) => {
+      if (!title) return;
+      if (!release.candidateToken) {
+        setGlobalStatus(t("status.releaseMissingCandidateToken"));
+        return;
+      }
+      try {
+        const { data, error } = await client.mutation(queueExistingMutation, {
+          input: {
+            titleId: title.id,
+            scope: releaseQueueScopeInput(release, { title: true }),
+            candidateToken: release.candidateToken,
+            purpose: "ADDITIONAL_FILE",
+          },
+        }).toPromise();
+        if (error) throw error;
+        assertNoReplaceConflict(
+          data?.queueExistingTitleDownload,
+          "A download is already in progress for this title.",
+        );
+        setGlobalStatus(t("status.queueSuccess", { name: release.title }));
+        await refreshTitleDetail();
+      } catch (err) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(err, t("status.apiError")));
+      }
+    },
+    [title, client, t, setGlobalStatus, refreshTitleDetail],
+  );
+
+  const handleMakePrimaryMovieFile = React.useCallback(
+    async (fileId: string) => {
+      if (!title) return;
+      setPrimaryMovieFileUpdatingId(fileId);
+      try {
+        const { error } = await client.mutation(setPrimaryMovieFileMutation, {
+          input: {
+            titleId: title.id,
+            fileId,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.primaryMovieFileUpdated"));
+        await refreshTitleDetail();
+      } catch (err) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(err, t("status.apiError")));
+      } finally {
+        setPrimaryMovieFileUpdatingId(null);
+      }
+    },
+    [title, client, t, setGlobalStatus, refreshTitleDetail],
   );
 
   const handleRefreshAndScan = React.useCallback(async () => {
@@ -1018,6 +1088,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         hasDownloadClients={hasDownloadClients}
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         renamePlan={renamePlan}
+        renameEnabled={renameEnabled}
         renamePreviewing={renamePreviewing}
         renameApplying={renameApplying}
         interactiveSearchAttempted={interactiveSearchAttempted}
@@ -1026,6 +1097,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         deleteLoading={deleteLoading}
         onSearch={runIndexerSearch}
         onQueue={queueRelease}
+        onQueueAdditional={queueAdditionalRelease}
         onSearchMonitored={handleSearchMonitored}
         onRefreshAndScan={handleRefreshAndScan}
         onTitleChanged={refreshTitleDetail}
@@ -1051,8 +1123,10 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
           canManageTitle ? handleClearReleaseBlocklistEntry : undefined
         }
         mediaFiles={mediaFiles}
+        primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         subtitleDownloads={subtitleDownloads}
         onDeleteFile={handleDeleteMediaFile}
+        onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
         onRefreshSubtitles={() => { void refreshTitleDetail(); }}
         onOpenFixMatch={() => setFixMatchOpen(true)}
       />

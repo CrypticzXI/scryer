@@ -71,6 +71,7 @@ fn base_episode_wanted_item() -> WantedItem {
         library_slug: None,
         episode_id: Some("episode-1".to_string()),
         collection_id: Some("season-1".to_string()),
+        series_movie_link_id: None,
         season_number: Some("1".to_string()),
         episode_number: Some("1".to_string()),
         media_type: "episode".to_string(),
@@ -89,10 +90,10 @@ fn base_episode_wanted_item() -> WantedItem {
     }
 }
 
-fn base_interstitial_wanted_item() -> WantedItem {
+fn base_series_movie_wanted_item() -> WantedItem {
     let now = now_utc().to_rfc3339();
     WantedItem {
-        id: "wanted-interstitial-1".to_string(),
+        id: "wanted-series-movie-1".to_string(),
         title_id: "title-1".to_string(),
         title_name: Some("Test Show".to_string()),
         title_slug: None,
@@ -101,10 +102,11 @@ fn base_interstitial_wanted_item() -> WantedItem {
         library_name: None,
         library_slug: None,
         episode_id: None,
-        collection_id: Some("movie-collection-1".to_string()),
+        collection_id: None,
+        series_movie_link_id: Some("series-movie-link-1".to_string()),
         season_number: None,
         episode_number: None,
-        media_type: "interstitial_movie".to_string(),
+        media_type: "series_movie".to_string(),
         search_phase: "primary".to_string(),
         next_search_at: None,
         last_search_at: None,
@@ -381,6 +383,7 @@ fn old_failed_grab_titles_do_not_research_immediately() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -416,6 +419,7 @@ fn fresh_failed_grab_titles_require_stale_last_search() {
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -478,11 +482,12 @@ fn single_episode_release_uses_episode_submission_scope() {
 }
 
 #[test]
-fn interstitial_movie_blocking_is_collection_scoped() {
-    let wanted = base_interstitial_wanted_item();
+fn series_movie_blocking_is_series_movie_link_scoped() {
+    let wanted = base_series_movie_wanted_item();
 
     let title_submission = DownloadSubmission {
         title_id: wanted.title_id.clone(),
+        purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),
         download_client_id: None,
         download_client_type: "sabnzbd".to_string(),
@@ -496,31 +501,34 @@ fn interstitial_movie_blocking_is_collection_scoped() {
     assert!(submission_blocks_wanted_item(
         &title_submission,
         &wanted,
-        wanted.collection_id.as_deref(),
+        None,
     ));
 
-    let matching_collection_submission = DownloadSubmission {
-        scope: SubmissionScope::Collection {
-            collection_id: wanted.collection_id.clone().expect("collection id"),
+    let matching_series_movie_submission = DownloadSubmission {
+        scope: SubmissionScope::SeriesMovie {
+            series_movie_link_id: wanted
+                .series_movie_link_id
+                .clone()
+                .expect("series movie link id"),
         },
         ..title_submission.clone()
     };
     assert!(submission_blocks_wanted_item(
-        &matching_collection_submission,
+        &matching_series_movie_submission,
         &wanted,
-        wanted.collection_id.as_deref(),
+        None,
     ));
 
-    let different_collection_submission = DownloadSubmission {
-        scope: SubmissionScope::Collection {
-            collection_id: "movie-collection-2".to_string(),
+    let different_series_movie_submission = DownloadSubmission {
+        scope: SubmissionScope::SeriesMovie {
+            series_movie_link_id: "series-movie-link-2".to_string(),
         },
         ..title_submission
     };
     assert!(!submission_blocks_wanted_item(
-        &different_collection_submission,
+        &different_series_movie_submission,
         &wanted,
-        wanted.collection_id.as_deref(),
+        None,
     ));
 }
 
@@ -530,6 +538,7 @@ fn episode_set_submission_blocks_each_covered_episode() {
     wanted.episode_id = Some("episode-2".to_string());
     let submission = DownloadSubmission {
         title_id: wanted.title_id.clone(),
+        purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),
         download_client_id: None,
         download_client_type: "sabnzbd".to_string(),

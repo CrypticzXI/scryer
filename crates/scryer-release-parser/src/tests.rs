@@ -62,6 +62,18 @@ fn lex_and_parse_standard_episode_release() {
 }
 
 #[test]
+fn parses_8k_av1_movie_release() {
+    let analysis = analyze_release_for_target(
+        "Movie.Title.2026.4320p.WEB-DL.AV1.AAC-GRP",
+        &context(ContextFacetHint::Movie, "Movie Title"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.projected.quality.as_deref(), Some("4320p"));
+    assert_eq!(candidate.projected.video_codec, Some(VideoCodec::Av1));
+}
+
+#[test]
 fn parses_sonarr_style_x_episode_release() {
     let analysis = analyze_release_for_target(
         "Show Name - 01x02 - The Episode WEBDL-1080p",

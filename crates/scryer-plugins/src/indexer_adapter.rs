@@ -700,6 +700,7 @@ impl IndexerClient for WasmIndexerClient {
         ids: std::collections::HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
+        _id_search_facet: Option<String>,
         newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,

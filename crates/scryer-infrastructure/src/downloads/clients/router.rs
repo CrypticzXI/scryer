@@ -2255,6 +2255,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
@@ -2309,6 +2310,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
@@ -2365,6 +2367,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
@@ -2406,6 +2409,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("magnet:?xt=urn:btih:abcdef".to_string()),
                 staged_nzb: None,
@@ -2472,6 +2476,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2545,6 +2550,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Movie),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/movie.nzb".to_string()),
                 staged_nzb: None,
@@ -2568,6 +2574,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Anime),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/anime.nzb".to_string()),
                 staged_nzb: None,
@@ -2626,6 +2633,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2684,6 +2692,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2743,6 +2752,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2799,6 +2809,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2877,6 +2888,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -2949,6 +2961,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -3009,6 +3022,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
@@ -3066,6 +3080,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,

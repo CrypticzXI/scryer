@@ -104,7 +104,7 @@ impl AppUseCase {
     fn login_failure_delay_range_ms(class: LoginFailureTimingClass) -> (u64, u64) {
         match class {
             LoginFailureTimingClass::PasswordBackedLocal => (400, 700),
-            LoginFailureTimingClass::FastMasked => (500, 800),
+            LoginFailureTimingClass::FastMasked => (400, 700),
         }
     }
 
@@ -169,6 +169,17 @@ impl AppUseCase {
         let admin = self.find_or_create_default_user().await?;
         let Some(password_hash) = admin.password_hash.as_deref() else {
             return Ok(true);
+        };
+
+        self.validate_password("admin", password_hash)
+    }
+
+    pub async fn existing_default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
+        let Some(admin) = self.find_default_user().await? else {
+            return Ok(false);
+        };
+        let Some(password_hash) = admin.password_hash.as_deref() else {
+            return Ok(false);
         };
 
         self.validate_password("admin", password_hash)
@@ -529,6 +540,9 @@ impl AppUseCase {
                 ("collection", Some(collection_id.clone()))
             }
             SubmissionScope::Title => ("title", None),
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            } => ("series_movie", Some(series_movie_link_id.clone())),
             SubmissionScope::Orphan => ("orphan", None),
         }
     }
@@ -571,6 +585,13 @@ impl AppUseCase {
                 collection_id: scope_id.ok_or_else(|| {
                     AppError::Unauthorized(
                         "release candidate token missing collection scope id".into(),
+                    )
+                })?,
+            }),
+            "series_movie" => Ok(SubmissionScope::SeriesMovie {
+                series_movie_link_id: scope_id.ok_or_else(|| {
+                    AppError::Unauthorized(
+                        "release candidate token missing series movie scope id".into(),
                     )
                 })?,
             }),
@@ -889,6 +910,11 @@ impl AppUseCase {
             self.verify_dummy_login_password(password);
             Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
             return Err(AppError::Validation("password is required".into()));
+        }
+        if Self::is_reserved_recovery_username(username) && !self.recovery_admin_login_enabled() {
+            self.verify_dummy_login_password(password);
+            Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
         }
 
         let Some(user) = self

@@ -61,6 +61,8 @@ pub struct TrackedDownload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedDownloadQueueMetadata {
     pub client_item: DownloadQueueItem,
+    pub client_id: String,
+    pub client_type: String,
     pub title_id: Option<String>,
     pub facet: Option<String>,
     pub source_title: Option<String>,
@@ -74,6 +76,8 @@ impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
     fn from(value: &TrackedDownload) -> Self {
         Self {
             client_item: value.client_item.clone(),
+            client_id: value.client_id.clone(),
+            client_type: value.client_type.clone(),
             title_id: value.title_id.clone(),
             facet: value.facet.clone(),
             source_title: value.source_title.clone(),
@@ -247,6 +251,11 @@ impl TrackedDownloadService {
     fn prune_cache(&mut self) {
         let ttl = tracked_download_cache_ttl();
         let stale_cutoff = Utc::now() - ttl;
+        let max_entries = tracked_download_cache_max_entries();
+        self.prune_cache_with_limits(stale_cutoff, max_entries);
+    }
+
+    fn prune_cache_with_limits(&mut self, stale_cutoff: DateTime<Utc>, max_entries: usize) {
         let last_seen_at = &self.last_seen_at;
         self.cache.retain(|id, tracked| {
             tracked.is_trackable
@@ -255,12 +264,11 @@ impl TrackedDownloadService {
                     .is_none_or(|last_seen| *last_seen >= stale_cutoff)
         });
 
-        let max_entries = tracked_download_cache_max_entries();
         if self.cache.len() > max_entries {
             let mut eviction_candidates = self
                 .cache
                 .iter()
-                .filter(|(_, tracked)| !tracked.is_trackable)
+                .filter(|(_, tracked)| tracked_download_can_be_evicted_for_cache_pressure(tracked))
                 .map(|(id, _)| {
                     (
                         self.last_seen_at.get(id).copied().unwrap_or(stale_cutoff),
@@ -428,6 +436,7 @@ impl TrackedDownloadService {
                 .download_submissions
                 .record_submission(DownloadSubmission {
                     title_id: String::new(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
                     facet: td.facet.clone().unwrap_or_default(),
                     download_client_id: Some(td.client_id.clone())
                         .filter(|value| !value.is_empty()),
@@ -845,6 +854,24 @@ impl TrackedDownloadHandle {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+fn tracked_download_can_be_evicted_for_cache_pressure(tracked: &TrackedDownload) -> bool {
+    if !tracked.is_trackable {
+        return true;
+    }
+
+    tracked.state == TrackedDownloadState::Downloading
+        && tracked.status == TrackedDownloadStatus::Ok
+        && tracked.status_messages.is_empty()
+        && tracked.title_id.is_none()
+        && tracked.facet.is_none()
+        && tracked.source_title.is_none()
+        && tracked.match_type == TitleMatchType::Unmatched
+        && !tracked.import_attempted
+        && tracked.path_missing_since.is_none()
+        && !tracked.notified_manual_interaction
+        && !tracked.skip_reacquire_on_failure
+}
+
 fn tracked_download_cache_ttl() -> chrono::Duration {
     std::env::var("SCRYER_TRACKED_DOWNLOAD_CACHE_TTL_HOURS")
         .ok()
@@ -1063,6 +1090,8 @@ mod tests {
             &self,
             _: &str,
             _: &str,
+            _: crate::DownloadSubmissionPurpose,
+            _: &crate::SubmissionScope,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
             Ok(None)
         }
@@ -1952,6 +1981,37 @@ mod tests {
         }
     }
 
+    fn build_tracked_download(id: &str) -> TrackedDownload {
+        let mut client_item = build_client_item();
+        client_item.download_client_item_id = id.to_string();
+        client_item.title_id = None;
+        client_item.facet = None;
+        client_item.title_name = id.to_string();
+        client_item.state = DownloadQueueState::Downloading;
+        client_item.progress_percent = 10;
+
+        TrackedDownload {
+            id: id.to_string(),
+            client_id: client_item.client_id.clone(),
+            client_type: client_item.client_type.clone(),
+            client_item,
+            state: TrackedDownloadState::Downloading,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: None,
+            facet: None,
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Unmatched,
+            is_trackable: true,
+            import_attempted: false,
+            path_missing_since: None,
+            skip_reacquire_on_failure: false,
+        }
+    }
+
     #[test]
     fn tracked_download_id_for_item_prefers_download_id() {
         let mut item = build_client_item();
@@ -2064,6 +2124,7 @@ mod tests {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: Some(crate::DownloadSubmission {
                 title_id: "title-1".to_string(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
                 download_client_id: Some("client-1".to_string()),
                 download_client_type: "nzbget".to_string(),
@@ -2220,6 +2281,8 @@ mod tests {
                 &self,
                 _: &str,
                 _: &str,
+                _: crate::DownloadSubmissionPurpose,
+                _: &crate::SubmissionScope,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
                 Ok(None)
             }
@@ -2735,6 +2798,62 @@ mod tests {
                 .find("client-1:failed")
                 .is_some_and(|td| td.is_trackable)
         );
+    }
+
+    #[test]
+    fn prune_cache_evicts_oldest_low_value_unmatched_download_under_pressure() {
+        let mut tracker = TrackedDownloadService::new();
+        let old = build_tracked_download("old-unmatched");
+        let recent = build_tracked_download("recent-unmatched");
+        tracker.cache.insert(old.id.clone(), old);
+        tracker.cache.insert(recent.id.clone(), recent);
+        let now = Utc::now();
+        tracker.last_seen_at.insert(
+            "old-unmatched".to_string(),
+            now - chrono::Duration::minutes(10),
+        );
+        tracker
+            .last_seen_at
+            .insert("recent-unmatched".to_string(), now);
+
+        tracker.prune_cache_with_limits(now - chrono::Duration::hours(1), 1);
+
+        assert!(tracker.find("old-unmatched").is_none());
+        assert!(tracker.find("recent-unmatched").is_some());
+    }
+
+    #[test]
+    fn prune_cache_keeps_actionable_entries_even_when_over_limit() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut actionable = build_tracked_download("actionable");
+        actionable.state = TrackedDownloadState::ImportPending;
+        actionable.title_id = Some("title-1".to_string());
+        actionable.facet = Some("series".to_string());
+        let mut failed = build_tracked_download("failed-actionable");
+        failed.state = TrackedDownloadState::FailedPending;
+        failed.status = TrackedDownloadStatus::Error;
+        failed.status_messages = vec!["failure needs processing".to_string()];
+        let low_value = build_tracked_download("low-value");
+        tracker.cache.insert(actionable.id.clone(), actionable);
+        tracker.cache.insert(failed.id.clone(), failed);
+        tracker.cache.insert(low_value.id.clone(), low_value);
+        let now = Utc::now();
+        tracker.last_seen_at.insert(
+            "actionable".to_string(),
+            now - chrono::Duration::minutes(10),
+        );
+        tracker.last_seen_at.insert(
+            "failed-actionable".to_string(),
+            now - chrono::Duration::minutes(5),
+        );
+        tracker.last_seen_at.insert("low-value".to_string(), now);
+
+        tracker.prune_cache_with_limits(now - chrono::Duration::hours(1), 1);
+
+        assert!(tracker.find("actionable").is_some());
+        assert!(tracker.find("failed-actionable").is_some());
+        assert!(tracker.find("low-value").is_none());
+        assert_eq!(tracker.cache.len(), 2);
     }
 
     #[test]

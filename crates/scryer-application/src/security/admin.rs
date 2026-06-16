@@ -2,12 +2,23 @@ use super::*;
 use crate::event_views::history_event_from_domain_event;
 use scryer_domain::ConfigurationChangeAction;
 
+const DEFAULT_ADMIN_USERNAME: &str = "admin";
+const RECOVERY_ADMIN_USERNAME: &str = "recovery-admin";
+
 #[cfg(unix)]
 fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
 impl AppUseCase {
+    fn required_startup_admin_app_permissions() -> scryer_domain::AppPermissionMask {
+        scryer_domain::UserAuthorization::full_admin().app
+    }
+
+    pub(crate) fn is_reserved_recovery_username(username: &str) -> bool {
+        Self::normalize_local_username(username).eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
+    }
+
     async fn ensure_user_admin_permission_masks(&self, user: &User) -> AppResult<()> {
         let admin_authorization = scryer_domain::UserAuthorization::full_admin();
         self.services
@@ -247,12 +258,164 @@ impl AppUseCase {
         Ok(user)
     }
 
+    async fn ensure_default_admin_actor(&self) -> AppResult<User> {
+        let username = DEFAULT_ADMIN_USERNAME;
+        if let Some(found) = self
+            .services
+            .identity
+            .users
+            .get_by_username(username)
+            .await?
+        {
+            self.ensure_user_admin_permission_masks(&found).await?;
+            self.refresh_cached_jwt_signing_key(&found).await?;
+            return Ok(found);
+        }
+
+        let user = User {
+            id: Id::new().0,
+            username: username.to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: Default::default(),
+        };
+
+        let user = self.services.identity.users.create(user).await?;
+        self.ensure_user_admin_permission_masks(&user).await?;
+        self.cache_jwt_signing_key(&user).await?;
+        self.emit_configuration_changed_event(
+            None,
+            "user",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Saved,
+        )
+        .await;
+        Ok(user)
+    }
+
     pub async fn find_or_create_default_user(&self) -> AppResult<User> {
-        self.ensure_default_admin("admin", "admin").await
+        self.ensure_default_admin_actor().await
     }
 
     pub async fn find_default_user(&self) -> AppResult<Option<User>> {
-        self.services.identity.users.get_by_username("admin").await
+        self.services
+            .identity
+            .users
+            .get_by_username(DEFAULT_ADMIN_USERNAME)
+            .await
+    }
+
+    pub async fn usable_admin_login_exists(&self) -> AppResult<bool> {
+        let required_permissions = Self::required_startup_admin_app_permissions();
+        for user in self.services.identity.users.list_all().await? {
+            let Some(password_hash) = user.password_hash.as_deref() else {
+                continue;
+            };
+            if !user.account_kind.allows_local_credentials() {
+                continue;
+            }
+            if self.validate_password("", password_hash).is_err() {
+                continue;
+            }
+
+            let user = self.attach_user_authorization(user).await?;
+            if user.authorization.app.contains(required_permissions) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub async fn recover_reserved_admin_access(&self, password: &str) -> AppResult<User> {
+        self.validate_new_local_password(password).await?;
+        let recovery_admin = if let Some(existing) = self
+            .services
+            .identity
+            .users
+            .get_by_username(RECOVERY_ADMIN_USERNAME)
+            .await?
+        {
+            if !existing.account_kind.allows_local_credentials() {
+                return Err(AppError::Validation(
+                    "recovery admin user is externally managed and cannot be repaired for local login"
+                        .into(),
+                ));
+            }
+            self.update_user_password_hash(&existing, &existing.id, password.to_string())
+                .await?
+        } else {
+            let user = User {
+                id: Id::new().0,
+                username: RECOVERY_ADMIN_USERNAME.to_string(),
+                password_hash: Some(self.hash_password(password)?),
+                account_kind: scryer_domain::UserAccountKind::Local,
+                authorization: Default::default(),
+            };
+            let user = self.services.identity.users.create(user).await?;
+            self.cache_jwt_signing_key(&user).await?;
+            self.emit_configuration_changed_event(
+                None,
+                "user",
+                Some(user.id.clone()),
+                ConfigurationChangeAction::Saved,
+            )
+            .await;
+            user
+        };
+        self.ensure_user_admin_permission_masks(&recovery_admin)
+            .await?;
+
+        self.services
+            .identity
+            .totp
+            .delete_credential_for_user(&recovery_admin.id)
+            .await?;
+        self.services
+            .identity
+            .totp
+            .replace_recovery_codes(&recovery_admin.id, Vec::new())
+            .await?;
+        self.services
+            .identity
+            .totp
+            .delete_enrollment_challenges_for_user(&recovery_admin.id)
+            .await?;
+        self.services
+            .identity
+            .totp
+            .clear_failed_attempts(&recovery_admin.id)
+            .await?;
+
+        for passkey in self
+            .services
+            .identity
+            .webauthn
+            .list_credentials_for_user(&recovery_admin.id)
+            .await?
+        {
+            self.services
+                .identity
+                .webauthn
+                .delete_credential_for_user(&passkey.id, &recovery_admin.id)
+                .await?;
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                MFA_REQUIRE_CONFIG_STEP_UP_KEY,
+                None,
+                serde_json::to_string(&false).unwrap_or_else(|_| "false".to_string()),
+                "startup_recovery",
+                Some(recovery_admin.id.clone()),
+            )
+            .await?;
+
+        self.refresh_cached_jwt_signing_key(&recovery_admin).await?;
+        Ok(recovery_admin)
     }
 
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
@@ -310,6 +473,11 @@ impl AppUseCase {
         let username = Self::normalize_local_username(&username).to_string();
         if username.is_empty() {
             return Err(AppError::Validation("username is required".to_string()));
+        }
+        if Self::is_reserved_recovery_username(&username) {
+            return Err(AppError::Validation(format!(
+                "{RECOVERY_ADMIN_USERNAME} is reserved for instance recovery"
+            )));
         }
         self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;

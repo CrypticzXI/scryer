@@ -98,7 +98,7 @@ type WantedViewState = {
 };
 
 const STATUS_OPTIONS: WantedStatus[] = ["wanted", "grabbed", "completed", "paused"];
-const MEDIA_TYPE_OPTIONS: WantedMediaType[] = ["movie", "episode", "interstitial_movie"];
+const MEDIA_TYPE_OPTIONS: WantedMediaType[] = ["movie", "episode", "series_movie"];
 const LATEST_DECISION_OPTIONS = [
   "title_mismatch",
   "quality_blocked",
@@ -299,7 +299,7 @@ function formatWantedMediaType(mediaType: WantedMediaType, t: Translate) {
   const key: Record<WantedMediaType, string> = {
     movie: "wanted.type.movie",
     episode: "wanted.type.episode",
-    interstitial_movie: "wanted.type.interstitialMovie",
+    series_movie: "wanted.type.seriesMovie",
   };
   return t(key[mediaType]);
 }
@@ -343,8 +343,8 @@ function formatWantedDecisionCode(code: string, t: Translate) {
 }
 
 function wantedItemContext(item: WantedItem, t: Translate) {
-  if (item.mediaType === "interstitial_movie") {
-    return t("wanted.context.franchiseMovie");
+  if (item.mediaType === "series_movie") {
+    return t("wanted.context.seriesMovie");
   }
   if (item.mediaType === "episode" && item.seasonNumber) {
     return t("wanted.context.seasonEpisode", {

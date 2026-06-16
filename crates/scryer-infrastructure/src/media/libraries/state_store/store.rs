@@ -270,6 +270,7 @@ fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         library_slug: None,
         episode_id: row.opt_text("episode_id")?,
         collection_id: row.opt_text("collection_id")?,
+        series_movie_link_id: row.opt_text("series_movie_link_id")?,
         season_number: None,
         episode_number: None,
         media_type: row.text("media_type")?,
@@ -352,6 +353,7 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         library_slug: row.opt_text("library_slug")?,
         episode_id: row.opt_text("episode_id")?,
         collection_id: row.opt_text("collection_id")?,
+        series_movie_link_id: row.opt_text("series_movie_link_id")?,
         season_number: row.opt_text("season_number")?,
         episode_number: row.opt_text("episode_number")?,
         media_type: row.text("media_type")?,
@@ -374,7 +376,7 @@ fn wanted_item_select_sql() -> &'static str {
     "SELECT w.id, w.title_id, t.name AS title_name, t.slug AS title_slug,
             t.facet AS title_facet, t.library_id AS library_id,
             libraries.name AS library_name, libraries.slug AS library_slug,
-            w.episode_id, w.collection_id,
+            w.episode_id, w.collection_id, w.series_movie_link_id,
             e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
             w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
             w.current_score,
@@ -487,7 +489,9 @@ fn sqlite_title_search_requires_spellfix(query: &WantedItemsQuery) -> bool {
 }
 
 fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
-    let conflict_target = if item.collection_id.is_some() {
+    let conflict_target = if item.series_movie_link_id.is_some() {
+        "(series_movie_link_id) WHERE series_movie_link_id IS NOT NULL"
+    } else if item.collection_id.is_some() {
         "(collection_id) WHERE collection_id IS NOT NULL"
     } else if item.episode_id.is_some() {
         match datastore {
@@ -497,15 +501,15 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
             }
         }
     } else {
-        "(title_id) WHERE episode_id IS NULL AND collection_id IS NULL"
+        "(title_id) WHERE episode_id IS NULL AND collection_id IS NULL AND series_movie_link_id IS NULL"
     };
 
     format!(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, collection_id, media_type, search_phase, next_search_at,
+         (id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase, next_search_at,
           last_search_at, search_count, baseline_date, status, grabbed_release, current_score,
           created_at, updated_at)
-         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
+         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
          ON CONFLICT{conflict_target} DO UPDATE SET
             search_phase = excluded.search_phase,
             next_search_at = CASE
@@ -533,6 +537,7 @@ fn wanted_upsert_args(datastore: &StoreDatastore, item: &WantedItem) -> AppResul
         SqlArg::Text(item.title_id.clone()),
         SqlArg::OptText(item.episode_id.clone()),
         SqlArg::OptText(item.collection_id.clone()),
+        SqlArg::OptText(item.series_movie_link_id.clone()),
         SqlArg::Text(item.media_type.clone()),
         SqlArg::Text(item.search_phase.clone()),
         opt_timestamp_arg_for_datastore(datastore, item.next_search_at.as_deref())?,
@@ -577,7 +582,7 @@ async fn fetch_seed_target_tx(
     tx: &mut crate::queries::sql_runtime::SqlTx<'_>,
     item: &WantedItem,
 ) -> AppResult<Option<WantedItem>> {
-    let columns = "SELECT id, title_id, episode_id, collection_id, media_type, search_phase,
+    let columns = "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase,
                           next_search_at, last_search_at, search_count, baseline_date, status,
                           grabbed_release, current_score, created_at, updated_at
                      FROM wanted_items";
@@ -597,10 +602,18 @@ async fn fetch_seed_target_tx(
                 SqlArg::Text(episode_id.to_string()),
             ],
         )
+    } else if let Some(series_movie_link_id) = item.series_movie_link_id.as_deref() {
+        (
+            format!("{columns} WHERE title_id = {{}} AND series_movie_link_id = {{}}"),
+            vec![
+                SqlArg::Text(item.title_id.clone()),
+                SqlArg::Text(series_movie_link_id.to_string()),
+            ],
+        )
     } else {
         (
             format!(
-                "{columns} WHERE title_id = {{}} AND episode_id IS NULL AND collection_id IS NULL"
+                "{columns} WHERE title_id = {{}} AND episode_id IS NULL AND collection_id IS NULL AND series_movie_link_id IS NULL"
             ),
             vec![SqlArg::Text(item.title_id.clone())],
         )
@@ -670,7 +683,7 @@ impl WantedItemRepository for WantedStore {
                     t.library_id AS library_id,
                     CAST(NULL AS TEXT) AS library_name,
                     CAST(NULL AS TEXT) AS library_slug,
-                    w.episode_id, w.collection_id,
+                    w.episode_id, w.collection_id, w.series_movie_link_id,
                     e.season_number, e.episode_number, w.media_type, w.search_phase,
                     w.next_search_at, w.last_search_at, w.search_count, w.baseline_date,
                     w.status, w.grabbed_release, w.current_score,
@@ -763,7 +776,7 @@ impl WantedItemRepository for WantedStore {
         } else {
             (
                 format!(
-                    "{} WHERE w.title_id = {{}} AND w.episode_id IS NULL",
+                    "{} WHERE w.title_id = {{}} AND w.episode_id IS NULL AND w.collection_id IS NULL AND w.series_movie_link_id IS NULL",
                     wanted_item_select_sql()
                 ),
                 vec![SqlArg::Text(title_id.to_string())],
@@ -815,7 +828,10 @@ impl WantedItemRepository for WantedStore {
                         current_score = COALESCE({}, current_score),
                         grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
                         updated_at = {}
-                  WHERE title_id = {} AND episode_id IS NULL"
+                  WHERE title_id = {}
+                    AND episode_id IS NULL
+                    AND collection_id IS NULL
+                    AND series_movie_link_id IS NULL"
                     .to_string(),
                 vec![
                     SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
@@ -860,6 +876,20 @@ impl WantedItemRepository for WantedStore {
                 SqlArg::Text(collection_id.to_string()),
                 SqlArg::Text(collection_id.to_string()),
             ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        execute_datastore_write(
+            &self.datastore,
+            "delete_wanted_items_for_series_movie_link",
+            "DELETE FROM wanted_items WHERE series_movie_link_id = {}",
+            vec![SqlArg::Text(series_movie_link_id.to_string())],
         )
         .await?;
         Ok(())

@@ -253,7 +253,6 @@ fn compare_fixture_corpus_against_ffprobe() {
         if !is_media_fixture(&path) {
             continue;
         }
-
         let analysis = analyze_file_with_options(
             &path,
             AnalyzeOptions {

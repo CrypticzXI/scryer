@@ -14,6 +14,8 @@ import {
   queueBestReleaseMutation,
   queueExistingMutation,
   setEpisodeMonitoredMutation,
+  setPrimaryMovieFileMutation,
+  setSeriesMovieMonitoredMutation,
   setTitleMonitoredMutation,
   triggerTitleWantedSearchMutation,
   triggerSeasonWantedSearchMutation,
@@ -98,6 +100,7 @@ export type TitleDetail = {
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
+  seriesMovieLinks?: SeriesMovieLink[];
   createdAt: string;
 };
 
@@ -112,37 +115,53 @@ export type TitleCollection = {
   fileSizeBytes: number | null;
   firstEpisodeNumber: string | null;
   lastEpisodeNumber: string | null;
-  interstitialMovie: InterstitialMovieMetadata | null;
-  specialsMovies: InterstitialMovieMetadata[];
-  interstitialSeasonEpisode: string | null;
   monitored: boolean;
   episodes?: CollectionEpisode[];
   createdAt: string;
 };
 
-export type InterstitialMovieMetadata = {
-  tvdbId: string;
-  name: string;
-  slug: string;
+export type MovieEntity = {
+  id: string;
+  title: string;
+  sortTitle: string | null;
+  slug: string | null;
   year: number | null;
-  contentStatus: string;
-  overview: string;
-  posterUrl: string;
-  language: string;
-  runtimeMinutes: number;
-  sortTitle: string;
-  imdbId: string;
+  overview: string | null;
+  posterUrl: string | null;
+  backgroundUrl: string | null;
+  language: string | null;
+  runtimeMinutes: number | null;
+  contentStatus: string | null;
   genres: string[];
-  studio: string;
+  studio: string | null;
   digitalReleaseDate: string | null;
+  imdbId: string | null;
+  tvdbId: string | null;
+  tmdbId: string | null;
+  malId: string | null;
+  anidbId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SeriesMovieLink = {
+  id: string;
+  seriesTitleId: string;
+  movie: MovieEntity;
+  placement: string | null;
+  narrativeOrder: string | null;
+  afterSeason: number | null;
+  beforeSeason: number | null;
+  linkedEpisodeId: string | null;
   associationConfidence: string | null;
   continuityStatus: string | null;
   movieForm: string | null;
   confidence: string | null;
   signalSummary: string | null;
-  placement: string | null;
-  movieTmdbId: string | null;
-  movieMalId: string | null;
+  source: string | null;
+  monitored: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 import type { TitleHistoryEvent } from "@/lib/types";
@@ -183,6 +202,8 @@ export type EpisodeMediaFile = {
   id: string;
   titleId: string;
   episodeId: string | null;
+  seriesMovieLinkIds: string[];
+  role: string;
   filePath: string;
   sizeBytes: string;
   qualityLabel: string | null;
@@ -248,6 +269,18 @@ function groupMediaFilesByEpisode(
   return grouped;
 }
 
+function groupMediaFilesBySeriesMovieLink(
+  files: EpisodeMediaFile[],
+): Record<string, EpisodeMediaFile[]> {
+  const grouped: Record<string, EpisodeMediaFile[]> = {};
+  for (const file of files) {
+    for (const linkId of file.seriesMovieLinkIds ?? []) {
+      (grouped[linkId] ??= []).push(file);
+    }
+  }
+  return grouped;
+}
+
 export const SeriesOverviewContainer = React.memo(function SeriesOverviewContainer({
   titleId,
   onTitleNotFound,
@@ -268,6 +301,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     LIBRARY_PERMISSIONS.manageTitles,
   );
   const [collections, setCollections] = React.useState<TitleCollection[]>([]);
+  const [seriesMovieLinks, setSeriesMovieLinks] = React.useState<SeriesMovieLink[]>([]);
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
   const [releaseBlocklistEntries, setReleaseBlocklistEntries] = React.useState<
     TitleReleaseBlocklistEntry[]
@@ -278,8 +312,12 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   >({});
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_SERIES_LIBRARY_PATH);
+  const [renameEnabled, setRenameEnabled] = React.useState(true);
   const [rootFolders, setRootFolders] = React.useState<{ path: string; isDefault: boolean }[]>([]);
   const [mediaFilesByEpisode, setMediaFilesByEpisode] = React.useState<
+    Record<string, EpisodeMediaFile[]>
+  >({});
+  const [mediaFilesBySeriesMovieLink, setMediaFilesBySeriesMovieLink] = React.useState<
     Record<string, EpisodeMediaFile[]>
   >({});
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
@@ -307,6 +345,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [mediaFileToDelete, setMediaFileToDelete] =
     React.useState<EpisodeMediaFile | null>(null);
   const [mediaFileDeleteLoading, setMediaFileDeleteLoading] = React.useState(false);
+  const [primaryMovieFileUpdatingId, setPrimaryMovieFileUpdatingId] =
+    React.useState<string | null>(null);
   const [mediaFileDeleteTypedConfirmation, setMediaFileDeleteTypedConfirmation] =
     React.useState("");
   const [fixMatchOpen, setFixMatchOpen] = React.useState(false);
@@ -377,6 +417,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     ) => {
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
+      const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
       const nextMediaFiles = nextTitle?.mediaFiles ?? [];
       setTitle(nextTitle);
       if (nextTitle) {
@@ -388,6 +429,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         });
       }
       setCollections(nextCollections);
+      setSeriesMovieLinks(nextSeriesMovieLinks);
       setEpisodesByCollection(
         Object.fromEntries(
           nextCollections.map((collection: TitleCollection) => [
@@ -397,6 +439,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         ),
       );
       setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
+      setMediaFilesBySeriesMovieLink(groupMediaFilesBySeriesMovieLink(nextMediaFiles));
       setEvents(snapshot.titleEvents);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
       setSubtitleDownloads(snapshot.externalSubtitles);
@@ -508,6 +551,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     if (!titleId) {
       setTitle(null);
       setCollections([]);
+      setSeriesMovieLinks([]);
       setEvents([]);
       setReleaseBlocklistEntries([]);
       setEpisodesByCollection({});
@@ -606,6 +650,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         );
         const folder = (data.mediaSettings?.libraryPath ?? "").trim();
         if (folder) setDefaultRootFolder(folder);
+        setRenameEnabled(data.mediaSettings?.renameEnabled !== false);
         if (Array.isArray(data.mediaSettings?.rootFolders)) {
           setRootFolders(data.mediaSettings.rootFolders);
         }
@@ -645,6 +690,18 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const { error } = await client.mutation(
         setEpisodeMonitoredMutation,
         { input: { episodeId, monitored } },
+      ).toPromise();
+      if (error) throw error;
+      await refreshTitleDetail();
+    },
+    [client, refreshTitleDetail],
+  );
+
+  const handleSetSeriesMovieMonitored = React.useCallback(
+    async (seriesMovieLinkId: string, monitored: boolean) => {
+      const { error } = await client.mutation(
+        setSeriesMovieMonitoredMutation,
+        { input: { seriesMovieLinkId, monitored } },
       ).toPromise();
       if (error) throw error;
       await refreshTitleDetail();
@@ -729,12 +786,15 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
   const handleDeleteMediaFile = React.useCallback((fileId: string) => {
     const nextFile =
-      Object.values(mediaFilesByEpisode)
+      [
+        ...Object.values(mediaFilesByEpisode),
+        ...Object.values(mediaFilesBySeriesMovieLink),
+      ]
         .flat()
         .find((candidate) => candidate.id === fileId) ?? null;
     setMediaFileToDelete(nextFile);
     setMediaFileDeleteTypedConfirmation("");
-  }, [mediaFilesByEpisode]);
+  }, [mediaFilesByEpisode, mediaFilesBySeriesMovieLink]);
 
   const handleRefreshAndScan = React.useCallback(async () => {
     if (!title) return;
@@ -885,6 +945,29 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     t,
   ]);
 
+  const handleMakePrimaryMovieFile = React.useCallback(
+    async (fileId: string) => {
+      if (!title) return;
+      setPrimaryMovieFileUpdatingId(fileId);
+      try {
+        const { error } = await client.mutation(setPrimaryMovieFileMutation, {
+          input: {
+            titleId: title.id,
+            fileId,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.primaryMovieFileUpdated"));
+        await refreshTitleDetail();
+      } catch (error: unknown) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.apiError")));
+      } finally {
+        setPrimaryMovieFileUpdatingId(null);
+      }
+    },
+    [client, refreshTitleDetail, setGlobalStatus, t, title],
+  );
+
   const deleteTitleConfirmDisabled =
     deleteFilesOnDisk &&
     (titleDeletePreviewLoading ||
@@ -930,12 +1013,12 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     [refreshTitleDetail, client, confirmReplaceConflict, title, t, setGlobalStatus],
   );
 
-  const handleAutoSearchInterstitialMovie = React.useCallback(
-    async (collection: TitleCollection) => {
-      if (!title || !collection.interstitialMovie) return;
+  const handleAutoSearchSeriesMovie = React.useCallback(
+    async (link: SeriesMovieLink) => {
+      if (!title) return;
       const input = {
         titleId: title.id,
-        scope: { collection: collection.id },
+        scope: { seriesMovie: link.id },
       };
       const payload = await retryWithReplaceOnConflict(
         input,
@@ -946,11 +1029,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           if (error) throw error;
           return data?.queueBestRelease;
         },
-        "A download is already in progress for this collection.",
+        "A download is already in progress for this series movie.",
         confirmReplaceConflict,
       );
-      assertNoReplaceConflict(payload, "A download is already in progress for this collection.");
-      setGlobalStatus(t("status.queuedLatest", { name: collection.interstitialMovie.name }));
+      assertNoReplaceConflict(payload, "A download is already in progress for this series movie.");
+      setGlobalStatus(t("status.queuedLatest", { name: link.movie.title }));
       await refreshTitleDetail();
     },
     [refreshTitleDetail, client, confirmReplaceConflict, title, t, setGlobalStatus],
@@ -1082,9 +1165,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         hydrating={hydrating}
         title={title}
         collections={collections}
+        seriesMovieLinks={seriesMovieLinks}
         events={events}
         episodesByCollection={episodesByCollection}
         mediaFilesByEpisode={mediaFilesByEpisode}
+        mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
         subtitleDownloads={subtitleDownloads}
         onRefreshSubtitles={refreshTitleDetail}
         releaseBlocklistEntries={releaseBlocklistEntries}
@@ -1094,15 +1179,17 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onBackToList={onBackToList}
         onSetCollectionMonitored={handleSetCollectionMonitored}
         onSetEpisodeMonitored={handleSetEpisodeMonitored}
+        onSetSeriesMovieMonitored={handleSetSeriesMovieMonitored}
         onSetTitleMonitored={handleSetTitleMonitored}
         onSearchMonitored={handleSearchMonitored}
         onAutoSearchEpisode={handleAutoSearchEpisode}
-        onAutoSearchInterstitialMovie={handleAutoSearchInterstitialMovie}
+        onAutoSearchSeriesMovie={handleAutoSearchSeriesMovie}
         downloadQueueItems={downloadQueueItems}
         hasDownloadClients={hasDownloadClients}
         showSearchPrerequisiteNotice={showSearchPrerequisiteNotice}
         qualityProfiles={qualityProfiles}
         defaultRootFolder={defaultRootFolder}
+        renameEnabled={renameEnabled}
         rootFolders={rootFolders}
         onUpdateTitleOptions={handleUpdateTitleOptions}
         completedDownloads={completedDownloads}
@@ -1119,6 +1206,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         onRequestDeleteTitle={handleRequestDeleteTitle}
         deleteLoading={deleteLoading}
         onDeleteFile={handleDeleteMediaFile}
+        onMakePrimaryFile={canManageTitle ? handleMakePrimaryMovieFile : undefined}
+        primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
         onOpenFixMatch={() => setFixMatchOpen(true)}
       />
       <FixTitleMatchDialog

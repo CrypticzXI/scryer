@@ -6,6 +6,7 @@ import { SettingsSecuritySection } from "@/components/views/settings/settings-se
 import { disposeWsClient } from "@/lib/graphql/ws-client";
 import { updateSecuritySettingsMutation } from "@/lib/graphql/mutations";
 import { securitySettingsQuery } from "@/lib/graphql/queries";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useAuth } from "@/lib/hooks/use-auth";
 import type { SecuritySettings } from "@/lib/types/settings";
@@ -26,9 +27,7 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
 };
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message.trim().length > 0
-    ? error.message
-    : fallback;
+  return userFacingGraphQlErrorMessage(error, fallback);
 }
 
 function parsePasswordMinLengthDraft(value: string): number | null {

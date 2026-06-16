@@ -11,7 +11,8 @@ use scryer_application::{
     TitleImageVariantRecord, TitleImageVariantSpec,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    no_redirect_reqwest_client,
 };
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
@@ -30,7 +31,7 @@ impl HttpTitleImageProcessor {
     pub fn new() -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                generic_reqwest_client(),
+                no_redirect_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
             max_source_bytes: MAX_SOURCE_BYTES,
@@ -42,7 +43,7 @@ impl HttpTitleImageProcessor {
     pub(crate) fn new_for_tests(avif_enabled: bool) -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                generic_reqwest_client(),
+                no_redirect_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
             max_source_bytes: MAX_SOURCE_BYTES,
@@ -55,6 +56,10 @@ impl HttpTitleImageProcessor {
         source_url: &str,
     ) -> AppResult<(String, Vec<u8>, Option<String>, Option<String>)> {
         let source_url = normalize_title_image_source_url(source_url)?;
+        let target =
+            scryer_outbound_http::prepare_untrusted_public_http_target(&source_url, "title image")
+                .await
+                .map_err(|error| AppError::Validation(error.to_string()))?;
         let scope = title_image_scope(&source_url);
         let response = self
             .outbound_http
@@ -65,7 +70,7 @@ impl HttpTitleImageProcessor {
                         std::time::Duration::from_millis(500),
                         std::time::Duration::from_secs(10),
                     ),
-                || self.outbound_http.client().get(source_url.as_str()),
+                || target.client().get(target.url().clone()),
             )
             .await
             .map_err(|error| match error {
@@ -82,6 +87,12 @@ impl HttpTitleImageProcessor {
                     AppError::Repository(format!("failed to fetch title image: {source}"))
                 }
             })?;
+
+        if response.status().is_redirection() {
+            return Err(AppError::Validation(
+                "title image redirects are not allowed".into(),
+            ));
+        }
 
         if !response.status().is_success() {
             return Err(AppError::Repository(format!(
@@ -672,6 +683,39 @@ mod tests {
             .expect("absolute TVDB URL should normalize"),
             "https://artworks.thetvdb.com/banners/posters/example.jpg"
         );
+    }
+
+    #[tokio::test]
+    async fn title_image_untrusted_fetch_blocks_local_and_private_addresses() {
+        for raw in [
+            "http://127.0.0.1/poster.jpg",
+            "http://10.0.0.5/poster.jpg",
+            "http://172.16.0.5/poster.jpg",
+            "http://192.168.1.5/poster.jpg",
+            "http://169.254.1.1/poster.jpg",
+            "http://224.0.0.1/poster.jpg",
+            "http://[::1]/poster.jpg",
+            "http://[fd00::1]/poster.jpg",
+            "http://[fe80::1]/poster.jpg",
+            "http://[ff02::1]/poster.jpg",
+        ] {
+            assert!(
+                scryer_outbound_http::prepare_untrusted_public_http_target(raw, "title image")
+                    .await
+                    .is_err(),
+                "{raw} should be blocked"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn title_image_untrusted_fetch_allows_public_addresses() {
+        scryer_outbound_http::prepare_untrusted_public_http_target(
+            "http://93.184.216.34/poster.jpg",
+            "title image",
+        )
+        .await
+        .expect("literal public IP should be allowed");
     }
 
     #[test]

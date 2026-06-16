@@ -97,7 +97,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn primary_download_client(&self) -> AppResult<Option<DownloadClientConfig>> {
+    async fn enabled_download_clients_by_priority(&self) -> AppResult<Vec<DownloadClientConfig>> {
         let mut enabled_clients = self
             .services
             .integrations
@@ -108,12 +108,8 @@ impl AppUseCase {
             .filter(|item| item.is_enabled)
             .collect::<Vec<_>>();
 
-        if enabled_clients.is_empty() {
-            return Ok(None);
-        }
-
         enabled_clients.sort_by_key(|config| config.client_priority);
-        Ok(enabled_clients.into_iter().next())
+        Ok(enabled_clients)
     }
 }
 impl AppUseCase {

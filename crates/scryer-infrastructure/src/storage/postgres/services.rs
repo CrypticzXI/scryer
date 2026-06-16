@@ -118,8 +118,8 @@ mod tests {
         UserRepository, default_quality_profile_for_search,
     };
     use scryer_domain::{
-        Collection, CollectionType, ExternalId, Id, InterstitialMovieMetadata, LibraryGrant,
-        LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
+        Collection, CollectionType, ExternalId, Id, Library, LibraryGrant, LibraryPermission,
+        LibraryPermissionMask, MediaFacet, Title, User,
     };
     use sqlx::Row;
     use tokio::task::JoinSet;
@@ -536,151 +536,6 @@ mod tests {
             )
             .await?;
             assert_eq!(default_lookup.as_deref(), Some("{}"));
-
-            services.pool().close().await;
-            Ok::<_, AppError>(())
-        }
-        .await;
-
-        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
-            .execute(&admin_pool)
-            .await;
-        admin_pool.close().await;
-        if let Err(error) = cleanup {
-            return Err(AppError::Repository(format!(
-                "failed to drop test schema {schema}: {error}"
-            )));
-        }
-        result
-    }
-
-    #[tokio::test]
-    async fn postgres_collection_round_trips_canonical_interstitial_columns() -> AppResult<()> {
-        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-        else {
-            eprintln!(
-                "skipping PostgreSQL collection interstitial-column test; SCRYER_TEST_POSTGRES_URL is not set"
-            );
-            return Ok(());
-        };
-
-        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
-            AppError::Repository(format!("failed to connect to postgres: {error}"))
-        })?;
-        let schema = next_test_schema_name();
-
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
-            .execute(&admin_pool)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!("failed to create test schema: {error}"))
-            })?;
-
-        let result = async {
-            let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
-            let services =
-                PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = title_store(&services);
-            let shows =
-                crate::ShowStore::new(crate::queries::sql_runtime::StoreDatastore::Postgres {
-                    pool: services.pool().clone(),
-                });
-
-            let mut title = sample_title("pg-collection-interstitial");
-            title.facet = MediaFacet::Anime;
-            TitleRepository::create(&catalog, title.clone()).await?;
-
-            let interstitial_movie = InterstitialMovieMetadata {
-                tvdb_id: "movie-100".to_string(),
-                name: "Interstitial Movie".to_string(),
-                slug: "interstitial-movie".to_string(),
-                year: Some(2024),
-                content_status: "released".to_string(),
-                overview: "A canonical scalar interstitial movie".to_string(),
-                poster_url: "https://example.com/interstitial.jpg".to_string(),
-                language: "eng".to_string(),
-                runtime_minutes: 42,
-                sort_title: "Interstitial Movie".to_string(),
-                imdb_id: "tt0000100".to_string(),
-                genres: vec!["Animation".to_string(), "Short".to_string()],
-                studio: "Scryer Studios".to_string(),
-                digital_release_date: Some("2024-05-01".to_string()),
-                association_confidence: Some("high".to_string()),
-                continuity_status: Some("canon".to_string()),
-                movie_form: Some("special".to_string()),
-                confidence: Some("strong".to_string()),
-                signal_summary: Some("test fixture".to_string()),
-                placement: Some("between-episodes".to_string()),
-                movie_tmdb_id: Some("100".to_string()),
-                movie_mal_id: Some("200".to_string()),
-                movie_anidb_id: Some("300".to_string()),
-            };
-            let special_movie = InterstitialMovieMetadata {
-                tvdb_id: "movie-101".to_string(),
-                name: "Special Movie".to_string(),
-                slug: "special-movie".to_string(),
-                year: Some(2025),
-                content_status: "released".to_string(),
-                overview: "A canonical special movie".to_string(),
-                poster_url: "https://example.com/special.jpg".to_string(),
-                language: "jpn".to_string(),
-                runtime_minutes: 55,
-                sort_title: "Special Movie".to_string(),
-                imdb_id: "tt0000101".to_string(),
-                genres: vec!["Adventure".to_string()],
-                studio: "Scryer Studios".to_string(),
-                digital_release_date: None,
-                association_confidence: None,
-                continuity_status: None,
-                movie_form: Some("ova".to_string()),
-                confidence: None,
-                signal_summary: None,
-                placement: None,
-                movie_tmdb_id: None,
-                movie_mal_id: Some("201".to_string()),
-                movie_anidb_id: Some("301".to_string()),
-            };
-            let collection = Collection {
-                id: "pg-collection-interstitial-season-1".to_string(),
-                title_id: title.id.clone(),
-                collection_type: CollectionType::Season,
-                collection_index: "1".to_string(),
-                label: Some("Season 1".to_string()),
-                ordered_path: None,
-                narrative_order: Some("1".to_string()),
-                first_episode_number: Some("1".to_string()),
-                last_episode_number: Some("12".to_string()),
-                interstitial_movie: Some(interstitial_movie.clone()),
-                specials_movies: vec![special_movie.clone()],
-                interstitial_season_episode: Some("S01E06".to_string()),
-                monitored: true,
-                created_at: chrono::Utc::now(),
-            };
-            ShowRepository::create_collection(&shows, collection.clone()).await?;
-
-            let listed = ShowRepository::list_collections_for_title(&shows, &title.id).await?;
-            assert_eq!(listed.len(), 1);
-            assert_eq!(listed[0].id, collection.id);
-            assert_eq!(
-                listed[0].interstitial_movie,
-                Some(interstitial_movie.clone())
-            );
-            assert_eq!(listed[0].specials_movies, vec![special_movie.clone()]);
-
-            let loaded = ShowRepository::get_collection_by_id(&shows, &collection.id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::Repository("expected collection to be readable by id".to_string())
-                })?;
-            assert_eq!(loaded.interstitial_movie, Some(interstitial_movie));
-            assert_eq!(loaded.specials_movies, vec![special_movie]);
-            assert_eq!(
-                loaded.interstitial_season_episode.as_deref(),
-                Some("S01E06")
-            );
 
             services.pool().close().await;
             Ok::<_, AppError>(())
@@ -1183,6 +1038,18 @@ mod tests {
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let users = user_store(&services);
             let libraries = library_store(&services);
+            let now = chrono::Utc::now();
+            let movie_library = Library {
+                id: "movie_default_library".to_string(),
+                facet: MediaFacet::Movie,
+                name: "Default movie".to_string(),
+                slug: "movies".to_string(),
+                is_default: true,
+                roots: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            };
+            LibraryRepository::create(&libraries, movie_library, Vec::new()).await?;
             let user = UserRepository::create(&users, User::new_admin("admin-concurrency")).await?;
             let user_id = user.id.clone();
             let permissions = LibraryPermissionMask::from_permissions([

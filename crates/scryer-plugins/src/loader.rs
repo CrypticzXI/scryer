@@ -15,7 +15,7 @@ use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
     SubtitleProviderConfig,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
@@ -50,6 +50,132 @@ type NotificationClientCache =
 type SubtitleClientCacheKey = (String, String, String, String, String);
 type SubtitleClientCache =
     std::sync::Mutex<HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>>;
+
+fn log_stale_plugin_cache_eviction(
+    plugin_family: &'static str,
+    provider_type: &str,
+    config_id: &str,
+    evicted_count: usize,
+) {
+    if evicted_count > 0 {
+        debug!(
+            plugin_family = plugin_family,
+            provider_type = provider_type,
+            config_id = config_id,
+            evicted_count = evicted_count,
+            "evicted stale plugin client cache entries"
+        );
+    }
+}
+
+fn insert_plugin_client_cache<K, Client>(
+    cache: &mut HashMap<K, Arc<Client>>,
+    cache_key: K,
+    client: Arc<Client>,
+    plugin_family: &'static str,
+    provider_type: &str,
+    config_id: &str,
+    same_identity: impl Fn(&K) -> bool,
+) -> Arc<Client>
+where
+    K: Eq + Hash,
+    Client: ?Sized,
+{
+    if let Some(existing) = cache.get(&cache_key).cloned() {
+        let before_len = cache.len();
+        cache.retain(|key, _| key == &cache_key || !same_identity(key));
+        log_stale_plugin_cache_eviction(
+            plugin_family,
+            provider_type,
+            config_id,
+            before_len - cache.len(),
+        );
+        return existing;
+    }
+
+    let before_len = cache.len();
+    cache.retain(|key, _| !same_identity(key));
+    log_stale_plugin_cache_eviction(
+        plugin_family,
+        provider_type,
+        config_id,
+        before_len - cache.len(),
+    );
+    cache.insert(cache_key, Arc::clone(&client));
+    client
+}
+
+fn insert_indexer_client_cache(
+    cache: &mut HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>,
+    cache_key: IndexerClientCacheKey,
+    client: Arc<dyn IndexerClient>,
+) -> Arc<dyn IndexerClient> {
+    let provider_type = cache_key.0.clone();
+    let config_id = cache_key.1.clone();
+    insert_plugin_client_cache(
+        cache,
+        cache_key,
+        client,
+        "indexer",
+        &provider_type,
+        &config_id,
+        |key| key.0.as_str() == provider_type.as_str() && key.1.as_str() == config_id.as_str(),
+    )
+}
+
+fn insert_download_client_cache(
+    cache: &mut HashMap<DownloadClientCacheKey, Arc<dyn DownloadClient>>,
+    cache_key: DownloadClientCacheKey,
+    client: Arc<dyn DownloadClient>,
+) -> Arc<dyn DownloadClient> {
+    let provider_type = cache_key.0.clone();
+    let config_id = cache_key.1.clone();
+    insert_plugin_client_cache(
+        cache,
+        cache_key,
+        client,
+        "download",
+        &provider_type,
+        &config_id,
+        |key| key.0.as_str() == provider_type.as_str() && key.1.as_str() == config_id.as_str(),
+    )
+}
+
+fn insert_notification_client_cache(
+    cache: &mut HashMap<NotificationClientCacheKey, Arc<dyn NotificationClient>>,
+    cache_key: NotificationClientCacheKey,
+    client: Arc<dyn NotificationClient>,
+) -> Arc<dyn NotificationClient> {
+    let provider_type = cache_key.0.clone();
+    let config_id = cache_key.1.clone();
+    insert_plugin_client_cache(
+        cache,
+        cache_key,
+        client,
+        "notification",
+        &provider_type,
+        &config_id,
+        |key| key.0.as_str() == provider_type.as_str() && key.1.as_str() == config_id.as_str(),
+    )
+}
+
+fn insert_subtitle_client_cache(
+    cache: &mut HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>,
+    cache_key: SubtitleClientCacheKey,
+    client: Arc<dyn SubtitleProviderClient>,
+) -> Arc<dyn SubtitleProviderClient> {
+    let provider_type = cache_key.0.clone();
+    let config_id = cache_key.1.clone();
+    insert_plugin_client_cache(
+        cache,
+        cache_key,
+        client,
+        "subtitle",
+        &provider_type,
+        &config_id,
+        |key| key.0.as_str() == provider_type.as_str() && key.1.as_str() == config_id.as_str(),
+    )
+}
 
 static WASMTIME_PLUGIN_BUILD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -597,9 +723,9 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
 /// runtime reload. All reads acquire a `RwLock` read lock; `reload()` acquires
 /// a write lock to swap the inner provider.
 ///
-/// Caches instantiated `IndexerClient`s by `(indexer_config_id, updated_at)` so
-/// WASM compilation only happens once per config revision. The cache is cleared
-/// on provider reload.
+/// Caches instantiated `IndexerClient`s by provider/config revision while
+/// retaining only one compiled generation for each stable provider/config id.
+/// The cache is cleared on provider reload.
 pub struct DynamicPluginProvider {
     inner: std::sync::RwLock<WasmIndexerPluginProvider>,
     client_cache: IndexerClientCache,
@@ -661,7 +787,11 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         let client = guard.client_for_provider(config)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.insert(cache_key, Arc::clone(&client));
+            return Some(insert_indexer_client_cache(
+                &mut cache,
+                cache_key,
+                Arc::clone(&client),
+            ));
         }
 
         Some(client)
@@ -1153,7 +1283,11 @@ impl DownloadClientPluginProvider for DynamicDownloadClientPluginProvider {
         let client = guard.client_for_config(config)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.insert(cache_key, Arc::clone(&client));
+            return Some(insert_download_client_cache(
+                &mut cache,
+                cache_key,
+                Arc::clone(&client),
+            ));
         }
 
         Some(client)
@@ -1920,7 +2054,11 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         let client = guard.client_for_config(config, host_bindings)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.insert(cache_key, Arc::clone(&client));
+            return Some(insert_subtitle_client_cache(
+                &mut cache,
+                cache_key,
+                Arc::clone(&client),
+            ));
         }
 
         Some(client)
@@ -2775,7 +2913,11 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         let client = guard.client_for_channel(config)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.insert(cache_key, Arc::clone(&client));
+            return Some(insert_notification_client_cache(
+                &mut cache,
+                cache_key,
+                Arc::clone(&client),
+            ));
         }
 
         Some(client)
@@ -2991,6 +3133,7 @@ mod tests {
             _ids: std::collections::HashMap<String, String>,
             _category: Option<String>,
             _facet: Option<String>,
+            _id_search_facet: Option<String>,
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<scryer_application::IndexerRoutingPlan>,
             _mode: scryer_application::SearchMode,
@@ -3024,6 +3167,37 @@ mod tests {
             _payload: &scryer_application::NotificationPayload,
         ) -> scryer_application::AppResult<()> {
             unreachable!("dummy notification client should not be called")
+        }
+    }
+
+    struct DummySubtitleProviderClient;
+
+    #[async_trait::async_trait]
+    impl SubtitleProviderClient for DummySubtitleProviderClient {
+        async fn search(
+            &self,
+            _query: &scryer_application::subtitles::SubtitleQuery,
+        ) -> scryer_application::AppResult<Vec<scryer_application::subtitles::SubtitleMatch>>
+        {
+            unreachable!("dummy subtitle provider client should not be called")
+        }
+
+        async fn download(
+            &self,
+            _provider_file_id: &str,
+        ) -> scryer_application::AppResult<scryer_application::subtitles::SubtitleFile> {
+            unreachable!("dummy subtitle provider client should not be called")
+        }
+
+        async fn validate_connection(
+            &self,
+        ) -> scryer_application::AppResult<scryer_application::SubtitleProviderValidationResult>
+        {
+            unreachable!("dummy subtitle provider client should not be called")
+        }
+
+        fn name(&self) -> &str {
+            "dummy-subtitle-provider"
         }
     }
 
@@ -3487,6 +3661,144 @@ mod tests {
             cache_fingerprint(r#"{"username":"alice"}"#),
             cache_fingerprint(r#"{"username":"bob"}"#)
         );
+    }
+
+    #[test]
+    fn dynamic_client_cache_insert_returns_existing_for_duplicate_key() {
+        let mut cache = HashMap::new();
+        let cache_key = (
+            "newznab".to_string(),
+            "idx-1".to_string(),
+            "revision-1".to_string(),
+        );
+
+        let first = insert_indexer_client_cache(
+            &mut cache,
+            cache_key.clone(),
+            Arc::new(DummyIndexerClient),
+        );
+        let duplicate =
+            insert_indexer_client_cache(&mut cache, cache_key, Arc::new(DummyIndexerClient));
+
+        assert!(Arc::ptr_eq(&first, &duplicate));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn dynamic_client_cache_insert_bounds_same_identity_for_all_plugin_families() {
+        let mut indexer_cache = HashMap::new();
+        let first_indexer = insert_indexer_client_cache(
+            &mut indexer_cache,
+            (
+                "newznab".to_string(),
+                "idx-1".to_string(),
+                "revision-1".to_string(),
+            ),
+            Arc::new(DummyIndexerClient),
+        );
+        let second_indexer = insert_indexer_client_cache(
+            &mut indexer_cache,
+            (
+                "newznab".to_string(),
+                "idx-1".to_string(),
+                "revision-2".to_string(),
+            ),
+            Arc::new(DummyIndexerClient),
+        );
+        assert!(!Arc::ptr_eq(&first_indexer, &second_indexer));
+        assert_eq!(indexer_cache.len(), 1);
+        assert!(indexer_cache.contains_key(&(
+            "newznab".to_string(),
+            "idx-1".to_string(),
+            "revision-2".to_string()
+        )));
+
+        let mut download_cache = HashMap::new();
+        let first_download = insert_download_client_cache(
+            &mut download_cache,
+            (
+                "sabnzbd".to_string(),
+                "download-1".to_string(),
+                "revision-1".to_string(),
+            ),
+            Arc::new(DummyDownloadClient),
+        );
+        let second_download = insert_download_client_cache(
+            &mut download_cache,
+            (
+                "sabnzbd".to_string(),
+                "download-1".to_string(),
+                "revision-2".to_string(),
+            ),
+            Arc::new(DummyDownloadClient),
+        );
+        assert!(!Arc::ptr_eq(&first_download, &second_download));
+        assert_eq!(download_cache.len(), 1);
+        assert!(download_cache.contains_key(&(
+            "sabnzbd".to_string(),
+            "download-1".to_string(),
+            "revision-2".to_string()
+        )));
+
+        let mut subtitle_cache = HashMap::new();
+        let first_subtitle = insert_subtitle_client_cache(
+            &mut subtitle_cache,
+            (
+                "opensubtitles".to_string(),
+                "subtitle-1".to_string(),
+                "revision-1".to_string(),
+                "config-a".to_string(),
+                "bindings-a".to_string(),
+            ),
+            Arc::new(DummySubtitleProviderClient),
+        );
+        let second_subtitle = insert_subtitle_client_cache(
+            &mut subtitle_cache,
+            (
+                "opensubtitles".to_string(),
+                "subtitle-1".to_string(),
+                "revision-2".to_string(),
+                "config-b".to_string(),
+                "bindings-b".to_string(),
+            ),
+            Arc::new(DummySubtitleProviderClient),
+        );
+        assert!(!Arc::ptr_eq(&first_subtitle, &second_subtitle));
+        assert_eq!(subtitle_cache.len(), 1);
+        assert!(subtitle_cache.contains_key(&(
+            "opensubtitles".to_string(),
+            "subtitle-1".to_string(),
+            "revision-2".to_string(),
+            "config-b".to_string(),
+            "bindings-b".to_string()
+        )));
+
+        let mut notification_cache = HashMap::new();
+        let first_notification = insert_notification_client_cache(
+            &mut notification_cache,
+            (
+                "webhook".to_string(),
+                "channel-1".to_string(),
+                "revision-1".to_string(),
+            ),
+            Arc::new(DummyNotificationClient),
+        );
+        let second_notification = insert_notification_client_cache(
+            &mut notification_cache,
+            (
+                "webhook".to_string(),
+                "channel-1".to_string(),
+                "revision-2".to_string(),
+            ),
+            Arc::new(DummyNotificationClient),
+        );
+        assert!(!Arc::ptr_eq(&first_notification, &second_notification));
+        assert_eq!(notification_cache.len(), 1);
+        assert!(notification_cache.contains_key(&(
+            "webhook".to_string(),
+            "channel-1".to_string(),
+            "revision-2".to_string()
+        )));
     }
 
     #[test]

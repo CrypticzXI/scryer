@@ -1,6 +1,6 @@
 [package]
 name = "scryer"
-version = "0.16.0"
+version = "0.16.1"
 edition.workspace = true
 
 [dependencies]
@@ -18,7 +18,7 @@ futures-util = "0.3"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["compression-full"] }
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "compression-zstd"] }
 http = "1.1"
 dotenvy = { workspace = true }
 tokio = { workspace = true }
@@ -33,7 +33,7 @@ brotli = "8"
 flate2 = "1"
 percent-encoding = "2"
 toml = { workspace = true }
-metrics-exporter-prometheus = "0.18"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 directories = "6"
 open = "5"
 governor = { workspace = true }

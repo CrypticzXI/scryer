@@ -37,10 +37,7 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
       return;
     }
 
-    const displayStatus =
-      toastLevel === "error"
-        ? normalizeGraphQlErrorMessage(rawStatus) || rawStatus.trim()
-        : rawStatus;
+    const displayStatus = normalizeGraphQlErrorMessage(rawStatus) || rawStatus.trim();
 
     const now = Date.now();
     const key = `${toastLevel}:${displayStatus.trim()}`;

@@ -549,6 +549,7 @@ export const applyMediaRenameMutation = `mutation ApplyMediaRename($input: Media
     failed
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       finalPath
@@ -569,6 +570,7 @@ export const applyMediaRenameBulkMutation = `mutation ApplyMediaRenameBulk($inpu
     failed
     items {
       collectionId
+      seriesMovieLinkIds
       currentPath
       proposedPath
       finalPath
@@ -644,6 +646,7 @@ export const createBackupMutation = `mutation CreateBackup($password: String) {
 export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($filename: String!) {
   prepareBackupDownload(filename: $filename) {
     downloadUrl
+    downloadAuthorizationToken
     expiresAt
   }
 }`;
@@ -838,6 +841,7 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    renameEnabled
     renameTemplate
     renameCollisionPolicy
     renameMissingMetadataPolicy
@@ -1106,6 +1110,10 @@ export const setEpisodeMonitoredMutation = `mutation SetEpisodeMonitored($input:
   setEpisodeMonitored(input: $input) { id monitored }
 }`;
 
+export const setSeriesMovieMonitoredMutation = `mutation SetSeriesMovieMonitored($input: SetSeriesMovieMonitoredInput!) {
+  setSeriesMovieMonitored(input: $input) { id monitored }
+}`;
+
 export const setTitleMonitoredMutation = `mutation SetTitleMonitored($input: SetTitleMonitoredInput!) {
   setTitleMonitored(input: $input) { id monitored }
 }`;
@@ -1197,6 +1205,12 @@ export const fixTitleMatchMutation = `mutation FixTitleMatch($input: FixTitleMat
       slug
       metadataFetchedAt
     }
+  }
+}`;
+
+export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input: SetPrimaryMovieFileInput!) {
+  setPrimaryMovieFile(input: $input) {
+    id
   }
 }`;
 

@@ -10,8 +10,8 @@ use scryer_application::{
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleReleaseBlocklistEntry,
+    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
+    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -322,6 +322,7 @@ pub fn from_media_settings(
             .collect(),
         required_audio_languages: settings.required_audio_languages,
         folder_template: settings.folder_template,
+        rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
         rename_collision_policy: settings.rename_collision_policy,
         rename_missing_metadata_policy: settings.rename_missing_metadata_policy,
@@ -458,30 +459,44 @@ pub fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayloa
             kind: "episode".to_string(),
             episode_id: Some(episode_id),
             episode_ids: Vec::new(),
+            series_movie_link_id: None,
             collection_id: None,
         },
         SubmissionScope::EpisodeSet { episode_ids } => QueueDownloadScopePayload {
             kind: "episode_set".to_string(),
             episode_id: None,
             episode_ids,
+            series_movie_link_id: None,
+            collection_id: None,
+        },
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => QueueDownloadScopePayload {
+            kind: "series_movie".to_string(),
+            episode_id: None,
+            episode_ids: Vec::new(),
+            series_movie_link_id: Some(series_movie_link_id),
             collection_id: None,
         },
         SubmissionScope::Collection { collection_id } => QueueDownloadScopePayload {
             kind: "collection".to_string(),
             episode_id: None,
             episode_ids: Vec::new(),
+            series_movie_link_id: None,
             collection_id: Some(collection_id),
         },
         SubmissionScope::Title => QueueDownloadScopePayload {
             kind: "title".to_string(),
             episode_id: None,
             episode_ids: Vec::new(),
+            series_movie_link_id: None,
             collection_id: None,
         },
         SubmissionScope::Orphan => QueueDownloadScopePayload {
             kind: "orphan".to_string(),
             episode_id: None,
             episode_ids: Vec::new(),
+            series_movie_link_id: None,
             collection_id: None,
         },
     }
@@ -1239,6 +1254,7 @@ fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPaylo
     MediaRenamePlanItemPayload {
         collection_id: item.collection_id,
         media_file_id: item.media_file_id,
+        series_movie_link_ids: item.series_movie_link_ids,
         current_path: item.current_path,
         proposed_path: item.proposed_path,
         normalized_filename: item.normalized_filename,
@@ -1269,6 +1285,7 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
     MediaRenameApplyItemPayload {
         collection_id: item.collection_id,
         media_file_id: item.media_file_id,
+        series_movie_link_ids: item.series_movie_link_ids,
         current_path: item.current_path,
         proposed_path: item.proposed_path,
         final_path: item.final_path,
@@ -1281,31 +1298,6 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
 
 pub fn from_collection(collection: Collection) -> CollectionPayload {
     let file_size_bytes = file_size_bytes_for_path(collection.ordered_path.as_deref());
-    let map_movie =
-        |movie: scryer_domain::InterstitialMovieMetadata| InterstitialMovieMetadataPayload {
-            tvdb_id: movie.tvdb_id,
-            name: movie.name,
-            slug: movie.slug,
-            year: movie.year,
-            content_status: movie.content_status,
-            overview: movie.overview,
-            poster_url: movie.poster_url,
-            language: movie.language,
-            runtime_minutes: movie.runtime_minutes,
-            sort_title: movie.sort_title,
-            imdb_id: movie.imdb_id,
-            genres: movie.genres,
-            studio: movie.studio,
-            digital_release_date: movie.digital_release_date,
-            association_confidence: movie.association_confidence,
-            continuity_status: movie.continuity_status,
-            movie_form: movie.movie_form,
-            confidence: movie.confidence,
-            signal_summary: movie.signal_summary,
-            placement: movie.placement,
-            movie_tmdb_id: movie.movie_tmdb_id,
-            movie_mal_id: movie.movie_mal_id,
-        };
     CollectionPayload {
         id: collection.id,
         title_id: collection.title_id,
@@ -1317,15 +1309,56 @@ pub fn from_collection(collection: Collection) -> CollectionPayload {
         file_size_bytes,
         first_episode_number: collection.first_episode_number,
         last_episode_number: collection.last_episode_number,
-        interstitial_movie: collection.interstitial_movie.map(map_movie),
-        interstitial_season_episode: collection.interstitial_season_episode,
-        specials_movies: collection
-            .specials_movies
-            .into_iter()
-            .map(map_movie)
-            .collect(),
         monitored: collection.monitored,
         created_at: collection.created_at.to_rfc3339(),
+    }
+}
+
+pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayload {
+    MovieEntityPayload {
+        id: movie.id,
+        title: movie.title,
+        sort_title: movie.sort_title,
+        slug: movie.slug,
+        year: movie.year,
+        overview: movie.overview,
+        poster_url: movie.poster_url,
+        background_url: movie.background_url,
+        language: movie.language,
+        runtime_minutes: movie.runtime_minutes,
+        content_status: movie.content_status,
+        genres: movie.genres,
+        studio: movie.studio,
+        digital_release_date: movie.digital_release_date,
+        imdb_id: movie.imdb_id,
+        tvdb_id: movie.tvdb_id,
+        tmdb_id: movie.tmdb_id,
+        mal_id: movie.mal_id,
+        anidb_id: movie.anidb_id,
+        created_at: movie.created_at.to_rfc3339(),
+        updated_at: movie.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMovieLinkPayload {
+    SeriesMovieLinkPayload {
+        id: link.id,
+        series_title_id: link.series_title_id,
+        movie: from_movie_entity(link.movie),
+        placement: link.placement,
+        narrative_order: link.narrative_order,
+        after_season: link.after_season,
+        before_season: link.before_season,
+        linked_episode_id: link.linked_episode_id,
+        association_confidence: link.association_confidence,
+        continuity_status: link.continuity_status,
+        movie_form: link.movie_form,
+        confidence: link.confidence,
+        signal_summary: link.signal_summary,
+        source: link.source,
+        monitored: link.monitored,
+        created_at: link.created_at.to_rfc3339(),
+        updated_at: link.updated_at.to_rfc3339(),
     }
 }
 
@@ -1388,8 +1421,10 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
         id: file.id,
         title_id: file.title_id,
         episode_id: file.episode_id,
+        series_movie_link_ids: file.series_movie_link_ids,
         file_path: file.file_path,
         size_bytes: file.size_bytes.to_string(),
+        role: file.role.as_str().to_string(),
         quality_label: file.quality_label,
         scan_status: file.scan_status,
         created_at: file.created_at,
@@ -1579,6 +1614,42 @@ pub fn from_jellyfin_server_user(
         username: user.username,
         display_name: user.display_name,
         avatar_url: user.avatar_url,
+    }
+}
+
+pub fn from_media_server_user(user: scryer_application::MediaServerUser) -> MediaServerUserPayload {
+    MediaServerUserPayload {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+    }
+}
+
+pub fn from_media_server_user_group(
+    group: scryer_application::MediaServerUserGroup,
+) -> MediaServerUserGroupPayload {
+    MediaServerUserGroupPayload {
+        connection_id: group.connection_id,
+        connection_name: group.connection_name,
+        provider: ExternalAccountProviderValue::from_domain(group.provider),
+        status: match group.status {
+            scryer_application::MediaServerUserGroupStatus::Ready => {
+                MediaServerUserGroupStatusValue::Ready
+            }
+            scryer_application::MediaServerUserGroupStatus::MissingCredentials => {
+                MediaServerUserGroupStatusValue::MissingCredentials
+            }
+            scryer_application::MediaServerUserGroupStatus::Error => {
+                MediaServerUserGroupStatusValue::Error
+            }
+        },
+        error_message: group.error_message,
+        users: group
+            .users
+            .into_iter()
+            .map(from_media_server_user)
+            .collect(),
     }
 }
 
@@ -1816,6 +1887,20 @@ pub fn from_smg_version_compatibility_notice(
         your_version: notice.your_version,
         message: notice.message,
         upgrade_deadline: notice.upgrade_deadline,
+    }
+}
+
+pub fn from_smg_scryer_update_notice(
+    notice: SmgScryerUpdateNotice,
+) -> SmgScryerUpdateNoticePayload {
+    SmgScryerUpdateNoticePayload {
+        available: notice.available,
+        current_version: notice.current_version,
+        latest_version: notice.latest_version,
+        latest_tag: notice.latest_tag,
+        release_url: notice.release_url,
+        published_at: notice.published_at,
+        checked_at: notice.checked_at,
     }
 }
 

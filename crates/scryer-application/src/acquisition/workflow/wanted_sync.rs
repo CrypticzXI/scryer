@@ -57,7 +57,7 @@ impl AppUseCase {
             .list_media_files_for_title(&title.id)
             .await
         {
-            Ok(files) => !files.is_empty(),
+            Ok(files) => files.iter().any(|file| file.role.is_primary()),
             Err(_) => false,
         };
 
@@ -101,6 +101,7 @@ impl AppUseCase {
             library_slug: None,
             episode_id: None,
             collection_id: None,
+            series_movie_link_id: None,
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
@@ -177,13 +178,25 @@ impl AppUseCase {
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
         let episodes_with_files: std::collections::HashSet<String> = existing_files
             .iter()
             .filter_map(|f| f.episode_id.clone())
             .collect();
+        let series_movie_links_with_files: HashSet<String> = self
+            .services
+            .library
+            .media_files
+            .list_series_movie_link_ids_with_files_for_title(&title.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let mut eligible_episode_ids = HashSet::new();
-        let mut eligible_interstitial_collection_ids = HashSet::new();
+        let mut eligible_series_movie_link_ids = HashSet::new();
 
         for collection in &collections {
             if !collection.monitored {
@@ -221,6 +234,7 @@ impl AppUseCase {
                     library_slug: None,
                     episode_id: Some(episode.id.clone()),
                     collection_id: None,
+                    series_movie_link_id: None,
                     season_number: episode.season_number.clone(),
                     episode_number: None,
                     media_type: "episode".to_string(),
@@ -255,23 +269,22 @@ impl AppUseCase {
             }
         }
 
-        // Generate wanted items for interstitial anime movies (franchise movies stored in Season 00)
+        // Generate wanted items for series-owned movies.
         if title.facet == scryer_domain::MediaFacet::Anime {
-            for collection in &collections {
-                if collection.collection_type != CollectionType::Interstitial
-                    || !collection.monitored
-                {
+            let series_movie_links = self
+                .services
+                .catalog
+                .shows
+                .list_series_movie_links_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            for link in series_movie_links {
+                if !link.monitored || series_movie_links_with_files.contains(&link.id) {
                     continue;
                 }
-                // Skip if already has a file on disk
-                if collection.ordered_path.is_some() {
-                    continue;
-                }
-                let Some(ref movie) = collection.interstitial_movie else {
-                    continue;
-                };
+
                 // Skip filler movies unless the user opted in
-                if movie.continuity_status.as_deref() == Some("filler") {
+                if link.continuity_status.as_deref() == Some("filler") {
                     let monitor_filler = self
                         .resolve_library_bool_setting(
                             "anime.monitor_filler_movies",
@@ -286,37 +299,9 @@ impl AppUseCase {
                     }
                 }
 
-                // Skip if the movie already exists as a separate Movie facet title
-                // (prevents downloading the same movie twice)
-                if (!movie.imdb_id.is_empty() || movie.movie_tmdb_id.is_some())
-                    && let Ok(all_titles) = self
-                        .services
-                        .catalog
-                        .titles
-                        .list_for_matching(None, None)
-                        .await
-                {
-                    let already_exists = all_titles.iter().any(|t| {
-                        t.facet == scryer_domain::MediaFacet::Movie
-                            && ((!movie.imdb_id.is_empty()
-                                && t.imdb_id.as_deref() == Some(&movie.imdb_id))
-                                || movie.movie_tmdb_id.as_deref().is_some_and(|tmdb| {
-                                    t.external_ids
-                                        .iter()
-                                        .any(|eid| eid.source == "tmdb" && eid.value == tmdb)
-                                }))
-                    });
-                    if already_exists {
-                        trace!(
-                            movie_name = movie.name.as_str(),
-                            "skipping interstitial wanted item: movie exists as separate title"
-                        );
-                        continue;
-                    }
-                }
-                eligible_interstitial_collection_ids.insert(collection.id.clone());
+                eligible_series_movie_link_ids.insert(link.id.clone());
 
-                let baseline_date = movie.digital_release_date.clone();
+                let baseline_date = link.movie.digital_release_date.clone();
                 let schedule =
                     compute_search_schedule("movie", baseline_date.as_deref(), "primary", now);
 
@@ -336,10 +321,11 @@ impl AppUseCase {
                     library_name: None,
                     library_slug: None,
                     episode_id: None,
-                    collection_id: Some(collection.id.clone()),
+                    collection_id: None,
+                    series_movie_link_id: Some(link.id.clone()),
                     season_number: Some("0".to_string()),
                     episode_number: None,
-                    media_type: "interstitial_movie".to_string(),
+                    media_type: "series_movie".to_string(),
                     search_phase: schedule.search_phase.to_string(),
                     next_search_at: Some(next_search_at),
                     last_search_at: None,
@@ -363,10 +349,10 @@ impl AppUseCase {
                 {
                     warn!(
                         title_id = title.id.as_str(),
-                        collection_id = collection.id.as_str(),
-                        movie_name = movie.name.as_str(),
+                        series_movie_link_id = link.id.as_str(),
+                        movie_name = link.movie.title.as_str(),
                         error = %err,
-                        "failed to upsert wanted item for interstitial movie"
+                        "failed to upsert wanted item for series movie"
                     );
                 }
             }
@@ -375,7 +361,7 @@ impl AppUseCase {
         self.reconcile_series_wanted_scope(
             title,
             &eligible_episode_ids,
-            &eligible_interstitial_collection_ids,
+            &eligible_series_movie_link_ids,
         )
         .await;
     }
@@ -385,7 +371,7 @@ impl AppUseCase {
         &self,
         title: &Title,
         eligible_episode_ids: &HashSet<String>,
-        eligible_interstitial_collection_ids: &HashSet<String>,
+        eligible_series_movie_link_ids: &HashSet<String>,
     ) {
         let existing_items = match self
             .services
@@ -432,25 +418,25 @@ impl AppUseCase {
             }
         }
 
-        let stale_interstitial_collection_ids: HashSet<String> = existing_items
+        let stale_series_movie_link_ids: HashSet<String> = existing_items
             .iter()
-            .filter(|item| item.media_type == "interstitial_movie")
-            .filter_map(|item| item.collection_id.clone())
-            .filter(|collection_id| !eligible_interstitial_collection_ids.contains(collection_id))
+            .filter(|item| item.media_type == "series_movie")
+            .filter_map(|item| item.series_movie_link_id.clone())
+            .filter(|link_id| !eligible_series_movie_link_ids.contains(link_id))
             .collect();
-        for collection_id in stale_interstitial_collection_ids {
+        for series_movie_link_id in stale_series_movie_link_ids {
             if let Err(err) = self
                 .services
                 .workflow
                 .wanted_items
-                .delete_wanted_items_for_collection(&collection_id)
+                .delete_wanted_items_for_series_movie_link(&series_movie_link_id)
                 .await
             {
                 warn!(
                     title_id = title.id.as_str(),
-                    collection_id,
+                    series_movie_link_id,
                     error = %err,
-                    "failed to delete stale interstitial wanted items during reconciliation"
+                    "failed to delete stale series movie wanted items during reconciliation"
                 );
             }
         }
@@ -745,6 +731,7 @@ impl AppUseCase {
             .await?;
         let fake_submission = DownloadSubmission {
             title_id: title_id.to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: String::new(),
             download_client_id: None,
             download_client_type: String::new(),

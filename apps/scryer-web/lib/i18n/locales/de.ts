@@ -614,6 +614,7 @@ const de: LocaleDictionary = {
   "title.interactiveSearchComingSoon": "Interaktive Suche kommt bald.",
   "title.seasonMonitored": "Staffel überwacht",
   "title.episodeMonitored": "Episode überwacht",
+  "title.seriesMovieMonitored": "Serienfilm überwacht",
   "title.deleteFilesOnDisk": "Dateien auf der Festplatte löschen",
   "title.seasonsAndEpisodes": "Staffeln und Folgen",
   "title.noTrackedSeasons":
@@ -641,8 +642,6 @@ const de: LocaleDictionary = {
   "title.movieDetails": "Filmdetails",
   "title.searchingReleases": "Indexer werden nach Releases durchsucht…",
   "title.noReleasesFound": "Keine Releases für {{name}} gefunden.",
-  "title.interactiveSearchHint":
-    "Verwende die interaktive Suche, um deine konfigurierten Indexer nach Releases für {{name}} zu durchsuchen.",
   "title.searchNeedsDownloadClientTitle": "Suche erfordert einen Download-Client",
   "title.searchNeedsDownloadClientDescription":
     "Konfiguriere mindestens einen Download-Client, bevor du auf dieser Titelseite Suche oder interaktive Suche verwendest.",
@@ -725,6 +724,7 @@ const de: LocaleDictionary = {
   "nzb.noResultsYet": "Noch keine Release-Treffer.",
   "nzb.blockedByProfile": "Vom Profil blockiert: {{reason}}",
   "nzb.queue": "Warteschlange",
+  "nzb.queueAdditionalFile": "Als zusätzliche Datei",
   "nzb.blocked": "Blockiert",
   "nzb.noConsideredResults":
     "Keine Releases haben das Qualitätsprofil bestanden.",
@@ -1266,6 +1266,9 @@ const de: LocaleDictionary = {
   "mediaFile.pendingScan": "Scan ausstehend",
   "mediaFile.scanFailed": "Scan fehlgeschlagen",
   "mediaFile.score": "Score {{score}}",
+  "mediaFile.primary": "Primär",
+  "mediaFile.additional": "Zusätzlich",
+  "mediaFile.makePrimary": "Als primär festlegen",
   "mediaFile.video": "Video",
   "mediaFile.audioTracks": "Audio",
   "mediaFile.audioCount": "{{count}} Audio",
@@ -1353,6 +1356,7 @@ const de: LocaleDictionary = {
     "TVDB-Treffer ausgewählt: {{name}}. Drücke jetzt NZBGeek durchsuchen.",
   "status.noReleaseSource": "Release enthält keine abrufbare Quelle.",
   "status.queueSuccess": "{{name}} in Warteschlange gestellt",
+  "status.primaryMovieFileUpdated": "Primäre Filmdatei aktualisiert",
   "status.noSource": "Keine Quelle zum Abrufen für {{name}}",
   "status.noReleaseForTitle": "Kein Release für {{name}} gefunden",
   "status.queuedLatest": "Neuestes Release für {{name}} abgerufen",
@@ -1491,7 +1495,7 @@ const de: LocaleDictionary = {
   "wanted.status.paused": "Pausiert",
   "wanted.type.movie": "Film",
   "wanted.type.episode": "Folge",
-  "wanted.type.interstitialMovie": "Franchise-Film",
+  "wanted.type.seriesMovie": "Serienfilm",
   "wanted.phase.primary": "Primär",
   "wanted.phase.preRelease": "Vorabveröffentlichung",
   "wanted.phase.preAir": "Vor Ausstrahlung",
@@ -1515,7 +1519,7 @@ const de: LocaleDictionary = {
   "wanted.context.episode": "Episode gesuchter Artikel",
   "wanted.context.seasonEpisode":
     "Staffel {{seasonNumber}} Episode gesuchter Artikel",
-  "wanted.context.franchiseMovie": "Franchise-Film gesuchter Artikel",
+  "wanted.context.seriesMovie": "Serienfilm gesuchter Artikel",
   "wanted.prev": "Zurück",
   "wanted.next": "Weiter",
   "wanted.timeNow": "jetzt",

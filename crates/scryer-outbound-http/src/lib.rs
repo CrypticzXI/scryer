@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
@@ -214,6 +215,220 @@ impl RateLimitRegistry {
 pub const DEFAULT_USER_AGENT: &str = concat!("Scryer/", env!("CARGO_PKG_VERSION"));
 pub const STANDARD_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[derive(Debug, Error)]
+pub enum OutboundDestinationError {
+    #[error("{label} URL is invalid: {message}")]
+    InvalidUrl {
+        label: &'static str,
+        message: String,
+    },
+    #[error("{label} URL must use http or https")]
+    UnsupportedScheme { label: &'static str },
+    #[error("{label} URL must include a host")]
+    MissingHost { label: &'static str },
+    #[error("{label} URL must not include embedded credentials")]
+    EmbeddedCredentials { label: &'static str },
+    #[error("{label} host failed to resolve: {host}: {source}")]
+    ResolveFailed {
+        label: &'static str,
+        host: String,
+        source: std::io::Error,
+    },
+    #[error("{label} host did not resolve: {host}")]
+    NoResolvedAddresses { label: &'static str, host: String },
+    #[error("{label} host resolves to a private or local address: {host}")]
+    ForbiddenAddress { label: &'static str, host: String },
+    #[error("failed to build pinned {label} client for {host}: {source}")]
+    ClientBuild {
+        label: &'static str,
+        host: String,
+        source: reqwest::Error,
+    },
+}
+
+pub fn validate_operator_http_url(
+    raw: &str,
+    label: &'static str,
+) -> Result<reqwest::Url, OutboundDestinationError> {
+    let url = reqwest::Url::parse(raw).map_err(|source| OutboundDestinationError::InvalidUrl {
+        label,
+        message: source.to_string(),
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(OutboundDestinationError::UnsupportedScheme { label });
+    }
+    if url.host_str().is_none() {
+        return Err(OutboundDestinationError::MissingHost { label });
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(OutboundDestinationError::EmbeddedCredentials { label });
+    }
+    Ok(url)
+}
+
+pub fn validate_public_http_url(
+    raw: &str,
+    label: &'static str,
+) -> Result<reqwest::Url, OutboundDestinationError> {
+    validate_operator_http_url(raw, label)
+}
+
+pub fn validate_untrusted_public_http_url(
+    raw: &str,
+    label: &'static str,
+) -> Result<reqwest::Url, OutboundDestinationError> {
+    validate_operator_http_url(raw, label)
+}
+
+#[derive(Clone)]
+pub struct PinnedPublicHttpTarget {
+    url: reqwest::Url,
+    host: String,
+    resolved_addrs: Vec<SocketAddr>,
+    client: Client,
+}
+
+impl PinnedPublicHttpTarget {
+    pub fn url(&self) -> &reqwest::Url {
+        &self.url
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn resolved_addrs(&self) -> &[SocketAddr] {
+        &self.resolved_addrs
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+}
+
+pub async fn prepare_untrusted_public_http_target(
+    raw: &str,
+    label: &'static str,
+) -> Result<PinnedPublicHttpTarget, OutboundDestinationError> {
+    let url = validate_untrusted_public_http_url(raw, label)?;
+    prepare_untrusted_public_http_target_from_url(url, label).await
+}
+
+pub async fn prepare_untrusted_public_http_target_from_url(
+    url: reqwest::Url,
+    label: &'static str,
+) -> Result<PinnedPublicHttpTarget, OutboundDestinationError> {
+    let resolved_addrs = resolve_public_http_destination(&url, label).await?;
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?
+        .to_string();
+    let client = reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &resolved_addrs)
+        .build()
+        .map_err(|source| OutboundDestinationError::ClientBuild {
+            label,
+            host: host.clone(),
+            source,
+        })?;
+
+    Ok(PinnedPublicHttpTarget {
+        url,
+        host,
+        resolved_addrs,
+        client,
+    })
+}
+
+pub async fn validate_public_http_destination(
+    url: &reqwest::Url,
+    label: &'static str,
+) -> Result<(), OutboundDestinationError> {
+    resolve_public_http_destination(url, label)
+        .await
+        .map(|_| ())
+}
+
+async fn resolve_public_http_destination(
+    url: &reqwest::Url,
+    label: &'static str,
+) -> Result<Vec<SocketAddr>, OutboundDestinationError> {
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?;
+    let port = url
+        .port_or_known_default()
+        .ok_or(OutboundDestinationError::MissingHost { label })?;
+    if let Some(ip) = parse_host_ip_literal(host) {
+        validate_public_ip(ip, host, label)?;
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+
+    let mut resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|source| OutboundDestinationError::ResolveFailed {
+            label,
+            host: host.to_string(),
+            source,
+        })?;
+    let mut resolved_addrs = Vec::new();
+    for addr in &mut resolved {
+        resolved_addrs.push(addr);
+        validate_public_ip(addr.ip(), host, label)?;
+    }
+    if resolved_addrs.is_empty() {
+        return Err(OutboundDestinationError::NoResolvedAddresses {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(resolved_addrs)
+}
+
+fn validate_public_ip(
+    ip: IpAddr,
+    host: &str,
+    label: &'static str,
+) -> Result<(), OutboundDestinationError> {
+    if public_http_ip_is_forbidden(ip) {
+        return Err(OutboundDestinationError::ForbiddenAddress {
+            label,
+            host: host.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn parse_host_ip_literal(host: &str) -> Option<IpAddr> {
+    host.parse::<IpAddr>().ok().or_else(|| {
+        host.strip_prefix('[')?
+            .strip_suffix(']')?
+            .parse::<IpAddr>()
+            .ok()
+    })
+}
+
+fn public_http_ip_is_forbidden(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+        }
+    }
+}
+
 fn reqwest_client_builder() -> reqwest::ClientBuilder {
     install_default_rustls_provider();
     Client::builder()
@@ -296,7 +511,7 @@ pub fn smg_reqwest_client() -> Client {
 }
 
 pub fn blocking_plugin_host_client(extra_ca_bundle_pem: &str) -> Result<BlockingClient, String> {
-    let mut builder = blocking_reqwest_client_builder();
+    let mut builder = blocking_reqwest_client_builder().redirect(reqwest::redirect::Policy::none());
     if !extra_ca_bundle_pem.trim().is_empty() {
         builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
     }
@@ -669,6 +884,74 @@ mod tests {
         assert_eq!(past_delay, Duration::from_secs(9));
         assert_eq!(zero_source, RetryAfterSource::FallbackBackoff);
         assert_eq!(zero_delay, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn operator_http_urls_allow_homelab_destinations() {
+        for raw in [
+            "http://localhost:9696",
+            "http://127.0.0.1:8080",
+            "http://192.168.1.50:9696",
+            "http://10.42.0.12:8080",
+            "http://prowlarr:9696",
+        ] {
+            validate_operator_http_url(raw, "operator integration")
+                .unwrap_or_else(|error| panic!("{raw} should be operator-valid: {error}"));
+        }
+    }
+
+    #[test]
+    fn operator_http_urls_reject_bad_syntax_and_credentials() {
+        assert!(matches!(
+            validate_operator_http_url("ftp://example.test", "operator integration"),
+            Err(OutboundDestinationError::UnsupportedScheme { .. })
+        ));
+        assert!(matches!(
+            validate_operator_http_url("https://user:secret@example.test", "operator integration"),
+            Err(OutboundDestinationError::EmbeddedCredentials { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn untrusted_public_http_targets_reject_private_and_local_addresses() {
+        for raw in [
+            "http://127.0.0.1/",
+            "http://10.0.0.1/",
+            "http://172.16.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.1.1/",
+            "http://0.0.0.0/",
+            "http://255.255.255.255/",
+            "http://224.0.0.1/",
+            "http://[::1]/",
+            "http://[fc00::1]/",
+            "http://[fe80::1]/",
+            "http://[ff02::1]/",
+        ] {
+            assert!(
+                matches!(
+                    prepare_untrusted_public_http_target(raw, "untrusted fetch").await,
+                    Err(OutboundDestinationError::ForbiddenAddress { .. })
+                ),
+                "{raw} should be blocked for untrusted fetches"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn untrusted_public_http_target_records_validated_socket_addresses() {
+        let target = prepare_untrusted_public_http_target(
+            "http://93.184.216.34:8080/artifact.wasm",
+            "untrusted fetch",
+        )
+        .await
+        .expect("literal public IP target should prepare");
+
+        assert_eq!(target.host(), "93.184.216.34");
+        assert_eq!(
+            target.resolved_addrs(),
+            &[SocketAddr::from(([93, 184, 216, 34], 8080))]
+        );
     }
 
     #[tokio::test]

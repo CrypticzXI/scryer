@@ -5,8 +5,8 @@ use std::time::UNIX_EPOCH;
 use async_trait::async_trait;
 use aws_lc_rs::digest as aws_lc_digest;
 use scryer_domain::{
-    Collection, CollectionType, DomainEventPayload, Episode, ImportType, MediaFacet,
-    MediaFileRenamedEventData, Title, User,
+    Collection, DomainEventPayload, Episode, ImportType, MediaFacet, MediaFileRenamedEventData,
+    Title, User,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -107,6 +107,7 @@ impl RenameMissingMetadataPolicy {
 pub struct RenamePlanItem {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub normalized_filename: Option<String>,
@@ -137,6 +138,7 @@ pub struct RenamePlan {
 pub struct RenameApplyItemResult {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub final_path: Option<String>,
@@ -248,6 +250,9 @@ impl AppUseCase {
                 "requested facet does not match title facet".into(),
             ));
         }
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
 
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))
@@ -268,6 +273,9 @@ impl AppUseCase {
     ) -> AppResult<RenamePlan> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
 
         let settings = self
             .read_rename_plan_settings(rename_facet_settings(&facet))
@@ -780,7 +788,10 @@ impl AppUseCase {
             .library
             .media_files
             .list_media_files_for_title(&title.id)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .collect::<Vec<_>>();
 
         let items = match title.facet.clone() {
             MediaFacet::Movie => {
@@ -1212,7 +1223,7 @@ pub(crate) fn configured_title_folder_path(
     PathBuf::from(media_root).join(if folder_name.is_empty() {
         tokens
             .get("title")
-            .cloned()
+            .map(|value| sanitize_filesystem_component(value))
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "untitled".to_string())
     } else {
@@ -1342,6 +1353,7 @@ struct ResolvedSeriesRenameMetadata {
 struct RenamePlanItemIds {
     collection_id: Option<String>,
     media_file_id: Option<String>,
+    series_movie_link_ids: Vec<String>,
 }
 
 struct RenamePlanSource {
@@ -1411,6 +1423,7 @@ fn rename_plan_item(
     RenamePlanItem {
         collection_id: item_ids.collection_id,
         media_file_id: item_ids.media_file_id,
+        series_movie_link_ids: item_ids.series_movie_link_ids,
         current_path,
         proposed_path,
         normalized_filename,
@@ -1775,6 +1788,7 @@ fn build_series_media_file_rename_plan_item(
     let source_item_ids = RenamePlanItemIds {
         collection_id: None,
         media_file_id: Some(source.file.id.clone()),
+        series_movie_link_ids: source.file.series_movie_link_ids.clone(),
     };
     let source_file = match prepare_rename_plan_source(
         source_item_ids.clone(),
@@ -1828,6 +1842,7 @@ fn build_series_media_file_rename_plan_item(
     let item_ids = RenamePlanItemIds {
         collection_id: rename_metadata.collection_id.clone(),
         media_file_id: source_item_ids.media_file_id,
+        series_movie_link_ids: source_item_ids.series_movie_link_ids,
     };
     let rendered = match resolve_rendered_rename_filename(
         &source_file,
@@ -1858,43 +1873,12 @@ fn build_series_media_file_rename_plan_item(
 }
 
 fn resolve_series_rename_metadata(
-    collections: &[Collection],
+    _collections: &[Collection],
     collections_by_id: &HashMap<String, Collection>,
     episodes_by_id: &HashMap<String, Episode>,
     source: &GroupedTitleMediaFile,
     parsed: &ParsedReleaseMetadata,
 ) -> ResolvedSeriesRenameMetadata {
-    if source.episode_ids.is_empty()
-        && let Some(collection) = collections.iter().find(|collection| {
-            collection.collection_type == CollectionType::Interstitial
-                && collection.ordered_path.as_deref() == Some(source.file.file_path.as_str())
-        })
-    {
-        let (season, episode) =
-            parse_interstitial_season_episode(collection.interstitial_season_episode.as_deref())
-                .unwrap_or_else(|| ("0".to_string(), "1".to_string()));
-
-        return ResolvedSeriesRenameMetadata {
-            collection_id: Some(collection.id.clone()),
-            season_order: non_empty_owned(collection.narrative_order.clone())
-                .or_else(|| non_empty_string(&collection.collection_index))
-                .unwrap_or_else(|| season.clone()),
-            absolute_episode: parsed
-                .episode
-                .as_ref()
-                .and_then(|episode_meta| episode_meta.absolute_episode)
-                .map(|value| format!("{value:03}"))
-                .unwrap_or_else(|| episode.clone()),
-            episode_title: collection
-                .interstitial_movie
-                .as_ref()
-                .map(|movie| movie.name.clone())
-                .unwrap_or_default(),
-            season,
-            episode,
-        };
-    }
-
     let linked_episodes =
         select_sorted_episodes(&source.episode_ids, episodes_by_id, collections_by_id);
     if let Some(primary_episode) = linked_episodes.first().copied() {
@@ -2096,26 +2080,6 @@ fn parse_sort_number(value: Option<&str>) -> Option<u32> {
         .and_then(|value| value.parse::<u32>().ok())
 }
 
-fn parse_interstitial_season_episode(value: Option<&str>) -> Option<(String, String)> {
-    let raw = value?.trim();
-    let stripped = raw.strip_prefix('S')?;
-    let (season, episode) = stripped.split_once('E')?;
-    let season = season.trim_start_matches('0');
-    let episode = episode.trim_start_matches('0');
-    Some((
-        if season.is_empty() {
-            "0".to_string()
-        } else {
-            season.to_string()
-        },
-        if episode.is_empty() {
-            "0".to_string()
-        } else {
-            episode.to_string()
-        },
-    ))
-}
-
 fn non_empty_owned(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         if value.trim().is_empty() {
@@ -2196,6 +2160,7 @@ fn build_movie_rename_plan_item(
     let item_ids = RenamePlanItemIds {
         collection_id: Some(collection.id.clone()),
         media_file_id: media_file.map(|media_file| media_file.id.clone()),
+        series_movie_link_ids: Vec::new(),
     };
     let source_file =
         match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {

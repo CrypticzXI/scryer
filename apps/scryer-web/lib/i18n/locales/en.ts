@@ -84,7 +84,8 @@ const en: LocaleDictionary = {
   "nav.group": "Navigation",
 
   "command.paletteTitle": "Go to",
-  "command.paletteDescription": "Search views, settings sections, and catalog titles",
+  "command.paletteDescription":
+    "Search views, settings sections, and catalog titles",
   "command.palettePlaceholder": "Type a page or title name",
   "command.paletteNoResults": "No matching destinations or titles",
   "command.paletteGroup": "Navigation",
@@ -111,7 +112,8 @@ const en: LocaleDictionary = {
   "settings.securitySkipLocalIps": "Skip for local IPs",
   "settings.securitySkipLocalIpsHelp":
     "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
-  "settings.securityMfaConfigStepUp": "Require MFA step-up for configuration changes",
+  "settings.securityMfaConfigStepUp":
+    "Require MFA step-up for configuration changes",
   "settings.securityMfaConfigStepUpHelp":
     "When enabled, system and facet configuration changes require a recent MFA verification.",
   "settings.securityMfaPasswordLogin": "Require MFA for password login",
@@ -139,9 +141,25 @@ const en: LocaleDictionary = {
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
   "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
+  "settings.mfaStepUpTitle": "Verify to open settings",
+  "settings.mfaStepUpDescription":
+    "Enter an authenticator code before viewing or changing configuration settings.",
+  "settings.mfaStepUpSubmit": "Continue",
+  "settings.mfaStepUpVerifying": "Verifying...",
+  "settings.mfaStepUpVerified": "Settings access verified.",
+  "settings.mfaStepUpFailed": "Could not verify that code. Try again.",
+  "settings.mfaStepUpRequiredAgain":
+    "Your settings verification expired. Enter a new authenticator code to continue.",
+  "settings.mfaStepUpPolicyLoadFailed":
+    "Settings verification status could not be loaded",
+  "settings.mfaStepUpPolicyLoadFailedDescription":
+    "Retry before viewing or changing configuration settings.",
+  "settings.mfaStepUpPolicyRetry": "Retry",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -156,13 +174,20 @@ const en: LocaleDictionary = {
   "settings.plexMachineId": "Machine ID",
   "settings.externalAccountInvites": "External account invites",
   "settings.externalAccountInvitesUnavailable":
-    "Enable provider login and configure at least one provider connection before creating external account invites.",
-  "settings.externalAccountInviteRequired": "Choose a user, provider connection, and provider identifier.",
+    "Enable media server login and configure at least one Jellyfin or Plex connection before creating external account invites.",
+  "settings.externalAccountInviteRequired":
+    "Choose a user and media server account.",
   "settings.externalAccountInviteCreated": "External account invite created.",
-  "settings.externalAccountInviteFailed": "Failed to create external account invite.",
+  "settings.externalAccountInviteFailed":
+    "Failed to create external account invite.",
+  "settings.mediaServerUser": "Media server user",
+  "settings.mediaServerUserSearchPlaceholder": "Search media server users",
+  "settings.mediaServerUserSearchFailed": "Media server user search failed.",
+  "settings.mediaServerUserPickerEmpty": "No media server users found.",
+  "settings.mediaServerUserPickerServerEmpty": "No users found on this server.",
   "settings.jellyfinUserSearchFailed": "Jellyfin user search failed.",
   "settings.jellyfinUserPickerEmpty": "No Jellyfin users found.",
-  "settings.jellyfinUserPickerManualEntry": "Use \"{{value}}\"",
+  "settings.jellyfinUserPickerManualEntry": 'Use "{{value}}"',
   "settings.previousExternalAccountInvites": "Previous invites",
   "settings.noExternalAccountInvites": "No external account invites yet.",
   "settings.externalAccountInviteStatusDisabled": "Disabled",
@@ -244,7 +269,8 @@ const en: LocaleDictionary = {
   "settings.librarySaveAndScanButton": "Save & Scan",
   "settings.librarySaveOnlyButton": "Save only",
   "settings.libraryDeleteButton": "Delete library",
-  "settings.libraryDeleteConfirm": "Delete {{name}}? Media files on disk will not be removed.",
+  "settings.libraryDeleteConfirm":
+    "Delete {{name}}? Media files on disk will not be removed.",
   "settings.libraryEmpty": "No libraries available.",
   "settings.libraryCreated": "Library created.",
   "settings.librarySaved": "Library saved.",
@@ -264,11 +290,14 @@ const en: LocaleDictionary = {
   "settings.libraryScoringPersonaLabel": "Scoring persona",
   "settings.libraryEffectivePersona": "Effective: {{value}}",
   "settings.rootFoldersLabel": "Root folders",
-  "settings.rootFoldersEmpty": "No root folders configured. Add at least one path.",
-  "settings.rootFoldersHelp": "Root folders are the top-level directories where media is stored. The default folder is used for new titles.",
+  "settings.rootFoldersEmpty":
+    "No root folders configured. Add at least one path.",
+  "settings.rootFoldersHelp":
+    "Root folders are the top-level directories where media is stored. The default folder is used for new titles.",
   "settings.rootFolderAdd": "Add root folder",
   "settings.rootFolderEdit": "Edit root folder",
-  "settings.rootFolderConflict": "This root folder is already used by {{libraries}}.",
+  "settings.rootFolderConflict":
+    "This root folder is already used by {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Set as default",
   "settings.libraryScanTitle": "Library scan",
@@ -379,7 +408,8 @@ const en: LocaleDictionary = {
     "Define profile behavior as JSON. Save with valid JSON and a list of profiles with unique `id` values.",
   "settings.qualityProfileGlobalLabel": "Default quality profile (global)",
   "settings.qualityProfileNameRequired": "Quality profile name is required.",
-  "settings.qualityProfileNameDuplicate": "Quality profile names must be unique.",
+  "settings.qualityProfileNameDuplicate":
+    "Quality profile names must be unique.",
   "settings.qualityProfileGlobalHelp":
     "Used when a category does not override it.",
   "settings.qualityProfileOverrideLabel": "{{category}} quality override",
@@ -401,11 +431,11 @@ const en: LocaleDictionary = {
   "settings.delayProfileCreate": "Create Profile",
   "settings.delayProfileCreateNew": "Create new delay profile",
   "settings.delayProfileEdit": "Edit Profile",
-  "settings.delayProfileConfirmDiscardTitle": "Discard current delay profile edits?",
+  "settings.delayProfileConfirmDiscardTitle":
+    "Discard current delay profile edits?",
   "settings.delayProfileConfirmDiscardDescription":
     "Your current delay profile edits will be lost.",
-  "settings.delayProfileDeleteConfirm":
-    "Delete this delay profile?",
+  "settings.delayProfileDeleteConfirm": "Delete this delay profile?",
   "settings.delayProfileNameLabel": "Name",
   "settings.delayProfileNamePlaceholder": "e.g. Wait for better quality",
   "settings.delayProfileNameRequired": "Delay profile name is required.",
@@ -466,7 +496,8 @@ const en: LocaleDictionary = {
   "settings.plexServerMissing": "Plex server not selected",
   "settings.discoverPlexServers": "Sign in with Plex to find servers",
   "settings.plexServer": "Plex server",
-  "settings.plexServerDiscoveryEmpty": "Plex did not return any accessible servers.",
+  "settings.plexServerDiscoveryEmpty":
+    "Plex did not return any accessible servers.",
   "settings.plexServerDiscoveryRequired":
     "Sign in with Plex and select a server before enabling Plex login, linking, or auto-add.",
   "settings.setupViaApiKey": "Setup via API key",
@@ -670,7 +701,8 @@ const en: LocaleDictionary = {
   "settings.pluginHttpTrustStoredCount": "{{count}} stored",
   "settings.pluginHttpTrustDescription":
     "Augment outbound HTTPS trust for WASM plugins with additional private or self-managed certificate authorities.",
-  "settings.pluginHttpTrustWarningTitle": "Use this only when you trust the certificate authority",
+  "settings.pluginHttpTrustWarningTitle":
+    "Use this only when you trust the certificate authority",
   "settings.pluginHttpTrustWarningBody":
     "These certificates extend HTTPS trust for plugin outbound requests. Only upload certificate authority files that you control or explicitly trust.",
   "settings.pluginHttpTrustUploadButton": "Upload trusted certificates",
@@ -749,6 +781,9 @@ const en: LocaleDictionary = {
     "This Scryer version is no longer supported. Upgrade now to continue using Scryer.",
   "smgUpgrade.minimumVersion": "Minimum supported version: {{version}}",
   "smgUpgrade.deadline": "Support cutoff: {{date}}",
+  "smgUpdate.title": "Scryer update available",
+  "smgUpdate.body": "You are running {{current}}. Latest is {{latest}}.",
+  "smgUpdate.releaseNotes": "Release notes",
 
   "title.addAndQueue": "Add Title and Queue",
   "title.addToCatalog": "Add to Catalog",
@@ -801,14 +836,14 @@ const en: LocaleDictionary = {
   "title.interactiveSearchComingSoon": "Interactive search is coming soon.",
   "title.seasonMonitored": "Season monitored",
   "title.episodeMonitored": "Episode monitored",
+  "title.seriesMovieMonitored": "Series movie monitored",
   "title.deleteFilesOnDisk": "Permanently delete files from disk",
   "title.seasonsAndEpisodes": "Seasons and Episodes",
   "title.noTrackedSeasons": "No seasons are tracked for this show yet.",
   "title.fetchingData": "Fetching data",
   "title.filesOnDisk": "Files on Disk",
   "title.noFilesTracked": "No files tracked.",
-  "title.noFilesTrackedHint":
-    "Run a library scan to detect files on disk.",
+  "title.noFilesTrackedHint": "Run a library scan to detect files on disk.",
   "title.configureRootFoldersHint":
     "Configure your root data folders in facet settings before scanning this library.",
   "title.invalidRootFoldersTitle": "One or more root folders are invalid.",
@@ -830,8 +865,6 @@ const en: LocaleDictionary = {
   "title.movieDetails": "Movie details",
   "title.searchingReleases": "Searching indexers for releases…",
   "title.noReleasesFound": "No releases found for {{name}}.",
-  "title.interactiveSearchHint":
-    "Use interactive search to query your configured indexers for releases of {{name}}.",
   "title.searchNeedsDownloadClientTitle": "Search requires a download client",
   "title.searchNeedsDownloadClientDescription":
     "Configure at least one download client before using search or interactive search from this title page.",
@@ -918,6 +951,7 @@ const en: LocaleDictionary = {
   "nzb.noResultsYet": "No release matches yet.",
   "nzb.blockedByProfile": "Blocked by profile: {{reason}}",
   "nzb.queue": "Queue",
+  "nzb.queueAdditionalFile": "Queue as additional file",
   "nzb.blocked": "Blocked",
   "nzb.noConsideredResults": "No releases passed the quality profile.",
   "nzb.blockedResults": "{{count}} blocked release(s)",
@@ -1013,14 +1047,17 @@ const en: LocaleDictionary = {
   "queue.assignTitleEmpty": "No matching titles found.",
   "queue.assignTitleQueued": "Title assigned. Import will be re-evaluated.",
   "queue.assignTitleFailed": "Failed to assign title.",
-  "queue.assignTitleBeforeImport": "Assign a title before starting manual import.",
+  "queue.assignTitleBeforeImport":
+    "Assign a title before starting manual import.",
   "queue.ignore": "Ignore",
   "queue.ignoreSuccess": "Download ignored.",
   "queue.ignoreFailed": "Failed to ignore download.",
   "queue.markFailedSearchAgain": "Mark Failed and Search Again",
   "queue.markFailedOnly": "Mark Failed Only",
-  "queue.markFailedSearchSuccess": "Download marked failed; reacquisition will run.",
-  "queue.markFailedOnlySuccess": "Download marked failed without reacquisition.",
+  "queue.markFailedSearchSuccess":
+    "Download marked failed; reacquisition will run.",
+  "queue.markFailedOnlySuccess":
+    "Download marked failed without reacquisition.",
   "queue.markFailedFailed": "Failed to mark download failed.",
   "queue.bulkIgnoreSuccess": "Ignored {{count}} downloads.",
   "queue.bulkIgnorePartial": "Ignored {{count}} downloads; {{failed}} failed.",
@@ -1041,7 +1078,8 @@ const en: LocaleDictionary = {
   "queue.deleteConfirmDescription":
     "Are you sure you want to remove this download from the queue? This cannot be undone.",
   "queue.bulkDeleteQueued": "Removal queued for {{count}} downloads.",
-  "queue.bulkDeletePartial": "Removal queued for {{count}} downloads; {{failed}} failed.",
+  "queue.bulkDeletePartial":
+    "Removal queued for {{count}} downloads; {{failed}} failed.",
   "queue.bulkDeleteFailed": "Failed to delete selected downloads.",
   "queue.bulkDeleteConfirmTitle": "Remove Selected Downloads",
   "queue.bulkDeleteConfirmDescription":
@@ -1145,7 +1183,8 @@ const en: LocaleDictionary = {
   "settings.managedByIndexer": "Managed by {{name}}",
   "settings.managedByParent": "Managed by parent",
   "settings.managesIndexerCount": "Manages {{count}} indexers",
-  "settings.managedIndexerReadOnly": "Managed indexers are controlled by their parent sync and cannot be edited directly.",
+  "settings.managedIndexerReadOnly":
+    "Managed indexers are controlled by their parent sync and cannot be edited directly.",
   "settings.managedIndexerReadOnlyShort": "Read-only",
   "settings.downloadClientsSection": "Download clients",
   "settings.downloadClientFilterPlaceholder": "Filter by client name or type",
@@ -1304,8 +1343,7 @@ const en: LocaleDictionary = {
   "settings.refProfilePreferRemux": "Profile prefers full remux releases",
   "settings.refProfileAllowBdDisk": "Blu-ray disc sources are accepted",
   "settings.refProfileAllowUpgrades": "Upgrading existing files is allowed",
-  "settings.refProfilePreferDualAudio":
-    "Profile prefers dual-audio releases",
+  "settings.refProfilePreferDualAudio": "Profile prefers dual-audio releases",
   "settings.refProfileRequiredLangs":
     "Mandatory audio languages (ISO 639-3 codes)",
 
@@ -1463,7 +1501,8 @@ const en: LocaleDictionary = {
   "settings.sub.enabled": "Enable subtitle management",
   "settings.sub.credentials": "OpenSubtitles Credentials",
   "settings.sub.username": "Username",
-  "settings.sub.usernameEmailWarning": "Use your OpenSubtitles username, not your email address.",
+  "settings.sub.usernameEmailWarning":
+    "Use your OpenSubtitles username, not your email address.",
   "settings.sub.password": "Password",
   "settings.sub.apiKey": "API Key",
   "settings.sub.apiKeyRequiredTitle": "Subtitle service unavailable",
@@ -1474,7 +1513,8 @@ const en: LocaleDictionary = {
     "Add your subtitle username and password here before searching or downloading subtitles.",
   "settings.sub.credentialsVerified": "Subtitle credentials verified",
   "settings.sub.languages": "Subtitle Languages",
-  "settings.sub.languagesHelp": "ISO 639-2 codes, comma-separated (e.g. eng, spa, fre, deu, jpn)",
+  "settings.sub.languagesHelp":
+    "ISO 639-2 codes, comma-separated (e.g. eng, spa, fre, deu, jpn)",
   "settings.sub.languagePickerAriaLabel": "Select subtitle languages",
   "settings.sub.languagePickerSelect": "Select languages...",
   "settings.sub.languagePickerSearch": "Search languages...",
@@ -1484,29 +1524,40 @@ const en: LocaleDictionary = {
   "settings.sub.forcedOnly": "Forced subtitles only",
   "settings.sub.minScoreSeries": "Minimum match percent for series",
   "settings.sub.minScoreMovie": "Minimum match percent for movies",
-  "settings.sub.minScoreHelp": "Subtitles below this match percentage are skipped. Series needs a higher threshold because episode-level matching must be exact.",
+  "settings.sub.minScoreHelp":
+    "Subtitles below this match percentage are skipped. Series needs a higher threshold because episode-level matching must be exact.",
   "settings.sub.searchInterval": "Search interval (hours)",
   "settings.sub.autoDownload": "Auto-download on import",
   "settings.sub.excludeAi": "Exclude AI-translated subtitles",
   "settings.sub.excludeMachine": "Exclude machine-translated subtitles",
   "settings.sub.syncEnabled": "Auto-correct subtitle timing",
-  "settings.sub.syncEnabledHelp": "Uses audio analysis to fix timing drift in downloaded subtitles.",
-  "settings.sub.syncThresholdSeries": "Auto-correct at or below this percent (series)",
-  "settings.sub.syncThresholdMovie": "Auto-correct at or below this percent (movies)",
-  "settings.sub.syncThresholdHelp": "Low-scoring subtitles are more likely to have timing issues. Subtitles above this match percentage are assumed to be well-timed.",
+  "settings.sub.syncEnabledHelp":
+    "Uses audio analysis to fix timing drift in downloaded subtitles.",
+  "settings.sub.syncThresholdSeries":
+    "Auto-correct at or below this percent (series)",
+  "settings.sub.syncThresholdMovie":
+    "Auto-correct at or below this percent (movies)",
+  "settings.sub.syncThresholdHelp":
+    "Low-scoring subtitles are more likely to have timing issues. Subtitles above this match percentage are assumed to be well-timed.",
   "settings.sub.syncMaxOffset": "Maximum correction (seconds)",
-  "settings.sub.syncMaxOffsetHelp": "Skip timing changes larger than this value to avoid damaging a subtitle that is probably already close enough.",
+  "settings.sub.syncMaxOffsetHelp":
+    "Skip timing changes larger than this value to avoid damaging a subtitle that is probably already close enough.",
   "settings.sub.syncPluginRequiredTitle": "Enhanced subtitle sync required",
-  "settings.sub.syncPluginRequiredDescription": "Install {{plugin}} to unlock automatic timing correction settings.",
+  "settings.sub.syncPluginRequiredDescription":
+    "Install {{plugin}} to unlock automatic timing correction settings.",
   "settings.sub.syncPluginLoadingCatalog": "Checking plugin catalog...",
   "settings.sub.syncPluginInstall": "Install plugin",
   "settings.sub.syncPluginInstalling": "Installing...",
-  "settings.sub.syncPluginUnavailable": "Enhanced Subtitle Sync is not available from the plugin catalog.",
-  "settings.sub.syncPluginBlocked": "Enhanced Subtitle Sync cannot be installed: {{reason}}",
-  "settings.sub.syncPluginDisabled": "Enhanced Subtitle Sync is installed but disabled. Enable it in Plugins to use timing correction.",
+  "settings.sub.syncPluginUnavailable":
+    "Enhanced Subtitle Sync is not available from the plugin catalog.",
+  "settings.sub.syncPluginBlocked":
+    "Enhanced Subtitle Sync cannot be installed: {{reason}}",
+  "settings.sub.syncPluginDisabled":
+    "Enhanced Subtitle Sync is installed but disabled. Enable it in Plugins to use timing correction.",
   "settings.sub.syncPluginInstalled": "{{plugin}} installed",
   "settings.sub.syncPluginLoadFailed": "Could not load the plugin catalog.",
-  "settings.sub.syncPluginInstallFailed": "Could not install {{plugin}}: {{error}}",
+  "settings.sub.syncPluginInstallFailed":
+    "Could not install {{plugin}}: {{error}}",
   "settings.sub.serviceStatus": "Subtitle Service",
   "settings.sub.serviceStatusAvailable": "Available",
   "settings.sub.serviceStatusUnavailable": "Unavailable",
@@ -1527,7 +1578,8 @@ const en: LocaleDictionary = {
   "settings.pp.filePathHelp": "Path to an executable script on the server.",
   "settings.pp.blocking": "Blocking",
   "settings.pp.fireAndForget": "Fire & Forget",
-  "settings.pp.blockingHelp": "Runs in priority order. Next script waits for this one to finish.",
+  "settings.pp.blockingHelp":
+    "Runs in priority order. Next script waits for this one to finish.",
   "settings.pp.fireAndForgetHelp":
     "Runs in the background without blocking import. Output can still be captured if enabled.",
   "settings.pp.executionMode": "Execution Mode",
@@ -1540,7 +1592,8 @@ const en: LocaleDictionary = {
     "When enabled, stdout and stderr are saved for each run, including background runs. Useful for troubleshooting.",
   "settings.pp.runHistory": "Run History",
   "settings.pp.noRuns": "No executions yet.",
-  "settings.pp.outputNotCaptured": "Output not captured. Enable debug mode on this script to see output.",
+  "settings.pp.outputNotCaptured":
+    "Output not captured. Enable debug mode on this script to see output.",
   "settings.pp.envHeading": "Environment Variables",
   "settings.pp.envDescription":
     "Scripts receive a JSON payload in SCRYER_METADATA, plus the convenience variables shown below. Values may be null when Scryer does not have them.",
@@ -1556,7 +1609,8 @@ const en: LocaleDictionary = {
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",
-  "settings.pluginRuntimeMemoryEstimate": "Estimated plugin runtime memory usage",
+  "settings.pluginRuntimeMemoryEstimate":
+    "Estimated plugin runtime memory usage",
   "settings.pluginsRefresh": "Refresh Catalog",
   "settings.pluginsUpdateAll": "Update All",
   "settings.pluginsUpdatingAll": "Updating All…",
@@ -1638,7 +1692,8 @@ const en: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "Plugin '{{name}}' reverted to the bundled built-in version.",
   "status.pluginUninstalled": "Plugin '{{name}}' uninstalled.",
@@ -1680,10 +1735,12 @@ const en: LocaleDictionary = {
   "qualityProfile.createProfileDescription":
     "Profile names can be edited after creation; IDs are auto-generated and must stay unique.",
   "qualityProfile.editProfile": "Edit quality profile",
-  "qualityProfile.confirmCreateFromEditTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmCreateFromEditTitle":
+    "Discard current quality profile edits?",
   "qualityProfile.confirmCreateFromEditDescription":
     "Your current quality profile edits will be lost and replaced with a new blank profile form.",
-  "qualityProfile.confirmDiscardTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmDiscardTitle":
+    "Discard current quality profile edits?",
   "qualityProfile.confirmDiscardDescription":
     "Your current quality profile edits will be lost.",
   "qualityProfile.profileNameLabel": "Profile name",
@@ -1807,7 +1864,7 @@ const en: LocaleDictionary = {
   "qualityProfile.minScorePlaceholder": "No minimum",
   "qualityProfile.confirmDeleteTitle": "Delete Quality Profile",
   "qualityProfile.confirmDeleteDescription":
-    "Are you sure you want to delete the quality profile \"{{name}}\"? This cannot be undone.",
+    'Are you sure you want to delete the quality profile "{{name}}"? This cannot be undone.',
   "qualityProfile.deleteDisabledInUse":
     "This profile is in use. Remove it from all titles and category defaults before deleting.",
 
@@ -1834,6 +1891,9 @@ const en: LocaleDictionary = {
   "mediaFile.pendingScan": "Pending Scan",
   "mediaFile.scanFailed": "Scan Failed",
   "mediaFile.score": "Score {{score}}",
+  "mediaFile.primary": "Primary",
+  "mediaFile.additional": "Additional",
+  "mediaFile.makePrimary": "Make primary",
   "mediaFile.video": "Video",
   "mediaFile.audioTracks": "Audio",
   "mediaFile.audioCount": "{{count}} Audio",
@@ -1935,6 +1995,7 @@ const en: LocaleDictionary = {
     "Selected TVDB match: {{name}}. Now press Search NZBGeek.",
   "status.noReleaseSource": "Release does not include a queueable source.",
   "status.queueSuccess": "Queued {{name}}",
+  "status.primaryMovieFileUpdated": "Primary movie file updated",
   "status.noSource": "No source to queue for {{name}}",
   "status.noReleaseForTitle": "No release found for {{name}}",
   "status.queuedLatest": "Queued latest release for {{name}}",
@@ -1958,8 +2019,7 @@ const en: LocaleDictionary = {
     "Remove {{name}} from catalog? Use the option below to also remove local files.",
   "status.titleDeleted": "{{name}} removed from catalog.",
   "status.bulkMonitorSuccess": "Monitored {{count}} titles.",
-  "status.bulkMonitorPartial":
-    "Monitored {{count}} titles; {{failed}} failed.",
+  "status.bulkMonitorPartial": "Monitored {{count}} titles; {{failed}} failed.",
   "status.bulkMonitorFailed": "Failed to monitor selected titles.",
   "status.bulkUnmonitorSuccess": "Unmonitored {{count}} titles.",
   "status.bulkUnmonitorPartial":
@@ -2001,7 +2061,8 @@ const en: LocaleDictionary = {
   "status.failedToDelete": "Failed to delete item.",
   "status.failedToLoad": "Failed to load data.",
   "status.failedToUpdate": "Failed to update item.",
-  "status.managePermissionsRequired": "Manage Permissions is required to edit permissions.",
+  "status.managePermissionsRequired":
+    "Manage Permissions is required to edit permissions.",
   "status.indexerCreated": "Indexer saved.",
   "status.indexerUpdated": "Indexer updated.",
   "status.indexerSynced": "Synced indexers managed by {{name}}.",
@@ -2040,18 +2101,24 @@ const en: LocaleDictionary = {
   "status.editingMediaServer": "Editing media server {{name}}",
   "status.deletingMediaServer": "Delete media server {{name}}?",
   "status.testingMediaServerConnection": "Testing {{server}} connection…",
-  "status.mediaServerConnectionTestPassed": "{{server}} connection test passed.",
-  "status.mediaServerConnectionTestFailed": "{{server}} connection test failed.",
+  "status.mediaServerConnectionTestPassed":
+    "{{server}} connection test passed.",
+  "status.mediaServerConnectionTestFailed":
+    "{{server}} connection test failed.",
   "status.downloadClientCreated": "Download client saved.",
   "status.downloadClientUpdated": "Download client updated.",
   "status.downloadClientDeleted": "Deleted download client {{name}}.",
   "status.downloadClientOrderSaved": "Download client priority order saved.",
   "status.testingDownloadClient": "Testing {{client}} connection…",
-  "status.downloadClientConnectionTestPassed": "{{client}} connection test passed.",
-  "status.downloadClientConnectionTestFailed": "{{client}} connection test failed.",
+  "status.downloadClientConnectionTestPassed":
+    "{{client}} connection test passed.",
+  "status.downloadClientConnectionTestFailed":
+    "{{client}} connection test failed.",
   "status.testingJellyfinConnection": "Testing {{connection}} connection...",
-  "status.jellyfinConnectionTestPassed": "{{connection}} connection test passed.",
-  "status.jellyfinConnectionTestFailed": "{{connection}} connection test failed.",
+  "status.jellyfinConnectionTestPassed":
+    "{{connection}} connection test passed.",
+  "status.jellyfinConnectionTestFailed":
+    "{{connection}} connection test failed.",
   "status.queueFailed": "Queue operation failed.",
   "status.apiError": "Request failed",
   "status.generic": "{{message}}",
@@ -2094,14 +2161,14 @@ const en: LocaleDictionary = {
   "profile.totpCode": "One-time code",
   "profile.totpVerifyAndEnable": "Verify and enable",
   "profile.totpEnabled": "Authenticator app enabled.",
-  "profile.totpDisabled": "Authenticator app disabled.",
+  "profile.totpDisabled": "Authenticator app unlinked.",
   "profile.totpEnabledAt": "Enabled",
   "profile.totpLastUsedAt": "Last used",
   "profile.totpRecoveryRemaining": "Recovery codes left",
   "profile.totpRecoveryCodes": "Recovery codes",
-  "profile.mfaVerifyStepUp": "Verify for settings",
-  "profile.mfaStepUpVerified": "MFA step-up verified.",
-  "profile.totpDisable": "Disable",
+  "profile.totpActionDescription":
+    "Enter an authenticator code to manage this authenticator.",
+  "profile.totpDisable": "Unlink authenticator",
   "profile.totpRegenerateRecoveryCodes": "New recovery codes",
   "profile.totpRecoveryCodesRegenerated": "Recovery codes regenerated.",
   "profile.totpOperationFailed": "Authenticator request failed.",
@@ -2144,7 +2211,8 @@ const en: LocaleDictionary = {
   "auth.loggingIn": "Signing in…",
   "auth.loginFailed": "Invalid username or password.",
   "auth.invalidCredentials": "Invalid username or password.",
-  "auth.signInFailedGeneric": "Sign-in failed. Check your sign-in details and try again.",
+  "auth.signInFailedGeneric":
+    "Sign-in failed. Check your sign-in details and try again.",
   "auth.signInWithScryerPassword": "Sign in with Scryer password",
   "auth.signInWithPasskey": "Sign in with passkey",
   "auth.signInWithJellyfin": "Sign in with Jellyfin",
@@ -2156,7 +2224,8 @@ const en: LocaleDictionary = {
   "auth.passkeyUnsupported": "This browser does not support passkeys.",
   "auth.passkeyCancelled": "Passkey request was cancelled.",
   "auth.passkeyFailed": "Passkey request failed.",
-  "auth.totpCodeRequired": "Enter your Scryer one-time code to finish signing in.",
+  "auth.totpCodeRequired":
+    "Enter your Scryer one-time code to finish signing in.",
   "auth.mfaSetupTitle": "Set up Scryer MFA",
   "auth.mfaSetupDescription":
     "Your sign-in worked. Set up Scryer one-time codes now so future sign-ins can be verified.",
@@ -2232,7 +2301,7 @@ const en: LocaleDictionary = {
   "wanted.status.paused": "Paused",
   "wanted.type.movie": "Movie",
   "wanted.type.episode": "Episode",
-  "wanted.type.interstitialMovie": "Franchise movie",
+  "wanted.type.seriesMovie": "Series movie",
   "wanted.phase.primary": "Primary",
   "wanted.phase.preRelease": "Pre-release",
   "wanted.phase.preAir": "Pre-air",
@@ -2255,7 +2324,7 @@ const en: LocaleDictionary = {
   "wanted.context.movie": "Movie wanted item",
   "wanted.context.episode": "Episode wanted item",
   "wanted.context.seasonEpisode": "Season {{seasonNumber}} episode wanted item",
-  "wanted.context.franchiseMovie": "Franchise movie wanted item",
+  "wanted.context.seriesMovie": "Series movie wanted item",
   "wanted.prev": "Previous",
   "wanted.next": "Next",
   "wanted.timeNow": "now",
@@ -2282,7 +2351,8 @@ const en: LocaleDictionary = {
   "cutoff.colFacet": "Type",
   "cutoff.colCurrentQuality": "Current",
   "cutoff.colTargetQuality": "Target",
-  "cutoff.noItems": "All monitored movies and episodes meet their quality profile cutoff.",
+  "cutoff.noItems":
+    "All monitored movies and episodes meet their quality profile cutoff.",
   "cutoff.totalCount": "{{count}} items below cutoff",
   "cutoff.filterFacet": "Type",
   "cutoff.allFacets": "All types",
@@ -2350,10 +2420,8 @@ const en: LocaleDictionary = {
   "settings.notificationEvent.postProcessingCompleted":
     "Post-Processing Completed",
   "settings.notificationEvent.subtitleDownloaded": "Subtitle Downloaded",
-  "settings.notificationEvent.subtitleSearchFailed":
-    "Subtitle Search Failed",
-  "settings.notificationEvent.mediaRequestSubmitted":
-    "Media Request Submitted",
+  "settings.notificationEvent.subtitleSearchFailed": "Subtitle Search Failed",
+  "settings.notificationEvent.mediaRequestSubmitted": "Media Request Submitted",
   "settings.notificationEvent.mediaRequestApproved": "Media Request Approved",
   "settings.notificationEvent.mediaRequestRejected": "Media Request Rejected",
   "settings.notificationEvent.mediaRequestCanceled": "Media Request Canceled",
@@ -2429,14 +2497,14 @@ const en: LocaleDictionary = {
   "setup.restoreDropTargetSelected": "Bundle selected and ready to inspect.",
   "setup.restoreDropTargetEncryptedSelected":
     "Encrypted bundle selected. Enter the password used during backup creation to continue.",
-  "setup.restoreDropTargetFormats":
-    "Supported formats: .tar.zst and .enc",
+  "setup.restoreDropTargetFormats": "Supported formats: .tar.zst and .enc",
   "setup.restoreSelectFile": "Select file",
   "setup.restoreClearFile": "Clear selection",
   "setup.restorePasswordHelp":
     "Enter the password used when this encrypted backup was created.",
   "setup.restoreNoFile": "Choose a backup bundle to continue.",
-  "setup.restorePasswordRequired": "Enter the bundle password before continuing.",
+  "setup.restorePasswordRequired":
+    "Enter the bundle password before continuing.",
   "setup.restoreInspect": "Inspect bundle",
   "setup.restoreApply": "Restore now",
   "setup.restoreChooseAnother": "Choose another bundle",
@@ -2533,7 +2601,8 @@ const en: LocaleDictionary = {
   "setup.findApiKey": "Find your API key",
   "setup.connectAndScan": "Connect & Scan",
   "setup.connectError": "Connection failed",
-  "setup.atLeastOneRequired": "Enter at least one of Sonarr, Radarr, or Prowlarr.",
+  "setup.atLeastOneRequired":
+    "Enter at least one of Sonarr, Radarr, or Prowlarr.",
   "setup.urlPlaceholder": "http://localhost:8989",
 
   "setup.reviewTitle": "Review & Import",
@@ -2647,8 +2716,10 @@ const en: LocaleDictionary = {
   "settings.autoBackupsSetKey": "Set automatic backup key",
   "settings.autoBackupsReplaceKey": "Replace automatic backup key",
   "settings.autoBackupsKeyAlreadySetHint": "(backup key already set)",
-  "settings.autoBackupsKeyPresent": "A saved automatic backup key is currently configured.",
-  "settings.autoBackupsKeyAbsent": "No automatic backup key is saved. Automatic backups will be plaintext.",
+  "settings.autoBackupsKeyPresent":
+    "A saved automatic backup key is currently configured.",
+  "settings.autoBackupsKeyAbsent":
+    "No automatic backup key is saved. Automatic backups will be plaintext.",
   "settings.autoBackupsClearKey": "Clear saved automatic backup key",
   "settings.autoBackupsClearKeyHelp":
     "Removes the stored key after you save. Future automatic backups will be plaintext unless you set a new key.",
@@ -2688,17 +2759,22 @@ const en: LocaleDictionary = {
   "settings.backupsRows": "{{count}} rows",
   "settings.recycleBin": "Recycle Bin",
   "settings.recycleBinEnabled": "Enable recycle bin",
-  "settings.recycleBinEnabledHelp": "Deleted and replaced media files move into the recycle bin before permanent removal.",
-  "settings.recycleBinEnabledReadonly": "Recycle bin status is controlled by users who can manage configuration.",
+  "settings.recycleBinEnabledHelp":
+    "Deleted and replaced media files move into the recycle bin before permanent removal.",
+  "settings.recycleBinEnabledReadonly":
+    "Recycle bin status is controlled by users who can manage configuration.",
   "settings.recycleBinSection": "Manage recycled media files",
   "settings.recycleBinLibraryFilter": "Libraries",
   "settings.recycleBinEmpty": "The recycle bin is empty.",
-  "settings.recycleBinNoManageableLibraries": "No libraries are available for recycle bin item management.",
+  "settings.recycleBinNoManageableLibraries":
+    "No libraries are available for recycle bin item management.",
   "settings.recycleBinRestore": "Restore",
   "settings.recycleBinDelete": "Delete",
   "settings.recycleBinEmptyAll": "Empty Recycle Bin",
-  "settings.recycleBinEmptyConfirm": "Permanently delete {{count}} items in the current recycle bin view? This cannot be undone.",
-  "settings.recycleBinDeleteConfirm": "Permanently delete this file? This cannot be undone.",
+  "settings.recycleBinEmptyConfirm":
+    "Permanently delete {{count}} items in the current recycle bin view? This cannot be undone.",
+  "settings.recycleBinDeleteConfirm":
+    "Permanently delete this file? This cannot be undone.",
   "settings.recycleBinReason": "Reason",
   "settings.recycleBinSize": "Size",
   "settings.recycleBinRecycled": "Recycled",

@@ -2,12 +2,66 @@ use super::*;
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
-use scryer_domain::TaggedAlias;
+use crate::settings::keys::default_indexer_routing_categories_for_scope;
+use scryer_domain::{MediaFacet, TaggedAlias};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
+
+fn release_search_tagged_aliases(title: &Title) -> Vec<TaggedAlias> {
+    let mut aliases = title.tagged_aliases.clone();
+    let mut seen: HashSet<String> = aliases
+        .iter()
+        .map(|alias| alias.name.trim().to_ascii_lowercase())
+        .filter(|alias| !alias.is_empty())
+        .collect();
+    for alias in &title.aliases {
+        let key = alias.trim().to_ascii_lowercase();
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        aliases.push(TaggedAlias {
+            name: alias.clone(),
+            language: "und".to_string(),
+        });
+    }
+    aliases
+}
+
+fn merge_newznab_category_codes(
+    base: impl IntoIterator<Item = String>,
+    extras: &[String],
+) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut seen = HashSet::new();
+    for category in base.into_iter().chain(extras.iter().cloned()) {
+        let category = category.trim().to_string();
+        if !category.is_empty() && seen.insert(category.clone()) {
+            merged.push(category);
+        }
+    }
+    merged
+}
+
+fn merge_series_movie_categories_into_routing(
+    plan: &mut IndexerRoutingPlan,
+    owner_facet: &MediaFacet,
+    extra_categories: &[String],
+) {
+    if extra_categories.is_empty() {
+        return;
+    }
+    for entry in plan.entries.values_mut().filter(|entry| entry.enabled) {
+        let base_categories = if entry.categories.is_empty() {
+            default_indexer_routing_categories_for_scope(owner_facet.as_str())
+        } else {
+            std::mem::take(&mut entry.categories)
+        };
+        entry.categories = merge_newznab_category_codes(base_categories, extra_categories);
+    }
+}
 
 fn source_kind_matches_preference(result: &IndexerSearchResult, preferred: &str) -> bool {
     match result.source_kind {
@@ -709,8 +763,12 @@ impl AppUseCase {
             tmdb_id,
             tvdb_id,
             anidb_id,
+            mal_id,
             category,
-            facet,
+            owner_facet,
+            search_facet,
+            id_search_facet,
+            newznab_categories,
             title_id,
             title_tags,
             library_id,
@@ -729,15 +787,25 @@ impl AppUseCase {
             library_id,
             imdb_id: imdb_id.as_deref(),
             tvdb_id: tvdb_id.as_deref(),
-            category_hint: category.as_deref(),
+            category_hint: Some(owner_facet.as_str()),
         };
         let quality_profile = self.resolve_quality_profile(quality_profile_lookup).await?;
 
         let scope_id = self.quality_profile_scope_id(quality_profile_lookup);
-        let indexer_routing = self
+        let mut indexer_routing = self
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
-        let newznab_categories = None;
+        let newznab_categories = if newznab_categories.is_empty() {
+            None
+        } else {
+            if let Some(plan) = indexer_routing.as_mut() {
+                merge_series_movie_categories_into_routing(plan, &owner_facet, &newznab_categories);
+            }
+            Some(merge_newznab_category_codes(
+                default_indexer_routing_categories_for_scope(owner_facet.as_str()),
+                &newznab_categories,
+            ))
+        };
 
         // If routing exists and every indexer is disabled, skip the search entirely.
         if let Some(ref plan) = indexer_routing {
@@ -801,15 +869,22 @@ impl AppUseCase {
         if let Some(anidb_id) = anidb_id.clone() {
             ids.insert("anidb_id".to_string(), anidb_id);
         }
+        if let Some(mal_id) = mal_id.clone() {
+            ids.insert("mal_id".to_string(), mal_id);
+        }
 
         for query in effective_queries {
             let indexer_client = self.services.integrations.indexer_client.clone();
             let ids = ids.clone();
             let category = category.clone();
-            let facet = facet.clone();
+            let facet = Some(search_facet.as_str().to_string());
+            let id_search_facet = id_search_facet
+                .as_ref()
+                .map(|facet| facet.as_str().to_string());
             let indexer_routing = indexer_routing.clone();
             let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
+            let query = query.clone();
 
             set.spawn(async move {
                 indexer_client
@@ -818,6 +893,7 @@ impl AppUseCase {
                         ids,
                         category.clone(),
                         facet,
+                        id_search_facet,
                         newznab_categories,
                         indexer_routing,
                         mode,
@@ -831,12 +907,14 @@ impl AppUseCase {
         }
 
         let mut query_failures = 0usize;
+        let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
 
         while let Some(result) = set.join_next().await {
             match result {
                 Ok(Ok(mut response)) => {
+                    successful_searches += 1;
                     for result in &mut response.results {
                         let provenance =
                             result.provenance.get_or_insert(ReleaseCandidateProvenance {
@@ -869,7 +947,7 @@ impl AppUseCase {
             }
         }
 
-        if raw_results.is_empty() && query_failures > 0 {
+        if raw_results.is_empty() && successful_searches == 0 && query_failures > 0 {
             let details =
                 first_failure.unwrap_or_else(|| "all indexer search queries failed".to_string());
             return Err(AppError::Repository(details));
@@ -901,6 +979,7 @@ impl AppUseCase {
         caller_label: &str,
         mode: SearchMode,
     ) -> AppResult<Vec<IndexerSearchResult>> {
+        let tagged_aliases = release_search_tagged_aliases(title);
         let results = self
             .search_and_score_releases(ReleaseSearchRequest {
                 queries: subject.queries.clone(),
@@ -908,8 +987,12 @@ impl AppUseCase {
                 tmdb_id: subject.tmdb_id.clone(),
                 tvdb_id: subject.tvdb_id.clone(),
                 anidb_id: subject.anidb_id.clone(),
+                mal_id: subject.mal_id.clone(),
                 category: Some(subject.category.clone()),
-                facet: Some(subject.facet.clone()),
+                owner_facet: subject.owner_facet.clone(),
+                search_facet: subject.search_facet.clone(),
+                id_search_facet: subject.id_search_facet.clone(),
+                newznab_categories: subject.newznab_categories.clone(),
                 title_id: subject.title_id.as_str(),
                 title_tags: &subject.title_tags,
                 library_id: Some(title.library_id.as_str()),
@@ -919,7 +1002,7 @@ impl AppUseCase {
                 season: subject.season,
                 episode: subject.episode,
                 absolute_episode: subject.absolute_episode,
-                tagged_aliases: &title.tagged_aliases,
+                tagged_aliases: &tagged_aliases,
                 search_subject_kind: subject.subject_kind,
                 parse_context: &subject.title_evidence.parse_context,
             })
@@ -1077,11 +1160,11 @@ impl AppUseCase {
         Ok(results)
     }
 
-    pub async fn search_indexers_for_interstitial_movie(
+    pub async fn search_indexers_for_series_movie(
         &self,
         actor: &User,
         title_id: String,
-        collection_id: String,
+        series_movie_link_id: String,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1096,35 +1179,30 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        let collection = self
+        let link = self
             .services
             .catalog
             .shows
-            .get_collection_by_id(&collection_id)
+            .get_series_movie_link_by_id(&series_movie_link_id)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
-        if collection.title_id != title.id {
+            .ok_or_else(|| AppError::NotFound(format!("series movie {series_movie_link_id}")))?;
+        if link.series_title_id != title.id {
             return Err(AppError::Validation(
-                "collection does not belong to title".into(),
-            ));
-        }
-        if collection.interstitial_movie.is_none() {
-            return Err(AppError::Validation(
-                "collection does not have interstitial movie metadata".into(),
+                "series movie does not belong to title".into(),
             ));
         }
 
         let (search_title, subject) = self
-            .resolve_release_search_subject_for_collection(&title, &collection)
+            .resolve_release_search_subject_for_series_movie(&title, &link)
             .await?;
 
         info!(
             actor = actor.id.as_str(),
             title_id = title_id.as_str(),
-            collection_id = collection_id.as_str(),
+            series_movie_link_id = series_movie_link_id.as_str(),
             query = subject.queries.first().map(String::as_str).unwrap_or(""),
             category = subject.category.as_str(),
-            "searching indexers for interstitial movie"
+            "searching indexers for series movie"
         );
 
         let mut results = self
@@ -1243,8 +1321,12 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
+    pub(crate) mal_id: Option<String>,
     pub(crate) category: Option<String>,
-    pub(crate) facet: Option<String>,
+    pub(crate) owner_facet: MediaFacet,
+    pub(crate) search_facet: MediaFacet,
+    pub(crate) id_search_facet: Option<MediaFacet>,
+    pub(crate) newznab_categories: Vec<String>,
     pub(crate) title_id: &'a str,
     pub(crate) title_tags: &'a [String],
     pub(crate) library_id: Option<&'a str>,

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
-import { QRCode } from "react-qr-code";
+import { TotpQrCode } from "@/components/common/totp-qr-code";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import { useLanguage } from "@/lib/hooks/use-language";
-import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
+import { TotpCodeForm, sanitizeTotpCode } from "@/components/auth/totp-code-form";
+import { Input, integerInputProps } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
@@ -67,10 +68,6 @@ function graphQlErrorCode(error: unknown): string | null {
 
 function primaryLoginFailureMessage(t: (key: string) => string): string {
   return t("auth.signInFailedGeneric");
-}
-
-function sanitizeTotpCode(value: string): string {
-  return sanitizeDigits(value).slice(0, 6);
 }
 
 export default function LoginPage() {
@@ -271,8 +268,8 @@ export default function LoginPage() {
   }, [t]);
 
   const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
+    async (e?: React.FormEvent) => {
+      e?.preventDefault();
       setError(null);
       setSubmitting(true);
       try {
@@ -508,9 +505,10 @@ export default function LoginPage() {
           ) : jellyfinMfaEnrollment ? (
             <div className="space-y-4">
               <div className="flex flex-col items-center gap-4">
-                <div className="w-fit rounded-md bg-white p-3">
-                  <QRCode value={jellyfinMfaEnrollment.otpauthUrl} size={168} />
-                </div>
+                <TotpQrCode
+                  id="jellyfin-mfa-enrollment-qr-code"
+                  value={jellyfinMfaEnrollment.otpauthUrl}
+                />
                 <a
                   id="jellyfin-mfa-enrollment-setup-link"
                   className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
@@ -620,41 +618,22 @@ export default function LoginPage() {
 
               {passwordFormVisible ? (
                 localTotpPrompted ? (
-                  <form id="login-form" onSubmit={handleSubmit} className="space-y-4">
-                    <div className="space-y-1 text-center">
-                      <h2 className="text-base font-semibold">{t("auth.totpCode")}</h2>
-                      <p className="text-sm text-muted-foreground">
-                        {t("auth.totpCodeRequired")}
-                      </p>
-                    </div>
-                    <Input
-                      {...integerInputProps}
-                      id="local-totp-code"
-                      autoComplete="one-time-code"
-                      autoFocus
-                      maxLength={6}
-                      value={localTotpCode}
-                      onChange={(event) => setLocalTotpCode(sanitizeTotpCode(event.target.value))}
-                      placeholder={t("auth.totpCode")}
-                    />
-                    <button
-                      id="login-submit"
-                      type="submit"
-                      disabled={anySubmitting || localTotpCode.length !== 6}
-                      className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
-                    >
-                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      {submitting ? t("auth.signingIn") : t("auth.signIn")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={resetLocalTotpChallenge}
-                      disabled={anySubmitting}
-                      className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
-                    >
-                      {t("label.back")}
-                    </button>
-                  </form>
+                  <TotpCodeForm
+                    id="login-form"
+                    inputId="local-totp-code"
+                    submitId="login-submit"
+                    code={localTotpCode}
+                    title={t("auth.totpCode")}
+                    description={t("auth.totpCodeRequired")}
+                    submitLabel={t("auth.signIn")}
+                    busyLabel={t("auth.signingIn")}
+                    cancelLabel={t("label.back")}
+                    busy={submitting}
+                    disabled={anySubmitting && !submitting}
+                    onCodeChange={setLocalTotpCode}
+                    onSubmit={() => handleSubmit()}
+                    onCancel={resetLocalTotpChallenge}
+                  />
                 ) : (
                   <form id="login-form" onSubmit={handleSubmit} className="space-y-5">
                     <div className="space-y-1.5">
@@ -759,50 +738,27 @@ export default function LoginPage() {
               ) : null}
 
               {jellyfinFormVisible && showJellyfinTotpCode ? (
-                <div id="jellyfin-login-form" className="space-y-4">
-                  <div className="space-y-1 text-center">
-                    <h2 className="text-base font-semibold">{t("auth.totpCode")}</h2>
-                    <p className="text-sm text-muted-foreground">
-                      {t("auth.totpCodeRequired")}
-                    </p>
-                  </div>
-                  <Input
-                    {...integerInputProps}
-                    id="jellyfin-totp-code"
-                    autoComplete="one-time-code"
-                    autoFocus
-                    maxLength={6}
-                    value={jellyfinTotpCode}
-                    onChange={(event) => setJellyfinTotpCode(sanitizeTotpCode(event.target.value))}
-                    placeholder={t("auth.totpCode")}
-                  />
-                  <button
-                    id="jellyfin-login-totp-submit"
-                    type="button"
-                    onClick={handleJellyfinSignIn}
-                    disabled={
-                      anySubmitting ||
-                      !jellyfinConnectionId ||
-                      !jellyfinUsername ||
-                      !jellyfinPassword ||
-                      jellyfinTotpCode.length !== 6
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    {jellyfinSubmitting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : null}
-                    {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signIn")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetJellyfinTotpChallenge}
-                    disabled={anySubmitting}
-                    className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
-                  >
-                    {t("label.back")}
-                  </button>
-                </div>
+                <TotpCodeForm
+                  id="jellyfin-login-form"
+                  inputId="jellyfin-totp-code"
+                  submitId="jellyfin-login-totp-submit"
+                  code={jellyfinTotpCode}
+                  title={t("auth.totpCode")}
+                  description={t("auth.totpCodeRequired")}
+                  submitLabel={t("auth.signIn")}
+                  busyLabel={t("auth.signingIn")}
+                  cancelLabel={t("label.back")}
+                  busy={jellyfinSubmitting}
+                  disabled={
+                    (anySubmitting && !jellyfinSubmitting) ||
+                    !jellyfinConnectionId ||
+                    !jellyfinUsername ||
+                    !jellyfinPassword
+                  }
+                  onCodeChange={setJellyfinTotpCode}
+                  onSubmit={handleJellyfinSignIn}
+                  onCancel={resetJellyfinTotpChallenge}
+                />
               ) : jellyfinFormVisible ? (
                 <div id="jellyfin-login-form" className="space-y-3">
                   {jellyfinConnections.length > 1 ? (
@@ -890,6 +846,7 @@ export default function LoginPage() {
                 </select>
               ) : null}
               <button
+                id="login-plex-submit"
                 type="button"
                 onClick={handlePlexSignIn}
                 disabled={anySubmitting || !plexConnectionId}

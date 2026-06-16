@@ -1,7 +1,7 @@
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
-  InterstitialMovieMetadata,
+  SeriesMovieLink,
   TitleCollection,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
@@ -42,34 +42,6 @@ export function formatRuntimeFromSeconds(runtimeSeconds: number | null | undefin
     return null;
   }
   return formatRuntimeFromMinutes(Math.floor(runtimeSeconds / 60));
-}
-
-export function getImdbUrl(imdbId: string | null | undefined) {
-  if (!imdbId) return null;
-  const trimmed = imdbId.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("tt")) {
-    return `https://www.imdb.com/title/${trimmed}`;
-  }
-  return `https://www.imdb.com/find?q=${encodeURIComponent(trimmed)}&s=tt`;
-}
-
-export function getTvdbMovieUrl(metadata: InterstitialMovieMetadata) {
-  const tvdbId = String(metadata.tvdbId).trim();
-  if (!tvdbId) return null;
-  const slug = metadata.slug?.trim();
-  const base = "https://www.thetvdb.com";
-  if (slug) {
-    return `${base}/movies/${tvdbId}-${encodeURIComponent(slug)}`;
-  }
-  return `${base}/?id=${encodeURIComponent(tvdbId)}`;
-}
-
-export function normalizeMovieCollectionLabel(label: string | null | undefined) {
-  if (!label) return null;
-  const trimmed = label.trim();
-  if (!trimmed) return null;
-  return /^movie\s+\d+$/i.test(trimmed) ? null : trimmed;
 }
 
 export function dedupeInsensitive(values: string[]) {
@@ -121,9 +93,6 @@ export function parseSeasonSortValue(collection: TitleCollection) {
 }
 
 export function isSpecialsCollection(collection: TitleCollection) {
-  if (collection.collectionType === "interstitial") {
-    return false;
-  }
   return collection.collectionType === "specials"
     || (collection.collectionType === "season" && parseSeasonSortValue(collection) === 0);
 }
@@ -132,9 +101,6 @@ export function seasonHeading(
   collection: TitleCollection,
   t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string,
 ) {
-  if (collection.collectionType === "interstitial") {
-    return collection.label?.trim() || t("narrative.movie");
-  }
   const label = collection.label?.trim();
   if (isSpecialsCollection(collection)) {
     return !label || /^season\s*0+$/i.test(label) ? t("title.specials") : label;
@@ -256,120 +222,91 @@ export function blocklistEntryMatchesEpisode(
   return keys.has(episodeKey(season, episodeNumber));
 }
 
-function normalizeSpecialsMovieMatchTitle(value: string | null | undefined) {
-  if (!value) {
-    return "";
+export type SeriesTimelineItem =
+  | {
+      kind: "collection";
+      key: string;
+      collection: TitleCollection;
+      sortValue: number;
+    }
+  | {
+      kind: "seriesMovie";
+      key: string;
+      link: SeriesMovieLink;
+      sortValue: number;
+    };
+
+export function seriesMovieTimelineSortValue(link: SeriesMovieLink) {
+  const narrativeOrder = link.narrativeOrder?.trim();
+  if (narrativeOrder && /^-?\d+(?:\.\d+)?$/.test(narrativeOrder)) {
+    const value = Number.parseFloat(narrativeOrder);
+    if (Number.isFinite(value)) {
+      return value;
+    }
   }
-  return value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/['’]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+
+  if (link.afterSeason != null) {
+    return link.afterSeason + 0.5;
+  }
+
+  if (link.beforeSeason != null) {
+    return link.beforeSeason - 0.5;
+  }
+
+  return 0.5;
 }
 
-function isNarrativeSpecialsMovie(movie: InterstitialMovieMetadata) {
-  const movieForm = movie.movieForm?.trim().toLowerCase();
-  const continuityStatus = movie.continuityStatus?.trim().toLowerCase();
-  return movieForm === "movie" || continuityStatus === "canon" || continuityStatus === "mixed";
+export function buildSeriesTimelineItems(
+  collections: TitleCollection[],
+  seriesMovieLinks: SeriesMovieLink[],
+): SeriesTimelineItem[] {
+  const items: SeriesTimelineItem[] = [
+    ...collections.map((collection) => ({
+      kind: "collection" as const,
+      key: `s-${collection.id}`,
+      collection,
+      sortValue: parseSeasonSortValue(collection),
+    })),
+    ...seriesMovieLinks.map((link) => ({
+      kind: "seriesMovie" as const,
+      key: `m-${link.id}`,
+      link,
+      sortValue: seriesMovieTimelineSortValue(link),
+    })),
+  ];
+
+  return items.sort(compareSeriesTimelineItems);
 }
 
-function scoreSpecialsMovieEpisodeMatch(
-  movie: InterstitialMovieMetadata,
-  episode: CollectionEpisode,
+function compareSeriesTimelineItems(
+  left: SeriesTimelineItem,
+  right: SeriesTimelineItem,
 ) {
-  const movieTitle = normalizeSpecialsMovieMatchTitle(movie.name);
-  const episodeTitle = normalizeSpecialsMovieMatchTitle(
-    episode.title || episode.episodeLabel || null,
-  );
-
-  if (!movieTitle || !episodeTitle) {
-    return -1;
+  const leftSpecials = left.kind === "collection" && isSpecialsCollection(left.collection);
+  const rightSpecials = right.kind === "collection" && isSpecialsCollection(right.collection);
+  if (leftSpecials !== rightSpecials) {
+    return leftSpecials ? 1 : -1;
   }
 
-  let score = -1;
-
-  if (movieTitle === episodeTitle) {
-    score = 100;
-  } else if (
-    movieTitle.startsWith(`${episodeTitle} `)
-    || movieTitle.endsWith(` ${episodeTitle}`)
-    || movieTitle.includes(` ${episodeTitle} `)
-    || episodeTitle.startsWith(`${movieTitle} `)
-    || episodeTitle.endsWith(` ${movieTitle}`)
-    || episodeTitle.includes(` ${movieTitle} `)
-  ) {
-    score = 88;
-  } else {
-    const movieTokens = new Set(movieTitle.split(" ").filter((token) => token.length > 2));
-    const episodeTokens = episodeTitle.split(" ").filter((token) => token.length > 2);
-    const overlap = episodeTokens.filter((token) => movieTokens.has(token)).length;
-    const smallestTokenSet = Math.max(1, Math.min(movieTokens.size, episodeTokens.length));
-    const coverage = overlap / smallestTokenSet;
-
-    if (overlap >= 2 && coverage >= 0.6) {
-      score = 60 + overlap;
-    }
+  if (left.sortValue !== right.sortValue) {
+    return right.sortValue - left.sortValue;
   }
 
-  if (score < 0) {
-    return -1;
+  if (left.kind !== right.kind) {
+    return left.kind === "collection" ? -1 : 1;
   }
 
-  const episodeYear = episode.airDate ? Number.parseInt(episode.airDate.slice(0, 4), 10) : null;
-  if (episodeYear != null && movie.year != null && episodeYear === movie.year) {
-    score += 5;
+  if (left.kind === "collection" && right.kind === "collection") {
+    return right.collection.collectionIndex.localeCompare(left.collection.collectionIndex)
+      || right.collection.id.localeCompare(left.collection.id);
   }
 
-  return score;
-}
-
-export function buildSpecialsMovieEpisodeMatches(
-  collection: TitleCollection,
-  episodes: CollectionEpisode[],
-) {
-  const linkedMovieByEpisodeId: Record<string, InterstitialMovieMetadata> = {};
-  const standaloneMovies: InterstitialMovieMetadata[] = [];
-
-  if (!isSpecialsCollection(collection) || collection.specialsMovies.length === 0) {
-    return { linkedMovieByEpisodeId, standaloneSpecialMovies: standaloneMovies };
+  if (left.kind === "seriesMovie" && right.kind === "seriesMovie") {
+    return left.link.movie.title.localeCompare(right.link.movie.title)
+      || left.link.id.localeCompare(right.link.id);
   }
 
-  const claimedEpisodeIds = new Set<string>();
-
-  for (const movie of collection.specialsMovies) {
-    if (isNarrativeSpecialsMovie(movie)) {
-      standaloneMovies.push(movie);
-      continue;
-    }
-
-    let bestEpisode: CollectionEpisode | null = null;
-    let bestScore = -1;
-
-    for (const episode of episodes) {
-      if (claimedEpisodeIds.has(episode.id)) {
-        continue;
-      }
-
-      const score = scoreSpecialsMovieEpisodeMatch(movie, episode);
-      if (score > bestScore) {
-        bestScore = score;
-        bestEpisode = episode;
-      }
-    }
-
-    if (bestEpisode && bestScore >= 60) {
-      linkedMovieByEpisodeId[bestEpisode.id] = movie;
-      claimedEpisodeIds.add(bestEpisode.id);
-    } else {
-      standaloneMovies.push(movie);
-    }
-  }
-
-  return { linkedMovieByEpisodeId, standaloneSpecialMovies: standaloneMovies };
+  return 0;
 }
 
 /**

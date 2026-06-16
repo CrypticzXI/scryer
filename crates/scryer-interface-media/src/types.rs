@@ -74,9 +74,6 @@ pub struct CollectionPayload {
     pub file_size_bytes: Option<i64>,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
-    pub interstitial_movie: Option<InterstitialMovieMetadataPayload>,
-    pub specials_movies: Vec<InterstitialMovieMetadataPayload>,
-    pub interstitial_season_episode: Option<String>,
     pub monitored: bool,
     pub created_at: String,
 }
@@ -86,6 +83,52 @@ pub struct SetCollectionMonitoredPayload {
     pub id: String,
     pub monitored: bool,
     pub episodes: Vec<EpisodePayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MovieEntityPayload {
+    pub id: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub language: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub content_status: Option<String>,
+    pub genres: Vec<String>,
+    pub studio: Option<String>,
+    pub digital_release_date: Option<String>,
+    pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
+    pub tmdb_id: Option<String>,
+    pub mal_id: Option<String>,
+    pub anidb_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SeriesMovieLinkPayload {
+    pub id: String,
+    pub series_title_id: String,
+    pub movie: MovieEntityPayload,
+    pub placement: Option<String>,
+    pub narrative_order: Option<String>,
+    pub after_season: Option<i32>,
+    pub before_season: Option<i32>,
+    pub linked_episode_id: Option<String>,
+    pub association_confidence: Option<String>,
+    pub continuity_status: Option<String>,
+    pub movie_form: Option<String>,
+    pub confidence: Option<String>,
+    pub signal_summary: Option<String>,
+    pub source: Option<String>,
+    pub monitored: bool,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -119,8 +162,10 @@ pub struct TitleMediaFilePayload {
     pub id: String,
     pub title_id: String,
     pub episode_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub file_path: String,
     pub size_bytes: String,
+    pub role: String,
     pub quality_label: Option<String>,
     pub scan_status: String,
     pub created_at: String,

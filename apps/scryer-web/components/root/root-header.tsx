@@ -26,7 +26,6 @@ import {
   viewFromFacet,
 } from "@/lib/facets/helpers";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
@@ -470,18 +469,14 @@ export const RootHeader = React.memo(function RootHeader({
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-h-20 gap-3">
                 <div className="h-20 w-14 flex-none overflow-hidden rounded-md border border-border bg-muted">
-                  {posterUrl ? (
-                    <TitlePoster
-                      src={posterUrl}
-                      alt={t("media.posterAlt", { name: result.name })}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                      {t("label.noArt")}
-                    </div>
-                  )}
+                  <TitlePosterSlot
+                    src={posterUrl}
+                    alt={t("media.posterAlt", { name: result.name })}
+                    className="h-full w-full object-cover"
+                    placeholderClassName="flex h-full w-full items-center justify-center text-xs text-muted-foreground"
+                    emptyLabel={t("label.noArt")}
+                    loading="lazy"
+                  />
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">{result.name}</p>

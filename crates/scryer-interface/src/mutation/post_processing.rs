@@ -2,7 +2,7 @@ use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_domain::{Id, PostProcessingScript};
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{app_from_ctx, require_config_step_up, to_gql_error};
 use crate::types::*;
 
 #[derive(Default)]
@@ -16,7 +16,7 @@ impl PostProcessingMutations {
         input: CreatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let now = Utc::now();
         let script = PostProcessingScript {
@@ -55,7 +55,7 @@ impl PostProcessingMutations {
         input: UpdatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let mut script = app
             .get_post_processing_script(&actor, &input.id)
@@ -115,7 +115,7 @@ impl PostProcessingMutations {
         id: String,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         app.delete_post_processing_script(&actor, &id)
             .await
@@ -130,7 +130,7 @@ impl PostProcessingMutations {
         id: String,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let updated = app
             .toggle_post_processing_script(&actor, &id)

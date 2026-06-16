@@ -1,5 +1,5 @@
-use async_graphql::Data;
 use async_graphql::http::ALL_WEBSOCKET_PROTOCOLS;
+use async_graphql::{Data, ErrorExtensionValues, Response as GraphQLResponse, ServerError};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
@@ -11,6 +11,7 @@ use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims, JwtSess
 use scryer_domain::AppPermission;
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
@@ -18,6 +19,13 @@ use crate::rate_limit::{
     RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
     should_precheck_graphql_login,
 };
+
+const X_FORWARDED_PROTO: &str = "x-forwarded-proto";
+const GRAPHQL_POST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
+const GRAPHQL_POST_EXECUTION_TIMEOUT_CODE: &str = "GRAPHQL_EXECUTION_TIMEOUT";
+const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
+const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
+const MFA_STEP_UP_REQUIRED_STATUS_CODE: u16 = 460;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CorsConfig {
@@ -53,6 +61,119 @@ impl CorsConfig {
         }
         self.allowed_origins.iter().any(|allowed| allowed == origin)
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WebSocketOriginPolicy {
+    allowed_origins: Vec<String>,
+}
+
+impl WebSocketOriginPolicy {
+    pub(crate) fn from_env(cors: &CorsConfig) -> Self {
+        let origins = match std::env::var("SCRYER_WS_ALLOWED_ORIGINS") {
+            Ok(raw) => parse_websocket_allowed_origins(&raw),
+            Err(_) => cors
+                .allowed_origins
+                .iter()
+                .filter_map(|origin| websocket_allowed_origin(origin))
+                .collect(),
+        };
+
+        Self {
+            allowed_origins: origins,
+        }
+    }
+
+    fn check(&self, headers: &HeaderMap) -> Result<(), String> {
+        let Some(origin) = headers
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+
+        let Some(origin) = websocket_allowed_origin(origin) else {
+            return Err("invalid WebSocket Origin".to_string());
+        };
+
+        if request_is_same_origin(headers, &origin)
+            || self
+                .allowed_origins
+                .iter()
+                .any(|allowed| allowed == &origin)
+        {
+            return Ok(());
+        }
+
+        Err(format!("WebSocket Origin is not allowed: {origin}"))
+    }
+}
+
+fn parse_websocket_allowed_origins(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(websocket_allowed_origin)
+        .collect()
+}
+
+fn websocket_allowed_origin(origin: &str) -> Option<String> {
+    if matches!(origin.trim(), "*" | "http://*" | "https://*") {
+        tracing::warn!(
+            origin,
+            "ignoring wildcard WebSocket Origin; configure exact origins instead"
+        );
+        return None;
+    }
+    canonical_origin(origin)
+}
+
+fn request_is_same_origin(headers: &HeaderMap, origin: &str) -> bool {
+    let Some((origin_scheme, origin_authority)) = split_origin(origin) else {
+        return false;
+    };
+    let Some(request_authority) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(normalize_authority)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if origin_authority != request_authority {
+        return false;
+    }
+
+    forwarded_proto(headers)
+        .is_none_or(|proto| origin_scheme_matches_forwarded_proto(&origin_scheme, &proto))
+}
+
+fn split_origin(origin: &str) -> Option<(String, String)> {
+    let (scheme, authority) = origin.split_once("://")?;
+    Some((scheme.to_ascii_lowercase(), normalize_authority(authority)))
+}
+
+fn normalize_authority(authority: &str) -> String {
+    authority.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(X_FORWARDED_PROTO)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn origin_scheme_matches_forwarded_proto(origin_scheme: &str, forwarded_proto: &str) -> bool {
+    matches!(
+        (origin_scheme, forwarded_proto),
+        ("http", "http") | ("http", "ws") | ("https", "https") | ("https", "wss")
+    )
 }
 
 fn default_cors_allowed_origins() -> Vec<String> {
@@ -286,6 +407,16 @@ pub(crate) async fn graphql_ws_handler(
     let auth_enabled = auth_snapshot.effective_form_login_enabled;
     let local_bypass_active = local_ip_bypass_active(&auth_snapshot, &headers, Some(remote_addr));
     let connection_epoch = auth_snapshot.epoch;
+
+    if let Err(error) = state.ws_origin_policy.check(&headers) {
+        tracing::warn!(
+            remote_addr = %remote_addr,
+            error = %error,
+            "rejecting GraphQL WebSocket connection because browser Origin is not allowed"
+        );
+        return (StatusCode::FORBIDDEN, error).into_response();
+    }
+
     let initial_actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
     let initial_data = graphql_ws_connection_data(connection_epoch, initial_actor.clone());
 
@@ -318,6 +449,7 @@ pub(crate) struct AuthState {
     pub(crate) schema: scryer_interface::ApiSchema,
     pub(crate) auth_runtime: AuthRuntimeStateHandle,
     pub(crate) rate_limiter: ScryerRateLimiter,
+    pub(crate) ws_origin_policy: WebSocketOriginPolicy,
 }
 
 /// GraphQL handler that returns a streaming response body.
@@ -333,8 +465,7 @@ pub(crate) async fn graphql_handler(
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
     let actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
-    let mut batch = body.into_inner();
-    let response_status = graphql_response_status(&mut batch);
+    let batch = body.into_inner();
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(
         client_ip,
@@ -350,7 +481,7 @@ pub(crate) async fn graphql_handler(
         let batch_response = rate_limited_graphql_response(&decision);
         let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
         return Response::builder()
-            .status(response_status)
+            .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap();
@@ -370,34 +501,83 @@ pub(crate) async fn graphql_handler(
         batch
     };
 
-    // Wrap execution in a single-item stream so the future is dropped (cancelled)
-    // when hyper detects the client has disconnected.
     let schema = state.schema.clone();
     let rate_limiter = state.rate_limiter.clone();
-    let body_stream = futures_util::stream::once(async move {
-        let mut batch_response = schema.execute_batch(batch).await;
-        if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
-            && !precheck_login
-            && !batch_response.is_ok()
-            && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
+    let mut batch_response =
+        match tokio::time::timeout(GRAPHQL_POST_EXECUTION_TIMEOUT, schema.execute_batch(batch))
+            .await
         {
-            batch_response = rate_limited_graphql_response(&decision);
-        }
-        Ok::<_, std::io::Error>(
-            serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec()),
-        )
-    });
+            Ok(response) => response,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_seconds = GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs(),
+                    "graphql POST execution timed out"
+                );
+                graphql_execution_timeout_response()
+            }
+        };
+    if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
+        && !precheck_login
+        && !batch_response.is_ok()
+        && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
+    {
+        batch_response = rate_limited_graphql_response(&decision);
+    }
+    let response_status = graphql_response_status(&batch_response);
+    let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
 
     Response::builder()
         .status(response_status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from_stream(body_stream))
+        .body(Body::from(body))
         .unwrap()
 }
 
-fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
-    let _ = batch;
+fn graphql_response_status(response: &async_graphql::BatchResponse) -> StatusCode {
+    if graphql_response_has_error_code(response, AUTHENTICATION_REQUIRED_CODE) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    if graphql_response_has_error_code(response, MFA_STEP_UP_REQUIRED_CODE) {
+        return StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE)
+            .expect("MFA step-up status code is a valid HTTP status code");
+    }
+
     StatusCode::OK
+}
+
+fn graphql_response_has_error_code(response: &async_graphql::BatchResponse, code: &str) -> bool {
+    match response {
+        async_graphql::BatchResponse::Single(response) => response_has_error_code(response, code),
+        async_graphql::BatchResponse::Batch(responses) => responses
+            .iter()
+            .any(|response| response_has_error_code(response, code)),
+    }
+}
+
+fn response_has_error_code(response: &GraphQLResponse, code: &str) -> bool {
+    response.errors.iter().any(|error| {
+        let Some(extensions) = &error.extensions else {
+            return false;
+        };
+        matches!(extensions.get("code"), Some(async_graphql::Value::String(value)) if value == code)
+    })
+}
+
+fn graphql_execution_timeout_response() -> async_graphql::BatchResponse {
+    let mut extensions = ErrorExtensionValues::default();
+    extensions.set("code", GRAPHQL_POST_EXECUTION_TIMEOUT_CODE);
+    extensions.set("timeoutSeconds", GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs());
+
+    let mut error = ServerError::new(
+        format!(
+            "GraphQL request timed out after {} seconds",
+            GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs()
+        ),
+        None,
+    );
+    error.extensions = Some(extensions);
+    async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]))
 }
 
 #[derive(Clone)]
@@ -592,6 +772,85 @@ async fn resolve_default_user_required(
     match app_use_case.find_default_user().await? {
         Some(user) => Ok(user),
         None => app_use_case.find_or_create_default_user().await,
+    }
+}
+
+#[cfg(test)]
+mod ws_origin_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn ws_headers(host: &str, origin: Option<&str>, forwarded_proto: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        if let Some(origin) = origin {
+            headers.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
+        }
+        if let Some(forwarded_proto) = forwarded_proto {
+            headers.insert(
+                X_FORWARDED_PROTO,
+                HeaderValue::from_str(forwarded_proto).unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn websocket_origin_policy_allows_no_origin_clients() {
+        let policy = WebSocketOriginPolicy::default();
+        let headers = ws_headers("192.168.1.25:8080", None, None);
+
+        assert!(policy.check(&headers).is_ok());
+    }
+
+    #[test]
+    fn websocket_origin_policy_allows_same_origin_lan_host() {
+        let policy = WebSocketOriginPolicy::default();
+        let headers = ws_headers("192.168.1.25:8080", Some("http://192.168.1.25:8080"), None);
+
+        assert!(policy.check(&headers).is_ok());
+    }
+
+    #[test]
+    fn websocket_origin_policy_allows_configured_origin() {
+        let policy = WebSocketOriginPolicy {
+            allowed_origins: vec!["https://scryer.example.test".to_string()],
+        };
+        let headers = ws_headers(
+            "127.0.0.1:8080",
+            Some("https://scryer.example.test"),
+            Some("https"),
+        );
+
+        assert!(policy.check(&headers).is_ok());
+    }
+
+    #[test]
+    fn websocket_origin_policy_rejects_cross_site_browser_origin() {
+        let policy = WebSocketOriginPolicy::default();
+        let headers = ws_headers("192.168.1.25:8080", Some("https://evil.example.test"), None);
+
+        assert!(policy.check(&headers).is_err());
+    }
+
+    #[test]
+    fn websocket_origin_policy_rejects_malformed_browser_origin() {
+        let policy = WebSocketOriginPolicy::default();
+        let headers = ws_headers("192.168.1.25:8080", Some("not an origin"), None);
+
+        assert!(policy.check(&headers).is_err());
+    }
+
+    #[test]
+    fn websocket_origin_policy_requires_forwarded_proto_match_when_present() {
+        let policy = WebSocketOriginPolicy::default();
+        let headers = ws_headers(
+            "scryer.example.test",
+            Some("http://scryer.example.test"),
+            Some("https"),
+        );
+
+        assert!(policy.check(&headers).is_err());
     }
 }
 
@@ -872,48 +1131,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scan_library_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "mutation StartScan { scanLibrary(facet: movie) { sessionId } }",
-        ));
-
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+    fn graphql_error_response_with_code(code: &str) -> async_graphql::BatchResponse {
+        let mut extensions = ErrorExtensionValues::default();
+        extensions.set("code", code);
+        let mut error = ServerError::new("graphQL error", None);
+        error.extensions = Some(extensions);
+        async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]))
     }
 
     #[test]
-    fn rehydrate_all_metadata_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "mutation RehydrateAllMetadata { rehydrateAllMetadata(language: \"jpn\") }",
-        ));
+    fn graphql_authentication_required_response_uses_unauthorized_status() {
+        let response = graphql_error_response_with_code(AUTHENTICATION_REQUIRED_CODE);
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(graphql_response_status(&response), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
-    fn queue_manual_import_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            r#"mutation QueueManualImport {
-                queueManualImport(input: {
-                    titleId: "title-1"
-                    clientType: "nzbget"
-                    downloadClientItemId: "download-1"
-                }) {
-                    importId
-                }
-            }"#,
-        ));
+    fn graphql_mfa_step_up_response_uses_step_up_status() {
+        let response = graphql_error_response_with_code(MFA_STEP_UP_REQUIRED_CODE);
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(
+            graphql_response_status(&response),
+            StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE).unwrap()
+        );
     }
 
     #[test]
-    fn non_scan_requests_keep_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "query ActiveScans { activeLibraryScans { sessionId } }",
-        ));
+    fn graphql_non_mfa_error_response_keeps_ok_status() {
+        let response = graphql_error_response_with_code("VALIDATION_FAILED");
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(graphql_response_status(&response), StatusCode::OK);
+    }
+
+    #[test]
+    fn graphql_batched_mfa_step_up_response_uses_step_up_status() {
+        let mut extensions = ErrorExtensionValues::default();
+        extensions.set("code", MFA_STEP_UP_REQUIRED_CODE);
+        let mut error = ServerError::new("MFA step-up required", None);
+        error.extensions = Some(extensions);
+        let response = async_graphql::BatchResponse::Batch(vec![
+            GraphQLResponse::new(async_graphql::Value::Null),
+            GraphQLResponse::from_errors(vec![error]),
+        ]);
+
+        assert_eq!(
+            graphql_response_status(&response),
+            StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE).unwrap()
+        );
+    }
+
+    #[test]
+    fn graphql_batched_authentication_required_takes_precedence_over_step_up() {
+        let mut auth_extensions = ErrorExtensionValues::default();
+        auth_extensions.set("code", AUTHENTICATION_REQUIRED_CODE);
+        let mut auth_error = ServerError::new("authentication required", None);
+        auth_error.extensions = Some(auth_extensions);
+
+        let mut mfa_extensions = ErrorExtensionValues::default();
+        mfa_extensions.set("code", MFA_STEP_UP_REQUIRED_CODE);
+        let mut mfa_error = ServerError::new("MFA step-up required", None);
+        mfa_error.extensions = Some(mfa_extensions);
+
+        let response = async_graphql::BatchResponse::Batch(vec![
+            GraphQLResponse::from_errors(vec![mfa_error]),
+            GraphQLResponse::from_errors(vec![auth_error]),
+        ]);
+
+        assert_eq!(graphql_response_status(&response), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn graphql_timeout_response_reports_sixty_second_execution_timeout() {
+        let response = graphql_execution_timeout_response();
+        let body = serde_json::to_value(&response).expect("timeout response serializes");
+
+        assert_eq!(
+            body["errors"][0]["message"],
+            "GraphQL request timed out after 60 seconds"
+        );
+        assert_eq!(
+            body["errors"][0]["extensions"]["code"],
+            GRAPHQL_POST_EXECUTION_TIMEOUT_CODE
+        );
+        assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 60);
     }
 
     #[test]

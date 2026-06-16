@@ -140,6 +140,15 @@ impl WantedItemRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.wanted
+            .delete_wanted_items_for_series_movie_link(series_movie_link_id)
+            .await
+    }
+
     async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.wanted
             .delete_wanted_items_for_episode(episode_id)
@@ -719,6 +728,9 @@ impl TestContext {
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
+        .with_external_identity_verifier(Arc::new(
+            scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
+        ))
         .with_media_server_connection_store(Arc::new(MediaServerConnectionStore::new(
             datastore.clone(),
             db.encryption_key_state(),

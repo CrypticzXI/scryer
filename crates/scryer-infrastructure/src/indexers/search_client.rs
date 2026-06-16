@@ -19,8 +19,8 @@ use tracing::{debug, info, warn};
 /// Each strategy carries the raw query/ID params to pass through to the plugin.
 #[derive(Clone, Debug)]
 struct SearchStrategy {
-    query: String,
     request_query: String,
+    request_facet: String,
     ids: HashMap<String, String>,
     season: Option<u32>,
     episode: Option<u32>,
@@ -567,7 +567,8 @@ impl MultiIndexerSearchClient {
     fn resolve_search_capabilities(
         config: &IndexerConfig,
         static_caps: &IndexerProviderCapabilities,
-        facet: &str,
+        query_facet: &str,
+        id_facet: &str,
     ) -> ResolvedSearchCapabilities {
         let transport_kind = config.nab_transport_kind();
         if transport_kind.is_none() {
@@ -621,15 +622,16 @@ impl MultiIndexerSearchClient {
 
         let mut caps = static_caps.clone();
         caps.supported_ids = supported_ids_from_caps_snapshot(snapshot);
-        caps.query_param = caps_snapshot_has_query(snapshot, facet).then_some("q".to_string());
-        caps.search_inputs = caps_search_inputs(snapshot, facet);
+        caps.query_param =
+            caps_snapshot_has_query(snapshot, query_facet).then_some("q".to_string());
+        caps.search_inputs = caps_search_inputs(snapshot, query_facet);
         caps.supported_external_ids = supported_external_ids_from_caps_snapshot(snapshot);
         caps.season_param = node_supports_param(snapshot.tv_search.as_ref(), "season")
             .then_some("season".to_string());
         caps.episode_param =
             node_supports_param(snapshot.tv_search.as_ref(), "ep").then_some("ep".to_string());
 
-        let id_dispatch_mode = if caps.has_facet(facet) {
+        let id_dispatch_mode = if caps.has_facet(id_facet) {
             IdDispatchMode::Aggregate
         } else {
             IdDispatchMode::QueryOnly
@@ -697,7 +699,6 @@ impl MultiIndexerSearchClient {
     async fn execute_strategy_tier(
         client: Arc<dyn IndexerClient>,
         category: Option<String>,
-        facet: String,
         per_indexer_categories: Option<Vec<String>>,
         mode: SearchMode,
         tagged_aliases: Vec<scryer_domain::TaggedAlias>,
@@ -710,13 +711,13 @@ impl MultiIndexerSearchClient {
             let category = category.clone();
             let per_indexer_categories = per_indexer_categories.clone();
             let tagged_aliases = tagged_aliases.clone();
-            let facet = facet.clone();
             let strategy_label = strategy.label.clone();
-            let title_guard_mode = if strategy.query.trim().is_empty() {
-                TitleGuardMode::SkipTitleMatch
-            } else {
-                TitleGuardMode::ExactTitleMatch
-            };
+            let title_guard_mode =
+                if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
+                    TitleGuardMode::SkipTitleMatch
+                } else {
+                    TitleGuardMode::ExactTitleMatch
+                };
 
             set.spawn(async move {
                 let start = std::time::Instant::now();
@@ -733,8 +734,9 @@ impl MultiIndexerSearchClient {
                         if strategy.generic_query_only {
                             None
                         } else {
-                            Some(facet)
+                            Some(strategy.request_facet)
                         },
+                        None,
                         if strategy.generic_query_only {
                             None
                         } else {
@@ -799,6 +801,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         ids: HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
+        id_search_facet: Option<String>,
         newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,
@@ -899,9 +902,23 @@ impl IndexerClient for MultiIndexerSearchClient {
                 return Err(AppError::Validation("search facet is required".to_string()));
             }
         };
+        let id_search_facet = match id_search_facet
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value @ ("movie" | "series" | "anime")) => value.to_string(),
+            Some(other) => {
+                return Err(AppError::Validation(format!(
+                    "unsupported ID search facet: {other}"
+                )));
+            }
+            None => facet.clone(),
+        };
 
         tracing::debug!(
             %facet,
+            %id_search_facet,
             ?category,
             ?ids,
             ?season,
@@ -942,7 +959,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                 .map(|entry| {
                     if entry.categories.is_empty() {
                         if Self::is_prowlarr_nab_proxy(config) {
-                            Self::default_newznab_categories_for_facet(&facet)
+                            newznab_categories
+                                .clone()
+                                .or_else(|| Self::default_newznab_categories_for_facet(&facet))
                         } else {
                             newznab_categories.clone()
                         }
@@ -952,7 +971,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                 })
                 .unwrap_or_else(|| {
                     if Self::is_prowlarr_nab_proxy(config) {
-                        Self::default_newznab_categories_for_facet(&facet)
+                        newznab_categories
+                            .clone()
+                            .or_else(|| Self::default_newznab_categories_for_facet(&facet))
                     } else {
                         newznab_categories.clone()
                     }
@@ -976,7 +997,8 @@ impl IndexerClient for MultiIndexerSearchClient {
             let static_caps = self
                 .plugin_provider
                 .capabilities_for_provider(&config.provider_type);
-            let resolved_caps = Self::resolve_search_capabilities(config, &static_caps, &facet);
+            let resolved_caps =
+                Self::resolve_search_capabilities(config, &static_caps, &facet, &id_search_facet);
             let caps = resolved_caps.caps.clone();
             debug!(
                 indexer = config.name.as_str(),
@@ -1002,12 +1024,15 @@ impl IndexerClient for MultiIndexerSearchClient {
             // - Indexers that have the facet but only for ID-based search (deduplicates_aliases)
             //   are skipped when none of their supported IDs are available.
             let has_facet_entry = caps.has_facet(&facet);
+            let has_id_facet_entry = caps.has_facet(&id_search_facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
             let skip_no_facet = !has_facet_entry
+                && !has_id_facet_entry
                 && has_declared_facets
                 && !matches!(resolved_caps.id_dispatch_mode, IdDispatchMode::QueryOnly);
-            let skip_no_matching_id = has_facet_entry && caps.deduplicates_aliases && {
-                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&facet)).is_empty()
+            let skip_no_matching_id = has_id_facet_entry && caps.deduplicates_aliases && {
+                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet))
+                    .is_empty()
             };
             if !is_rss_request && (skip_no_facet || skip_no_matching_id) {
                 info!(
@@ -1026,23 +1051,26 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            let filtered_ids =
-                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&facet));
+            let eligible_ids =
+                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet));
             if matches!(
                 resolved_caps.id_dispatch_mode,
                 IdDispatchMode::Aggregate | IdDispatchMode::QueryOnly
             ) {
-                let dropped_ids = available_ids
+                let extra_ids = available_ids
                     .keys()
-                    .filter(|id_type| !filtered_ids.contains_key(*id_type))
+                    .filter(|id_type| !eligible_ids.contains_key(*id_type))
                     .cloned()
                     .collect::<Vec<_>>();
-                if !dropped_ids.is_empty() {
+                if !available_ids.is_empty() {
                     debug!(
                         indexer = config.name.as_str(),
                         facet,
-                        dropped_ids = ?dropped_ids,
-                        "dropping IDs not advertised by effective caps"
+                        id_search_facet,
+                        eligible_ids = ?eligible_ids.keys().collect::<Vec<_>>(),
+                        carried_ids = ?available_ids.keys().collect::<Vec<_>>(),
+                        extra_ids = ?extra_ids,
+                        "ID strategy capability resolved; carrying full ID envelope when strategy runs"
                     );
                 }
             }
@@ -1111,6 +1139,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         HashMap::new(),
                                         category,
                                         Some(facet),
+                                        None,
                                         rss_category_request.clone(),
                                         None,
                                         mode,
@@ -1171,7 +1200,8 @@ impl IndexerClient for MultiIndexerSearchClient {
 
             let mut strategies: Vec<SearchStrategy> = build_strategies(&StrategyParams {
                 query: &query,
-                facet: &facet,
+                query_facet: &facet,
+                id_facet: &id_search_facet,
                 ids: &available_ids,
                 season,
                 episode,
@@ -1186,7 +1216,8 @@ impl IndexerClient for MultiIndexerSearchClient {
             {
                 let alias_strategies = build_strategies(&StrategyParams {
                     query: &alias_query,
-                    facet: &facet,
+                    query_facet: &facet,
+                    id_facet: &id_search_facet,
                     ids: &available_ids,
                     season,
                     episode,
@@ -1200,8 +1231,8 @@ impl IndexerClient for MultiIndexerSearchClient {
             }
             if is_rss_request && strategies.is_empty() {
                 strategies.push(SearchStrategy {
-                    query: String::new(),
                     request_query: String::new(),
+                    request_facet: facet.clone(),
                     ids: HashMap::new(),
                     season: None,
                     episode: None,
@@ -1248,7 +1279,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let primary_outcomes = Self::execute_strategy_tier(
                         client.clone(),
                         category_for_indexer.clone(),
-                        facet.clone(),
                         rss_category_request.clone(),
                         mode,
                         tagged_aliases_for_indexer.clone(),
@@ -1301,7 +1331,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             Err(err) => {
                                 primary_had_error = true;
                                 batch_health.mark_error();
-                                warn!(
+                                debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
                                     error = %err,
@@ -1343,7 +1373,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                         let fallback_outcomes = Self::execute_strategy_tier(
                             client,
                             category_for_indexer,
-                            facet,
                             rss_category_request,
                             mode,
                             tagged_aliases_for_indexer.clone(),
@@ -1394,7 +1423,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 }
                                 Err(err) => {
                                     batch_health.mark_error();
-                                    warn!(
+                                    debug!(
                                         indexer = indexer_name.as_str(),
                                         strategy = outcome.label.as_str(),
                                         error = %err,
@@ -1420,9 +1449,25 @@ impl IndexerClient for MultiIndexerSearchClient {
                         }
                     }
 
+                    let batch_had_success = batch_health.any_success;
+                    let batch_had_error = batch_health.any_error;
                     batch_health
                         .apply(&backoff_tracker, &indexer_id, &indexer_name)
                         .await;
+
+                    if mode == SearchMode::Interactive
+                        && collected_results.is_empty()
+                        && !batch_had_success
+                        && batch_had_error
+                    {
+                        return (
+                            indexer_id,
+                            indexer_name,
+                            Err(AppError::Repository(
+                                "all attempted indexer strategies failed".to_string(),
+                            )),
+                        );
+                    }
 
                     (
                         indexer_id,
@@ -1440,9 +1485,13 @@ impl IndexerClient for MultiIndexerSearchClient {
         }
 
         let mut all_results: Vec<IndexerSearchResult> = Vec::new();
+        let mut successful_searches = 0usize;
+        let mut failed_searches = 0usize;
+        let mut first_failure: Option<String> = None;
         while let Some(join_result) = set.join_next().await {
             match join_result {
                 Ok((_id, name, Ok(mut response))) => {
+                    successful_searches += 1;
                     debug!(
                         indexer = name.as_str(),
                         count = response.results.len(),
@@ -1451,10 +1500,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                     all_results.append(&mut response.results);
                 }
                 Ok((id, name, Err(err))) => {
+                    failed_searches += 1;
+                    first_failure = first_failure.or_else(|| Some(err.to_string()));
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
                     let _ = id;
                 }
                 Err(err) => {
+                    failed_searches += 1;
+                    first_failure = first_failure.or_else(|| Some(err.to_string()));
                     warn!(error = %err, "indexer search task panicked");
                 }
             }
@@ -1488,6 +1541,16 @@ impl IndexerClient for MultiIndexerSearchClient {
             }
         }
 
+        if all_results.is_empty()
+            && successful_searches == 0
+            && failed_searches > 0
+            && mode == SearchMode::Interactive
+        {
+            return Err(AppError::Repository(first_failure.unwrap_or_else(|| {
+                "all indexer search attempts failed".to_string()
+            })));
+        }
+
         for result in &mut all_results {
             if result.parsed_release_metadata.is_none() {
                 result.parsed_release_metadata =
@@ -1512,7 +1575,8 @@ impl IndexerClient for MultiIndexerSearchClient {
 /// dispatch them all in parallel.
 struct StrategyParams<'a> {
     query: &'a str,
-    facet: &'a str,
+    query_facet: &'a str,
+    id_facet: &'a str,
     ids: &'a HashMap<String, String>,
     season: Option<u32>,
     episode: Option<u32>,
@@ -1522,12 +1586,12 @@ struct StrategyParams<'a> {
     is_alias_query: bool,
 }
 
-/// The `facet` parameter is the current search facet ("movie", "series", "anime").
-/// The orchestrator only builds ID strategies for facets the indexer declares
-/// in `supported_ids`.
+/// The query facet controls text-search endpoint shape. The ID facet controls
+/// which provider IDs are valid for ID-backed strategies.
 fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     let query = p.query;
-    let facet = p.facet;
+    let query_facet = p.query_facet;
+    let id_facet = p.id_facet;
     let ids = p.ids;
     let season = p.season;
     let episode = p.episode;
@@ -1542,17 +1606,22 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
     let mut strategies = Vec::with_capacity(4);
 
-    let filtered_ids = filter_ids_for_types(ids, caps.id_types_for_facet(facet));
-    if !filtered_ids.is_empty() && !is_alias_query {
+    let eligible_ids = filter_ids_for_types(ids, caps.id_types_for_facet(id_facet));
+    if !eligible_ids.is_empty() && !is_alias_query {
+        let full_ids = ids
+            .iter()
+            .filter(|(_, value)| !value.trim().is_empty())
+            .map(|(id_type, value)| (id_type.clone(), value.clone()))
+            .collect::<HashMap<_, _>>();
         let selected_ids = match id_dispatch_mode {
-            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => filtered_ids.clone(),
+            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => full_ids,
             IdDispatchMode::QueryOnly => HashMap::new(),
         };
-        if facet == "anime" && !selected_ids.is_empty() {
+        if id_facet == "anime" && !selected_ids.is_empty() {
             if let Some(absolute_episode) = absolute_episode {
                 strategies.push(SearchStrategy {
-                    query: query.to_string(),
                     request_query: String::new(),
+                    request_facet: id_facet.to_string(),
                     ids: selected_ids.clone(),
                     season: None,
                     episode: None,
@@ -1564,8 +1633,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
             if episode.is_some() {
                 strategies.push(SearchStrategy {
-                    query: query.to_string(),
                     request_query: String::new(),
+                    request_facet: id_facet.to_string(),
                     ids: selected_ids.clone(),
                     season,
                     episode,
@@ -1576,10 +1645,10 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             }
         }
 
-        if strategies.is_empty() {
+        if strategies.is_empty() && !selected_ids.is_empty() {
             strategies.push(SearchStrategy {
-                query: query.to_string(),
                 request_query: String::new(),
+                request_facet: id_facet.to_string(),
                 ids: selected_ids,
                 season,
                 episode,
@@ -1593,13 +1662,13 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     // Freetext strategy: skip if indexer has no capability for this facet at all.
     // An indexer that only declares "anime" should not get freetext for "series" searches.
     // For alias queries, indexers with deduplicates_aliases skip freetext (handled at top).
-    let has_facet_entry = caps.has_facet(facet);
+    let has_facet_entry = caps.has_facet(query_facet);
     let skip_no_facet = !has_facet_entry && !caps.supported_ids.is_empty();
     let generic_query_only = id_dispatch_mode == IdDispatchMode::QueryOnly;
     if caps.query_param.is_some() && !query.is_empty() && !skip_no_facet {
         strategies.push(SearchStrategy {
-            query: query.to_string(),
             request_query: query.to_string(),
+            request_facet: query_facet.to_string(),
             ids: HashMap::new(),
             season,
             episode,
@@ -1616,8 +1685,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     // If no strategies were generated, fall back to a single combined call
     if strategies.is_empty() && !query.is_empty() && caps.query_param.is_some() {
         strategies.push(SearchStrategy {
-            query: query.to_string(),
             request_query: query.to_string(),
+            request_facet: query_facet.to_string(),
             ids: HashMap::new(),
             season,
             episode,
@@ -2069,6 +2138,7 @@ mod tests {
             _ids: HashMap<String, String>,
             _category: Option<String>,
             _facet: Option<String>,
+            _id_search_facet: Option<String>,
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
@@ -2196,6 +2266,7 @@ mod tests {
             ids: HashMap<String, String>,
             _category: Option<String>,
             facet: Option<String>,
+            _id_search_facet: Option<String>,
             newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
@@ -2447,6 +2518,7 @@ mod tests {
                 Some("series".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Auto,
                 None,
                 None,
@@ -2481,6 +2553,7 @@ mod tests {
             .search(
                 String::new(),
                 HashMap::new(),
+                None,
                 None,
                 None,
                 None,
@@ -2522,6 +2595,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 SearchMode::Auto,
                 None,
                 None,
@@ -2559,6 +2633,7 @@ mod tests {
                 Some("series".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Auto,
                 None,
                 None,
@@ -2573,7 +2648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_prowlarr_movie_caps_drop_tmdb_when_proxy_does_not_advertise_it() {
+    async fn managed_prowlarr_movie_caps_carry_full_id_envelope_when_any_id_is_eligible() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
         config.managed_parent_config_id = Some("parent".into());
@@ -2608,6 +2683,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -2622,12 +2698,16 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12004567".to_string()),
+                ("tmdb_id".to_string(), "120045".to_string()),
+            ])
         );
     }
 
     #[tokio::test]
-    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids() {
+    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids_to_carry_full_id_envelope()
+    {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
 
@@ -2658,6 +2738,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -2672,7 +2753,10 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12004567".to_string()),
+                ("tmdb_id".to_string(), "120045".to_string()),
+            ])
         );
     }
 
@@ -2713,6 +2797,7 @@ mod tests {
                 ]),
                 None,
                 Some("movie".to_string()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -2772,6 +2857,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -2827,6 +2913,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -2845,6 +2932,57 @@ mod tests {
         assert_eq!(recorded[0].season, None);
         assert_eq!(recorded[0].episode, None);
         assert_eq!(recorded[0].absolute_episode, None);
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_prefers_supplied_newznab_categories_over_facet_defaults() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid"], &["q", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Demon.Slayer.Mugen.Train.2020"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Demon Slayer Mugen Train 2020".to_string(),
+                HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
+                Some("anime".to_string()),
+                Some("movie".to_string()),
+                Some("movie".to_string()),
+                Some(vec!["5070".to_string(), "2000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].categories,
+            vec!["5070".to_string(), "2000".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -2886,6 +3024,7 @@ mod tests {
                 ]),
                 None,
                 Some("movie".to_string()),
+                None,
                 Some(vec!["2000".to_string()]),
                 None,
                 SearchMode::Interactive,
@@ -2938,6 +3077,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -2979,6 +3119,7 @@ mod tests {
                 HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
                 None,
                 Some("movie".to_string()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3028,6 +3169,7 @@ mod tests {
                 Some("movie".to_string()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -3041,10 +3183,80 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12345678".to_string()),
+                ("tmdb_id".to_string(), "123456".to_string()),
+            ])
         );
         assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
         assert!(recorded[0].categories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn id_backed_movie_results_skip_freetext_title_guard() {
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|call| {
+                if call.ids.is_empty() {
+                    response_with_titles(&["Should.Not.Fallback.2024"])
+                } else {
+                    response_with_titles(&["Completely.Different.Title.2024.1080p.BluRay"])
+                }
+            }),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Expected Movie 2024".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt12345678".to_string()),
+                    ("tmdb_id".to_string(), "123456".to_string()),
+                    ("tvdb_id".to_string(), "98765".to_string()),
+                    ("anidb_id".to_string(), "54321".to_string()),
+                    ("mal_id".to_string(), "67890".to_string()),
+                ]),
+                Some("movie".to_string()),
+                Some("movie".to_string()),
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].title,
+            "Completely.Different.Title.2024.1080p.BluRay"
+        );
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1, "ID results should suppress fallback");
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([
+                ("imdb_id".to_string(), "tt12345678".to_string()),
+                ("tmdb_id".to_string(), "123456".to_string()),
+                ("tvdb_id".to_string(), "98765".to_string()),
+                ("anidb_id".to_string(), "54321".to_string()),
+                ("mal_id".to_string(), "67890".to_string()),
+            ])
+        );
     }
 
     #[tokio::test]
@@ -3065,6 +3277,7 @@ mod tests {
             .search(
                 String::new(),
                 HashMap::new(),
+                None,
                 None,
                 None,
                 Some(vec!["2000".into(), "5030".into()]),
@@ -3104,6 +3317,7 @@ mod tests {
             .search(
                 String::new(),
                 HashMap::new(),
+                None,
                 None,
                 None,
                 Some(vec!["2000".into(), "5030".into()]),
@@ -3147,6 +3361,7 @@ mod tests {
                 Some("series".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 Some(1),
                 Some(12),
@@ -3180,6 +3395,7 @@ mod tests {
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3222,6 +3438,7 @@ mod tests {
                 Some("series".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 Some(1),
                 Some(12),
@@ -3257,6 +3474,7 @@ mod tests {
                 Some("movie".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -3275,6 +3493,61 @@ mod tests {
         assert_eq!(response.results[0].title, "Lattice.Zero.1999.1080p.BluRay");
     }
 
+    #[test]
+    fn series_movie_anime_lane_builds_movie_id_strategy() {
+        let caps = movie_caps();
+        let ids = HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]);
+        let strategies = build_strategies(&StrategyParams {
+            query: "Mugen Train 2020",
+            query_facet: "anime",
+            id_facet: "movie",
+            ids: &ids,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            caps: &caps,
+            id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            is_alias_query: false,
+        });
+
+        assert_eq!(strategies.len(), 1);
+        assert_eq!(strategies[0].label, "ids");
+        assert_eq!(strategies[0].request_facet, "movie");
+        assert!(strategies[0].ids.contains_key("imdb_id"));
+    }
+
+    #[tokio::test]
+    async fn interactive_search_errors_when_every_strategy_fails() {
+        let (client, _calls) = scripted_search_client(movie_caps(), |_call| {
+            Err(AppError::Repository("forced indexer failure".into()))
+        });
+
+        let error = client
+            .search(
+                "Mugen Train 2020".into(),
+                HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
+                Some("movie".into()),
+                Some("movie".into()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect_err("interactive search should report all-failed attempts");
+
+        assert!(
+            error
+                .to_string()
+                .contains("all attempted indexer strategies failed"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn movie_query_backed_id_search_keeps_synthetic_numeric_title_match() {
         let (client, calls) = scripted_search_client(movie_caps(), |_call| {
@@ -3287,6 +3560,7 @@ mod tests {
                 HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())]),
                 Some("movie".into()),
                 Some("movie".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3326,6 +3600,7 @@ mod tests {
                 Some("anime".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 Some(2),
                 Some(3),
@@ -3358,12 +3633,13 @@ mod tests {
             }
         });
 
-        let response = client
+        let error = client
             .search(
                 "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3373,13 +3649,18 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("search should still return an aggregate response");
+            .expect_err("ID-tier errors should surface instead of falling back");
+        assert!(
+            error
+                .to_string()
+                .contains("all attempted indexer strategies failed"),
+            "unexpected error: {error}"
+        );
 
         let calls = calls.lock().expect("call log mutex");
         assert_eq!(calls.len(), 1);
         assert!(calls[0].ids.contains_key("tvdb_id"));
         assert!(calls[0].query.is_empty());
-        assert!(response.results.is_empty());
     }
 
     #[tokio::test]
@@ -3400,6 +3681,7 @@ mod tests {
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3448,6 +3730,7 @@ mod tests {
                 Some("anime".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 Some(2),
                 Some(3),
@@ -3487,12 +3770,13 @@ mod tests {
                 }
             });
 
-        let response = client
+        let error = client
             .search(
                 "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3502,13 +3786,18 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("all-failure primary outcomes should still aggregate cleanly");
+            .expect_err("all-failure primary outcomes should report an interactive error");
+        assert!(
+            error
+                .to_string()
+                .contains("all attempted indexer strategies failed"),
+            "unexpected error: {error}"
+        );
 
         {
             let calls = calls.lock().expect("call log mutex");
             assert_eq!(calls.len(), 2);
             assert!(calls.iter().all(|call| call.ids.contains_key("anidb_id")));
-            assert!(response.results.is_empty());
         }
         assert!(client.backoff_tracker.is_disabled("idx-1").await.is_some());
 
@@ -3569,6 +3858,7 @@ mod tests {
                 Some("series".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 Some(1),
                 Some(12),
@@ -3586,6 +3876,7 @@ mod tests {
                 HashMap::new(),
                 Some("series".into()),
                 Some("series".into()),
+                None,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -3617,6 +3908,7 @@ mod tests {
                 Some("movie".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -3634,7 +3926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_backed_id_searches_keep_title_guard() {
+    async fn query_backed_id_searches_skip_title_guard() {
         let (client, _calls) = scripted_search_client(movie_caps(), |call| {
             if call.ids.contains_key("imdb_id") {
                 response_with_titles(&[
@@ -3654,6 +3946,7 @@ mod tests {
                 Some("movie".into()),
                 None,
                 None,
+                None,
                 SearchMode::Interactive,
                 None,
                 None,
@@ -3663,8 +3956,12 @@ mod tests {
             .await
             .expect("query-backed ID search should succeed");
 
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].title, "Lantern.Tide.2001.1080p.BluRay");
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(
+            response.results[0].title,
+            "Lantern.Tide.Hidden.Current.2001.1080p.BluRay"
+        );
+        assert_eq!(response.results[1].title, "Lantern.Tide.2001.1080p.BluRay");
     }
 
     #[test]
@@ -3686,7 +3983,8 @@ mod tests {
         let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
         let strategies = build_strategies(&StrategyParams {
             query: "Silver Horizon: Beyond Journey's End S02E05",
-            facet: "anime",
+            query_facet: "anime",
+            id_facet: "anime",
             ids: &ids,
             season: Some(2),
             episode: Some(5),
@@ -3805,7 +4103,8 @@ mod tests {
         let ids = HashMap::from([("tvdb_id".to_string(), "424536".to_string())]);
         let strategies = build_strategies(&StrategyParams {
             query: "Sora no Vale",
-            facet: "anime",
+            query_facet: "anime",
+            id_facet: "anime",
             ids: &ids,
             season: Some(2),
             episode: Some(5),

@@ -5,7 +5,7 @@ use std::time::Duration;
 use aws_lc_rs::{digest, hmac, rand::SecureRandom};
 use base64::Engine as _;
 use ml_dsa::{Keypair, MlDsa65, SigningKey};
-use scryer_application::SettingsRepository;
+use scryer_application::{SettingsRepository, SmgScryerUpdateNotice};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, parse_retry_after,
     smg_reqwest_client,
@@ -19,6 +19,7 @@ const PQ_CLIENT_FAMILY: &str = "scryer-stable";
 // Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
@@ -792,6 +793,13 @@ pub async fn persist_version_compatibility_notice(
     notice: Option<&VersionIncompatible>,
 ) -> Result<(), String> {
     persist_setting_json(db, SMG_VERSION_COMPATIBILITY_NOTICE_KEY, &notice).await
+}
+
+pub async fn persist_scryer_update_notice(
+    db: &dyn SettingsRepository,
+    notice: Option<&SmgScryerUpdateNotice>,
+) -> Result<(), String> {
+    persist_setting_json(db, SMG_SCRYER_UPDATE_NOTICE_KEY, &notice).await
 }
 
 async fn persist_pq_enrollment_state(

@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(not(test))]
+const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[derive(Clone, Debug)]
 pub struct MediaServerConnectionDraft {
     pub provider: MediaServerProvider,
@@ -93,6 +98,10 @@ impl AppUseCase {
             .as_deref()
             .map(str::trim)
             .is_some_and(|value| !value.is_empty());
+        let api_key = match draft.provider {
+            MediaServerProvider::Plex => draft.api_key.clone().or(draft.plex_auth_token.clone()),
+            MediaServerProvider::Jellyfin | MediaServerProvider::Emby => draft.api_key.clone(),
+        };
         let mut connection = self
             .normalize_media_server_connection(
                 scryer_domain::Id::new().0,
@@ -106,7 +115,7 @@ impl AppUseCase {
                 draft.default_app_permissions,
                 draft.default_library_grants,
                 machine_id,
-                draft.api_key,
+                api_key,
                 draft.path_mappings,
                 now,
                 now,
@@ -204,6 +213,22 @@ impl AppUseCase {
             .as_deref()
             .map(str::trim)
             .is_some_and(|value| !value.is_empty());
+        let existing_api_key = if existing.provider == provider {
+            existing.api_key.clone()
+        } else {
+            None
+        };
+        let api_key = if patch.clear_api_key {
+            None
+        } else if provider == MediaServerProvider::Plex {
+            patch
+                .plex_auth_token
+                .clone()
+                .or(patch.api_key.clone())
+                .or(existing_api_key)
+        } else {
+            patch.api_key.clone().or(existing_api_key)
+        };
 
         let mut connection = self
             .normalize_media_server_connection(
@@ -224,11 +249,7 @@ impl AppUseCase {
                     .default_library_grants
                     .unwrap_or_else(|| existing.default_library_grants.clone()),
                 machine_id,
-                if patch.clear_api_key {
-                    None
-                } else {
-                    patch.api_key.or(existing.api_key.clone())
-                },
+                api_key,
                 patch
                     .path_mappings
                     .unwrap_or_else(|| existing.path_mappings.clone()),
@@ -369,7 +390,7 @@ impl AppUseCase {
         }
         let api_key = connection.api_key.as_deref().ok_or_else(|| {
             AppError::Validation(
-                "Jellyfin user listing requires a saved API key; enter the user manually instead"
+                "Jellyfin user listing requires a saved API key; save an API key to load Jellyfin users"
                     .into(),
             )
         })?;
@@ -378,6 +399,81 @@ impl AppUseCase {
             .external_identity_verifier
             .list_jellyfin_users(&connection.base_url, api_key, search)
             .await
+    }
+
+    pub async fn list_media_server_users(
+        &self,
+        actor: &User,
+        search: Option<&str>,
+    ) -> AppResult<Vec<MediaServerUserGroup>> {
+        self.require_app_permission(actor, AppPermission::ManageUsers)
+            .await?;
+        let search = search.map(str::trim).filter(|value| !value.is_empty());
+        let mut connections = self
+            .services
+            .integrations
+            .media_server_connections
+            .list(None)
+            .await?;
+        connections.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| {
+                    left.display_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.display_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut tasks = tokio::task::JoinSet::new();
+        let verifier = Arc::clone(&self.services.integrations.external_identity_verifier);
+        let search = search.map(ToString::to_string);
+        for connection in connections {
+            if !connection.enabled || !connection.login_enabled {
+                continue;
+            }
+
+            let Some(provider) = external_account_provider_for_media_server(&connection.provider)
+            else {
+                continue;
+            };
+
+            let verifier = Arc::clone(&verifier);
+            let search = search.clone();
+            tasks.spawn(async move {
+                list_media_server_user_group_with_timeout(verifier, connection, provider, search)
+                    .await
+            });
+        }
+
+        let mut groups = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(group) => groups.push(group),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "media server user lookup task failed before returning a group"
+                    );
+                }
+            }
+        }
+
+        groups.sort_by(|left, right| {
+            left.provider
+                .as_str()
+                .cmp(right.provider.as_str())
+                .then_with(|| {
+                    left.connection_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.connection_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.connection_id.cmp(&right.connection_id))
+        });
+
+        Ok(groups)
     }
 
     async fn require_media_server_permission(
@@ -482,12 +578,14 @@ impl AppUseCase {
                 MediaServerProvider::Jellyfin | MediaServerProvider::Emby => None,
             },
             api_key: match provider {
-                MediaServerProvider::Jellyfin | MediaServerProvider::Emby => api_key,
-                MediaServerProvider::Plex => None,
+                MediaServerProvider::Jellyfin
+                | MediaServerProvider::Emby
+                | MediaServerProvider::Plex => api_key,
             },
             path_mappings: match provider {
-                MediaServerProvider::Jellyfin | MediaServerProvider::Emby => path_mappings,
-                MediaServerProvider::Plex => Vec::new(),
+                MediaServerProvider::Jellyfin
+                | MediaServerProvider::Emby
+                | MediaServerProvider::Plex => path_mappings,
             },
             created_at,
             updated_at,
@@ -875,8 +973,12 @@ fn media_server_plex_identity_changed(
     patch: &MediaServerConnectionPatch,
 ) -> bool {
     (patch.clear_machine_id && existing.machine_id.is_some())
+        || (patch.clear_api_key && existing.api_key.is_some())
         || patch.machine_id.as_ref().is_some_and(|machine_id| {
             normalize_optional_string(Some(machine_id.clone())) != existing.machine_id
+        })
+        || patch.api_key.as_ref().is_some_and(|api_key| {
+            normalize_optional_string(Some(api_key.clone())) != existing.api_key
         })
         || option_has_non_empty_text(patch.plex_auth_token.as_deref())
         || option_has_non_empty_text(patch.plex_server_id.as_deref())
@@ -903,6 +1005,151 @@ fn default_media_server_display_name(provider: &MediaServerProvider) -> &'static
         MediaServerProvider::Jellyfin => "Jellyfin",
         MediaServerProvider::Plex => "Plex",
         MediaServerProvider::Emby => "Emby",
+    }
+}
+
+async fn list_media_server_user_group_with_timeout(
+    verifier: Arc<dyn ExternalIdentityVerifier>,
+    connection: MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+    search: Option<String>,
+) -> MediaServerUserGroup {
+    let timeout_group = empty_media_server_user_group(&connection, provider.clone());
+    match tokio::time::timeout(
+        MEDIA_SERVER_USER_LIST_TIMEOUT,
+        list_media_server_user_group(verifier, connection, provider, search),
+    )
+    .await
+    {
+        Ok(group) => group,
+        Err(_) => {
+            let mut group = timeout_group;
+            group.status = MediaServerUserGroupStatus::Error;
+            group.error_message = Some(format!(
+                "Timed out after {} loading users from this server",
+                media_server_user_list_timeout_label()
+            ));
+            group
+        }
+    }
+}
+
+fn media_server_user_list_timeout_label() -> String {
+    let seconds = MEDIA_SERVER_USER_LIST_TIMEOUT.as_secs();
+    if seconds > 0 {
+        return format!("{seconds} seconds");
+    }
+    format!(
+        "{} milliseconds",
+        MEDIA_SERVER_USER_LIST_TIMEOUT.as_millis()
+    )
+}
+
+async fn list_media_server_user_group(
+    verifier: Arc<dyn ExternalIdentityVerifier>,
+    connection: MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+    search: Option<String>,
+) -> MediaServerUserGroup {
+    let mut group = empty_media_server_user_group(&connection, provider.clone());
+    match provider {
+        scryer_domain::ExternalAccountProvider::Jellyfin => {
+            let Some(api_key) = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                group.status = MediaServerUserGroupStatus::MissingCredentials;
+                group.error_message =
+                    Some("Save a Jellyfin API key to load users from this server".into());
+                return group;
+            };
+
+            match verifier
+                .list_jellyfin_users(&connection.base_url, api_key, search.as_deref())
+                .await
+            {
+                Ok(users) => {
+                    group.users = users.into_iter().map(MediaServerUser::from).collect();
+                }
+                Err(error) => {
+                    group.status = MediaServerUserGroupStatus::Error;
+                    group.error_message = Some(error.to_string());
+                }
+            }
+        }
+        scryer_domain::ExternalAccountProvider::Plex => {
+            if connection
+                .machine_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                group.status = MediaServerUserGroupStatus::Error;
+                group.error_message =
+                    Some("Discover and select a Plex server before loading users".into());
+                return group;
+            }
+
+            let Some(plex_auth_token) = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                group.status = MediaServerUserGroupStatus::MissingCredentials;
+                group.error_message =
+                    Some("Save a Plex token to load users from this server".into());
+                return group;
+            };
+
+            match verifier
+                .list_plex_users(plex_auth_token, search.as_deref())
+                .await
+            {
+                Ok(users) => {
+                    group.users = users.into_iter().map(MediaServerUser::from).collect();
+                }
+                Err(error) => {
+                    group.status = MediaServerUserGroupStatus::Error;
+                    group.error_message = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    group.users.sort_by(|left, right| {
+        left.username
+            .to_ascii_lowercase()
+            .cmp(&right.username.to_ascii_lowercase())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    group
+}
+
+fn empty_media_server_user_group(
+    connection: &MediaServerConnection,
+    provider: scryer_domain::ExternalAccountProvider,
+) -> MediaServerUserGroup {
+    MediaServerUserGroup {
+        connection_id: connection.id.clone(),
+        connection_name: connection.display_name.clone(),
+        provider,
+        status: MediaServerUserGroupStatus::Ready,
+        error_message: None,
+        users: Vec::new(),
+    }
+}
+
+fn external_account_provider_for_media_server(
+    provider: &MediaServerProvider,
+) -> Option<scryer_domain::ExternalAccountProvider> {
+    match provider {
+        MediaServerProvider::Jellyfin => Some(scryer_domain::ExternalAccountProvider::Jellyfin),
+        MediaServerProvider::Plex => Some(scryer_domain::ExternalAccountProvider::Plex),
+        MediaServerProvider::Emby => None,
     }
 }
 
@@ -1186,6 +1433,55 @@ mod tests {
         ) -> AppResult<Vec<JellyfinServerUser>> {
             Ok(Vec::new())
         }
+
+        async fn list_plex_users(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<PlexServerUser>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct TestNotificationPluginProvider;
+
+    impl NotificationPluginProvider for TestNotificationPluginProvider {
+        fn client_for_channel(
+            &self,
+            _: &scryer_domain::NotificationChannelConfig,
+        ) -> Option<Arc<dyn NotificationClient>> {
+            None
+        }
+
+        fn available_provider_types(&self) -> Vec<String> {
+            vec!["plex".to_string()]
+        }
+
+        fn config_fields_for_provider(
+            &self,
+            provider_type: &str,
+        ) -> Vec<scryer_domain::ConfigFieldDef> {
+            if provider_type != "plex" {
+                return Vec::new();
+            }
+
+            vec![scryer_domain::ConfigFieldDef {
+                key: "base_url".to_string(),
+                label: "Base URL".to_string(),
+                field_type: scryer_domain::ConfigFieldType::String,
+                required: true,
+                default_value: None,
+                value_source: Default::default(),
+                role: None,
+                host_binding: None,
+                options: Vec::new(),
+                help_text: None,
+            }]
+        }
+
+        fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
+            (provider_type == "plex").then(|| "Plex Media Server".to_string())
+        }
     }
 
     struct TestDomainEventRepository;
@@ -1257,7 +1553,7 @@ mod tests {
         }
     }
 
-    fn app_with_connection(connection: MediaServerConnection) -> AppUseCase {
+    fn app_with_connections(connections: Vec<MediaServerConnection>) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -1273,8 +1569,9 @@ mod tests {
         )
         .with_external_identity_verifier(Arc::new(NoopExternalIdentityVerifier))
         .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
-            vec![connection],
+            connections,
         )))
+        .with_notification_provider(Arc::new(TestNotificationPluginProvider))
         .with_domain_events(Arc::new(TestDomainEventRepository))
         .build_partial_for_tests();
 
@@ -1287,6 +1584,10 @@ mod tests {
             },
             Arc::new(FacetRegistry::new()),
         )
+    }
+
+    fn app_with_connection(connection: MediaServerConnection) -> AppUseCase {
+        app_with_connections(vec![connection])
     }
 
     fn user_with_permissions(username: &str, app: AppPermissionMask) -> User {
@@ -1373,6 +1674,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jellyfin_user_listing_without_api_key_points_to_picker_setup() {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.api_key = None;
+        let app = app_with_connection(connection);
+        let user = user_with_permissions(
+            "manage-users",
+            AppPermissionMask::from_permissions([AppPermission::ManageUsers]),
+        );
+
+        let error = app
+            .list_jellyfin_server_users(&user, "jellyfin-main", None)
+            .await
+            .expect_err("missing Jellyfin API key should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("save an API key to load Jellyfin users"));
+        assert!(!message.contains("manually"));
+    }
+
+    #[tokio::test]
     async fn media_server_update_rejects_enabling_grant_bearing_connection_without_manage_permissions()
      {
         let mut connection = grant_bearing_jellyfin_connection();
@@ -1455,6 +1776,24 @@ mod tests {
                 patch.machine_id = Some("machine-2".to_string());
                 patch
             }),
+            ("plex api key", grant_bearing_plex_connection(), {
+                let mut patch = empty_update_patch("plex-main");
+                patch.api_key = Some("api-key-2".to_string());
+                patch
+            }),
+            (
+                "plex clear api key",
+                {
+                    let mut connection = grant_bearing_plex_connection();
+                    connection.api_key = Some("api-key-1".to_string());
+                    connection
+                },
+                {
+                    let mut patch = empty_update_patch("plex-main");
+                    patch.clear_api_key = true;
+                    patch
+                },
+            ),
         ] {
             let app = app_with_connection(connection);
             let error = app
@@ -1550,5 +1889,140 @@ mod tests {
         assert_eq!(updated.display_name, "Home Jellyfin");
         assert!(!updated.default_app_permissions.is_empty());
         assert!(!updated.default_library_grants.is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_server_create_preserves_plex_token_and_path_mappings() {
+        let app = app_with_connections(Vec::new());
+        let created = app
+            .create_media_server_connection(
+                &system_settings_user(),
+                MediaServerConnectionDraft {
+                    provider: MediaServerProvider::Plex,
+                    display_name: "Plex".to_string(),
+                    base_url: "http://plex:32400".to_string(),
+                    enabled: true,
+                    login_enabled: false,
+                    linking_enabled: false,
+                    auto_add_enabled: false,
+                    default_app_permissions: AppPermissionMask::NONE,
+                    default_library_grants: Vec::new(),
+                    machine_id: None,
+                    plex_auth_token: Some(" plex-token ".to_string()),
+                    plex_server_id: None,
+                    api_key: None,
+                    admin_username: None,
+                    admin_password: None,
+                    path_mappings: vec![MediaServerPathMapping {
+                        source_path: "/mnt/plex".to_string(),
+                        destination_path: "/data/media".to_string(),
+                        sort_order: 0,
+                    }],
+                },
+            )
+            .await
+            .expect("Plex connection should be created");
+
+        assert_eq!(created.api_key.as_deref(), Some("plex-token"));
+        assert_eq!(
+            created.path_mappings,
+            vec![MediaServerPathMapping {
+                source_path: "/mnt/plex".to_string(),
+                destination_path: "/data/media".to_string(),
+                sort_order: 0,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn media_server_update_preserves_existing_plex_token_and_replaces_from_oauth() {
+        let mut connection = grant_bearing_plex_connection();
+        connection.api_key = Some("old-token".to_string());
+        let app = app_with_connection(connection);
+        let updated = app
+            .update_media_server_connection(&permission_manager_user(), {
+                let mut patch = empty_update_patch("plex-main");
+                patch.plex_auth_token = Some(" new-token ".to_string());
+                patch.path_mappings = Some(vec![MediaServerPathMapping {
+                    source_path: "/mnt/plex".to_string(),
+                    destination_path: "/data/media".to_string(),
+                    sort_order: 0,
+                }]);
+                patch
+            })
+            .await
+            .expect("Plex connection should update");
+
+        assert_eq!(updated.api_key.as_deref(), Some("new-token"));
+        assert_eq!(updated.path_mappings.len(), 1);
+
+        let app = app_with_connection(updated);
+        let unchanged = app
+            .update_media_server_connection(
+                &permission_manager_user(),
+                empty_update_patch("plex-main"),
+            )
+            .await
+            .expect("empty update should preserve Plex token");
+
+        assert_eq!(unchanged.api_key.as_deref(), Some("new-token"));
+        assert_eq!(unchanged.path_mappings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn media_server_update_does_not_carry_api_key_across_provider_change() {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.login_enabled = false;
+        connection.auto_add_enabled = false;
+        connection.default_app_permissions = AppPermissionMask::NONE;
+        connection.default_library_grants.clear();
+        connection.api_key = Some("jellyfin-token".to_string());
+        let app = app_with_connection(connection);
+
+        let updated = app
+            .update_media_server_connection(&system_settings_user(), {
+                let mut patch = empty_update_patch("jellyfin-main");
+                patch.provider = Some(MediaServerProvider::Plex);
+                patch.display_name = Some("Plex".to_string());
+                patch.base_url = Some("http://plex:32400".to_string());
+                patch.login_enabled = Some(false);
+                patch.linking_enabled = Some(false);
+                patch.auto_add_enabled = Some(false);
+                patch.default_app_permissions = Some(AppPermissionMask::NONE);
+                patch.default_library_grants = Some(Vec::new());
+                patch.path_mappings = Some(Vec::new());
+                patch
+            })
+            .await
+            .expect("provider change should not reuse old provider secret");
+
+        assert_eq!(updated.provider, MediaServerProvider::Plex);
+        assert_eq!(updated.api_key, None);
+    }
+
+    #[tokio::test]
+    async fn plex_media_server_notification_channel_uses_facade_config() {
+        let mut connection = grant_bearing_plex_connection();
+        connection.api_key = Some("plex-token".to_string());
+        connection.path_mappings = vec![MediaServerPathMapping {
+            source_path: "/mnt/plex".to_string(),
+            destination_path: "/data/media".to_string(),
+            sort_order: 0,
+        }];
+        let app = app_with_connection(connection);
+
+        let channel = app
+            .notification_channel_for_media_server_target("plex-main")
+            .await
+            .expect("Plex media server notification channel should resolve");
+        let config: serde_json::Value =
+            serde_json::from_str(&channel.config_json).expect("config should be JSON");
+
+        assert_eq!(channel.id, "media-server:plex-main");
+        assert_eq!(channel.channel_type.as_str(), "plex");
+        assert_eq!(config["base_url"], "https://plex.tv");
+        assert_eq!(config["api_key"], "plex-token");
+        assert_eq!(config["machine_id"], "machine-1");
+        assert_eq!(config["path_mappings"], "/data/media => /mnt/plex");
     }
 }

@@ -150,6 +150,97 @@ impl AppUseCase {
         self.apply_title_metadata_update(Some(actor.id.clone()), id, name, facet, tags)
             .await
     }
+
+    pub async fn set_primary_movie_file(
+        &self,
+        actor: &User,
+        title_id: &str,
+        file_id: &str,
+    ) -> AppResult<Title> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+
+        let media_files = self
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await?;
+        let selected_file = media_files
+            .iter()
+            .find(|file| file.id == file_id)
+            .ok_or_else(|| AppError::NotFound(format!("media file {file_id}")))?;
+        if title.facet != MediaFacet::Movie {
+            let series_movie_link_id = selected_file
+                .series_movie_link_ids
+                .first()
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "primary movie file can only be set for movie titles or series movie files"
+                            .to_string(),
+                    )
+                })?;
+            let additional_file_ids = media_files
+                .iter()
+                .filter(|file| file.id != selected_file.id)
+                .filter(|file| {
+                    file.series_movie_link_ids
+                        .iter()
+                        .any(|link_id| link_id == series_movie_link_id)
+                })
+                .map(|file| file.id.clone())
+                .collect::<Vec<_>>();
+
+            self.services
+                .library
+                .media_files
+                .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
+                .await?;
+            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+                .await;
+            return Ok(title);
+        }
+        let movie_scope =
+            crate::library::movie_scan_scope::MovieScanScope::from_title_folder_or_file(
+                title.folder_path.as_deref(),
+                &selected_file.file_path,
+            )
+            .ok_or_else(|| {
+                AppError::Validation("movie title does not have a canonical folder path".to_string())
+            })?;
+        if !movie_scope.file_is_inside_canonical_folder(&selected_file.file_path) {
+            return Err(AppError::Validation(
+                "selected file is outside the title's canonical movie folder".to_string(),
+            ));
+        }
+
+        let additional_file_ids = media_files
+            .iter()
+            .filter(|file| file.id != selected_file.id)
+            .filter(|file| movie_scope.file_is_inside_canonical_folder(&file.file_path))
+            .map(|file| file.id.clone())
+            .collect::<Vec<_>>();
+
+        self.services
+            .library
+            .media_files
+            .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
+            .await?;
+        self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+            .await;
+        Ok(title)
+    }
 }
 impl AppUseCase {
     pub async fn fix_title_match(

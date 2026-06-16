@@ -455,14 +455,14 @@ pub(crate) fn render_episode_nfo(title: &Title, episode: &Episode) -> String {
     finish_xml(buf)
 }
 
-/// Render a Kodi/Jellyfin-compatible `<episodedetails>` NFO for an interstitial anime movie.
+/// Render a Kodi/Jellyfin-compatible `<episodedetails>` NFO for a series movie.
 ///
 /// Written as a season 0 special so media servers recognize it as part of the series.
 /// Includes `<airsbefore_season>` for Jellyfin's "Display specials within seasons" feature.
-pub(crate) fn render_interstitial_movie_nfo(
-    movie: &scryer_domain::InterstitialMovieMetadata,
+pub(crate) fn render_series_movie_episode_nfo(
+    movie: &scryer_domain::MovieEntity,
     season_episode: &str,
-    collection_index: &str,
+    after_season: Option<i32>,
 ) -> String {
     let mut buf = Cursor::new(Vec::new());
     let mut w = Writer::new_with_indent(&mut buf, b' ', 2);
@@ -471,7 +471,7 @@ pub(crate) fn render_interstitial_movie_nfo(
     let tag = BytesStart::new("episodedetails");
     w.write_event(Event::Start(tag)).ok();
 
-    write_element(&mut w, "title", &movie.name);
+    write_element(&mut w, "title", &movie.title);
     write_element(&mut w, "season", "0");
 
     if let Some(ep_str) = season_episode.strip_prefix("S00E")
@@ -480,44 +480,34 @@ pub(crate) fn render_interstitial_movie_nfo(
         write_element(&mut w, "episode", &ep_num.to_string());
     }
 
-    if !movie.overview.is_empty() {
-        write_element(&mut w, "plot", &movie.overview);
+    if let Some(overview) = movie.overview.as_deref().filter(|value| !value.is_empty()) {
+        write_element(&mut w, "plot", overview);
     }
     if let Some(ref release_date) = movie.digital_release_date {
         write_element(&mut w, "aired", release_date);
     }
-    if movie.runtime_minutes > 0 {
-        write_element(&mut w, "runtime", &movie.runtime_minutes.to_string());
+    if let Some(runtime_minutes) = movie.runtime_minutes.filter(|minutes| *minutes > 0) {
+        write_element(&mut w, "runtime", &runtime_minutes.to_string());
     }
 
-    if let Some(airs_before) = airs_before_season_from_collection_index(collection_index) {
-        write_element(&mut w, "airsbefore_season", &airs_before.to_string());
+    if let Some(after_season) = after_season {
+        write_element(&mut w, "airsbefore_season", &(after_season + 1).to_string());
         write_element(&mut w, "airsbefore_episode", "1");
     }
 
-    if !movie.tvdb_id.is_empty() {
-        write_uniqueid(&mut w, "tvdb", &movie.tvdb_id, true);
+    if let Some(tvdb_id) = movie.tvdb_id.as_deref().filter(|value| !value.is_empty()) {
+        write_uniqueid(&mut w, "tvdb", tvdb_id, true);
     }
-    if !movie.imdb_id.is_empty() {
-        write_uniqueid(&mut w, "imdb", &movie.imdb_id, false);
+    if let Some(imdb_id) = movie.imdb_id.as_deref().filter(|value| !value.is_empty()) {
+        write_uniqueid(&mut w, "imdb", imdb_id, false);
     }
-    if let Some(ref tmdb_id) = movie.movie_tmdb_id {
+    if let Some(ref tmdb_id) = movie.tmdb_id {
         write_uniqueid(&mut w, "tmdb", tmdb_id, false);
     }
 
     w.write_event(Event::End(BytesEnd::new("episodedetails")))
         .ok();
     finish_xml(buf)
-}
-
-/// Derive the Jellyfin `airsbefore_season` value from a collection index.
-///
-/// Collection index "1.1" means the movie airs after season 1, so it should display
-/// before season 2. Returns `Some(2)` for "1.1", `Some(3)` for "2.1", etc.
-fn airs_before_season_from_collection_index(index: &str) -> Option<i32> {
-    let before_dot = index.split('.').next()?;
-    let after_season: i32 = before_dot.parse().ok()?;
-    Some(after_season + 1)
 }
 
 /// Render a Plex/Sonarr-style `.plexmatch` hint file for the given series Title.

@@ -1,4 +1,4 @@
-export type WantedMediaType = "movie" | "episode" | "interstitial_movie";
+export type WantedMediaType = "movie" | "episode" | "series_movie";
 export type WantedSearchPhase = "pre_air" | "pre_release" | "primary" | "secondary" | "long_tail";
 export type WantedStatus = "wanted" | "grabbed" | "paused" | "completed";
 export type PendingReleaseStatus =

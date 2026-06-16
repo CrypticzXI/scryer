@@ -172,10 +172,11 @@ pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, Delete
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity, EpisodeUpdate,
-    ImportArtifact, IndexerConfigSyncResult, IndexerConfigUpdate, IndexerRoutingEntry,
-    IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput,
-    ManagedIndexerChildPlan, ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
+    DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult,
+    IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan,
+    IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
     NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueueDownloadOutcome,
     QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef,
     SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
@@ -317,23 +318,24 @@ pub use ports::{
     IndexerPluginProvider, IndexerStatsTracker, JellyfinServerUser, JobRunRepository,
     LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
     LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, MediaServerConnectionRepository, NOTIFICATION_REQUEST_SCHEMA_VERSION,
-    NewMediaRequest, NotificationActorPayload, NotificationAppPayload,
-    NotificationApplicationUpdatePayload, NotificationChannelRepository, NotificationClient,
-    NotificationDownloadPayload, NotificationEpisodePayload, NotificationExternalIdsPayload,
-    NotificationFilePayload, NotificationHealthPayload, NotificationImportPayload,
-    NotificationManualInteractionPayload, NotificationMediaFilePayload,
-    NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
-    NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
-    NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
-    PlexServerDiscovery, PluginDescriptorLoader, PluginHttpTrustConfigRuntime,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
-    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
-    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
-    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
-    UserExternalAccountRepository, UserRepository, VerifiedExternalIdentity, WantedItemRepository,
-    WebauthnRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
+    NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
+    NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
+    NotificationEpisodePayload, NotificationExternalIdsPayload, NotificationFilePayload,
+    NotificationHealthPayload, NotificationImportPayload, NotificationManualInteractionPayload,
+    NotificationMediaFilePayload, NotificationMediaUpdatePayload,
+    NotificationMediaUpdateTypePayload, NotificationPayload, NotificationPluginProvider,
+    NotificationReleasePayload, NotificationSeverityPayload, NotificationSubscriptionRepository,
+    NotificationTitlePayload, PendingReleaseRepository, PlexServerDiscovery, PlexServerUser,
+    PluginDescriptorLoader, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
+    PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
+    RuleSetRepository, RuntimePluginLoad, SettingsRepository, ShowRepository, StagedNzbStore,
+    SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
+    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
+    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
+    UserRepository, VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -351,8 +353,9 @@ pub use quality_profile::{
     BLOCK_SCORE, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
     QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
     REQUEST_QUALITY_PROFILE_IDS_KEY, ScoringConfig, ScoringEntry, ScoringSource, apply_age_scoring,
-    apply_size_scoring_for_category, default_quality_profile_1080p_for_search,
-    default_quality_profile_for_search, evaluate_against_profile, parse_profile_catalog_from_json,
+    apply_size_scoring_for_category, default_quality_profile_8k_for_search,
+    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
+    evaluate_against_profile, parse_profile_catalog_from_json,
 };
 pub use services::{
     AppServices, AppServicesBuilder, AppUseCase, ExternalImportMonitorWarmupBeginResult,
@@ -385,8 +388,9 @@ pub use settings::keys::{
     RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
     RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
-    RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
-    RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_ENABLED_KEY, RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
+    RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,
@@ -395,7 +399,6 @@ pub use settings::keys::{
     TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
-pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
@@ -435,6 +438,7 @@ pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,
     ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
+pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {

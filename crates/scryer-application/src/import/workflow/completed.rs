@@ -15,6 +15,55 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
         }
     });
 }
+
+async fn analyze_and_persist_imported_media_file(
+    app: &AppUseCase,
+    title_id: &str,
+    media_file_id: &str,
+    file_path: &std::path::Path,
+) {
+    let acceptance = match app
+        .services
+        .library
+        .media_analyzer
+        .analyze_file(file_path.to_path_buf())
+        .await
+    {
+        Ok(crate::MediaAnalysisOutcome::Valid(analysis)) => {
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: Some(*analysis),
+                scan_error: None,
+            }
+        }
+        Ok(crate::MediaAnalysisOutcome::Invalid(error)) => {
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: None,
+                scan_error: Some(error),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                title_id,
+                file_id = %media_file_id,
+                file_path = %file_path.display(),
+                "failed to analyze imported media file"
+            );
+            crate::post_download_gate::ImportedFileAcceptance {
+                analysis: None,
+                scan_error: Some(error.to_string()),
+            }
+        }
+    };
+
+    crate::post_download_gate::persist_media_analysis_result(
+        &app.services.library.media_files,
+        media_file_id,
+        &acceptance,
+    )
+    .await;
+}
+
 fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceIdentity {
     DownloadSourceIdentity::new(
         Some(completed.client_id.as_str()),
@@ -22,21 +71,245 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
         &completed.download_client_item_id,
     )
 }
-fn merge_scryer_origin_parameters(
-    parameters: &mut Vec<(String, String)>,
-    title_id: String,
-    facet: String,
-    collection_id: Option<String>,
-) {
-    upsert_parameter(parameters, "*scryer_title_id", title_id);
-    upsert_parameter(parameters, "*scryer_facet", facet);
-    if let Some(collection_id) = collection_id {
-        upsert_parameter(parameters, "*scryer_collection_id", collection_id);
+async fn completed_import_purpose(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+) -> crate::DownloadSubmissionPurpose {
+    let identity = completed_download_identity(completed);
+    if let Ok(Some(submission)) = app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(&identity)
+        .await
+    {
+        return submission.purpose;
+    }
+
+    extract_parameter(&completed.parameters, "*scryer_import_purpose")
+        .as_deref()
+        .map(crate::DownloadSubmissionPurpose::from_label)
+        .unwrap_or_default()
+}
+fn additional_import_dest_path(
+    canonical_dest_path: &Path,
+    parsed: &ParsedReleaseMetadata,
+) -> PathBuf {
+    let parent = canonical_dest_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = canonical_dest_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("additional");
+    let extension = canonical_dest_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mkv");
+    let raw_label = parsed
+        .edition
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(parsed.raw_title.as_str());
+    let sanitized_label = sanitize_filesystem_component(raw_label)
+        .trim()
+        .chars()
+        .take(48)
+        .collect::<String>();
+    let label = if sanitized_label.is_empty() {
+        "additional".to_string()
+    } else {
+        sanitized_label
+    };
+    let hash = blake3::hash(parsed.raw_title.as_bytes()).to_hex();
+    let hash = &hash.as_str()[..8];
+    let base_name = sanitize_filesystem_component(&format!("{stem} - {label} {hash}.{extension}"));
+    let mut candidate = parent.join(&base_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    for suffix in 2..=999 {
+        let name =
+            sanitize_filesystem_component(&format!("{stem} - {label} {hash} ({suffix}).{extension}"));
+        candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    parent.join(sanitize_filesystem_component(&format!(
+        "{stem} - {label} {hash} {}.{extension}",
+        Id::new().0
+    )))
+}
+const SCRYER_TITLE_ID_PARAM: &str = "*scryer_title_id";
+const SCRYER_FACET_PARAM: &str = "*scryer_facet";
+const SCRYER_COLLECTION_ID_PARAM: &str = "*scryer_collection_id";
+const SCRYER_SERIES_MOVIE_LINK_ID_PARAM: &str = "*scryer_series_movie_link_id";
+const COMPLETED_ORIGIN_SCOPE_CONFLICT: &str = "origin_scope_conflict";
+
+#[derive(Clone, Debug)]
+enum CompletedDownloadOriginResolution {
+    Ready(CompletedDownload),
+    Conflict {
+        reason: &'static str,
+        detail: String,
+    },
+    NoScryerOrigin,
+}
+
+fn resolve_completed_download_origin(
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> CompletedDownloadOriginResolution {
+    match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched)
+            if submission_has_scryer_origin(&matched.submission) =>
+        {
+            match reconciled_scryer_origin_parameters(
+                &completed.parameters,
+                &matched.submission,
+            ) {
+                Ok(parameters) => {
+                    let mut resolved = completed.clone();
+                    resolved.parameters = parameters;
+                    CompletedDownloadOriginResolution::Ready(resolved)
+                }
+                Err(detail) => CompletedDownloadOriginResolution::Conflict {
+                    reason: COMPLETED_ORIGIN_SCOPE_CONFLICT,
+                    detail,
+                },
+            }
+        }
+        _ if has_scryer_origin(&completed.parameters) => {
+            CompletedDownloadOriginResolution::Ready(completed.clone())
+        }
+        _ => CompletedDownloadOriginResolution::NoScryerOrigin,
     }
 }
-fn upsert_parameter(parameters: &mut Vec<(String, String)>, key: &str, value: String) {
+
+fn reconciled_scryer_origin_parameters(
+    parameters: &[(String, String)],
+    submission: &DownloadSubmission,
+) -> Result<Vec<(String, String)>, String> {
+    let mut reconciled = parameters.to_vec();
+    fill_missing_or_compatible_parameter(
+        &mut reconciled,
+        SCRYER_TITLE_ID_PARAM,
+        &submission.title_id,
+        "title id",
+    )?;
+    fill_missing_or_compatible_parameter(
+        &mut reconciled,
+        SCRYER_FACET_PARAM,
+        &submission.facet,
+        "facet",
+    )?;
+    reconcile_submission_scope_parameters(&mut reconciled, &submission.scope)?;
+    Ok(reconciled)
+}
+
+fn reconcile_submission_scope_parameters(
+    parameters: &mut Vec<(String, String)>,
+    scope: &SubmissionScope,
+) -> Result<(), String> {
+    match scope {
+        SubmissionScope::Collection { collection_id } => {
+            reject_existing_scope_parameter(
+                parameters,
+                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
+                "series movie link id",
+                "collection",
+            )?;
+            fill_missing_or_compatible_parameter(
+                parameters,
+                SCRYER_COLLECTION_ID_PARAM,
+                collection_id,
+                "collection id",
+            )
+        }
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => fill_missing_or_compatible_parameter(
+            parameters,
+            SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
+            series_movie_link_id,
+            "series movie link id",
+        ),
+        SubmissionScope::Episode { .. }
+        | SubmissionScope::EpisodeSet { .. }
+        | SubmissionScope::Title
+        | SubmissionScope::Orphan => {
+            reject_existing_scope_parameter(
+                parameters,
+                SCRYER_COLLECTION_ID_PARAM,
+                "collection id",
+                "non-collection",
+            )?;
+            reject_existing_scope_parameter(
+                parameters,
+                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
+                "series movie link id",
+                "non-series-movie",
+            )
+        }
+    }
+}
+
+fn fill_missing_or_compatible_parameter(
+    parameters: &mut Vec<(String, String)>,
+    key: &str,
+    expected: &str,
+    label: &str,
+) -> Result<(), String> {
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(existing) = non_empty_parameter_value(parameters, key)
+        && existing != expected
+    {
+        return Err(format!(
+            "completed download carried {label} {existing:?}, but matched submission expected {expected:?}"
+        ));
+    }
+
+    insert_missing_or_empty_parameter(parameters, key, expected.to_string());
+    Ok(())
+}
+
+fn reject_existing_scope_parameter(
+    parameters: &[(String, String)],
+    key: &str,
+    label: &str,
+    expected_scope: &str,
+) -> Result<(), String> {
+    if let Some(existing) = non_empty_parameter_value(parameters, key) {
+        return Err(format!(
+            "completed download carried {label} {existing:?}, but matched submission expected {expected_scope} scope"
+        ));
+    }
+    Ok(())
+}
+
+fn non_empty_parameter_value(parameters: &[(String, String)], key: &str) -> Option<String> {
+    parameters
+        .iter()
+        .find(|(candidate_key, _)| candidate_key == key)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn insert_missing_or_empty_parameter(
+    parameters: &mut Vec<(String, String)>,
+    key: &str,
+    value: String,
+) {
     if let Some((_, existing_value)) = parameters.iter_mut().find(|(name, _)| name == key) {
-        *existing_value = value;
+        if existing_value.trim().is_empty() {
+            *existing_value = value;
+        }
     } else {
         parameters.push((key.to_string(), value));
     }

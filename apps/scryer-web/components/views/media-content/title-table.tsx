@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowDown, ArrowUp, Eye, EyeOff, Loader2, Search, Trash2, Zap } from "lucide-react";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import {
   TableBody,
   TableCell,
@@ -55,6 +56,7 @@ type TitleTableProps = {
   onToggleMonitored?: (title: TitleRecord, monitored: boolean) => Promise<void> | void;
   onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (title: TitleRecord, release: Release) => void;
+  onQueueAdditionalFromInteractive?: (title: TitleRecord, release: Release) => Promise<void> | void;
   isDeletingById: Record<string, boolean>;
   isTogglingMonitoredById?: Record<string, boolean>;
   showScanLibraryAction?: boolean;
@@ -80,6 +82,7 @@ export function TitleTable({
   onToggleMonitored,
   onInteractiveSearch,
   onQueueFromInteractive,
+  onQueueAdditionalFromInteractive,
   isDeletingById,
   isTogglingMonitoredById,
   showScanLibraryAction = false,
@@ -460,6 +463,14 @@ export function TitleTable({
                   <SearchResultBuckets
                     results={interactiveSearchResults}
                     onQueue={(release) => onQueueFromInteractive(item, release)}
+                    onQueueAdditional={
+                      onQueueAdditionalFromInteractive
+                        ? (release) => onQueueAdditionalFromInteractive(item, release)
+                        : undefined
+                    }
+                    canQueueAdditional={(release) =>
+                      releaseSupportsAdditionalFileQueue(release, item.facet)
+                    }
                     requireCandidateToken
                   />
                 )}

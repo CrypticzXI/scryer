@@ -301,6 +301,23 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             .await;
     }
 }
+fn submission_blocks_search_for_wanted_item(
+    submission: &DownloadSubmission,
+    item: &WantedItem,
+    episode_collection_id: Option<&str>,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> bool {
+    if !submission_blocks_wanted_item(submission, item, episode_collection_id) {
+        return false;
+    }
+
+    if submission_is_active(submission, dl_snapshot) {
+        return true;
+    }
+
+    submission_is_completed(submission, dl_snapshot) && item.current_score.is_none()
+}
+
 impl AppUseCase {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn run_acquisition_cycle_once(&self) {
@@ -390,12 +407,16 @@ async fn process_single_wanted_item(
         .unwrap_or_default();
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
-    let has_blocking_active_or_completed_submission = submissions.iter().any(|submission| {
-        submission_is_active_or_completed(submission, dl_snapshot)
-            && submission_blocks_wanted_item(submission, item, episode_collection_id.as_deref())
+    let has_blocking_download_submission = submissions.iter().any(|submission| {
+        submission_blocks_search_for_wanted_item(
+            submission,
+            item,
+            episode_collection_id.as_deref(),
+            dl_snapshot,
+        )
     });
 
-    if has_blocking_active_or_completed_submission {
+    if has_blocking_download_submission {
         info!(
             title = title.name.as_str(),
             media_type = item.media_type.as_str(),
@@ -408,51 +429,17 @@ async fn process_single_wanted_item(
         return Ok(());
     }
 
-    // For interstitial movies, build a synthetic title from the collection's movie metadata
-    // so the search uses the movie's name/year/IMDB ID instead of the parent series'
-    let search_title = if item.media_type == "interstitial_movie" {
-        if let Some(ref coll_id) = item.collection_id
-            && let Ok(Some(collection)) = app
-                .services
-                .catalog
-                .shows
-                .get_collection_by_id(coll_id)
-                .await
-        {
-            interstitial_movie_search_title(&title, &collection)
-        } else {
-            title.clone()
-        }
-    } else {
-        title.clone()
-    };
-
-    let search_title = if item.media_type == "episode" {
-        if let Some(anidb_id) = app
-            .local_scoped_anidb_id_for_episode(episode.as_ref())
-            .await
-        {
-            let mut title = search_title;
-            title.external_ids.retain(|id| {
-                !matches!(
-                    id.source.trim().to_ascii_lowercase().as_str(),
-                    "anidb" | "anidb_id"
-                )
-            });
-            title.external_ids.push(scryer_domain::ExternalId {
-                source: "anidb".into(),
-                value: anidb_id,
-            });
-            title
-        } else {
-            search_title
-        }
-    } else {
-        search_title
-    };
+    let search_title = app
+        .release_search_title_for_wanted_item(&title, item, episode.as_ref())
+        .await;
 
     let subject = app
-        .resolve_release_search_subject_for_wanted_item(&search_title, item, episode.as_ref())
+        .resolve_release_search_subject_for_wanted_item(
+            &title,
+            &search_title,
+            item,
+            episode.as_ref(),
+        )
         .await;
     let search_season = subject.season;
 
@@ -583,7 +570,10 @@ async fn process_single_wanted_item(
                             .media_files
                             .list_media_files_for_title(&title.id)
                             .await
-                            .unwrap_or_default();
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|file| file.role.is_primary())
+                            .collect::<Vec<_>>();
 
                         let episode_file_scores: std::collections::HashMap<String, i32> =
                             existing_files
@@ -662,6 +652,7 @@ async fn process_single_wanted_item(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
+                                    purpose: crate::DownloadSubmissionPurpose::Standard,
                                     download_id: Some(download_id),
                                     source_hint: pack_url.clone(),
                                     staged_nzb: None,
@@ -754,6 +745,7 @@ async fn process_single_wanted_item(
                                             last_search_at: Some(now.to_rfc3339()),
                                             download_submission: DownloadSubmission {
                                                 title_id: title.id.clone(),
+                                                purpose: crate::DownloadSubmissionPurpose::Standard,
                                                 facet: facet_str.trim_matches('"').to_string(),
                                                 download_client_id: grab.client_id.clone(),
                                                 download_client_type: grab.client_type.clone(),
@@ -931,12 +923,29 @@ async fn process_single_wanted_item(
         .filter_map(|e| e.source_title)
         .map(|t| t.to_ascii_lowercase())
         .collect();
+    let existing_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|file| file.role.is_primary())
+        .collect::<Vec<_>>();
+    let analyzed_cutoff_quality =
+        crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+            &existing_files,
+            subject.submission_scope.episode_id(),
+            subject.submission_scope.series_movie_link_id(),
+        );
 
     let upgrade_context = app
-        .resolve_upgrade_context_for_title_with_category(
+        .resolve_upgrade_context_for_title_with_category_and_quality(
             &search_title,
             item.grabbed_release.as_deref(),
             Some(subject.category.as_str()),
+            analyzed_cutoff_quality,
         )
         .await;
     let profile = &upgrade_context.profile;
@@ -1167,6 +1176,7 @@ async fn process_single_wanted_item(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
@@ -1283,6 +1293,7 @@ async fn process_single_wanted_item(
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
                             title_id: title.id.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
                             download_client_type: grab.client_type.clone(),
@@ -1866,6 +1877,7 @@ mod task_runner_tests {
             library_slug: None,
             episode_id: Some(format!("{title_id}-episode-{episode_number}")),
             collection_id: None,
+            series_movie_link_id: None,
             season_number: Some("1".to_string()),
             episode_number: Some(episode_number.to_string()),
             media_type: "episode".to_string(),
@@ -1882,6 +1894,81 @@ mod task_runner_tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    fn episode_submission(title_id: &str, episode_id: &str, job_id: &str) -> DownloadSubmission {
+        DownloadSubmission {
+            title_id: title_id.to_string(),
+            purpose: DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: job_id.to_string(),
+            source_hint: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Episode {
+                episode_id: episode_id.to_string(),
+            },
+        }
+    }
+
+    fn snapshot_with_job(job_id: &str, completed: bool) -> DownloadClientSnapshot {
+        let key = download_client_item_identity(Some("primary"), job_id);
+        let mut snapshot = DownloadClientSnapshot {
+            active_titles: Default::default(),
+            active_client_ids: Default::default(),
+            active_raw_item_id_counts: Default::default(),
+            completed_client_ids: Default::default(),
+            completed_raw_item_id_counts: Default::default(),
+            failed_by_download_id: Default::default(),
+        };
+        if completed {
+            snapshot.completed_client_ids.insert(key);
+        } else {
+            snapshot.active_client_ids.insert(key);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn completed_submission_blocks_initial_wanted_search() {
+        let item = wanted_episode_item("title-bluey", "Bluey", 1);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-baseline");
+        let snapshot = snapshot_with_job("job-baseline", true);
+
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
+    }
+
+    #[test]
+    fn completed_submission_does_not_block_upgrade_search() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-baseline");
+        let snapshot = snapshot_with_job("job-baseline", true);
+
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
+    }
+
+    #[test]
+    fn active_submission_still_blocks_upgrade_search() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-upgrade");
+        let snapshot = snapshot_with_job("job-upgrade", false);
+
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission, &item, None, &snapshot,
+        ));
     }
 
     #[test]

@@ -1156,6 +1156,7 @@ impl DownloadClient for NzbgetDownloadClient {
         let mut parameters: Vec<Value> = vec![
             json!({"*scryer_title_id": title.id.clone()}),
             json!({"*scryer_facet": facet_str}),
+            json!({"*scryer_import_purpose": request.purpose.as_str()}),
         ];
         if let Some(download_id) = request.download_id.as_deref() {
             parameters.push(json!({"*scryer_download_id": download_id}));

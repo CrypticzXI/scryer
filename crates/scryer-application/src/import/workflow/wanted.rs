@@ -33,6 +33,7 @@ async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
+    rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
     source_video: &Path,
@@ -46,6 +47,7 @@ async fn execute_resolved_episode_import(
     quality_profile: &crate::QualityProfile,
     quality_override: Option<String>,
     runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
+    additional_import: bool,
 ) -> AppResult<EpisodeImportOutcome> {
     let source_size = std::fs::metadata(source_video)
         .map(|metadata| metadata.len() as i64)
@@ -66,6 +68,156 @@ async fn execute_resolved_episode_import(
         .iter()
         .map(|incumbent| incumbent.media_file.clone())
         .collect::<Vec<_>>();
+    if additional_import {
+        if target_episode_ids.len() != 1 {
+            return Ok(EpisodeImportOutcome::Rejected {
+                rejection: crate::post_download_gate::ImportedFileRejection {
+                    message: "additional-file episode imports support exactly one episode"
+                        .to_string(),
+                    recycle_reason: "additional_file_multi_episode",
+                    skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                    blocking_rule_codes: vec!["additional_file_multi_episode".to_string()],
+                },
+                finalize_before_import: false,
+                reason_code: Some("additional_file_multi_episode".to_string()),
+                episode_ids: target_episode_ids.clone(),
+            });
+        }
+
+        let ext = source_video
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("mkv")
+            .to_string();
+        let effective_quality_label = quality_override
+            .as_deref()
+            .and_then(|value| non_empty_string(Some(value.to_string())))
+            .or_else(|| parsed.quality.clone());
+        let effective_parsed =
+            parsed_with_quality_override(parsed, effective_quality_label.as_deref());
+        let canonical_dest_path = episode_import_dest_path(
+            title,
+            &effective_parsed,
+            &ext,
+            source_video,
+            title_folder_path,
+            rename_enabled,
+            rename_template,
+            rename_season,
+            rename_episode_number,
+            rename_absolute_number,
+            rename_episode_title,
+            effective_quality_label.as_deref(),
+        );
+        let dest_path = additional_import_dest_path(&canonical_dest_path, &effective_parsed);
+        let check_ctx = crate::import_checks::ImportCheckContext {
+            source_path: source_video,
+            dest_path: &dest_path,
+            source_size: source_size as u64,
+            parsed: &effective_parsed,
+            existing_files: &existing_files,
+        };
+        if let crate::import_checks::ImportVerdict::Reject { reason, code } =
+            crate::import_checks::run_import_checks(&check_ctx)
+        {
+            return Ok(EpisodeImportOutcome::Skipped {
+                message: reason,
+                reason_code: Some(code.to_string()),
+                skip_reason: Some(skip_reason_for_import_check_code(code)),
+                episode_ids: target_episode_ids.clone(),
+            });
+        }
+
+        let import_mode = app
+            .resolve_import_mode(Some(&title.library_id), &title.facet)
+            .await?;
+        let file_result = app
+            .services
+            .workflow
+            .file_importer
+            .import_file(source_video, &dest_path, import_mode)
+            .await?;
+        let media_file_input = crate::InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: path_to_stored_string(&dest_path),
+            size_bytes: file_result.size_bytes as i64,
+            role: crate::MediaFileRole::Additional,
+            quality_label: effective_quality_label.clone(),
+            scene_name: Some(effective_parsed.raw_title.clone()),
+            release_group: effective_parsed.release_group.clone(),
+            source_type: crate::release_parser::parsed_release_source_type(&effective_parsed),
+            resolution: effective_quality_label,
+            video_codec_parsed: effective_parsed.video_codec,
+            audio_codec_parsed: effective_parsed.audio.as_ref().map(ToString::to_string),
+            audio_channels_parsed: effective_parsed.audio_channels.clone(),
+            original_file_path: Some(path_to_stored_string(source_video)),
+            grabbed_release_title: Some(effective_parsed.raw_title.clone()),
+            edition: effective_parsed.edition.clone(),
+            ..Default::default()
+        };
+        let media_file_id = app
+            .services
+            .library
+            .media_files
+            .insert_media_file(&media_file_input)
+            .await?;
+        analyze_and_persist_imported_media_file(app, &title.id, &media_file_id, &dest_path).await;
+        if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+            app,
+            &title.id,
+            &media_file_id,
+            target_episode_ids.first().map(String::as_str),
+            &dest_path,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                title_id = %title.id,
+                file_id = %media_file_id,
+                dest_path = %dest_path.display(),
+                "failed to reconcile external subtitles after additional episode import"
+            );
+        }
+        maybe_trigger_subtitle_search(app, &title.id, &media_file_id);
+
+        for episode in target_episodes {
+            if let Err(err) = app
+                .services
+                .library
+                .media_files
+                .link_file_to_episode(&media_file_id, &episode.id)
+                .await
+            {
+                tracing::warn!(error = %err, episode_id = %episode.id, "failed to link additional file to episode");
+                if import_mode == scryer_domain::ImportMode::Move {
+                    return Err(AppError::Repository(format!(
+                        "move import source cleanup blocked because episode linking failed for {}",
+                        dest_path.display()
+                    )));
+                }
+            }
+        }
+
+        let link_type =
+            finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+
+        return Ok(EpisodeImportOutcome::Imported {
+            dest_path: path_to_stored_string(&dest_path),
+            episode_ids: target_episode_ids,
+            imported_media_file_id: Some(media_file_id),
+            reason_code: Some("additional_file".to_string()),
+            link_type: Some(link_type),
+        });
+    }
+    let existing_incumbents = existing_incumbents
+        .into_iter()
+        .filter(|incumbent| incumbent.media_file.role.is_primary())
+        .collect::<Vec<_>>();
+    let existing_files = existing_incumbents
+        .iter()
+        .map(|incumbent| incumbent.media_file.clone())
+        .collect::<Vec<_>>();
     let existing_score = existing_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
@@ -82,6 +234,51 @@ async fn execute_resolved_episode_import(
             )
         }
     };
+    let precheck_ext = source_video
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("mkv")
+        .to_string();
+    let precheck_quality_label = quality_override
+        .as_deref()
+        .and_then(|value| non_empty_string(Some(value.to_string())))
+        .or_else(|| parsed.quality.clone());
+    let precheck_parsed =
+        parsed_with_quality_override(parsed, precheck_quality_label.as_deref());
+    let precheck_dest_path = episode_import_dest_path(
+        title,
+        &precheck_parsed,
+        &precheck_ext,
+        source_video,
+        title_folder_path,
+        rename_enabled,
+        rename_template,
+        rename_season,
+        rename_episode_number,
+        rename_absolute_number,
+        rename_episode_title,
+        precheck_quality_label.as_deref(),
+    );
+
+    let check_ctx = crate::import_checks::ImportCheckContext {
+        source_path: source_video,
+        dest_path: &precheck_dest_path,
+        source_size: source_size as u64,
+        parsed: &precheck_parsed,
+        existing_files: &existing_files,
+    };
+    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
+        crate::import_checks::run_import_checks(&check_ctx)
+    {
+        tracing::debug!(file = %precheck_dest_path.display(), %code, %reason, "skipping episode file");
+        return Ok(EpisodeImportOutcome::Skipped {
+            message: reason,
+            reason_code: Some(code.to_string()),
+            skip_reason: Some(skip_reason_for_import_check_code(code)),
+            episode_ids: target_episode_ids.clone(),
+        });
+    }
+
     let prepared = match crate::post_download_gate::prepare_import_candidate(
         app,
         title,
@@ -102,6 +299,7 @@ async fn execute_resolved_episode_import(
                 rejection,
                 finalize_before_import: true,
                 reason_code: None,
+                episode_ids: target_episode_ids.clone(),
             });
         }
     };
@@ -132,14 +330,11 @@ async fn execute_resolved_episode_import(
             reason_code: Some(
                 super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
             ),
+            episode_ids: target_episode_ids.clone(),
         });
     }
 
-    let ext = source_video
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("mkv")
-        .to_string();
+    let ext = precheck_ext;
     let effective_quality_label = quality_override
         .as_deref()
         .and_then(|value| non_empty_string(Some(value.to_string())))
@@ -150,7 +345,9 @@ async fn execute_resolved_episode_import(
         title,
         &effective_parsed,
         &ext,
+        source_video,
         title_folder_path,
+        rename_enabled,
         rename_template,
         rename_season,
         rename_episode_number,
@@ -158,25 +355,6 @@ async fn execute_resolved_episode_import(
         rename_episode_title,
         effective_quality_label.as_deref(),
     );
-
-    let check_ctx = crate::import_checks::ImportCheckContext {
-        source_path: source_video,
-        dest_path: &dest_path,
-        source_size: source_size as u64,
-        parsed: &prepared.parsed,
-        existing_files: &existing_files,
-    };
-    if let crate::import_checks::ImportVerdict::Reject { reason, code } =
-        crate::import_checks::run_import_checks(&check_ctx)
-    {
-        tracing::debug!(file = %dest_path.display(), %code, %reason, "skipping episode file");
-        return Ok(EpisodeImportOutcome::Skipped {
-            message: reason,
-            reason_code: Some(code.to_string()),
-            skip_reason: Some(skip_reason_for_import_check_code(code)),
-        });
-    }
-
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
@@ -205,6 +383,7 @@ async fn execute_resolved_episode_import(
                     rejection,
                     finalize_before_import: true,
                     reason_code: None,
+                    episode_ids: target_episode_ids.clone(),
                 });
             }
         };
@@ -274,6 +453,7 @@ async fn execute_resolved_episode_import(
                     rejection,
                     finalize_before_import: false,
                     reason_code: None,
+                    episode_ids: target_episode_ids.clone(),
                 });
             }
             Err(err) => {

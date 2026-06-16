@@ -2,7 +2,8 @@ use crate::types::*;
 use scryer_application::{
     ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
     ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
-    DownloadSourceKind as AppDownloadSourceKind, JobCategory as AppJobCategory,
+    DownloadSourceKind as AppDownloadSourceKind,
+    DownloadSubmissionPurpose as AppDownloadSubmissionPurpose, JobCategory as AppJobCategory,
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
     JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
@@ -78,6 +79,15 @@ impl FromApplication<AppDownloadSourceKind> for DownloadSourceKindValue {
             AppDownloadSourceKind::NzbUrl => Self::NzbUrl,
             AppDownloadSourceKind::TorrentFile => Self::TorrentFile,
             AppDownloadSourceKind::MagnetUri => Self::MagnetUri,
+        }
+    }
+}
+
+impl IntoApplication<AppDownloadSubmissionPurpose> for QueueDownloadPurposeValue {
+    fn into_application(self) -> AppDownloadSubmissionPurpose {
+        match self {
+            Self::Standard => AppDownloadSubmissionPurpose::Standard,
+            Self::AdditionalFile => AppDownloadSubmissionPurpose::AdditionalFile,
         }
     }
 }
@@ -387,6 +397,9 @@ impl IntoApplication<AppSubmissionScope> for QueueDownloadScopeInput {
                 episode_ids.dedup();
                 AppSubmissionScope::EpisodeSet { episode_ids }
             }
+            Self::SeriesMovie(series_movie_link_id) => AppSubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            },
             Self::Collection(collection_id) => AppSubmissionScope::Collection { collection_id },
             Self::Title(_) => AppSubmissionScope::Title,
         }

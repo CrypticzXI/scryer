@@ -235,5 +235,9 @@ mod tests {
             quality_from_video_dimensions(Some(3840), Some(1600)),
             Some("2160p")
         );
+        assert_eq!(
+            quality_from_video_dimensions(Some(7680), Some(3200)),
+            Some("4320p")
+        );
     }
 }

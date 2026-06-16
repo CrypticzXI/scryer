@@ -4,6 +4,7 @@ pub struct MediaSettings {
     pub root_folders: Vec<RootFolderEntry>,
     pub required_audio_languages: Vec<String>,
     pub folder_template: String,
+    pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: String,
     pub rename_missing_metadata_policy: String,
@@ -22,6 +23,7 @@ pub struct UpdateMediaSettings {
     pub root_folders: Option<Vec<RootFolderEntry>>,
     pub required_audio_languages: Option<Vec<String>>,
     pub folder_template: Option<String>,
+    pub rename_enabled: Option<bool>,
     pub rename_template: Option<String>,
     pub rename_collision_policy: Option<String>,
     pub rename_missing_metadata_policy: Option<String>,
@@ -178,6 +180,13 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub(crate) async fn resolve_rename_enabled(&self, facet: &MediaFacet) -> AppResult<bool> {
+        Ok(self
+            .read_setting_bool_value(RENAME_ENABLED_KEY, Some(facet.as_str()))
+            .await?
+            .unwrap_or(true))
+    }
+
     pub(crate) async fn resolve_import_mode(
         &self,
         library_id: Option<&str>,
@@ -304,6 +313,7 @@ impl AppUseCase {
 
         let root_folders = self.root_folders_for_facet(&facet).await?;
         let library_path = default_path_from_root_folders(&facet, &root_folders);
+        let rename_enabled = self.resolve_rename_enabled(&facet).await?;
         let scoped_rename_template = self
             .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet.as_str()))
             .await?;
@@ -353,6 +363,7 @@ impl AppUseCase {
                 .load_facet_required_audio_languages(facet.as_str())
                 .await?,
             folder_template,
+            rename_enabled,
             rename_template,
             rename_collision_policy,
             rename_missing_metadata_policy,
@@ -482,6 +493,22 @@ impl AppUseCase {
                 )
                 .await?;
             changed_keys.push(FOLDER_TEMPLATE_KEY.to_string());
+        }
+
+        if let Some(rename_enabled) = input.rename_enabled {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    RENAME_ENABLED_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&rename_enabled)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(RENAME_ENABLED_KEY.to_string());
         }
 
         if let Some(rename_template) = normalize_optional_string(input.rename_template) {

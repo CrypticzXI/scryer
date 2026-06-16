@@ -250,6 +250,45 @@ async fn matched_completed_download_submission(
     )))
 }
 
+pub(crate) enum ResolvedCompletedDownloadOriginForImport {
+    Ready(CompletedDownload),
+    Conflict {
+        reason: &'static str,
+        detail: String,
+    },
+    NoScryerOrigin,
+}
+
+pub(crate) async fn resolve_completed_download_origin_for_import(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    item: Option<&DownloadQueueItem>,
+) -> AppResult<ResolvedCompletedDownloadOriginForImport> {
+    let submission_resolution = resolve_completed_download_submission(app, completed, item).await?;
+    Ok(
+        match resolve_completed_download_origin(completed, &submission_resolution) {
+            CompletedDownloadOriginResolution::Ready(completed) => {
+                ResolvedCompletedDownloadOriginForImport::Ready(completed)
+            }
+            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }
+            }
+            CompletedDownloadOriginResolution::NoScryerOrigin => {
+                ResolvedCompletedDownloadOriginForImport::NoScryerOrigin
+            }
+        },
+    )
+}
+
+pub(crate) async fn block_completed_download_origin_conflict_for_manual_review(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    reason: &str,
+    detail: &str,
+) {
+    block_completed_download_identity_for_manual_review(app, completed, reason, detail).await;
+}
+
 async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
     completed: &CompletedDownload,
@@ -294,29 +333,6 @@ async fn completed_download_already_imported_for_current_attempt(
         .imports
         .is_already_imported(&source_identity)
         .await
-}
-
-fn completed_download_for_submission_cleanup(
-    completed: &CompletedDownload,
-    resolution: &CompletedDownloadSubmissionResolution,
-) -> CompletedDownload {
-    if has_scryer_origin(&completed.parameters) {
-        return completed.clone();
-    }
-
-    let CompletedDownloadSubmissionResolution::Matched(matched) = resolution else {
-        return completed.clone();
-    };
-
-    let collection_id = matched.submission.scope.collection_id().map(str::to_string);
-    let mut patched = completed.clone();
-    merge_scryer_origin_parameters(
-        &mut patched.parameters,
-        matched.submission.title_id.clone(),
-        matched.submission.facet.clone(),
-        collection_id,
-    );
-    patched
 }
 
 async fn completed_download_terminal_state_for_resolution(
@@ -616,13 +632,36 @@ pub async fn try_import_completed_downloads(
                 state = state.as_str(),
                 "import: DownloadId already has terminal state"
             );
-            let cleanup_completed =
-                completed_download_for_submission_cleanup(&completed, &submission_resolution);
-            let cleanup =
-                reconcile_terminal_download_cleanup_for_completed(app, &cleanup_completed, state)
+            match resolve_completed_download_origin(&completed, &submission_resolution) {
+                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
+                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                        app,
+                        &cleanup_completed,
+                        state,
+                    )
                     .await;
-            if terminal_download_cleanup_is_complete(cleanup) {
-                processed_ids.insert(source_ref.clone());
+                    if terminal_download_cleanup_is_complete(cleanup) {
+                        processed_ids.insert(source_ref.clone());
+                    }
+                }
+                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                    block_completed_download_identity_for_manual_review(
+                        app,
+                        &completed,
+                        reason,
+                        &detail,
+                    )
+                    .await;
+                }
+                CompletedDownloadOriginResolution::NoScryerOrigin => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: terminal download state found but no scryer origin was available for cleanup"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                }
             }
             continue;
         }
@@ -674,62 +713,71 @@ pub async fn try_import_completed_downloads(
                 title = %item.title_name,
                 "import: treating already-imported download as terminal imported for cleanup"
             );
-            let cleanup_completed =
-                completed_download_for_submission_cleanup(&completed, &submission_resolution);
-            let cleanup = reconcile_terminal_download_cleanup_for_completed(
-                app,
-                &cleanup_completed,
-                TrackedDownloadState::Imported,
-            )
-            .await;
-            if terminal_download_cleanup_is_complete(cleanup) {
-                processed_ids.insert(source_ref.clone());
+            match resolve_completed_download_origin(&completed, &submission_resolution) {
+                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
+                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
+                        app,
+                        &cleanup_completed,
+                        TrackedDownloadState::Imported,
+                    )
+                    .await;
+                    if terminal_download_cleanup_is_complete(cleanup) {
+                        processed_ids.insert(source_ref.clone());
+                    }
+                }
+                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                    block_completed_download_identity_for_manual_review(
+                        app,
+                        &completed,
+                        reason,
+                        &detail,
+                    )
+                    .await;
+                }
+                CompletedDownloadOriginResolution::NoScryerOrigin => {
+                    tracing::debug!(
+                        source_ref = %source_ref,
+                        title = %item.title_name,
+                        client_type = %completed.client_type,
+                        "import: already-imported download had no scryer origin for cleanup"
+                    );
+                    processed_ids.insert(source_ref.clone());
+                }
             }
             continue;
         }
 
-        let completed = if has_scryer_origin(&completed.parameters) {
-            completed.clone()
-        } else {
-            match &submission_resolution {
-                CompletedDownloadSubmissionResolution::Matched(matched)
-                    if submission_has_scryer_origin(&matched.submission) =>
-                {
-                    let collection_id =
-                        matched.submission.scope.collection_id().map(str::to_string);
-                    let mut patched = completed.clone();
-                    merge_scryer_origin_parameters(
-                        &mut patched.parameters,
-                        matched.submission.title_id.clone(),
-                        matched.submission.facet.clone(),
-                        collection_id,
-                    );
-                    patched
-                }
-                CompletedDownloadSubmissionResolution::Matched(_) => {
+        let completed = match resolve_completed_download_origin(&completed, &submission_resolution)
+        {
+            CompletedDownloadOriginResolution::Ready(completed) => completed,
+            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
+                block_completed_download_identity_for_manual_review(
+                    app, &completed, reason, &detail,
+                )
+                .await;
+                continue;
+            }
+            CompletedDownloadOriginResolution::NoScryerOrigin => {
+                if matches!(
+                    &submission_resolution,
+                    CompletedDownloadSubmissionResolution::Matched(_)
+                ) {
                     tracing::debug!(
                         source_ref = %source_ref,
                         title = %item.title_name,
                         client_type = %completed.client_type,
                         "import: ignoring stub download_submissions row without scryer origin metadata"
                     );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
-                }
-                CompletedDownloadSubmissionResolution::Foreign => {
+                } else {
                     tracing::debug!(
                         source_ref = %source_ref,
                         title = %item.title_name,
                         client_type = %completed.client_type,
                         "import: no scryer origin — not in parameters or download_submissions table"
                     );
-                    processed_ids.insert(source_ref.clone());
-                    continue;
                 }
-                CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-                | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => {
-                    unreachable!()
-                }
+                processed_ids.insert(source_ref.clone());
+                continue;
             }
         };
 
@@ -822,24 +870,13 @@ pub async fn try_import_completed_downloads(
 
     processed_ids
 }
-fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
-    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
-        && Path::new(&result.source_path).exists()
-    {
-        return true;
-    }
-
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(completed_import_error_message_is_retryable)
-}
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
 pub(crate) struct ImportPathSettings {
     pub(crate) media_root: String,
+    pub(crate) rename_enabled: bool,
     pub(crate) rename_template: String,
     pub(crate) folder_template: String,
 }
@@ -858,6 +895,18 @@ async fn persist_title_folder_path_if_missing(app: &AppUseCase, title: &Title, f
         .titles
         .set_folder_path(&title.id, &path_to_stored_string(folder_path))
         .await;
+}
+pub(crate) fn preserved_import_filename(source_path: &Path) -> String {
+    let raw = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("untitled");
+    let sanitized = sanitize_filesystem_component(raw);
+    if sanitized.is_empty() {
+        "untitled".to_string()
+    } else {
+        sanitized
+    }
 }
 #[cfg(test)]
 fn sanitized_title_folder_component(raw: &str) -> String {
@@ -888,6 +937,34 @@ pub(crate) fn find_video_files(dir: &Path, filter_samples: bool) -> AppResult<Ve
 
     let walked = crate::filesystem_walk::FilesystemWalker::new()
         .skip_unreadable_subdirectories()
+        .walk(dir)?;
+
+    Ok(walked
+        .into_iter()
+        .flat_map(|entry| entry.files.into_iter())
+        .filter(|path| is_video_file(path))
+        .filter(|path| !filter_samples || !is_sample_file(path))
+        .collect())
+}
+
+pub(crate) fn find_video_files_without_symlinked_dirs(
+    dir: &Path,
+    filter_samples: bool,
+) -> AppResult<Vec<PathBuf>> {
+    if std::fs::read_dir(dir).is_err() && is_video_file(dir) {
+        tracing::info!(
+            path = %dir.display(),
+            "download path is a video file, not a directory"
+        );
+        return Ok((!filter_samples || !is_sample_file(dir))
+            .then_some(dir.to_path_buf())
+            .into_iter()
+            .collect());
+    }
+
+    let walked = crate::filesystem_walk::FilesystemWalker::new()
+        .skip_unreadable_subdirectories()
+        .skip_symlinked_directories()
         .walk(dir)?;
 
     Ok(walked

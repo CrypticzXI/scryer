@@ -26,11 +26,10 @@ blake3 = "1"
 sha2 = "0.10"
 libsqlite3-sys = { version = "0.37.0", default-features = false, features = ["bundled"] }
 unicode-normalization = "0.1"
-zstd = "0.13"
-flate2 = "1"
-async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
+zstd = { version = "0.13", default-features = false }
+async-compression = { version = "0.4", default-features = false, features = ["tokio", "zstd", "gzip"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "query", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate", "stream"] }
-ml-dsa = "=0.1.0"
+ml-dsa = "0.1.1"
 aws-lc-rs = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -72,4 +71,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 toml = { workspace = true }
-zstd = "0.13"
+zstd = { version = "0.13", default-features = false }

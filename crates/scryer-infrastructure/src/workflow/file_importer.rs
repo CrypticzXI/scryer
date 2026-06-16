@@ -4,14 +4,17 @@ use scryer_domain::{
     ImportContentProof, ImportFileIdentity, ImportFileResult, ImportMode, ImportSourceCleanupGuard,
     ImportSourceIdentity, ImportSourceIdentityKind, ImportStrategy,
 };
+use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, symlink};
 
 const IMPORT_CONTENT_PROOF_SAMPLE_BYTES: usize = 1024 * 1024;
+const TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO: i32 = 9;
+const IMPORT_COPY_MAX_ATTEMPTS: usize = 3;
 
 pub struct FsFileImporter;
 
@@ -36,6 +39,16 @@ fn is_cross_device_error(err: &std::io::Error) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileFingerprint {
     len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectoryFingerprint {
+    #[cfg(not(unix))]
     modified: Option<SystemTime>,
     #[cfg(unix)]
     dev: u64,
@@ -275,6 +288,24 @@ fn fingerprint_from_metadata(metadata: &std::fs::Metadata) -> AppResult<FileFing
     })
 }
 
+fn directory_fingerprint_from_metadata(
+    metadata: &std::fs::Metadata,
+) -> AppResult<DirectoryFingerprint> {
+    if !metadata.is_dir() {
+        return Err(AppError::Repository(
+            "import destination parent is not a directory".into(),
+        ));
+    }
+    Ok(DirectoryFingerprint {
+        #[cfg(not(unix))]
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(unix)]
+        ino: metadata.ino(),
+    })
+}
+
 fn ensure_same_source(path: &Path, expected: &ImportSourceFingerprint) -> AppResult<()> {
     let actual = fingerprint_import_source(path)?;
     if &actual != expected {
@@ -376,6 +407,10 @@ struct ImportFileOptions {
     force_copy_verification_failure: bool,
     #[cfg(test)]
     force_delete_failure: bool,
+    #[cfg(test)]
+    force_transient_copy_failures: u8,
+    #[cfg(test)]
+    force_non_transient_copy_failure: bool,
 }
 
 #[cfg(test)]
@@ -408,10 +443,53 @@ fn force_delete_failure(_: &ImportFileOptions) -> bool {
     false
 }
 
+#[cfg(test)]
+fn force_copy_attempt_error(
+    temp_file: &mut std::fs::File,
+    options: &ImportFileOptions,
+    attempt: usize,
+) -> std::io::Result<()> {
+    if options.force_non_transient_copy_failure {
+        temp_file.write_all(b"partial non-transient copy failure")?;
+        temp_file.flush()?;
+        return Err(io_other("forced non-transient copy failure"));
+    }
+    if attempt <= usize::from(options.force_transient_copy_failures) {
+        temp_file.write_all(format!("partial transient copy failure {attempt}").as_bytes())?;
+        temp_file.flush()?;
+        return Err(std::io::Error::from_raw_os_error(
+            TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn force_copy_attempt_error(
+    _temp_file: &mut std::fs::File,
+    _options: &ImportFileOptions,
+    _attempt: usize,
+) -> std::io::Result<()> {
+    Ok(())
+}
+
+struct ImportDestinationGuard {
+    requested_path: PathBuf,
+    parent_path: PathBuf,
+    approved_parent_canonical: PathBuf,
+    approved_parent_fingerprint: DirectoryFingerprint,
+}
+
+fn destination_parent_for_guard(dest: &Path) -> &Path {
+    dest.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 fn prepare_import_destination(
     source: &Path,
     dest: &Path,
-) -> AppResult<(ImportSourceFingerprint, u64)> {
+) -> AppResult<(ImportSourceFingerprint, u64, ImportDestinationGuard)> {
     let source_fingerprint = fingerprint_import_source(source)?;
     let size = source_fingerprint.file.len;
     if size == 0 {
@@ -421,17 +499,102 @@ fn prepare_import_destination(
         )));
     }
 
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
+    let parent = destination_parent_for_guard(dest);
+    std::fs::create_dir_all(parent).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to create destination directory {}: {}",
+            parent.display(),
+            e
+        ))
+    })?;
+    let approved_parent_canonical = std::fs::canonicalize(parent).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to inspect destination directory {}: {}",
+            parent.display(),
+            e
+        ))
+    })?;
+    let approved_parent_fingerprint = std::fs::metadata(parent)
+        .map_err(|e| {
             AppError::Repository(format!(
-                "failed to create destination directory {}: {}",
+                "failed to stat destination directory {}: {}",
                 parent.display(),
                 e
             ))
-        })?;
+        })
+        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+
+    Ok((
+        source_fingerprint,
+        size,
+        ImportDestinationGuard {
+            requested_path: dest.to_path_buf(),
+            parent_path: parent.to_path_buf(),
+            approved_parent_canonical,
+            approved_parent_fingerprint,
+        },
+    ))
+}
+
+fn validate_import_destination_guard(
+    guard: &ImportDestinationGuard,
+    returned_dest: &Path,
+) -> AppResult<()> {
+    if returned_dest != guard.requested_path {
+        return Err(AppError::Repository(format!(
+            "import destination changed during placement: expected {} got {}",
+            guard.requested_path.display(),
+            returned_dest.display()
+        )));
     }
 
-    Ok((source_fingerprint, size))
+    let current_parent_canonical = std::fs::canonicalize(&guard.parent_path).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to re-check destination directory {}: {}",
+            guard.parent_path.display(),
+            e
+        ))
+    })?;
+    if current_parent_canonical != guard.approved_parent_canonical {
+        return Err(AppError::Repository(format!(
+            "import destination parent changed during placement: {} resolved to {} before import and {} after import",
+            guard.parent_path.display(),
+            guard.approved_parent_canonical.display(),
+            current_parent_canonical.display()
+        )));
+    }
+    let current_parent_fingerprint = std::fs::metadata(&guard.parent_path)
+        .map_err(|e| {
+            AppError::Repository(format!(
+                "failed to stat destination directory {} after placement: {}",
+                guard.parent_path.display(),
+                e
+            ))
+        })
+        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+    if current_parent_fingerprint != guard.approved_parent_fingerprint {
+        return Err(AppError::Repository(format!(
+            "import destination parent changed during placement: {}",
+            guard.parent_path.display()
+        )));
+    }
+
+    let metadata = std::fs::symlink_metadata(&guard.requested_path).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to inspect imported destination {}: {}",
+            guard.requested_path.display(),
+            e
+        ))
+    })?;
+    let file_type = metadata.file_type();
+    if !file_type.is_file() && !file_type.is_symlink() {
+        return Err(AppError::Repository(format!(
+            "import destination is not a file or symlink: {}",
+            guard.requested_path.display()
+        )));
+    }
+
+    Ok(())
 }
 
 fn import_symlink_source(
@@ -504,6 +667,102 @@ fn import_symlink_source(
     }
 }
 
+#[derive(Debug)]
+struct ImportCopyAttemptError {
+    stage: &'static str,
+    error: std::io::Error,
+}
+
+impl ImportCopyAttemptError {
+    fn new(stage: &'static str, error: std::io::Error) -> Self {
+        Self { stage, error }
+    }
+
+    fn is_transient_file_handle_error(&self) -> bool {
+        self.error.raw_os_error() == Some(TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO)
+    }
+}
+
+impl fmt::Display for ImportCopyAttemptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.stage, self.error)
+    }
+}
+
+fn remove_import_temp_file(temp_dest: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(temp_dest) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+fn sleep_before_import_copy_retry(_delay: Duration) {}
+
+#[cfg(not(test))]
+fn sleep_before_import_copy_retry(delay: Duration) {
+    std::thread::sleep(delay);
+}
+
+fn import_copy_retry_delay(attempt: usize) -> Duration {
+    match attempt {
+        1 => Duration::from_secs(1),
+        _ => Duration::from_secs(3),
+    }
+}
+
+fn copy_regular_source_to_destination_once(
+    source: &Path,
+    dest: &Path,
+    temp_dest: &Path,
+    source_fingerprint: &ImportSourceFingerprint,
+    options: ImportFileOptions,
+    attempt: usize,
+) -> Result<(), ImportCopyAttemptError> {
+    ensure_same_source(source, source_fingerprint)
+        .map_err(io_other)
+        .map_err(|error| ImportCopyAttemptError::new("source preflight", error))?;
+    let mut source_file = std::fs::File::open(source)
+        .map_err(|error| ImportCopyAttemptError::new("source open", error))?;
+    let source_open_fingerprint = fingerprint_from_metadata(
+        &source_file
+            .metadata()
+            .map_err(|error| ImportCopyAttemptError::new("source metadata", error))?,
+    )
+    .map_err(io_other)
+    .map_err(|error| ImportCopyAttemptError::new("source validation", error))?;
+    if source_open_fingerprint != source_fingerprint.file {
+        return Err(ImportCopyAttemptError::new(
+            "source validation",
+            io_other("import source changed before copy"),
+        ));
+    }
+
+    let mut temp_file = std::fs::File::create(temp_dest)
+        .map_err(|error| ImportCopyAttemptError::new("temp create", error))?;
+    force_copy_attempt_error(&mut temp_file, &options, attempt)
+        .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
+    std::io::copy(&mut source_file, &mut temp_file)
+        .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
+    temp_file
+        .flush()
+        .map_err(|error| ImportCopyAttemptError::new("flush", error))?;
+    temp_file
+        .sync_all()
+        .map_err(|error| ImportCopyAttemptError::new("sync", error))?;
+    drop(temp_file);
+
+    ensure_same_source(source, source_fingerprint)
+        .map_err(io_other)
+        .map_err(|error| ImportCopyAttemptError::new("source verification", error))?;
+
+    std::fs::rename(temp_dest, dest)
+        .map_err(|error| ImportCopyAttemptError::new("final rename", error))?;
+
+    Ok(())
+}
+
 fn copy_regular_source_to_destination(
     source: &Path,
     dest: &Path,
@@ -512,37 +771,48 @@ fn copy_regular_source_to_destination(
     options: ImportFileOptions,
 ) -> AppResult<()> {
     let temp_dest = dest.with_extension("tmp_import");
+    let mut attempt = 1usize;
 
-    let copy_result = (|| -> Result<(), std::io::Error> {
-        ensure_same_source(source, source_fingerprint).map_err(io_other)?;
-        let mut source_file = std::fs::File::open(source)?;
-        let source_open_fingerprint =
-            fingerprint_from_metadata(&source_file.metadata()?).map_err(io_other)?;
-        if source_open_fingerprint != source_fingerprint.file {
-            return Err(io_other("import source changed before copy"));
+    loop {
+        if let Err(error) = remove_import_temp_file(&temp_dest) {
+            return Err(AppError::Repository(format!(
+                "import copy failed before attempt {}: {} -> {}: cleanup of temporary destination {} failed: {}",
+                attempt,
+                source.display(),
+                dest.display(),
+                temp_dest.display(),
+                error
+            )));
         }
 
-        let mut temp_file = std::fs::File::create(&temp_dest)?;
-        std::io::copy(&mut source_file, &mut temp_file)?;
-        temp_file.flush()?;
-        temp_file.sync_all()?;
-        drop(temp_file);
+        match copy_regular_source_to_destination_once(
+            source,
+            dest,
+            &temp_dest,
+            source_fingerprint,
+            options,
+            attempt,
+        ) {
+            Ok(()) => break,
+            Err(error) => {
+                let should_retry =
+                    error.is_transient_file_handle_error() && attempt < IMPORT_COPY_MAX_ATTEMPTS;
+                let _ = remove_import_temp_file(&temp_dest);
+                if should_retry {
+                    sleep_before_import_copy_retry(import_copy_retry_delay(attempt));
+                    attempt += 1;
+                    continue;
+                }
 
-        ensure_same_source(source, source_fingerprint).map_err(io_other)?;
-
-        std::fs::rename(&temp_dest, dest)?;
-
-        Ok(())
-    })();
-
-    if let Err(e) = copy_result {
-        let _ = std::fs::remove_file(&temp_dest);
-        return Err(AppError::Repository(format!(
-            "import copy failed: {} -> {}: {}",
-            source.display(),
-            dest.display(),
-            e
-        )));
+                return Err(AppError::Repository(format!(
+                    "import copy failed after {} attempt(s): {} -> {}: {}",
+                    attempt,
+                    source.display(),
+                    dest.display(),
+                    error
+                )));
+            }
+        }
     }
 
     if force_copy_verification_failure(&options) {
@@ -648,10 +918,11 @@ fn import_hardlink_or_copy_blocking(
     options: ImportFileOptions,
     source_cleanup_required: bool,
 ) -> AppResult<ImportFileResult> {
-    let (source_fingerprint, size) = prepare_import_destination(&source, &dest)?;
+    let (source_fingerprint, size, destination_guard) = prepare_import_destination(&source, &dest)?;
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
         import_symlink_source(&source, &dest, &source_fingerprint, size)?;
+        validate_import_destination_guard(&destination_guard, &dest)?;
         let source_cleanup = cleanup_guard_after_placement(
             source_cleanup_required,
             &source,
@@ -679,6 +950,7 @@ fn import_hardlink_or_copy_blocking(
                 }
                 match std::fs::metadata(&dest) {
                     Ok(dest_meta) if dest_meta.len() == size => {
+                        validate_import_destination_guard(&destination_guard, &dest)?;
                         let source_cleanup = cleanup_guard_after_placement(
                             source_cleanup_required,
                             &source,
@@ -729,6 +1001,7 @@ fn import_hardlink_or_copy_blocking(
     }
 
     copy_regular_source_to_destination(&source, &dest, &source_fingerprint, size, options)?;
+    validate_import_destination_guard(&destination_guard, &dest)?;
 
     let source_cleanup = cleanup_guard_after_placement(
         source_cleanup_required,
@@ -826,6 +1099,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn destination_guard_rejects_parent_replacement_after_approval() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let parent = dir.path().join("library");
+        let dest = parent.join("Imported.Movie.mkv");
+        let (_source_fingerprint, _size, guard) =
+            prepare_import_destination(&source, &dest).expect("prepare destination");
+
+        let old_parent = dir.path().join("library-old");
+        std::fs::rename(&parent, &old_parent).expect("replace approved parent");
+        std::fs::create_dir_all(&parent).expect("create replacement parent");
+        std::fs::write(&dest, b"fake video bytes").expect("write destination");
+
+        let error = validate_import_destination_guard(&guard, &dest)
+            .expect_err("changed parent should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("import destination parent changed during placement")
+        );
+    }
+
     #[tokio::test]
     async fn move_mode_places_regular_source_and_returns_cleanup_guard() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -914,6 +1211,94 @@ mod tests {
         assert!(error.to_string().contains("import copy failed"));
         assert!(source.exists());
         assert!(!dest.exists());
+    }
+
+    #[test]
+    fn move_mode_copy_retries_transient_bad_file_descriptor() {
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let dest_dir = tempfile::tempdir().expect("dest tempdir");
+        let source = source_dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dest_dir.path().join("Imported.Movie.mkv");
+        let temp_dest = dest.with_extension("tmp_import");
+
+        let result = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::Move,
+            ImportFileOptions {
+                force_cross_device_move: true,
+                force_transient_copy_failures: 1,
+                ..Default::default()
+            },
+        )
+        .expect("copy should retry and succeed");
+
+        assert_eq!(result.strategy, ImportStrategy::Copy);
+        assert!(source.exists());
+        assert_eq!(
+            std::fs::read(&dest).expect("read dest"),
+            b"fake video bytes"
+        );
+        assert!(!temp_dest.exists());
+    }
+
+    #[test]
+    fn move_mode_copy_exhausts_transient_bad_file_descriptor_retries() {
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let dest_dir = tempfile::tempdir().expect("dest tempdir");
+        let source = source_dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dest_dir.path().join("Imported.Movie.mkv");
+        let temp_dest = dest.with_extension("tmp_import");
+
+        let error = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::Move,
+            ImportFileOptions {
+                force_cross_device_move: true,
+                force_transient_copy_failures: 3,
+                ..Default::default()
+            },
+        )
+        .expect_err("copy should fail after retry budget");
+
+        let message = error.to_string();
+        assert!(message.contains("import copy failed after 3 attempt(s)"));
+        assert!(message.contains("copy: Bad file descriptor"));
+        assert!(source.exists());
+        assert!(!dest.exists());
+        assert!(!temp_dest.exists());
+    }
+
+    #[test]
+    fn move_mode_copy_does_not_retry_non_transient_copy_error() {
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let dest_dir = tempfile::tempdir().expect("dest tempdir");
+        let source = source_dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dest_dir.path().join("Imported.Movie.mkv");
+        let temp_dest = dest.with_extension("tmp_import");
+
+        let error = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::Move,
+            ImportFileOptions {
+                force_cross_device_move: true,
+                force_non_transient_copy_failure: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("copy should fail without retry");
+
+        let message = error.to_string();
+        assert!(message.contains("import copy failed after 1 attempt(s)"));
+        assert!(message.contains("copy: forced non-transient copy failure"));
+        assert!(source.exists());
+        assert!(!dest.exists());
+        assert!(!temp_dest.exists());
     }
 
     #[test]

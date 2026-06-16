@@ -284,9 +284,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: None,
             last_episode_number: None,
-            interstitial_movie: None,
-            specials_movies: Vec::new(),
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         }

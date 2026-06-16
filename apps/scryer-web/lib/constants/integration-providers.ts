@@ -5,9 +5,11 @@ import type {
 
 export const VISIBLE_MEDIA_SERVER_PROVIDERS = [
   "jellyfin",
+  "plex",
 ] as const satisfies readonly MediaServerProvider[];
 export const VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS = [
   "jellyfin",
+  "plex",
 ] as const satisfies readonly ExternalAccountProvider[];
 
 export type VisibleMediaServerProvider = (typeof VISIBLE_MEDIA_SERVER_PROVIDERS)[number];

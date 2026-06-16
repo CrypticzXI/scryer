@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { classifyStatusToastLevel } from "../utils/status-toast.ts";
 import {
+  isMfaStepUpRequiredError,
   normalizeGraphQlErrorMessage,
   userFacingGraphQlErrorMessage,
 } from "./error-message.ts";
@@ -25,8 +26,52 @@ test("normalizeGraphQlErrorMessage strips nested GraphQL repository validation p
   );
 });
 
+test("normalizeGraphQlErrorMessage strips plain GraphQL prefixes", () => {
+  assert.equal(
+    normalizeGraphQlErrorMessage(
+      "[GraphQL] enable TOTP for your account before requiring TOTP for system configuration",
+    ),
+    "enable TOTP for your account before requiring TOTP for system configuration",
+  );
+});
+
+test("normalizeGraphQlErrorMessage rewrites config step-up errors", () => {
+  assert.equal(
+    normalizeGraphQlErrorMessage(
+      "[GraphQL] MFA verification is required before changing system configuration",
+    ),
+    "Settings verification expired. Enter an authenticator code to continue.",
+  );
+});
+
+test("isMfaStepUpRequiredError detects GraphQL extension codes", () => {
+  assert.equal(
+    isMfaStepUpRequiredError({
+      graphQLErrors: [
+        {
+          message: "MFA verification is required before changing system configuration",
+          extensions: { code: "MFA_STEP_UP_REQUIRED" },
+        },
+      ],
+    }),
+    true,
+  );
+});
+
 test("userFacingGraphQlErrorMessage passes plain Error.message through", () => {
   assert.equal(userFacingGraphQlErrorMessage(new Error("queue failed"), "fallback"), "queue failed");
+});
+
+test("userFacingGraphQlErrorMessage normalizes prefixed Error.message values", () => {
+  assert.equal(
+    userFacingGraphQlErrorMessage(
+      new Error(
+        "[GraphQL] enable TOTP for your account before requiring TOTP for system configuration",
+      ),
+      "fallback",
+    ),
+    "enable TOTP for your account before requiring TOTP for system configuration",
+  );
 });
 
 test("userFacingGraphQlErrorMessage uses fallback when no message exists", () => {

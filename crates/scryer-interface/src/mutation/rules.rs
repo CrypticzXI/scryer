@@ -1,4 +1,4 @@
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, require_config_step_up, to_gql_error};
 use crate::types::*;
 use async_graphql::{Context, Object, Result as GqlResult};
 
@@ -21,7 +21,7 @@ impl RulesMutations {
         input: CreateRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let rule_set = app
             .create_rule_set(
@@ -44,7 +44,7 @@ impl RulesMutations {
         input: UpdateRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let rule_set = app
             .update_rule_set(
@@ -64,7 +64,7 @@ impl RulesMutations {
 
     async fn delete_rule_set(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         app.delete_rule_set(&actor, &id)
             .await
@@ -79,7 +79,7 @@ impl RulesMutations {
         input: ToggleRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let rule_set = app
             .toggle_rule_set(&actor, &input.id, input.enabled)
@@ -109,7 +109,7 @@ impl RulesMutations {
         input: ValidateRuleSetInput,
     ) -> GqlResult<RuleValidationResultPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let rule_set_id = input
             .rule_set_id

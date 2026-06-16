@@ -56,10 +56,11 @@ export type MediaInfoFile = {
 };
 
 function resolveResolution(width: number | null, height: number | null): string | null {
-  if (width == null) return null;
-  if (width >= 3840) return "4K";
-  if (width >= 1920) return "1080p";
-  if (width >= 1280) return "720p";
+  if (width == null && height == null) return null;
+  if ((width != null && width >= 7680) || (height != null && height >= 4200)) return "8K";
+  if ((width != null && width >= 3840) || (height != null && height >= 2100)) return "4K";
+  if ((width != null && width >= 1920) || (height != null && height >= 1000)) return "1080p";
+  if ((width != null && width >= 1280) || (height != null && height >= 700)) return "720p";
   return height != null ? `${height}p` : null;
 }
 

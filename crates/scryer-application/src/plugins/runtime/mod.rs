@@ -18,7 +18,8 @@ use scryer_domain::{
     PersistedPluginWasmPayload, PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    no_redirect_reqwest_client,
 };
 use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, effective_host_sdk_constraint, host_version_matches_constraint,

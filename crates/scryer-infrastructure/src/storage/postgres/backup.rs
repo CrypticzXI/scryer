@@ -19,7 +19,7 @@ use scryer_domain::MediaFacet;
 
 use crate::backup_import_normalization::{
     ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
-    strip_nonportable_backup_fields,
+    strip_nonportable_backup_fields, validate_restore_manifest_table_set,
 };
 use crate::postgres::PostgresServices;
 use crate::queries::title_search::{
@@ -169,27 +169,20 @@ async fn restore_bundle_parts_into_postgres_pool(
 ) -> AppResult<()> {
     validate_backup_catalog(pool).await?;
     let export_tables = ordered_export_tables(pool).await?;
-    let expected_tables = export_tables.iter().cloned().collect::<BTreeSet<_>>();
-    let manifest_tables = row_counts.keys().cloned().collect::<BTreeSet<_>>();
-    if manifest_tables != expected_tables {
-        let missing = expected_tables
-            .difference(&manifest_tables)
-            .cloned()
-            .collect::<Vec<_>>();
-        let unexpected = manifest_tables
-            .difference(&expected_tables)
-            .cloned()
-            .collect::<Vec<_>>();
-        return Err(AppError::Validation(format!(
-            "backup bundle table set does not match the current restore catalog: missing [{}], unexpected [{}]",
-            missing.join(", "),
-            unexpected.join(", ")
-        )));
-    }
+    validate_restore_manifest_table_set(row_counts, &export_tables)?;
 
     let mut tx = pool.begin().await.map_err(|error| {
         AppError::Repository(format!("failed to begin PostgreSQL restore: {error}"))
     })?;
+
+    sqlx::query("DELETE FROM title_image_variants")
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to clear generated title image variants: {error}"
+            ))
+        })?;
 
     for table in export_tables.iter().rev() {
         let sql = format!("DELETE FROM {}", quote_identifier(table));
@@ -213,7 +206,13 @@ async fn restore_bundle_parts_into_postgres_pool(
     rebuild_title_search_projection(&mut tx).await?;
     repair_sequences(&mut tx).await?;
 
-    for (table, expected_rows) in row_counts {
+    for table in &export_tables {
+        let expected_rows = row_counts.get(table).ok_or_else(|| {
+            AppError::Validation(format!(
+                "backup bundle table set does not match the current restore catalog: missing [{}], unexpected []",
+                table
+            ))
+        })?;
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
         let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
             .fetch_one(&mut *tx)

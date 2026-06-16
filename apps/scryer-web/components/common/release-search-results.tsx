@@ -1,8 +1,13 @@
 
 import * as React from "react";
-import { ChevronDown, ChevronUp, ArrowDown, ArrowUp, Check } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowDown, ArrowUp, Check, FilePlus2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
+import {
+  releaseSearchResultQueueAdditionalId,
+  releaseSearchResultQueueId,
+  releaseSearchResultRowId,
+} from "@/lib/utils/dom-ids";
 import type { Release } from "@/lib/types";
 
 type SortKey = "score" | "size";
@@ -63,12 +68,14 @@ function sortBy(
 function SearchResultRow({
   result,
   onQueue,
+  onQueueAdditional,
   blocked,
   requireCandidateToken = false,
   mobile = false,
 }: {
   result: Release;
   onQueue: (r: Release) => Promise<void> | void;
+  onQueueAdditional?: (r: Release) => Promise<void> | void;
   blocked: boolean;
   requireCandidateToken?: boolean;
   mobile?: boolean;
@@ -76,6 +83,7 @@ function SearchResultRow({
   const t = useTranslate();
   const [expanded, setExpanded] = React.useState(false);
   const [queueRequested, setQueueRequested] = React.useState(false);
+  const [additionalQueueRequested, setAdditionalQueueRequested] = React.useState(false);
   const decision = result.qualityProfileDecision;
   const hasLog = decision && decision.scoringLog.length > 0;
   const parsedBits = [
@@ -120,6 +128,12 @@ function SearchResultRow({
       : null;
   const queueDisabled = blocked || queueRequested || queueUnavailableReason !== null;
   const queueButtonMuted = blocked || queueUnavailableReason !== null;
+  const additionalQueueDisabled =
+    blocked || additionalQueueRequested || queueUnavailableReason !== null || !onQueueAdditional;
+  const idVariant = mobile ? "mobile" : undefined;
+  const rowId = releaseSearchResultRowId(result, idVariant);
+  const queueButtonId = releaseSearchResultQueueId(result, idVariant);
+  const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(result, idVariant);
 
   const handleQueueClick = React.useCallback(() => {
     if (queueDisabled) {
@@ -140,9 +154,32 @@ function SearchResultRow({
     }
   }, [onQueue, queueDisabled, result]);
 
+  const handleQueueAdditionalClick = React.useCallback(() => {
+    if (additionalQueueDisabled || !onQueueAdditional) {
+      return;
+    }
+
+    setAdditionalQueueRequested(true);
+
+    try {
+      const maybePromise = onQueueAdditional(result);
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        void (maybePromise as Promise<void>).catch(() => {
+          setAdditionalQueueRequested(false);
+        });
+      }
+    } catch {
+      setAdditionalQueueRequested(false);
+    }
+  }, [additionalQueueDisabled, onQueueAdditional, result]);
+
   if (mobile) {
     return (
-      <div className="rounded-lg border border-border bg-background/40 p-3">
+      <div
+        id={rowId}
+        data-ui="release-search-result-row"
+        className="rounded-lg border border-border bg-background/40 p-3"
+      >
         <div className="space-y-2">
           <p className="min-w-0 whitespace-normal break-words text-sm font-semibold leading-snug text-foreground">
             {result.title}
@@ -184,28 +221,56 @@ function SearchResultRow({
           {queueUnavailableReason ? (
             <p className="text-xs text-muted-foreground">{queueUnavailableReason}</p>
           ) : null}
-          <Button
-            size="sm"
-            onClick={handleQueueClick}
-            disabled={queueDisabled}
-            className={
-              queueButtonMuted
-                ? "mt-1 w-full"
-                : queueRequested
-                  ? "mt-1 w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                  : "mt-1 w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
-            }
-            variant={queueButtonMuted ? "ghost" : "default"}
-          >
-            {queueRequested ? (
-              <span className="inline-flex items-center gap-1.5">
-                <Check className="h-3.5 w-3.5" />
-                {t("queue.state.queued")}
-              </span>
-            ) : (
-              t("nzb.queue")
-            )}
-          </Button>
+          <div className="mt-1 grid gap-2">
+            <Button
+              id={queueButtonId}
+              data-ui="release-search-result-queue"
+              size="sm"
+              onClick={handleQueueClick}
+              disabled={queueDisabled}
+              className={
+                queueButtonMuted
+                  ? "w-full"
+                  : queueRequested
+                    ? "w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
+                    : "w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+              }
+              variant={queueButtonMuted ? "ghost" : "default"}
+            >
+              {queueRequested ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Check className="h-3.5 w-3.5" />
+                  {t("queue.state.queued")}
+                </span>
+              ) : (
+                t("nzb.queue")
+              )}
+            </Button>
+            {onQueueAdditional ? (
+              <Button
+                id={queueAdditionalButtonId}
+                data-ui="release-search-result-queue-additional"
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleQueueAdditionalClick}
+                disabled={additionalQueueDisabled}
+                className="w-full"
+              >
+                {additionalQueueRequested ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Check className="h-3.5 w-3.5" />
+                    {t("queue.state.queued")}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <FilePlus2 className="h-3.5 w-3.5" />
+                    {t("nzb.queueAdditionalFile")}
+                  </span>
+                )}
+              </Button>
+            ) : null}
+          </div>
         </div>
       </div>
     );
@@ -213,7 +278,7 @@ function SearchResultRow({
 
   return (
     <>
-      <tr>
+      <tr id={rowId} data-ui="release-search-result-row">
         <td className="rounded-l-lg border border-border border-r-0 px-4 py-2 align-middle">
           <div className="space-y-1">
             <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">{result.title}</p>
@@ -274,28 +339,56 @@ function SearchResultRow({
           {bytesToWholeReadable(result.sizeBytes)}
         </td>
         <td className="rounded-r-lg border border-border border-l-0 px-4 py-2 text-center align-middle">
-          <Button
-            size="default"
-            onClick={handleQueueClick}
-            disabled={queueDisabled}
-            className={
-              queueButtonMuted
-                ? "h-10"
-                : queueRequested
-                  ? "h-10 border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                  : "h-10 bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
-            }
-            variant={queueButtonMuted ? "ghost" : "default"}
-          >
-            {queueRequested ? (
-              <span className="inline-flex items-center gap-1.5">
-                <Check className="h-3.5 w-3.5" />
-                {t("queue.state.queued")}
-              </span>
-            ) : (
-              t("nzb.queue")
-            )}
-          </Button>
+          <div className="flex flex-col items-stretch gap-2">
+            <Button
+              id={queueButtonId}
+              data-ui="release-search-result-queue"
+              size="default"
+              onClick={handleQueueClick}
+              disabled={queueDisabled}
+              className={
+                queueButtonMuted
+                  ? "h-10"
+                  : queueRequested
+                    ? "h-10 border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
+                    : "h-10 bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+              }
+              variant={queueButtonMuted ? "ghost" : "default"}
+            >
+              {queueRequested ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Check className="h-3.5 w-3.5" />
+                  {t("queue.state.queued")}
+                </span>
+              ) : (
+                t("nzb.queue")
+              )}
+            </Button>
+            {onQueueAdditional ? (
+              <Button
+                id={queueAdditionalButtonId}
+                data-ui="release-search-result-queue-additional"
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleQueueAdditionalClick}
+                disabled={additionalQueueDisabled}
+                className="h-9"
+              >
+                {additionalQueueRequested ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Check className="h-3.5 w-3.5" />
+                    {t("queue.state.queued")}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <FilePlus2 className="h-3.5 w-3.5" />
+                    {t("nzb.queueAdditionalFile")}
+                  </span>
+                )}
+              </Button>
+            ) : null}
+          </div>
         </td>
       </tr>
       {expanded && hasLog ? (
@@ -352,10 +445,14 @@ function SearchResultRow({
 export function SearchResultBuckets({
   results,
   onQueue,
+  onQueueAdditional,
+  canQueueAdditional,
   requireCandidateToken = false,
 }: {
   results: Release[];
   onQueue: (r: Release) => Promise<void> | void;
+  onQueueAdditional?: (r: Release) => Promise<void> | void;
+  canQueueAdditional?: (r: Release) => boolean;
   requireCandidateToken?: boolean;
 }) {
   const t = useTranslate();
@@ -432,6 +529,11 @@ export function SearchResultBuckets({
                 key={`${result.source}-${result.title}-${result.link}`}
                 result={result}
                 onQueue={onQueue}
+                onQueueAdditional={
+                  onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                    ? onQueueAdditional
+                    : undefined
+                }
                 blocked={isBlocked}
                 requireCandidateToken={requireCandidateToken}
                 mobile
@@ -443,7 +545,7 @@ export function SearchResultBuckets({
             <table className="w-full table-fixed text-left">
               <thead className="bg-card/80">
                 <tr>
-                  <th className="w-[68%] px-4 py-3 text-base font-bold text-foreground">Release</th>
+                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">Release</th>
                   <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
                     <button
                       type="button"
@@ -462,7 +564,7 @@ export function SearchResultBuckets({
                       Size {renderSortIcon("size")}
                     </button>
                   </th>
-                  <th className="w-[14%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
+                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -471,6 +573,11 @@ export function SearchResultBuckets({
                     key={`${result.source}-${result.title}-${result.link}`}
                     result={result}
                     onQueue={onQueue}
+                    onQueueAdditional={
+                      onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                        ? onQueueAdditional
+                        : undefined
+                    }
                     blocked={isBlocked}
                     requireCandidateToken={requireCandidateToken}
                   />
@@ -481,7 +588,15 @@ export function SearchResultBuckets({
         </div>
       );
     },
-    [handleSort, onQueue, renderSortIcon, requireCandidateToken, sortKey],
+    [
+      canQueueAdditional,
+      handleSort,
+      onQueue,
+      onQueueAdditional,
+      renderSortIcon,
+      requireCandidateToken,
+      sortKey,
+    ],
   );
 
   return (

@@ -5,7 +5,7 @@ use scryer_application::{
 };
 use scryer_domain::{NewDownloadClientConfig, NewIndexerConfig};
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, require_config_step_up, to_gql_error};
 use crate::mappers::{
     from_download_client_config, from_indexer_config_sync_result, from_indexer_config_with_fields,
     from_rss_sync_report, from_subtitle_provider_config,
@@ -47,7 +47,7 @@ impl ConfigMutations {
         input: CreateIndexerConfigInput,
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let config = app
             .create_indexer_config(
                 &actor,
@@ -77,7 +77,7 @@ impl ConfigMutations {
         input: UpdateIndexerConfigInput,
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let config = app
             .update_indexer_config(
                 &actor,
@@ -112,7 +112,7 @@ impl ConfigMutations {
         input: DeleteIndexerConfigInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_indexer_config(&actor, &input.id)
             .await
             .map_err(to_gql_error)
@@ -125,7 +125,7 @@ impl ConfigMutations {
         input: CreateDownloadClientConfigInput,
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let config_json =
             enrich_download_client_config_json(&input.client_type, input.config_json).await?;
         let config = app
@@ -157,7 +157,7 @@ impl ConfigMutations {
         input: UpdateDownloadClientConfigInput,
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let existing = app
             .get_download_client_config(&actor, &input.id)
             .await
@@ -216,7 +216,7 @@ impl ConfigMutations {
         input: DeleteDownloadClientConfigInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_download_client_config(&actor, &input.id)
             .await
             .map_err(to_gql_error)
@@ -229,7 +229,7 @@ impl ConfigMutations {
         input: ReorderDownloadClientConfigsInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.reorder_download_clients(&actor, input.ids)
             .await
             .map_err(to_gql_error)
@@ -242,7 +242,7 @@ impl ConfigMutations {
         input: TestDownloadClientConnectionInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         let client_type = input.client_type.trim().to_lowercase();
         let config_json = input.config_json.trim().to_string();
@@ -258,7 +258,7 @@ impl ConfigMutations {
         input: CreateSubtitleProviderConfigInput,
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let config = app
             .create_subtitle_provider_config(
                 &actor,
@@ -285,7 +285,7 @@ impl ConfigMutations {
         input: UpdateSubtitleProviderConfigInput,
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let disabled_until = optional_datetime_input(input.disabled_until, "disabled_until")?;
         let config = app
             .update_subtitle_provider_config(
@@ -320,7 +320,7 @@ impl ConfigMutations {
         input: DeleteSubtitleProviderConfigInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_subtitle_provider_config(&actor, &input.id)
             .await
             .map_err(to_gql_error)
@@ -333,7 +333,7 @@ impl ConfigMutations {
         input: TestSubtitleProviderConnectionInput,
     ) -> GqlResult<SubtitleProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let result = app
             .test_subtitle_provider_connection(
                 &actor,
@@ -356,7 +356,7 @@ impl ConfigMutations {
         input: TestIndexerConnectionInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
 
         app.test_indexer_connection(
             &actor,
@@ -375,7 +375,7 @@ impl ConfigMutations {
         id: String,
     ) -> GqlResult<IndexerConfigSyncPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let result = app
             .sync_indexer_config(&actor, &id)
             .await

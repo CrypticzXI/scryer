@@ -4,7 +4,7 @@ use scryer_application::{
     NotificationSubscriptionTargetUpdate,
 };
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{app_from_ctx, require_config_step_up, to_gql_error};
 use crate::mappers::{from_notification_channel, from_notification_subscription};
 use crate::types::*;
 
@@ -19,7 +19,7 @@ impl NotificationMutations {
         input: CreateNotificationChannelInput,
     ) -> GqlResult<NotificationChannelPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let channel = app
             .create_notification_channel_with_media_server_connection_id(
                 &actor,
@@ -40,7 +40,7 @@ impl NotificationMutations {
         input: UpdateNotificationChannelInput,
     ) -> GqlResult<NotificationChannelPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let channel = app
             .update_notification_channel_with_media_server_connection_id(
                 &actor,
@@ -57,7 +57,7 @@ impl NotificationMutations {
 
     async fn delete_notification_channel(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_notification_channel(&actor, &id)
             .await
             .map_err(to_gql_error)
@@ -66,7 +66,7 @@ impl NotificationMutations {
 
     async fn test_notification_channel(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.test_notification_channel(&actor, &id)
             .await
             .map_err(to_gql_error)
@@ -79,7 +79,7 @@ impl NotificationMutations {
         input: CreateNotificationSubscriptionInput,
     ) -> GqlResult<NotificationSubscriptionPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let sub = app
             .create_notification_subscription_for_target(
                 &actor,
@@ -104,7 +104,7 @@ impl NotificationMutations {
         input: UpdateNotificationSubscriptionInput,
     ) -> GqlResult<NotificationSubscriptionPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         let sub = app
             .update_notification_subscription_target(
                 &actor,
@@ -132,7 +132,7 @@ impl NotificationMutations {
         id: String,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_config_step_up(ctx).await?;
         app.delete_notification_subscription(&actor, &id)
             .await
             .map_err(to_gql_error)

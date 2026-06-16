@@ -599,8 +599,7 @@ impl ExternalImportMutations {
         ctx: &Context<'_>,
         input: ExecuteExternalImportInput,
     ) -> GqlResult<ExternalImportResultPayload> {
-        let actor = actor_from_ctx(ctx)?;
-
+        let actor = require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
 
         let selected_dc_keys: HashSet<String> = input

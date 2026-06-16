@@ -24,7 +24,7 @@ const PERSONAS: { id: ScoringPersonaId; icon: typeof Scale; descKey: string }[] 
   { id: "Compatible", icon: MonitorSmartphone, descKey: "setup.personaCompatibleDesc" },
 ];
 
-const QUALITY_TARGETS: QualityTargetId[] = ["4k", "1080p"];
+const QUALITY_TARGETS: QualityTargetId[] = ["8k", "4k", "1080p"];
 
 const FACETS: { id: ViewCategoryId; labelKey: string }[] = [
   { id: "movie", labelKey: "setup.facetMovies" },
@@ -96,7 +96,7 @@ export function SetupPersonaView({
                             : "border-border bg-background text-foreground hover:bg-muted"
                         }`}
                       >
-                        {q === "4k" ? "4K" : "1080P"}
+                        {formatQualityTarget(q)}
                       </button>
                     ))}
                   </div>
@@ -156,4 +156,15 @@ export function SetupPersonaView({
       </div>
     </div>
   );
+}
+
+function formatQualityTarget(target: QualityTargetId): string {
+  switch (target) {
+    case "8k":
+      return "8K";
+    case "4k":
+      return "4K";
+    case "1080p":
+      return "1080P";
+  }
 }

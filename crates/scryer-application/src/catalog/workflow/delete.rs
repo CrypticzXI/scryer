@@ -552,7 +552,7 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        let (matching_movie_collection_ids, matching_interstitial_collection_ids) = self
+        let matching_movie_collection_ids = self
             .services
             .catalog
             .shows
@@ -562,14 +562,14 @@ impl AppUseCase {
             .filter(|collection| {
                 collection.ordered_path.as_deref() == Some(media_file.file_path.as_str())
             })
-            .fold((Vec::new(), Vec::new()), |mut acc, collection| {
-                match collection.collection_type {
-                    scryer_domain::CollectionType::Movie => acc.0.push(collection.id),
-                    scryer_domain::CollectionType::Interstitial => acc.1.push(collection.id),
-                    _ => {}
+            .filter_map(|collection| {
+                if collection.collection_type == scryer_domain::CollectionType::Movie {
+                    Some(collection.id)
+                } else {
+                    None
                 }
-                acc
-            });
+            })
+            .collect::<Vec<_>>();
 
         if delete_from_disk {
             let delete_confirmation = delete_confirmation.ok_or_else(|| {
@@ -611,30 +611,6 @@ impl AppUseCase {
                 );
             }
         }
-        for collection_id in matching_interstitial_collection_ids {
-            if let Err(error) = self
-                .services
-                .catalog
-                .shows
-                .update_collection(
-                    &collection_id,
-                    CollectionUpdate {
-                        clear_ordered_path: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                tracing::warn!(
-                    error = %error,
-                    file_id = %file_id,
-                    collection_id = %collection_id,
-                    file_path = %media_file.file_path,
-                    "failed to clear matching interstitial collection ordered_path after media file delete"
-                );
-            }
-        }
-
         info!(
             file_id = %file_id,
             file_path = %media_file.file_path,

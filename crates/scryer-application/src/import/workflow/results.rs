@@ -224,6 +224,19 @@ async fn finalize_import_source_cleanup(
 
     Ok(scryer_domain::ImportStrategy::Move)
 }
+pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
+    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
+        && Path::new(&result.source_path).exists()
+    {
+        return true;
+    }
+
+    result
+        .error_message
+        .as_deref()
+        .is_some_and(completed_import_error_message_is_retryable)
+}
+
 fn completed_import_status_for_result(
     result: &ImportResult,
     fallback_status: ImportStatus,

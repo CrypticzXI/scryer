@@ -64,13 +64,22 @@ fn collection_submission_scope(collection_id: Option<String>) -> SubmissionScope
         .map(|collection_id| SubmissionScope::Collection { collection_id })
         .unwrap_or(SubmissionScope::Title)
 }
+fn series_movie_submission_scope(series_movie_link_id: Option<String>) -> SubmissionScope {
+    series_movie_link_id
+        .map(|series_movie_link_id| SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        })
+        .unwrap_or(SubmissionScope::Title)
+}
 pub(crate) fn direct_download_submission_scope_for_wanted_item(
     item: &WantedItem,
     _episode: Option<&Episode>,
 ) -> SubmissionScope {
     match item.media_type.as_str() {
         "episode" => episode_submission_scope(item.episode_id.clone()),
-        "interstitial_movie" => collection_submission_scope(item.collection_id.clone()),
+        "series_movie" => {
+            series_movie_submission_scope(item.series_movie_link_id.clone())
+        }
         _ => SubmissionScope::Title,
     }
 }
@@ -82,7 +91,9 @@ pub(crate) fn collection_download_submission_scope_for_wanted_item(
         "episode" => {
             collection_submission_scope(episode_collection_id_for_wanted_item(item, episode))
         }
-        "interstitial_movie" => collection_submission_scope(item.collection_id.clone()),
+        "series_movie" => {
+            series_movie_submission_scope(item.series_movie_link_id.clone())
+        }
         _ => SubmissionScope::Title,
     }
 }

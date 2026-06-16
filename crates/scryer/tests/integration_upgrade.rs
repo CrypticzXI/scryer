@@ -63,8 +63,27 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         self.inner.link_file_to_episode(file_id, episode_id).await
     }
 
+    async fn link_file_to_series_movie(
+        &self,
+        file_id: &str,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .link_file_to_series_movie(file_id, series_movie_link_id)
+            .await
+    }
+
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         self.inner.list_media_files_for_title(title_id).await
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        self.inner
+            .list_series_movie_link_ids_with_files_for_title(title_id)
+            .await
     }
 
     async fn list_live_media_files_for_episode_ids(
@@ -144,6 +163,17 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         }
 
         self.inner.update_media_file_path(file_id, file_path).await
+    }
+
+    async fn set_media_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .await
     }
 
     async fn replace_media_file_for_upgrade(

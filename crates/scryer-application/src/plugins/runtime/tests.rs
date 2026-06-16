@@ -418,7 +418,12 @@ mod signature_bundle_decode_tests {
 
 #[cfg(test)]
 mod plugin_http_client_tests {
-    use super::{PluginHttpClientProfile, plugin_http_client};
+    use super::{
+        PLUGIN_HTTP_MAX_VALIDATED_REDIRECTS, PluginHttpClientProfile, PluginRedirectPolicy,
+        combined_plugin_catalog_probe_error, fetch_plugin_bytes_with_redirect_policy,
+        plugin_http_client, plugin_redirect_location_url,
+    };
+    use crate::AppError;
 
     #[test]
     fn plugin_http_client_profiles_are_cached() {
@@ -437,6 +442,66 @@ mod plugin_http_client_tests {
         assert_eq!(default_a, default_b);
         assert_eq!(rule_pack_a, rule_pack_b);
         assert_ne!(default_a, rule_pack_a);
+    }
+
+    #[tokio::test]
+    async fn plugin_artifact_fetch_rejects_private_destinations() {
+        let error = fetch_plugin_bytes_with_redirect_policy(
+            "http://127.0.0.1/plugin.wasm",
+            "test plugin artifact",
+            "test-plugin-artifact",
+            PluginRedirectPolicy::Reject,
+        )
+        .await
+        .expect_err("private plugin artifact URL should be rejected");
+
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "expected validation error, got {error:?}"
+        );
+        assert!(error.to_string().contains("private or local address"));
+    }
+
+    #[test]
+    fn plugin_catalog_redirects_are_capped_at_three_hops() {
+        assert_eq!(PLUGIN_HTTP_MAX_VALIDATED_REDIRECTS, 3);
+    }
+
+    #[test]
+    fn plugin_catalog_redirect_location_accepts_relative_github_location() {
+        let current_url = reqwest::Url::parse(
+            "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv3/catalog-v3.redirect.json",
+        )
+        .expect("valid URL");
+        let location = reqwest::header::HeaderValue::from_static(
+            "/scryer-media/scryer-plugins/releases/download/catalog%2Fv3/catalog-v3.redirect.bundle.json",
+        );
+
+        let redirect_url =
+            plugin_redirect_location_url(&current_url, &location, "plugin catalog redirect")
+                .expect("relative redirect should resolve");
+
+        assert_eq!(
+            redirect_url.as_str(),
+            "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv3/catalog-v3.redirect.bundle.json"
+        );
+    }
+
+    #[test]
+    fn plugin_catalog_probe_error_preserves_primary_and_github_failures() {
+        let error = combined_plugin_catalog_probe_error(
+            Some("failed to download primary: dns failed"),
+            Some("failed to download fallback: redirects are not allowed"),
+        )
+        .expect("combined error");
+
+        assert!(error.contains("primary plugin catalog redirect: failed to download primary"));
+        assert!(error.contains("GitHub plugin catalog redirect: failed to download fallback"));
+    }
+
+    #[test]
+    fn plugin_catalog_probe_error_is_empty_without_probe_failures() {
+        assert_eq!(combined_plugin_catalog_probe_error(None, None), None);
     }
 }
 #[cfg(all(test, feature = "runtime-plugin-trust"))]

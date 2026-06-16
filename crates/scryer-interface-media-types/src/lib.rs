@@ -259,6 +259,13 @@ pub enum DownloadSourceKindValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum QueueDownloadPurposeValue {
+    Standard,
+    AdditionalFile,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "lowercase")]
 pub enum DelayProfilePreferredProtocolValue {
     Usenet,
@@ -709,6 +716,7 @@ pub enum ImportSkipReasonValue {
     PostDownloadRuleBlocked,
     PolicyMismatch,
     UnresolvedIdentity,
+    UnparseableEpisode,
     NoVideoFiles,
     DiskFull,
     PermissionDenied,
@@ -723,6 +731,7 @@ impl ImportSkipReasonValue {
             ImportSkipReason::PostDownloadRuleBlocked => Self::PostDownloadRuleBlocked,
             ImportSkipReason::PolicyMismatch => Self::PolicyMismatch,
             ImportSkipReason::UnresolvedIdentity => Self::UnresolvedIdentity,
+            ImportSkipReason::UnparseableEpisode => Self::UnparseableEpisode,
             ImportSkipReason::NoVideoFiles => Self::NoVideoFiles,
             ImportSkipReason::DiskFull => Self::DiskFull,
             ImportSkipReason::PermissionDenied => Self::PermissionDenied,
@@ -797,7 +806,7 @@ impl WantedStatusValue {
 pub enum WantedMediaTypeValue {
     Movie,
     Episode,
-    InterstitialMovie,
+    SeriesMovie,
 }
 
 impl WantedMediaTypeValue {
@@ -805,7 +814,7 @@ impl WantedMediaTypeValue {
         match self {
             Self::Movie => "movie",
             Self::Episode => "episode",
-            Self::InterstitialMovie => "interstitial_movie",
+            Self::SeriesMovie => "series_movie",
         }
     }
 
@@ -813,7 +822,7 @@ impl WantedMediaTypeValue {
         match value.trim().to_ascii_lowercase().as_str() {
             "movie" => Some(Self::Movie),
             "episode" => Some(Self::Episode),
-            "interstitial_movie" => Some(Self::InterstitialMovie),
+            "series_movie" => Some(Self::SeriesMovie),
             _ => None,
         }
     }
@@ -1071,32 +1080,6 @@ pub struct SubmitMediaRequestPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct InterstitialMovieMetadataPayload {
-    pub tvdb_id: String,
-    pub name: String,
-    pub slug: String,
-    pub year: Option<i32>,
-    pub content_status: String,
-    pub overview: String,
-    pub poster_url: String,
-    pub language: String,
-    pub runtime_minutes: i32,
-    pub sort_title: String,
-    pub imdb_id: String,
-    pub genres: Vec<String>,
-    pub studio: String,
-    pub digital_release_date: Option<String>,
-    pub association_confidence: Option<String>,
-    pub continuity_status: Option<String>,
-    pub movie_form: Option<String>,
-    pub confidence: Option<String>,
-    pub signal_summary: Option<String>,
-    pub placement: Option<String>,
-    pub movie_tmdb_id: Option<String>,
-    pub movie_mal_id: Option<String>,
-}
-
-#[derive(SimpleObject, Clone)]
 pub struct AudioStreamDetailPayload {
     pub codec: Option<String>,
     pub profile: Option<String>,
@@ -1140,6 +1123,17 @@ pub struct SmgVersionCompatibilityNoticePayload {
     pub your_version: String,
     pub message: String,
     pub upgrade_deadline: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SmgScryerUpdateNoticePayload {
+    pub available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub latest_tag: String,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub checked_at: String,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1427,6 +1421,7 @@ pub struct QueueDownloadScopePayload {
     pub kind: String,
     pub episode_id: Option<String>,
     pub episode_ids: Vec<String>,
+    pub series_movie_link_id: Option<String>,
     pub collection_id: Option<String>,
 }
 
@@ -1659,6 +1654,7 @@ pub struct MarkTrackedDownloadFailedInput {
 pub enum QueueDownloadScopeInput {
     Episode(String),
     EpisodeSet(Vec<String>),
+    SeriesMovie(String),
     Collection(String),
     Title(bool),
 }
@@ -1829,6 +1825,7 @@ pub struct DeleteTitlesPayload {
 pub struct MediaRenamePlanItemPayload {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub normalized_filename: Option<String>,
@@ -1859,6 +1856,7 @@ pub struct MediaRenamePlanPayload {
 pub struct MediaRenameApplyItemPayload {
     pub collection_id: Option<String>,
     pub media_file_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub final_path: Option<String>,
@@ -1960,6 +1958,7 @@ pub struct AuthRuntimeStatePayload {
     pub passkey_enabled: bool,
     pub env_override_active: bool,
     pub mfa_require_password_login: bool,
+    pub mfa_require_config_step_up: bool,
     pub totp_require_jellyfin_login: bool,
 }
 
@@ -2071,6 +2070,7 @@ pub struct MediaSettingsPayload {
     pub root_folders: Vec<RootFolderPayload>,
     pub required_audio_languages: Vec<String>,
     pub folder_template: String,
+    pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: String,
     pub rename_missing_metadata_policy: String,
@@ -2128,10 +2128,8 @@ pub struct AddTitleInput {
     pub source_kind: Option<DownloadSourceKindValue>,
     pub source_title: Option<String>,
     pub min_availability: Option<String>,
-    // Metadata fields the frontend can supply from the search result so the
-    // title is created with rich data immediately, without relying on a
-    // separate hydration round-trip to the metadata gateway.
-    pub poster_url: Option<String>,
+    // Non-artwork metadata fields the frontend can supply from the search result.
+    // Poster and fanart URLs are sourced from server-side SMG metadata.
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub sort_title: Option<String>,
@@ -2147,7 +2145,6 @@ pub struct SubmitMediaRequestInput {
     pub facet: MediaFacetValue,
     pub title: String,
     pub external_ids: Vec<ExternalIdInput>,
-    pub poster_url: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub sort_title: Option<String>,
@@ -2194,7 +2191,7 @@ pub struct ApproveMediaRequestPayload {
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
     pub title_id: String,
-    pub collection_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
     pub season: Option<String>,
     pub episode: Option<String>,
     pub limit: Option<i32>,
@@ -2206,6 +2203,7 @@ pub struct QueueDownloadInput {
     pub candidate_token: String,
     pub scope: QueueDownloadScopeInput,
     pub replace_in_progress: Option<bool>,
+    pub purpose: Option<QueueDownloadPurposeValue>,
 }
 
 #[derive(InputObject)]
@@ -2364,6 +2362,7 @@ pub struct UpdateMediaSettingsInput {
     pub root_folders: Option<Vec<RootFolderInput>>,
     pub required_audio_languages: Option<Vec<String>>,
     pub folder_template: Option<String>,
+    pub rename_enabled: Option<bool>,
     pub rename_template: Option<String>,
     pub rename_collision_policy: Option<String>,
     pub rename_missing_metadata_policy: Option<String>,
@@ -2437,6 +2436,7 @@ pub struct CreateExternalAccountInviteInput {
     pub connection_id: String,
     pub provider: ExternalAccountProviderValue,
     pub provider_user_identifier: String,
+    pub provider_user_id: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2488,6 +2488,32 @@ pub struct JellyfinServerUserPayload {
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum MediaServerUserGroupStatusValue {
+    Ready,
+    MissingCredentials,
+    Error,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerUserPayload {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerUserGroupPayload {
+    pub connection_id: String,
+    pub connection_name: String,
+    pub provider: ExternalAccountProviderValue,
+    pub status: MediaServerUserGroupStatusValue,
+    pub error_message: Option<String>,
+    pub users: Vec<MediaServerUserPayload>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2861,6 +2887,12 @@ pub struct UpdateTitleInput {
 }
 
 #[derive(InputObject)]
+pub struct SetPrimaryMovieFileInput {
+    pub title_id: String,
+    pub file_id: String,
+}
+
+#[derive(InputObject)]
 pub struct FixTitleMatchInput {
     pub title_id: String,
     pub tvdb_id: String,
@@ -2875,6 +2907,12 @@ pub struct SetCollectionMonitoredInput {
 #[derive(InputObject, Clone)]
 pub struct SetEpisodeMonitoredInput {
     pub episode_id: String,
+    pub monitored: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct SetSeriesMovieMonitoredInput {
+    pub series_movie_link_id: String,
     pub monitored: bool,
 }
 

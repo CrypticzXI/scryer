@@ -1599,6 +1599,8 @@ pub struct PluginDownloadRelease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_recent: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub season_pack: Option<bool>,

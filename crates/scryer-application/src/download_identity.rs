@@ -159,6 +159,9 @@ fn download_submission_release_attempt_key(submission: &DownloadSubmission) -> S
             format!("collection:{}", collection_id.trim())
         }
         SubmissionScope::Title => "title".to_string(),
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => format!("series_movie:{series_movie_link_id}"),
         SubmissionScope::Orphan => "orphan".to_string(),
     };
     format!(

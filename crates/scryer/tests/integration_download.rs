@@ -20,7 +20,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use common::{TestContext, load_fixture};
 use scryer_application::{
     AppError, DownloadClient, DownloadClientAddRequest, DownloadClientPluginProvider,
-    DownloadSourceKind, NullSettingsRepository, NullStagedNzbStore, StagedNzbRef,
+    DownloadSourceKind, DownloadSubmissionPurpose, NullSettingsRepository, NullStagedNzbStore,
+    StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
 use scryer_infrastructure::{
@@ -342,6 +343,7 @@ fn request_with_staged_nzb(
         seed_goal_seconds: None,
         is_recent: None,
         season_pack: None,
+        purpose: DownloadSubmissionPurpose::Standard,
     }
 }
 

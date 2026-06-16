@@ -25,6 +25,9 @@ export function setGraphqlLanguage(lang: string) {
 
 let onBackendRestarting: (() => void) | null = null;
 
+export const MFA_STEP_UP_REQUIRED_EVENT = "scryer:mfa-step-up-required";
+const MFA_STEP_UP_REQUIRED_STATUS = 460;
+
 export function setOnBackendRestarting(cb: (() => void) | null) {
   onBackendRestarting = cb;
 }
@@ -33,18 +36,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
 }
 
-function isAuthenticationRequiredResponse(body: unknown): boolean {
-  if (!isRecord(body) || !Array.isArray(body.errors)) {
-    return false;
+function dispatchMfaStepUpRequired() {
+  if (typeof window === "undefined") {
+    return;
   }
 
-  return body.errors.some((error) => {
-    if (!isRecord(error) || typeof error.message !== "string") {
-      return false;
-    }
-
-    return error.message.trim().toLowerCase() === "authentication required";
-  });
+  window.dispatchEvent(new CustomEvent(MFA_STEP_UP_REQUIRED_EVENT));
 }
 
 function getLoginRedirectTarget() {
@@ -112,6 +109,14 @@ async function backendHealthLooksOk(): Promise<boolean> {
 
 export const scryerFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
+  if (response.status === 401) {
+    redirectToLogin();
+    throw new TypeError("Authentication required");
+  }
+  if (response.status === MFA_STEP_UP_REQUIRED_STATUS) {
+    dispatchMfaStepUpRequired();
+  }
+
   const ct = response.headers.get("content-type") ?? "";
   if (ct.includes("text/html")) {
     const backendHealthy = await backendHealthLooksOk();
@@ -120,14 +125,6 @@ export const scryerFetch: typeof fetch = async (input, init) => {
       throw new TypeError("Service is restarting");
     }
     throw new TypeError("Unexpected HTML response from backend");
-  }
-
-  if (ct.includes("application/json")) {
-    const body = await response.clone().json().catch(() => null);
-    if (isAuthenticationRequiredResponse(body)) {
-      redirectToLogin();
-      throw new TypeError("Authentication required");
-    }
   }
 
   return response;

@@ -63,6 +63,7 @@ async fn import_series_download(
 ) -> AppResult<ImportResult> {
     let ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     } = resolve_import_paths(app, title).await?;
@@ -83,8 +84,11 @@ async fn import_series_download(
     let mut failed_count: usize = 0;
     let mut last_error: Option<String> = None;
     let mut last_rejection_skip_reason: Option<ImportSkipReason> = None;
+    let mut last_skipped_message: Option<String> = None;
+    let mut last_skipped_skip_reason: Option<ImportSkipReason> = None;
     let mut imported_updates: Vec<NotificationMediaUpdate> = Vec::new();
     let mut imported_episode_ids: Vec<String> = Vec::new();
+    let mut attributed_episode_ids: Vec<String> = Vec::new();
     let mut imported_link_type: Option<scryer_domain::ImportStrategy> = None;
     let expected_episode_ids =
         expected_episode_ids_for_completed_download(app, title, completed).await;
@@ -95,6 +99,7 @@ async fn import_series_download(
             actor,
             title,
             import_id,
+            rename_enabled,
             &rename_template,
             &full_folder_path,
             completed,
@@ -114,14 +119,30 @@ async fn import_series_download(
             }) => {
                 imported_count += 1;
                 imported_updates.push(NotificationMediaUpdate::created(dest_path));
-                imported_episode_ids.extend(episode_ids);
+                append_unique_episode_ids(&mut imported_episode_ids, &episode_ids);
+                append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
                 if link_type == Some(scryer_domain::ImportStrategy::Move) {
                     imported_link_type = link_type;
                 }
             }
-            Ok(EpisodeImportOutcome::Skipped { .. }) => skipped_count += 1,
-            Ok(EpisodeImportOutcome::Rejected { rejection, .. }) => {
+            Ok(EpisodeImportOutcome::Skipped {
+                message,
+                skip_reason,
+                episode_ids,
+                ..
+            }) => {
+                skipped_count += 1;
+                append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
+                last_skipped_message = Some(message);
+                last_skipped_skip_reason = skip_reason;
+            }
+            Ok(EpisodeImportOutcome::Rejected {
+                rejection,
+                episode_ids,
+                ..
+            }) => {
                 rejected_count += 1;
+                append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
                 last_error = Some(rejection.message.clone());
                 last_rejection_skip_reason = rejection.skip_reason.clone();
             }
@@ -160,10 +181,20 @@ async fn import_series_download(
     } else {
         // All files skipped (no parseable episode info, already imported, etc.)
         // — this is a permanent condition, not worth retrying.
-        (ImportDecision::Skipped, ImportStatus::Skipped, None)
+        (
+            ImportDecision::Skipped,
+            ImportStatus::Skipped,
+            last_skipped_skip_reason,
+        )
     };
 
-    let error_message = if failed_count > 0 || skipped_count > 0 || rejected_count > 0 {
+    let error_message = if imported_count == 0
+        && failed_count == 0
+        && rejected_count == 0
+        && skipped_count > 0
+    {
+        last_skipped_message
+    } else if failed_count > 0 || skipped_count > 0 || rejected_count > 0 {
         Some(format!(
             "{imported_count} imported, {skipped_count} skipped, {rejected_count} rejected, {failed_count} failed{}",
             last_error
@@ -186,7 +217,7 @@ async fn import_series_download(
         source_path: completed.dest_dir.clone(),
         dest_path: None,
         quality: None,
-        episode_ids: imported_episode_ids.clone(),
+        episode_ids: attributed_episode_ids,
         file_size_bytes: None,
         link_type: imported_link_type,
         error_message,
@@ -236,12 +267,21 @@ enum EpisodeImportOutcome {
         message: String,
         reason_code: Option<String>,
         skip_reason: Option<ImportSkipReason>,
+        episode_ids: Vec<String>,
     },
     Rejected {
         rejection: crate::post_download_gate::ImportedFileRejection,
         finalize_before_import: bool,
         reason_code: Option<String>,
+        episode_ids: Vec<String>,
     },
+}
+fn append_unique_episode_ids(target: &mut Vec<String>, source: &[String]) {
+    for episode_id in source {
+        if !target.contains(episode_id) {
+            target.push(episode_id.clone());
+        }
+    }
 }
 #[derive(Clone, Debug)]
 struct EpisodeUpgradePlan {
@@ -290,7 +330,7 @@ async fn expected_episode_ids_from_submission_scope(
         SubmissionScope::Collection { collection_id } => {
             episode_ids_for_collection(app, title, collection_id, true).await
         }
-        SubmissionScope::Title | SubmissionScope::Orphan => None,
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => None,
     }
 }
 async fn expected_episode_ids_from_release_title(
@@ -536,6 +576,7 @@ async fn import_single_episode_file(
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
+    rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
     completed: &CompletedDownload,
@@ -566,7 +607,8 @@ async fn import_single_episode_file(
             return Ok(EpisodeImportOutcome::Skipped {
                 message: "file has no parseable episode info".to_string(),
                 reason_code: None,
-                skip_reason: Some(ImportSkipReason::NoVideoFiles),
+                skip_reason: Some(ImportSkipReason::UnparseableEpisode),
+                episode_ids: Vec::new(),
             });
         }
     };
@@ -593,6 +635,7 @@ async fn import_single_episode_file(
             },
             finalize_before_import: false,
             reason_code: Some("episode_outside_grabbed_release".to_string()),
+            episode_ids: target_episode_ids.clone(),
         });
     }
     let ep_num_str = ep_meta
@@ -606,10 +649,14 @@ async fn import_single_episode_file(
             .and_then(|ep| ep.absolute_number.clone())
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
+    let additional_import = completed_import_purpose(app, completed)
+        .await
+        .is_additional_file();
     let outcome = execute_resolved_episode_import(
         app,
         actor,
         title,
+        rename_enabled,
         rename_template,
         title_folder_path,
         source_video,
@@ -623,6 +670,7 @@ async fn import_single_episode_file(
         quality_profile,
         None,
         crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic,
+        additional_import,
     )
     .await?;
 
@@ -647,7 +695,9 @@ async fn import_single_episode_file(
             )
             .await;
 
-            if imported_media_file_id.is_some() {
+            if imported_media_file_id.is_some()
+                && reason_code.as_deref() != Some("additional_file")
+            {
                 if nfo_enabled {
                     let nfo_path = std::path::Path::new(dest_path).with_extension("nfo");
                     if let Some(episode) = target_episodes.first() {
@@ -719,6 +769,7 @@ async fn import_single_episode_file(
             rejection,
             finalize_before_import,
             reason_code,
+            ..
         } => {
             if *finalize_before_import {
                 crate::post_download_gate::reject_source_file_before_import(
@@ -776,6 +827,7 @@ pub(crate) async fn resolve_import_paths(
         .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
         .unwrap_or(default_root);
 
+    let rename_enabled = app.resolve_rename_enabled(&title.facet).await?;
     let rename_template = app
         .read_setting_string_value_for_scope(
             super::SETTINGS_SCOPE_SYSTEM,
@@ -804,6 +856,7 @@ pub(crate) async fn resolve_import_paths(
 
     Ok(ImportPathSettings {
         media_root,
+        rename_enabled,
         rename_template,
         folder_template,
     })
@@ -824,7 +877,9 @@ pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,
     ext: &str,
+    source_path: &Path,
     title_folder_path: &Path,
+    rename_enabled: bool,
     rename_template: &str,
     season_num: u32,
     ep_num_str: &str,
@@ -847,7 +902,11 @@ pub(crate) fn episode_import_dest_path(
     if let Some(q) = quality_override {
         tokens.insert("quality".to_string(), q.to_string());
     }
-    let rendered = render_rename_template(rename_template, &tokens);
+    let rendered = if rename_enabled {
+        render_rename_template(rename_template, &tokens)
+    } else {
+        preserved_import_filename(source_path)
+    };
     if use_season_folders(title) {
         let season_folder = format!("Season {:02}", season_num);
         title_folder_path.join(&season_folder).join(&rendered)

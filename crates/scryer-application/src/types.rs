@@ -470,8 +470,10 @@ pub struct TitleMediaFile {
     pub id: String,
     pub title_id: String,
     pub episode_id: Option<String>,
+    pub series_movie_link_ids: Vec<String>,
     pub file_path: String,
     pub size_bytes: i64,
+    pub role: crate::MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,
     pub quality_label: Option<String>,
@@ -831,6 +833,7 @@ pub struct WantedItem {
     pub library_slug: Option<String>,
     pub episode_id: Option<String>,
     pub collection_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub media_type: String,
@@ -1504,6 +1507,17 @@ pub struct SmgVersionCompatibilityNotice {
     pub your_version: String,
     pub message: String,
     pub upgrade_deadline: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SmgScryerUpdateNotice {
+    pub available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub latest_tag: String,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub checked_at: String,
 }
 
 #[derive(Clone, Debug)]

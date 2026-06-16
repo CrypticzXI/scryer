@@ -934,8 +934,14 @@ pub struct AppRuntimeIntegrationState {
 }
 
 #[derive(Clone)]
+pub struct AppRuntimeSecurityState {
+    recovery_admin_login_enabled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeState {
     pub environment: AppRuntimeEnvironmentState,
+    pub security: AppRuntimeSecurityState,
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
     pub acquisition: AppRuntimeAcquisitionState,
@@ -972,6 +978,9 @@ impl AppRuntimeState {
                 config_dir,
                 supported_plugin_required_features,
             ),
+            security: AppRuntimeSecurityState {
+                recovery_admin_login_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
             events: AppRuntimeEventState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
@@ -1958,6 +1967,20 @@ pub struct AppUseCase {
 }
 
 impl AppUseCase {
+    pub fn set_recovery_admin_login_enabled(&self, enabled: bool) {
+        self.runtime
+            .security
+            .recovery_admin_login_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn recovery_admin_login_enabled(&self) -> bool {
+        self.runtime
+            .security
+            .recovery_admin_login_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     async fn invalidate_monitored_title_matcher(&self) {
         let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
         state.dirty = true;

@@ -146,6 +146,20 @@ impl TitleMutations {
         Ok(from_title(title))
     }
 
+    async fn set_primary_movie_file(
+        &self,
+        ctx: &Context<'_>,
+        input: SetPrimaryMovieFileInput,
+    ) -> GqlResult<TitlePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let title = app
+            .set_primary_movie_file(&actor, &input.title_id, &input.file_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_title(title))
+    }
+
     async fn fix_title_match(
         &self,
         ctx: &Context<'_>,

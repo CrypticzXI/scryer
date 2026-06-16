@@ -371,6 +371,27 @@ pub trait TitleImageProcessor: Send + Sync {
 
 #[async_trait]
 pub trait ShowRepository: Send + Sync {
+    async fn list_series_movie_links_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>>;
+    async fn get_series_movie_link_by_id(
+        &self,
+        link_id: &str,
+    ) -> AppResult<Option<scryer_domain::SeriesMovieLink>>;
+    async fn find_series_movie_link_by_legacy_collection_id(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Option<scryer_domain::SeriesMovieLink>>;
+    async fn upsert_series_movie_link(
+        &self,
+        link: scryer_domain::SeriesMovieLink,
+    ) -> AppResult<scryer_domain::SeriesMovieLink>;
+    async fn delete_stale_series_movie_links(
+        &self,
+        title_id: &str,
+        retained_link_ids: &[String],
+    ) -> AppResult<()>;
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>>;
     async fn list_collection_external_ids(
         &self,
@@ -391,21 +412,6 @@ pub trait ShowRepository: Send + Sync {
         collection_id: &str,
         update: CollectionUpdate,
     ) -> AppResult<Collection>;
-    async fn update_collection_interstitial_movie(
-        &self,
-        collection_id: &str,
-        interstitial_movie: scryer_domain::InterstitialMovieMetadata,
-    ) -> AppResult<Collection>;
-    async fn update_collection_specials_movies(
-        &self,
-        collection_id: &str,
-        specials_movies: Vec<scryer_domain::InterstitialMovieMetadata>,
-    ) -> AppResult<Collection>;
-    async fn update_interstitial_season_episode(
-        &self,
-        collection_id: &str,
-        season_episode: Option<String>,
-    ) -> AppResult<()>;
     async fn set_collection_episodes_monitored(
         &self,
         collection_id: &str,
@@ -558,6 +564,61 @@ pub struct JellyfinServerUser {
     pub avatar_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlexServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl From<JellyfinServerUser> for MediaServerUser {
+    fn from(user: JellyfinServerUser) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+impl From<PlexServerUser> for MediaServerUser {
+    fn from(user: PlexServerUser) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaServerUserGroupStatus {
+    Ready,
+    MissingCredentials,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaServerUserGroup {
+    pub connection_id: String,
+    pub connection_name: String,
+    pub provider: scryer_domain::ExternalAccountProvider,
+    pub status: MediaServerUserGroupStatus,
+    pub error_message: Option<String>,
+    pub users: Vec<MediaServerUser>,
+}
+
 #[async_trait]
 pub trait ExternalIdentityVerifier: Send + Sync {
     async fn verify_plex(
@@ -595,6 +656,11 @@ pub trait ExternalIdentityVerifier: Send + Sync {
         api_key: &str,
         search: Option<&str>,
     ) -> AppResult<Vec<JellyfinServerUser>>;
+    async fn list_plex_users(
+        &self,
+        plex_auth_token: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<PlexServerUser>>;
 }
 
 #[async_trait]
@@ -1010,6 +1076,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         title_id: &str,
         request_signature: &str,
+        purpose: DownloadSubmissionPurpose,
+        scope: &SubmissionScope,
     ) -> AppResult<Option<DownloadSubmission>>;
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
@@ -1305,6 +1373,12 @@ pub trait MediaFileRepository: Send + Sync {
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()>;
 
+    async fn link_file_to_series_movie(
+        &self,
+        file_id: &str,
+        series_movie_link_id: &str,
+    ) -> AppResult<()>;
+
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>>;
 
     async fn list_live_media_files_for_episode_ids(
@@ -1312,6 +1386,11 @@ pub trait MediaFileRepository: Send + Sync {
         title_id: &str,
         episode_ids: &[String],
     ) -> AppResult<Vec<EpisodeScopedMediaFile>>;
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<String>>;
 
     async fn list_title_media_size_summaries(
         &self,
@@ -1348,6 +1427,13 @@ pub trait MediaFileRepository: Send + Sync {
     ) -> AppResult<()>;
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()>;
+
+    async fn set_media_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()>;
 
     async fn replace_media_file_for_upgrade(
         &self,
@@ -1514,6 +1600,11 @@ pub trait WantedItemRepository: Send + Sync {
 
     async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()>;
 
+    async fn delete_wanted_items_for_series_movie_link(
+        &self,
+        series_movie_link_id: &str,
+    ) -> AppResult<()>;
+
     async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()>;
 
     async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64>;
@@ -1543,6 +1634,20 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
     repo: &R,
     item: &WantedItem,
 ) -> AppResult<Option<WantedItem>> {
+    if let Some(series_movie_link_id) = item.series_movie_link_id.as_deref() {
+        return Ok(repo
+            .list_wanted_items(WantedItemsQuery {
+                title_id: Some(item.title_id.clone()),
+                limit: 500,
+                ..WantedItemsQuery::default()
+            })
+            .await?
+            .into_iter()
+            .find(|existing| {
+                existing.series_movie_link_id.as_deref() == Some(series_movie_link_id)
+            }));
+    }
+
     if let Some(collection_id) = item.collection_id.as_deref() {
         return Ok(repo
             .list_wanted_items(WantedItemsQuery {
@@ -1569,7 +1674,11 @@ async fn find_existing_wanted_item_seed<R: WantedItemRepository + ?Sized>(
         })
         .await?
         .into_iter()
-        .find(|existing| existing.episode_id.is_none() && existing.collection_id.is_none()))
+        .find(|existing| {
+            existing.episode_id.is_none()
+                && existing.collection_id.is_none()
+                && existing.series_movie_link_id.is_none()
+        }))
 }
 
 #[async_trait]
@@ -1774,6 +1883,7 @@ pub trait IndexerClient: Send + Sync {
         ids: std::collections::HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
+        id_search_facet: Option<String>,
         newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,

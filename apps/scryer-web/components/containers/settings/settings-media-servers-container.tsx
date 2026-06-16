@@ -135,7 +135,7 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
 }
 
 function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
-  const supportsAuth = draft.provider === "jellyfin";
+  const supportsAuth = draft.provider === "jellyfin" || draft.provider === "plex";
   const input: Record<string, unknown> = {
     provider: draft.provider,
     displayName: draft.displayName.trim(),

@@ -5,8 +5,8 @@ use scryer_application::{
     PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
 };
 use scryer_domain::{
-    CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id,
-    InterstitialMovieMetadata,
+    CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id, MovieEntity,
+    SeriesMovieLink,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -16,14 +16,22 @@ use crate::queries::sql_runtime::{
 use crate::storage::sql::json::canonical_json_text;
 
 const COLLECTION_COLUMNS: &str = "id, title_id, collection_type, collection_index, label, ordered_path, \
-    narrative_order, first_episode_number, last_episode_number, interstitial_tvdb_id, interstitial_name, \
-    interstitial_slug, interstitial_year, interstitial_content_status, interstitial_overview, \
-    interstitial_poster_url, interstitial_language, interstitial_runtime_minutes, interstitial_sort_title, \
-    interstitial_imdb_id, interstitial_genres_json, interstitial_studio, interstitial_digital_release_date, \
-    interstitial_association_confidence, interstitial_continuity_status, interstitial_movie_form, \
-    interstitial_confidence, interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id, \
-    interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode, special_movies_json, \
-    monitored, created_at";
+    narrative_order, first_episode_number, last_episode_number, monitored, created_at";
+
+const SERIES_MOVIE_LINK_COLUMNS: &str = "sml.id AS link_id, sml.series_title_id, sml.placement, \
+    sml.narrative_order, sml.after_season, sml.before_season, sml.linked_episode_id, \
+    sml.association_confidence, sml.continuity_status, sml.movie_form, sml.confidence, \
+    sml.signal_summary, sml.source, sml.monitored AS link_monitored, sml.legacy_collection_id, \
+    sml.created_at AS link_created_at, sml.updated_at AS link_updated_at, \
+    me.id AS movie_id, me.title AS movie_title, me.sort_title AS movie_sort_title, \
+    me.slug AS movie_slug, me.year AS movie_year, me.overview AS movie_overview, \
+    me.poster_url AS movie_poster_url, me.background_url AS movie_background_url, \
+    me.language AS movie_language, me.runtime_minutes AS movie_runtime_minutes, \
+    me.content_status AS movie_content_status, me.genres_json AS movie_genres_json, \
+    me.studio AS movie_studio, me.digital_release_date AS movie_digital_release_date, \
+    me.imdb_id AS movie_imdb_id, me.tvdb_id AS movie_tvdb_id, me.tmdb_id AS movie_tmdb_id, \
+    me.mal_id AS movie_mal_id, me.anidb_id AS movie_anidb_id, me.created_at AS movie_created_at, \
+    me.updated_at AS movie_updated_at";
 
 const EPISODE_COLUMNS: &str = "id, title_id, collection_id, episode_type, episode_number, season_number, \
     episode_label, title, air_date, duration_seconds, has_multi_audio, has_subtitle, is_filler, is_recap, \
@@ -31,18 +39,9 @@ const EPISODE_COLUMNS: &str = "id, title_id, collection_id, episode_type, episod
 
 const COLLECTION_INSERT_SQL: &str = "INSERT INTO collections (
     id, title_id, collection_type, collection_index, label, ordered_path, narrative_order,
-    first_episode_number, last_episode_number, interstitial_tvdb_id, interstitial_name,
-    interstitial_slug, interstitial_year, interstitial_content_status, interstitial_overview,
-    interstitial_poster_url, interstitial_language, interstitial_runtime_minutes,
-    interstitial_sort_title, interstitial_imdb_id, interstitial_genres_json,
-    interstitial_studio, interstitial_digital_release_date, interstitial_association_confidence,
-    interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
-    interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
-    interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
-    special_movies_json, monitored, created_at
+    first_episode_number, last_episode_number, monitored, created_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 const COLLECTION_UPDATE_SQL: &str = "UPDATE collections SET
@@ -54,31 +53,6 @@ const COLLECTION_UPDATE_SQL: &str = "UPDATE collections SET
     narrative_order = {},
     first_episode_number = {},
     last_episode_number = {},
-    interstitial_tvdb_id = {},
-    interstitial_name = {},
-    interstitial_slug = {},
-    interstitial_year = {},
-    interstitial_content_status = {},
-    interstitial_overview = {},
-    interstitial_poster_url = {},
-    interstitial_language = {},
-    interstitial_runtime_minutes = {},
-    interstitial_sort_title = {},
-    interstitial_imdb_id = {},
-    interstitial_genres_json = {},
-    interstitial_studio = {},
-    interstitial_digital_release_date = {},
-    interstitial_association_confidence = {},
-    interstitial_continuity_status = {},
-    interstitial_movie_form = {},
-    interstitial_confidence = {},
-    interstitial_signal_summary = {},
-    interstitial_placement = {},
-    interstitial_movie_tmdb_id = {},
-    interstitial_movie_mal_id = {},
-    interstitial_movie_anidb_id = {},
-    interstitial_season_episode = {},
-    special_movies_json = {},
     monitored = {}
 WHERE id = {}";
 
@@ -132,6 +106,57 @@ impl ShowStore {
 
 #[async_trait]
 impl ShowRepository for ShowStore {
+    async fn list_series_movie_links_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<SeriesMovieLink>> {
+        list_series_movie_links_for_title_query(self.read_target(), title_id).await
+    }
+
+    async fn get_series_movie_link_by_id(
+        &self,
+        link_id: &str,
+    ) -> AppResult<Option<SeriesMovieLink>> {
+        get_series_movie_link_by_id_query(self.read_target(), link_id).await
+    }
+
+    async fn find_series_movie_link_by_legacy_collection_id(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<Option<SeriesMovieLink>> {
+        find_series_movie_link_by_legacy_collection_id_query(self.read_target(), collection_id)
+            .await
+    }
+
+    async fn upsert_series_movie_link(&self, link: SeriesMovieLink) -> AppResult<SeriesMovieLink> {
+        SqlRuntime::run_in_transaction(&self.datastore, "upsert_series_movie_link", move |tx| {
+            let link = link.clone();
+            Box::pin(async move { upsert_series_movie_link_tx(tx, link).await })
+        })
+        .await
+    }
+
+    async fn delete_stale_series_movie_links(
+        &self,
+        title_id: &str,
+        retained_link_ids: &[String],
+    ) -> AppResult<()> {
+        let title_id = title_id.to_string();
+        let retained_link_ids = retained_link_ids.to_vec();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "delete_stale_series_movie_links",
+            move |tx| {
+                let title_id = title_id.clone();
+                let retained_link_ids = retained_link_ids.clone();
+                Box::pin(async move {
+                    delete_stale_series_movie_links_tx(tx, &title_id, &retained_link_ids).await
+                })
+            },
+        )
+        .await
+    }
+
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
         list_collections_for_title_query(self.read_target(), title_id).await
     }
@@ -197,81 +222,6 @@ impl ShowRepository for ShowStore {
                 Ok(collection)
             })
         })
-        .await
-    }
-
-    async fn update_collection_interstitial_movie(
-        &self,
-        collection_id: &str,
-        interstitial_movie: InterstitialMovieMetadata,
-    ) -> AppResult<Collection> {
-        let collection_id = collection_id.to_string();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "update_collection_interstitial_movie",
-            move |tx| {
-                let collection_id = collection_id.clone();
-                let interstitial_movie = interstitial_movie.clone();
-                Box::pin(async move {
-                    let mut collection = load_collection_tx(tx, &collection_id)
-                        .await?
-                        .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
-                    collection.interstitial_movie = Some(interstitial_movie);
-                    persist_collection_tx(tx, &collection).await?;
-                    Ok(collection)
-                })
-            },
-        )
-        .await
-    }
-
-    async fn update_collection_specials_movies(
-        &self,
-        collection_id: &str,
-        specials_movies: Vec<InterstitialMovieMetadata>,
-    ) -> AppResult<Collection> {
-        let collection_id = collection_id.to_string();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "update_collection_specials_movies",
-            move |tx| {
-                let collection_id = collection_id.clone();
-                let specials_movies = specials_movies.clone();
-                Box::pin(async move {
-                    let mut collection = load_collection_tx(tx, &collection_id)
-                        .await?
-                        .ok_or_else(|| AppError::NotFound(format!("collection {collection_id}")))?;
-                    collection.specials_movies = specials_movies;
-                    persist_collection_tx(tx, &collection).await?;
-                    Ok(collection)
-                })
-            },
-        )
-        .await
-    }
-
-    async fn update_interstitial_season_episode(
-        &self,
-        collection_id: &str,
-        season_episode: Option<String>,
-    ) -> AppResult<()> {
-        let collection_id = collection_id.to_string();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "update_interstitial_season_episode",
-            move |tx| {
-                let collection_id = collection_id.clone();
-                let season_episode = season_episode.clone();
-                Box::pin(async move {
-                    update_interstitial_season_episode_tx(
-                        tx,
-                        &collection_id,
-                        season_episode.as_deref(),
-                    )
-                    .await
-                })
-            },
-        )
         .await
     }
 
@@ -513,6 +463,297 @@ impl ShowRepository for ShowStore {
         )
         .await
     }
+}
+
+async fn list_series_movie_links_for_title_query(
+    target: SqlTarget<'_>,
+    title_id: &str,
+) -> AppResult<Vec<SeriesMovieLink>> {
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.series_title_id = {{}}
+         ORDER BY COALESCE(sml.narrative_order, ''), sml.created_at ASC, sml.id ASC"
+    );
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
+    rows.iter().map(row_to_series_movie_link).collect()
+}
+
+async fn get_series_movie_link_by_id_query(
+    target: SqlTarget<'_>,
+    link_id: &str,
+) -> AppResult<Option<SeriesMovieLink>> {
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.id = {{}}
+         LIMIT 1"
+    );
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(link_id.to_string())],
+    )
+    .await?;
+    row.as_ref().map(row_to_series_movie_link).transpose()
+}
+
+async fn find_series_movie_link_by_legacy_collection_id_query(
+    target: SqlTarget<'_>,
+    collection_id: &str,
+) -> AppResult<Option<SeriesMovieLink>> {
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.legacy_collection_id = {{}}
+         LIMIT 1"
+    );
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(collection_id.to_string())],
+    )
+    .await?;
+    row.as_ref().map(row_to_series_movie_link).transpose()
+}
+
+async fn upsert_series_movie_link_tx(
+    tx: &mut SqlTx<'_>,
+    mut link: SeriesMovieLink,
+) -> AppResult<SeriesMovieLink> {
+    let movie_id = find_existing_movie_entity_id_tx(tx, &link.movie)
+        .await?
+        .unwrap_or_else(|| link.movie.id.clone());
+    link.movie.id = movie_id.clone();
+    upsert_movie_entity_tx(tx, &link.movie).await?;
+
+    if let Some(existing_link_id) =
+        find_existing_series_movie_link_id_tx(tx, &link.series_title_id, &movie_id).await?
+    {
+        link.id = existing_link_id;
+    }
+
+    tx.execute(
+        "INSERT INTO series_movie_links (
+             id, series_title_id, movie_entity_id, placement, narrative_order, after_season,
+             before_season, linked_episode_id, association_confidence, continuity_status,
+             movie_form, confidence, signal_summary, source, monitored, legacy_collection_id,
+             created_at, updated_at
+         ) VALUES (
+             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+         )
+         ON CONFLICT(id) DO UPDATE SET
+             series_title_id = excluded.series_title_id,
+             movie_entity_id = excluded.movie_entity_id,
+             placement = excluded.placement,
+             narrative_order = excluded.narrative_order,
+             after_season = excluded.after_season,
+             before_season = excluded.before_season,
+             linked_episode_id = excluded.linked_episode_id,
+             association_confidence = excluded.association_confidence,
+             continuity_status = excluded.continuity_status,
+             movie_form = excluded.movie_form,
+             confidence = excluded.confidence,
+             signal_summary = excluded.signal_summary,
+             source = excluded.source,
+             monitored = excluded.monitored,
+             legacy_collection_id = COALESCE(excluded.legacy_collection_id, series_movie_links.legacy_collection_id),
+             updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(link.id.clone()),
+            SqlArg::Text(link.series_title_id.clone()),
+            SqlArg::Text(movie_id),
+            SqlArg::OptText(link.placement.clone()),
+            SqlArg::OptText(link.narrative_order.clone()),
+            SqlArg::OptI32(link.after_season),
+            SqlArg::OptI32(link.before_season),
+            SqlArg::OptText(link.linked_episode_id.clone()),
+            SqlArg::OptText(link.association_confidence.clone()),
+            SqlArg::OptText(link.continuity_status.clone()),
+            SqlArg::OptText(link.movie_form.clone()),
+            SqlArg::OptText(link.confidence.clone()),
+            SqlArg::OptText(link.signal_summary.clone()),
+            SqlArg::OptText(link.source.clone()),
+            SqlArg::Bool(link.monitored),
+            SqlArg::OptText(link.legacy_collection_id.clone()),
+            SqlArg::Timestamp(link.created_at),
+            SqlArg::Timestamp(link.updated_at),
+        ],
+    )
+    .await?;
+
+    load_series_movie_link_tx(tx, &link.id)
+        .await?
+        .ok_or_else(|| AppError::Repository("series movie link upsert returned no row".into()))
+}
+
+async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppResult<()> {
+    tx.execute(
+        "INSERT INTO movie_entities (
+             id, title, sort_title, slug, year, overview, poster_url, background_url, language,
+             runtime_minutes, content_status, genres_json, studio, digital_release_date,
+             imdb_id, tvdb_id, tmdb_id, mal_id, anidb_id, created_at, updated_at
+         ) VALUES (
+             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+         )
+         ON CONFLICT(id) DO UPDATE SET
+             title = excluded.title,
+             sort_title = excluded.sort_title,
+             slug = excluded.slug,
+             year = excluded.year,
+             overview = excluded.overview,
+             poster_url = excluded.poster_url,
+             background_url = excluded.background_url,
+             language = excluded.language,
+             runtime_minutes = excluded.runtime_minutes,
+             content_status = excluded.content_status,
+             genres_json = excluded.genres_json,
+             studio = excluded.studio,
+             digital_release_date = excluded.digital_release_date,
+             imdb_id = COALESCE(excluded.imdb_id, movie_entities.imdb_id),
+             tvdb_id = COALESCE(excluded.tvdb_id, movie_entities.tvdb_id),
+             tmdb_id = COALESCE(excluded.tmdb_id, movie_entities.tmdb_id),
+             mal_id = COALESCE(excluded.mal_id, movie_entities.mal_id),
+             anidb_id = COALESCE(excluded.anidb_id, movie_entities.anidb_id),
+             updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(movie.id.clone()),
+            SqlArg::Text(movie.title.clone()),
+            SqlArg::OptText(movie.sort_title.clone()),
+            SqlArg::OptText(movie.slug.clone()),
+            SqlArg::OptI32(movie.year),
+            SqlArg::OptText(movie.overview.clone()),
+            SqlArg::OptText(movie.poster_url.clone()),
+            SqlArg::OptText(movie.background_url.clone()),
+            SqlArg::OptText(movie.language.clone()),
+            SqlArg::OptI32(movie.runtime_minutes),
+            SqlArg::OptText(movie.content_status.clone()),
+            SqlArg::Text(canonical_json_text(&movie.genres)?),
+            SqlArg::OptText(movie.studio.clone()),
+            SqlArg::OptText(movie.digital_release_date.clone()),
+            SqlArg::OptText(movie.imdb_id.clone()),
+            SqlArg::OptText(movie.tvdb_id.clone()),
+            SqlArg::OptText(movie.tmdb_id.clone()),
+            SqlArg::OptText(movie.mal_id.clone()),
+            SqlArg::OptText(movie.anidb_id.clone()),
+            SqlArg::Timestamp(movie.created_at),
+            SqlArg::Timestamp(movie.updated_at),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn find_existing_movie_entity_id_tx(
+    tx: &mut SqlTx<'_>,
+    movie: &MovieEntity,
+) -> AppResult<Option<String>> {
+    for (column, value) in [
+        ("tvdb_id", movie.tvdb_id.as_deref()),
+        ("tmdb_id", movie.tmdb_id.as_deref()),
+        ("imdb_id", movie.imdb_id.as_deref()),
+        ("mal_id", movie.mal_id.as_deref()),
+        ("anidb_id", movie.anidb_id.as_deref()),
+    ] {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let sql = format!("SELECT id FROM movie_entities WHERE {column} = {{}} LIMIT 1");
+        if let Some(row) =
+            SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(value.to_string())])
+                .await?
+        {
+            return row.opt_text("id");
+        }
+    }
+
+    let title = movie.title.trim();
+    if title.is_empty() {
+        return Ok(None);
+    }
+    let (sql, args) = if let Some(year) = movie.year {
+        (
+            "SELECT id FROM movie_entities WHERE lower(title) = lower({}) AND year = {} LIMIT 1",
+            vec![SqlArg::Text(title.to_string()), SqlArg::I32(year)],
+        )
+    } else {
+        (
+            "SELECT id FROM movie_entities WHERE lower(title) = lower({}) AND year IS NULL LIMIT 1",
+            vec![SqlArg::Text(title.to_string())],
+        )
+    };
+    let row = SqlRuntime::fetch_optional(SqlExec::Tx(tx), sql, &args).await?;
+    row.as_ref().map(|row| row.text("id")).transpose()
+}
+
+async fn find_existing_series_movie_link_id_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    movie_id: &str,
+) -> AppResult<Option<String>> {
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT id FROM series_movie_links WHERE series_title_id = {} AND movie_entity_id = {} LIMIT 1",
+        &[
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(movie_id.to_string()),
+        ],
+    )
+    .await?;
+    row.as_ref().map(|row| row.text("id")).transpose()
+}
+
+async fn load_series_movie_link_tx(
+    tx: &mut SqlTx<'_>,
+    link_id: &str,
+) -> AppResult<Option<SeriesMovieLink>> {
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.id = {{}}
+         LIMIT 1"
+    );
+    let row =
+        SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(link_id.to_string())])
+            .await?;
+    row.as_ref().map(row_to_series_movie_link).transpose()
+}
+
+async fn delete_stale_series_movie_links_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+    retained_link_ids: &[String],
+) -> AppResult<()> {
+    if retained_link_ids.is_empty() {
+        tx.execute(
+            "DELETE FROM series_movie_links WHERE series_title_id = {} AND COALESCE(source, '') = 'anibridge'",
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let placeholders = bind_placeholders(retained_link_ids.len());
+    let sql = format!(
+        "DELETE FROM series_movie_links
+         WHERE series_title_id = {{}}
+           AND COALESCE(source, '') = 'anibridge'
+           AND id NOT IN ({placeholders})"
+    );
+    let mut args = Vec::with_capacity(retained_link_ids.len() + 1);
+    args.push(SqlArg::Text(title_id.to_string()));
+    args.extend(retained_link_ids.iter().cloned().map(SqlArg::Text));
+    tx.execute(&sql, &args).await?;
+    Ok(())
 }
 
 async fn list_collections_for_title_query(
@@ -804,7 +1045,6 @@ async fn load_collection_tx(
 }
 
 async fn insert_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> AppResult<()> {
-    let interstitial = collection_interstitial_column_values(collection)?;
     let args = vec![
         SqlArg::Text(collection.id.clone()),
         SqlArg::Text(collection.title_id.clone()),
@@ -815,31 +1055,6 @@ async fn insert_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> Ap
         SqlArg::OptText(collection.narrative_order.clone()),
         SqlArg::OptText(collection.first_episode_number.clone()),
         SqlArg::OptText(collection.last_episode_number.clone()),
-        SqlArg::OptText(interstitial.tvdb_id),
-        SqlArg::OptText(interstitial.name),
-        SqlArg::OptText(interstitial.slug),
-        SqlArg::OptI32(interstitial.year),
-        SqlArg::OptText(interstitial.content_status),
-        SqlArg::OptText(interstitial.overview),
-        SqlArg::OptText(interstitial.poster_url),
-        SqlArg::OptText(interstitial.language),
-        SqlArg::OptI64(interstitial.runtime_minutes.map(i64::from)),
-        SqlArg::OptText(interstitial.sort_title),
-        SqlArg::OptText(interstitial.imdb_id),
-        SqlArg::OptText(interstitial.genres_json),
-        SqlArg::OptText(interstitial.studio),
-        SqlArg::OptText(interstitial.digital_release_date),
-        SqlArg::OptText(interstitial.association_confidence),
-        SqlArg::OptText(interstitial.continuity_status),
-        SqlArg::OptText(interstitial.movie_form),
-        SqlArg::OptText(interstitial.confidence),
-        SqlArg::OptText(interstitial.signal_summary),
-        SqlArg::OptText(interstitial.placement),
-        SqlArg::OptText(interstitial.movie_tmdb_id),
-        SqlArg::OptText(interstitial.movie_mal_id),
-        SqlArg::OptText(interstitial.movie_anidb_id),
-        SqlArg::OptText(collection.interstitial_season_episode.clone()),
-        SqlArg::Text(interstitial.special_movies_json),
         SqlArg::Bool(collection.monitored),
         SqlArg::Timestamp(collection.created_at),
     ];
@@ -850,7 +1065,6 @@ async fn insert_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> Ap
 }
 
 async fn persist_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> AppResult<()> {
-    let interstitial = collection_interstitial_column_values(collection)?;
     let args = vec![
         SqlArg::Text(collection.title_id.clone()),
         SqlArg::Text(collection.collection_type.as_str().to_string()),
@@ -860,31 +1074,6 @@ async fn persist_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> A
         SqlArg::OptText(collection.narrative_order.clone()),
         SqlArg::OptText(collection.first_episode_number.clone()),
         SqlArg::OptText(collection.last_episode_number.clone()),
-        SqlArg::OptText(interstitial.tvdb_id),
-        SqlArg::OptText(interstitial.name),
-        SqlArg::OptText(interstitial.slug),
-        SqlArg::OptI32(interstitial.year),
-        SqlArg::OptText(interstitial.content_status),
-        SqlArg::OptText(interstitial.overview),
-        SqlArg::OptText(interstitial.poster_url),
-        SqlArg::OptText(interstitial.language),
-        SqlArg::OptI64(interstitial.runtime_minutes.map(i64::from)),
-        SqlArg::OptText(interstitial.sort_title),
-        SqlArg::OptText(interstitial.imdb_id),
-        SqlArg::OptText(interstitial.genres_json),
-        SqlArg::OptText(interstitial.studio),
-        SqlArg::OptText(interstitial.digital_release_date),
-        SqlArg::OptText(interstitial.association_confidence),
-        SqlArg::OptText(interstitial.continuity_status),
-        SqlArg::OptText(interstitial.movie_form),
-        SqlArg::OptText(interstitial.confidence),
-        SqlArg::OptText(interstitial.signal_summary),
-        SqlArg::OptText(interstitial.placement),
-        SqlArg::OptText(interstitial.movie_tmdb_id),
-        SqlArg::OptText(interstitial.movie_mal_id),
-        SqlArg::OptText(interstitial.movie_anidb_id),
-        SqlArg::OptText(collection.interstitial_season_episode.clone()),
-        SqlArg::Text(interstitial.special_movies_json),
         SqlArg::Bool(collection.monitored),
     ];
 
@@ -892,22 +1081,6 @@ async fn persist_collection_tx(tx: &mut SqlTx<'_>, collection: &Collection) -> A
     args.push(SqlArg::Text(collection.id.clone()));
     tx.execute(COLLECTION_UPDATE_SQL, &args).await?;
 
-    Ok(())
-}
-
-async fn update_interstitial_season_episode_tx(
-    tx: &mut SqlTx<'_>,
-    collection_id: &str,
-    season_episode: Option<&str>,
-) -> AppResult<()> {
-    tx.execute(
-        "UPDATE collections SET interstitial_season_episode = {} WHERE id = {}",
-        &[
-            SqlArg::OptText(season_episode.map(str::to_string)),
-            SqlArg::Text(collection_id.to_string()),
-        ],
-    )
-    .await?;
     Ok(())
 }
 
@@ -1115,33 +1288,6 @@ struct SummaryCandidate {
     ordered_path: Option<String>,
 }
 
-struct CollectionInterstitialColumnValues {
-    tvdb_id: Option<String>,
-    name: Option<String>,
-    slug: Option<String>,
-    year: Option<i32>,
-    content_status: Option<String>,
-    overview: Option<String>,
-    poster_url: Option<String>,
-    language: Option<String>,
-    runtime_minutes: Option<i32>,
-    sort_title: Option<String>,
-    imdb_id: Option<String>,
-    genres_json: Option<String>,
-    studio: Option<String>,
-    digital_release_date: Option<String>,
-    association_confidence: Option<String>,
-    continuity_status: Option<String>,
-    movie_form: Option<String>,
-    confidence: Option<String>,
-    signal_summary: Option<String>,
-    placement: Option<String>,
-    movie_tmdb_id: Option<String>,
-    movie_mal_id: Option<String>,
-    movie_anidb_id: Option<String>,
-    special_movies_json: String,
-}
-
 fn collection_update_is_empty(update: &CollectionUpdate) -> bool {
     update.collection_type.is_none()
         && update.collection_index.is_none()
@@ -1244,40 +1390,6 @@ fn apply_episode_update(episode: &mut Episode, update: EpisodeUpdate) {
     }
 }
 
-fn collection_interstitial_column_values(
-    collection: &Collection,
-) -> AppResult<CollectionInterstitialColumnValues> {
-    let movie = collection.interstitial_movie.as_ref();
-    Ok(CollectionInterstitialColumnValues {
-        tvdb_id: movie.map(|value| value.tvdb_id.clone()),
-        name: movie.map(|value| value.name.clone()),
-        slug: movie.map(|value| value.slug.clone()),
-        year: movie.and_then(|value| value.year),
-        content_status: movie.map(|value| value.content_status.clone()),
-        overview: movie.map(|value| value.overview.clone()),
-        poster_url: movie.map(|value| value.poster_url.clone()),
-        language: movie.map(|value| value.language.clone()),
-        runtime_minutes: movie.map(|value| value.runtime_minutes),
-        sort_title: movie.map(|value| value.sort_title.clone()),
-        imdb_id: movie.map(|value| value.imdb_id.clone()),
-        genres_json: movie
-            .map(|value| canonical_json_text(&value.genres))
-            .transpose()?,
-        studio: movie.map(|value| value.studio.clone()),
-        digital_release_date: movie.and_then(|value| value.digital_release_date.clone()),
-        association_confidence: movie.and_then(|value| value.association_confidence.clone()),
-        continuity_status: movie.and_then(|value| value.continuity_status.clone()),
-        movie_form: movie.and_then(|value| value.movie_form.clone()),
-        confidence: movie.and_then(|value| value.confidence.clone()),
-        signal_summary: movie.and_then(|value| value.signal_summary.clone()),
-        placement: movie.and_then(|value| value.placement.clone()),
-        movie_tmdb_id: movie.and_then(|value| value.movie_tmdb_id.clone()),
-        movie_mal_id: movie.and_then(|value| value.movie_mal_id.clone()),
-        movie_anidb_id: movie.and_then(|value| value.movie_anidb_id.clone()),
-        special_movies_json: canonical_json_text(&collection.specials_movies)?,
-    })
-}
-
 fn normalized_scoped_external_id(
     scoped_id: &ScopedExternalId,
 ) -> Option<(String, String, String, String)> {
@@ -1369,11 +1481,60 @@ fn row_to_collection(row: &SqlRow) -> AppResult<Collection> {
         narrative_order: row.opt_text("narrative_order")?,
         first_episode_number: row.opt_text("first_episode_number")?,
         last_episode_number: row.opt_text("last_episode_number")?,
-        interstitial_movie: row_to_interstitial_movie(row)?,
-        specials_movies: row_to_specials_movies(row)?,
-        interstitial_season_episode: row.opt_text("interstitial_season_episode")?,
         monitored: row.bool("monitored")?,
         created_at: row.timestamp("created_at")?,
+    })
+}
+
+fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
+    let genres = row
+        .opt_json("movie_genres_json")?
+        .map(serde_json::from_value::<Vec<String>>)
+        .transpose()
+        .map_err(repo_err)?
+        .unwrap_or_default();
+
+    Ok(SeriesMovieLink {
+        id: row.text("link_id")?,
+        series_title_id: row.text("series_title_id")?,
+        movie: MovieEntity {
+            id: row.text("movie_id")?,
+            title: row.text("movie_title")?,
+            sort_title: row.opt_text("movie_sort_title")?,
+            slug: row.opt_text("movie_slug")?,
+            year: row.opt_i32("movie_year")?,
+            overview: row.opt_text("movie_overview")?,
+            poster_url: row.opt_text("movie_poster_url")?,
+            background_url: row.opt_text("movie_background_url")?,
+            language: row.opt_text("movie_language")?,
+            runtime_minutes: row.opt_i32("movie_runtime_minutes")?,
+            content_status: row.opt_text("movie_content_status")?,
+            genres,
+            studio: row.opt_text("movie_studio")?,
+            digital_release_date: row.opt_text("movie_digital_release_date")?,
+            imdb_id: row.opt_text("movie_imdb_id")?,
+            tvdb_id: row.opt_text("movie_tvdb_id")?,
+            tmdb_id: row.opt_text("movie_tmdb_id")?,
+            mal_id: row.opt_text("movie_mal_id")?,
+            anidb_id: row.opt_text("movie_anidb_id")?,
+            created_at: row.timestamp("movie_created_at")?,
+            updated_at: row.timestamp("movie_updated_at")?,
+        },
+        placement: row.opt_text("placement")?,
+        narrative_order: row.opt_text("narrative_order")?,
+        after_season: row.opt_i32("after_season")?,
+        before_season: row.opt_i32("before_season")?,
+        linked_episode_id: row.opt_text("linked_episode_id")?,
+        association_confidence: row.opt_text("association_confidence")?,
+        continuity_status: row.opt_text("continuity_status")?,
+        movie_form: row.opt_text("movie_form")?,
+        confidence: row.opt_text("confidence")?,
+        signal_summary: row.opt_text("signal_summary")?,
+        source: row.opt_text("source")?,
+        monitored: row.bool("link_monitored")?,
+        legacy_collection_id: row.opt_text("legacy_collection_id")?,
+        created_at: row.timestamp("link_created_at")?,
+        updated_at: row.timestamp("link_updated_at")?,
     })
 }
 
@@ -1419,56 +1580,6 @@ fn row_to_calendar_episode(row: &SqlRow) -> AppResult<CalendarEpisode> {
         air_date: row.opt_text("air_date")?,
         monitored: row.bool("monitored")?,
     })
-}
-
-fn row_to_interstitial_movie(row: &SqlRow) -> AppResult<Option<InterstitialMovieMetadata>> {
-    let Some(tvdb_id) = row.opt_text("interstitial_tvdb_id")? else {
-        return Ok(None);
-    };
-
-    let genres = row
-        .opt_json("interstitial_genres_json")?
-        .map(serde_json::from_value::<Vec<String>>)
-        .transpose()
-        .map_err(repo_err)?
-        .unwrap_or_default();
-
-    Ok(Some(InterstitialMovieMetadata {
-        tvdb_id,
-        name: row.opt_text("interstitial_name")?.unwrap_or_default(),
-        slug: row.opt_text("interstitial_slug")?.unwrap_or_default(),
-        year: row.opt_i32("interstitial_year")?,
-        content_status: row
-            .opt_text("interstitial_content_status")?
-            .unwrap_or_default(),
-        overview: row.opt_text("interstitial_overview")?.unwrap_or_default(),
-        poster_url: row.opt_text("interstitial_poster_url")?.unwrap_or_default(),
-        language: row.opt_text("interstitial_language")?.unwrap_or_default(),
-        runtime_minutes: row
-            .opt_i64("interstitial_runtime_minutes")?
-            .unwrap_or_default() as i32,
-        sort_title: row.opt_text("interstitial_sort_title")?.unwrap_or_default(),
-        imdb_id: row.opt_text("interstitial_imdb_id")?.unwrap_or_default(),
-        genres,
-        studio: row.opt_text("interstitial_studio")?.unwrap_or_default(),
-        digital_release_date: row.opt_text("interstitial_digital_release_date")?,
-        association_confidence: row.opt_text("interstitial_association_confidence")?,
-        continuity_status: row.opt_text("interstitial_continuity_status")?,
-        movie_form: row.opt_text("interstitial_movie_form")?,
-        confidence: row.opt_text("interstitial_confidence")?,
-        signal_summary: row.opt_text("interstitial_signal_summary")?,
-        placement: row.opt_text("interstitial_placement")?,
-        movie_tmdb_id: row.opt_text("interstitial_movie_tmdb_id")?,
-        movie_mal_id: row.opt_text("interstitial_movie_mal_id")?,
-        movie_anidb_id: row.opt_text("interstitial_movie_anidb_id")?,
-    }))
-}
-
-fn row_to_specials_movies(row: &SqlRow) -> AppResult<Vec<InterstitialMovieMetadata>> {
-    match row.opt_json("special_movies_json")? {
-        Some(value) => serde_json::from_value(value).map_err(repo_err),
-        None => Ok(Vec::new()),
-    }
 }
 
 async fn insert_scoped_collection_ids_sqlite(

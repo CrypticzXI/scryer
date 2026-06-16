@@ -121,13 +121,29 @@ impl LauncherOps for RealLauncherOps {
     }
 
     fn drop_privileges(&self, uid: u32, gid: u32) -> io::Result<()> {
-        // SAFETY: setgid/setuid are process-global but valid here before exec.
+        // SAFETY: setgroups/setgid/setuid are process-global but valid here before exec.
         unsafe {
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
             if libc::setgid(gid) != 0 {
                 return Err(io::Error::last_os_error());
             }
             if libc::setuid(uid) != 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if libc::getuid() != uid
+                || libc::geteuid() != uid
+                || libc::getgid() != gid
+                || libc::getegid() != gid
+            {
+                return Err(io::Error::other(format!(
+                    "credential verification failed after privilege drop; uid={} euid={} gid={} egid={}",
+                    libc::getuid(),
+                    libc::geteuid(),
+                    libc::getgid(),
+                    libc::getegid()
+                )));
             }
         }
         Ok(())
@@ -151,11 +167,8 @@ fn run_with_ops<O: LauncherOps>(ops: &O, config: &LaunchConfig) -> Result<(), St
     if ops.is_root() {
         let (uid, gid) = requested_identity(ops, config);
         repair_ownership(ops, config, uid, gid);
-        if let Err(error) = ops.drop_privileges(uid, gid) {
-            ops.warn(&format!(
-                "failed to drop privileges to {uid}:{gid}: {error}; continuing with current credentials"
-            ));
-        }
+        ops.drop_privileges(uid, gid)
+            .map_err(|error| format!("failed to drop privileges to {uid}:{gid}: {error}"))?;
     }
 
     let args = config.launch_args();
@@ -590,19 +603,15 @@ mod tests {
     }
 
     #[test]
-    fn failed_privilege_drop_should_still_attempt_to_launch() {
+    fn failed_privilege_drop_should_stop_before_launch() {
         let ops = MockLauncherOps {
             fail_drop: true,
             ..Default::default()
         };
         ops.insert_entry("/payloads/scryer", MockEntry::executable_file());
-        run_with_ops(&ops, &base_config()).expect("launch should still proceed");
-        assert_eq!(ops.exec_paths(), vec![PathBuf::from("/payloads/scryer")]);
-        assert!(
-            ops.warnings()
-                .iter()
-                .any(|warning| warning.contains("failed to drop privileges"))
-        );
+        let error = run_with_ops(&ops, &base_config()).expect_err("launch should fail closed");
+        assert!(error.contains("failed to drop privileges"));
+        assert!(ops.exec_paths().is_empty());
     }
 
     #[test]

@@ -171,17 +171,14 @@ async fn run_iron_vale_stack_probe() {
         .await
         .expect("post-hydration title scan should succeed");
 
-    let collections = ctx
+    let series_movie_links = ctx
         .shows
-        .list_collections_for_title(&titles[0].id)
+        .list_series_movie_links_for_title(&titles[0].id)
         .await
-        .expect("list anime collections after stack probe");
+        .expect("list anime series movie links after stack probe");
     assert!(
-        collections
-            .iter()
-            .any(|collection| collection.collection_type
-                == scryer_domain::CollectionType::Interstitial),
-        "expected at least one interstitial collection to validate the complex anime shape",
+        !series_movie_links.is_empty(),
+        "expected at least one series movie link to validate the complex anime shape",
     );
 
     let media_files = ctx
@@ -345,7 +342,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "slug": "iron-vale-movie-1",
             "year": 2015,
             "content_status": "released",
-            "overview": "Interstitial movie 1",
+            "overview": "Series movie 1",
             "poster_url": "https://example.invalid/iron-vale-movie-1.jpg",
             "language": "eng",
             "runtime_minutes": 90,
@@ -359,7 +356,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "movie_form": "movie",
             "placement": "ordered",
             "confidence": "high",
-            "signal_summary": "Mapped TVDB special to interstitial movie 1"
+            "signal_summary": "Mapped TVDB special to series movie 1"
         }),
         json!({
             "movie_tvdb_id": 880002,
@@ -371,7 +368,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "slug": "iron-vale-movie-2",
             "year": 2016,
             "content_status": "released",
-            "overview": "Interstitial movie 2",
+            "overview": "Series movie 2",
             "poster_url": "https://example.invalid/iron-vale-movie-2.jpg",
             "language": "eng",
             "runtime_minutes": 92,
@@ -385,7 +382,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "movie_form": "movie",
             "placement": "ordered",
             "confidence": "high",
-            "signal_summary": "Mapped TVDB special to interstitial movie 2"
+            "signal_summary": "Mapped TVDB special to series movie 2"
         }),
         json!({
             "movie_tvdb_id": 880003,
@@ -397,7 +394,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "slug": "iron-vale-movie-3",
             "year": 2017,
             "content_status": "released",
-            "overview": "Interstitial movie 3",
+            "overview": "Series movie 3",
             "poster_url": "https://example.invalid/iron-vale-movie-3.jpg",
             "language": "eng",
             "runtime_minutes": 94,
@@ -411,7 +408,7 @@ fn build_iron_vale_metadata_fixture() -> String {
             "movie_form": "movie",
             "placement": "ordered",
             "confidence": "high",
-            "signal_summary": "Mapped TVDB special to interstitial movie 3"
+            "signal_summary": "Mapped TVDB special to series movie 3"
         }),
     ];
 
@@ -506,7 +503,7 @@ fn create_iron_vale_library_root(root: &Path) -> PathBuf {
     )
     .expect("write Iron Vale tvshow.nfo");
 
-    // Keep the metadata shape large (99 episodes plus interstitial movies),
+    // Keep the metadata shape large (99 episodes plus series movies),
     // but keep the on-disk fixture smaller so the subprocess probe spends its
     // time in the complex title-scan logic instead of file analysis.
     let season_sample_episodes = [
@@ -589,22 +586,20 @@ async fn wait_for_iron_vale_scan_to_settle(
         if let Some(title) = title
             && let Some(metadata_fetched_at) = title.metadata_fetched_at
         {
-            let collections = ctx
+            let series_movie_links = ctx
                 .shows
-                .list_collections_for_title(&title.id)
+                .list_series_movie_links_for_title(&title.id)
                 .await
-                .expect("list collections while waiting for stack probe scan");
+                .expect("list series movie links while waiting for stack probe scan");
             let media_files = ctx
                 .media_files
                 .list_media_files_for_title(&title.id)
                 .await
                 .expect("list media files while waiting for stack probe scan");
             let enough_files = minimum_media_files.is_none_or(|value| media_files.len() >= value);
-            let has_interstitial = collections.iter().any(|collection| {
-                collection.collection_type == scryer_domain::CollectionType::Interstitial
-            });
+            let has_series_movie_links = !series_movie_links.is_empty();
 
-            if sessions.is_empty() && enough_files && has_interstitial {
+            if sessions.is_empty() && enough_files && has_series_movie_links {
                 return metadata_fetched_at;
             }
         }

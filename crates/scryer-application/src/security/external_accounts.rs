@@ -209,6 +209,99 @@ impl AppUseCase {
         Ok(accounts)
     }
 
+    pub async fn repair_legacy_jellyfin_external_account_invites(&self) -> AppResult<()> {
+        let connections = self
+            .services
+            .integrations
+            .media_server_connections
+            .list(Some(scryer_domain::MediaServerProvider::Jellyfin))
+            .await?
+            .into_iter()
+            .map(|connection| (connection.id.clone(), connection))
+            .collect::<std::collections::HashMap<_, _>>();
+        let users = self.services.identity.users.list_all().await?;
+
+        for user in users {
+            let accounts = self
+                .services
+                .identity
+                .external_accounts
+                .list_by_user_id(&user.id)
+                .await?;
+            for mut account in accounts {
+                if account.provider != scryer_domain::ExternalAccountProvider::Jellyfin
+                    || account.external_user_id.is_some()
+                    || account.status != scryer_domain::ExternalAccountStatus::PendingClaim
+                {
+                    continue;
+                }
+
+                let resolved = if let Some(connection) = connections.get(&account.connection_id)
+                    && let Some(api_key) = connection.api_key.as_deref()
+                {
+                    match self
+                        .services
+                        .integrations
+                        .external_identity_verifier
+                        .list_jellyfin_users(&connection.base_url, api_key, Some(&account.username))
+                        .await
+                    {
+                        Ok(users) => {
+                            let normalized = normalize_provider_username(&account.username);
+                            let matches = users
+                                .into_iter()
+                                .filter(|user| {
+                                    normalize_provider_username(&user.username) == normalized
+                                })
+                                .collect::<Vec<_>>();
+                            (matches.len() == 1).then(|| matches[0].clone())
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                account_id = %account.id,
+                                connection_id = %account.connection_id,
+                                "failed to resolve legacy Jellyfin invite"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(resolved) = resolved {
+                    account.external_user_id = Some(resolved.id);
+                    account.username = resolved.username;
+                    account.display_name = resolved.display_name;
+                    account.avatar_url = resolved.avatar_url;
+                    account.updated_at = Utc::now();
+                    tracing::info!(
+                        account_id = %account.id,
+                        connection_id = %account.connection_id,
+                        "repaired legacy Jellyfin invite with immutable external user id"
+                    );
+                } else {
+                    account.status = scryer_domain::ExternalAccountStatus::Disabled;
+                    account.updated_at = Utc::now();
+                    tracing::warn!(
+                        account_id = %account.id,
+                        connection_id = %account.connection_id,
+                        "disabled legacy Jellyfin invite that could not be resolved to one immutable external user id"
+                    );
+                }
+
+                self.services
+                    .identity
+                    .external_accounts
+                    .update(account)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn create_external_account_invite(
         &self,
         actor: &User,
@@ -216,16 +309,12 @@ impl AppUseCase {
         provider: scryer_domain::ExternalAccountProvider,
         connection_id: String,
         provider_user_identifier: String,
+        provider_user_id: Option<String>,
     ) -> AppResult<scryer_domain::UserExternalAccount> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
         let connection_id = normalize_connection_id(connection_id);
-        let provider_user_identifier = provider_user_identifier.trim().to_string();
-        if provider_user_identifier.is_empty() {
-            return Err(AppError::Validation(
-                "provider user identifier is required".into(),
-            ));
-        }
+        let _provider_user_identifier = provider_user_identifier.trim();
         let connection = self
             .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Invite)
             .await?;
@@ -238,72 +327,100 @@ impl AppUseCase {
 
         let (external_user_id, username, display_name, avatar_url) = match provider {
             scryer_domain::ExternalAccountProvider::Jellyfin => {
-                let resolved_user = if let Some(api_key) = connection.api_key.as_deref() {
-                    self.services
-                        .integrations
-                        .external_identity_verifier
-                        .list_jellyfin_users(
-                            &connection.base_url,
-                            api_key,
-                            Some(&provider_user_identifier),
+                let jellyfin_user_id = provider_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "Jellyfin invites require selecting a Jellyfin user from the picker"
+                                .into(),
                         )
-                        .await
-                        .ok()
-                        .and_then(|users| {
-                            users.into_iter().find(|user| {
-                                user.id.eq_ignore_ascii_case(&provider_user_identifier)
-                                    || user
-                                        .username
-                                        .eq_ignore_ascii_case(&provider_user_identifier)
-                            })
-                        })
-                } else {
-                    None
-                };
-                let username = resolved_user
-                    .as_ref()
-                    .map(|user| user.username.clone())
-                    .unwrap_or_else(|| provider_user_identifier.clone());
+                    })?;
+                let api_key = connection.api_key.as_deref().ok_or_else(|| {
+                    AppError::Validation(
+                        "Jellyfin invites require a saved Jellyfin API key so Scryer can resolve the immutable user id".into(),
+                    )
+                })?;
+                let user = self
+                    .services
+                    .integrations
+                    .external_identity_verifier
+                    .list_jellyfin_users(&connection.base_url, api_key, Some(jellyfin_user_id))
+                    .await?
+                    .into_iter()
+                    .find(|user| user.id.eq_ignore_ascii_case(jellyfin_user_id))
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "selected Jellyfin user was not found on the configured server".into(),
+                        )
+                    })?;
                 if self
                     .services
                     .identity
                     .external_accounts
-                    .get_pending_claim_by_provider_username(
-                        provider.clone(),
-                        &connection_id,
-                        &username,
-                    )
+                    .get_by_provider_identity(provider.clone(), &connection_id, &user.id)
                     .await?
                     .is_some()
                 {
                     return Err(AppError::Validation(
-                        "Jellyfin account already has a pending invite".into(),
+                        "Jellyfin account is already linked or invited".into(),
                     ));
                 }
-                if let Some(user) = resolved_user {
-                    if self
-                        .services
-                        .identity
-                        .external_accounts
-                        .get_by_provider_identity(provider.clone(), &connection_id, &user.id)
-                        .await?
-                        .is_some()
-                    {
-                        return Err(AppError::Validation(
-                            "Jellyfin account is already linked or invited".into(),
-                        ));
-                    }
-                    (Some(user.id), username, user.display_name, user.avatar_url)
-                } else {
-                    (None, username, None, None)
-                }
+                (
+                    Some(user.id),
+                    user.username,
+                    user.display_name,
+                    user.avatar_url,
+                )
             }
-            scryer_domain::ExternalAccountProvider::Plex => (
-                Some(provider_user_identifier.clone()),
-                provider_user_identifier,
-                None,
-                None,
-            ),
+            scryer_domain::ExternalAccountProvider::Plex => {
+                let plex_user_id = provider_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "Plex invites require selecting a Plex user from the picker".into(),
+                        )
+                    })?;
+                let plex_auth_token = connection.api_key.as_deref().ok_or_else(|| {
+                    AppError::Validation(
+                        "Plex invites require a saved Plex token so Scryer can resolve the immutable user id".into(),
+                    )
+                })?;
+                let user = self
+                    .services
+                    .integrations
+                    .external_identity_verifier
+                    .list_plex_users(plex_auth_token, Some(plex_user_id))
+                    .await?
+                    .into_iter()
+                    .find(|user| user.id.eq_ignore_ascii_case(plex_user_id))
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "selected Plex user was not found on the configured account".into(),
+                        )
+                    })?;
+                if self
+                    .services
+                    .identity
+                    .external_accounts
+                    .get_by_provider_identity(provider.clone(), &connection_id, &user.id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(AppError::Validation(
+                        "Plex account is already linked or invited".into(),
+                    ));
+                }
+                (
+                    Some(user.id),
+                    user.username,
+                    user.display_name,
+                    user.avatar_url,
+                )
+            }
         };
 
         let mut account = scryer_domain::UserExternalAccount::pending_claim(
@@ -374,7 +491,7 @@ impl AppUseCase {
         actor: &User,
         verified: VerifiedExternalIdentity,
     ) -> AppResult<scryer_domain::UserExternalAccount> {
-        let mut existing = self
+        let existing = self
             .services
             .identity
             .external_accounts
@@ -384,21 +501,6 @@ impl AppUseCase {
                 &verified.external_user_id,
             )
             .await?;
-
-        if existing.is_none()
-            && verified.provider == scryer_domain::ExternalAccountProvider::Jellyfin
-        {
-            existing = self
-                .services
-                .identity
-                .external_accounts
-                .get_pending_claim_by_provider_username(
-                    verified.provider.clone(),
-                    &verified.connection_id,
-                    &normalize_provider_username(&verified.username),
-                )
-                .await?;
-        }
 
         if let Some(mut existing) = existing {
             if existing.user_id != actor.id {
@@ -506,7 +608,7 @@ impl AppUseCase {
         connection: scryer_domain::MediaServerConnection,
     ) -> AppResult<User> {
         let provider = verified.provider.clone();
-        let mut account = self
+        let account = self
             .services
             .identity
             .external_accounts
@@ -516,19 +618,6 @@ impl AppUseCase {
                 &verified.external_user_id,
             )
             .await?;
-
-        if account.is_none() && provider == scryer_domain::ExternalAccountProvider::Jellyfin {
-            account = self
-                .services
-                .identity
-                .external_accounts
-                .get_pending_claim_by_provider_username(
-                    provider,
-                    &verified.connection_id,
-                    &normalize_provider_username(&verified.username),
-                )
-                .await?;
-        }
 
         let mut auto_added_user = None;
         let mut account = if let Some(account) = account {
@@ -642,18 +731,22 @@ impl AppUseCase {
     async fn unique_auto_added_username(&self, provider_username: &str) -> AppResult<String> {
         let base = provider_username.trim();
         let base = if base.is_empty() { "media-user" } else { base };
-        if self
-            .services
-            .identity
-            .users
-            .get_by_username(base)
-            .await?
-            .is_none()
+        if !Self::is_reserved_recovery_username(base)
+            && self
+                .services
+                .identity
+                .users
+                .get_by_username(base)
+                .await?
+                .is_none()
         {
             return Ok(base.to_string());
         }
         for suffix in 2..=9999 {
             let candidate = format!("{base}-{suffix}");
+            if Self::is_reserved_recovery_username(&candidate) {
+                continue;
+            }
             if self
                 .services
                 .identity
@@ -756,9 +849,9 @@ mod tests {
         NullTitleRepository, NullUserRepository,
     };
     use crate::{
-        AppServices, IndexerConfig, IndexerConfigRepository, IndexerConfigUpdate, JwtAuthConfig,
-        MediaServerConnectionRepository, SettingsRepository, UserExternalAccountRepository,
-        UserRepository,
+        AppServices, ExternalIdentityVerifier, IndexerConfig, IndexerConfigRepository,
+        IndexerConfigUpdate, JellyfinServerUser, JwtAuthConfig, MediaServerConnectionRepository,
+        PlexServerUser, SettingsRepository, UserExternalAccountRepository, UserRepository,
     };
     use scryer_domain::{
         AppPermission, AppPermissionMask, ExternalAccountProvider, ExternalAccountStatus,
@@ -788,6 +881,12 @@ mod tests {
         connections: Mutex<Vec<MediaServerConnection>>,
     }
 
+    #[derive(Default)]
+    struct TestExternalIdentityVerifier {
+        jellyfin_users: Vec<JellyfinServerUser>,
+        plex_users: Vec<PlexServerUser>,
+    }
+
     impl TestExternalAccountRepository {
         fn new(accounts: Vec<UserExternalAccount>) -> Self {
             Self {
@@ -800,6 +899,25 @@ mod tests {
         fn new(connections: Vec<MediaServerConnection>) -> Self {
             Self {
                 connections: Mutex::new(connections),
+            }
+        }
+    }
+
+    impl TestExternalIdentityVerifier {
+        fn with_jellyfin_users(jellyfin_users: Vec<JellyfinServerUser>) -> Self {
+            Self {
+                jellyfin_users,
+                plex_users: Vec::new(),
+            }
+        }
+
+        fn with_users(
+            jellyfin_users: Vec<JellyfinServerUser>,
+            plex_users: Vec<PlexServerUser>,
+        ) -> Self {
+            Self {
+                jellyfin_users,
+                plex_users,
             }
         }
     }
@@ -911,6 +1029,122 @@ mod tests {
                 .await
                 .retain(|account| account.id != id);
             Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ExternalIdentityVerifier for TestExternalIdentityVerifier {
+        async fn verify_plex(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            Err(AppError::Repository(
+                "external identity verification is not configured".into(),
+            ))
+        }
+
+        async fn verify_jellyfin(
+            &self,
+            connection_id: &str,
+            _: &str,
+            username: &str,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            let user = self
+                .jellyfin_users
+                .iter()
+                .find(|user| user.username.eq_ignore_ascii_case(username))
+                .ok_or_else(|| AppError::Unauthorized("invalid Jellyfin credentials".into()))?;
+            Ok(VerifiedExternalIdentity {
+                provider: ExternalAccountProvider::Jellyfin,
+                connection_id: connection_id.to_string(),
+                external_user_id: user.id.clone(),
+                username: user.username.clone(),
+                display_name: user.display_name.clone(),
+                avatar_url: user.avatar_url.clone(),
+            })
+        }
+
+        async fn discover_plex_servers(
+            &self,
+            _: &str,
+        ) -> AppResult<Vec<crate::PlexServerDiscovery>> {
+            Ok(Vec::new())
+        }
+
+        async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn exchange_jellyfin_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<String> {
+            Err(AppError::Repository(
+                "external identity verification is not configured".into(),
+            ))
+        }
+
+        async fn list_jellyfin_users(
+            &self,
+            _: &str,
+            api_key: &str,
+            search: Option<&str>,
+        ) -> AppResult<Vec<JellyfinServerUser>> {
+            if api_key == "fail" {
+                return Err(AppError::Repository("Jellyfin listing failed".into()));
+            }
+            if api_key == "stall" {
+                return std::future::pending::<AppResult<Vec<JellyfinServerUser>>>().await;
+            }
+            let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+                return Ok(self.jellyfin_users.clone());
+            };
+            let search = search.to_ascii_lowercase();
+            Ok(self
+                .jellyfin_users
+                .iter()
+                .filter(|user| {
+                    user.id.to_ascii_lowercase().contains(&search)
+                        || user.username.to_ascii_lowercase().contains(&search)
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn list_plex_users(
+            &self,
+            plex_auth_token: &str,
+            search: Option<&str>,
+        ) -> AppResult<Vec<PlexServerUser>> {
+            if plex_auth_token == "fail" {
+                return Err(AppError::Repository("Plex listing failed".into()));
+            }
+            if plex_auth_token == "stall" {
+                return std::future::pending::<AppResult<Vec<PlexServerUser>>>().await;
+            }
+            let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+                return Ok(self.plex_users.clone());
+            };
+            let search = search.to_ascii_lowercase();
+            Ok(self
+                .plex_users
+                .iter()
+                .filter(|user| {
+                    user.id.to_ascii_lowercase().contains(&search)
+                        || user.username.to_ascii_lowercase().contains(&search)
+                })
+                .cloned()
+                .collect())
         }
     }
 
@@ -1155,6 +1389,22 @@ mod tests {
         external_accounts: Arc<dyn UserExternalAccountRepository>,
         media_server_connections: Vec<MediaServerConnection>,
     ) -> AppUseCase {
+        test_app_with_identity_media_servers_and_verifier(
+            settings,
+            users,
+            external_accounts,
+            media_server_connections,
+            Arc::new(TestExternalIdentityVerifier::default()),
+        )
+    }
+
+    fn test_app_with_identity_media_servers_and_verifier(
+        settings: Arc<dyn SettingsRepository>,
+        users: Arc<dyn UserRepository>,
+        external_accounts: Arc<dyn UserExternalAccountRepository>,
+        media_server_connections: Vec<MediaServerConnection>,
+        external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
+    ) -> AppUseCase {
         let assembly = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -1169,6 +1419,7 @@ mod tests {
             String::new(),
         )
         .with_external_account_store(external_accounts)
+        .with_external_identity_verifier(external_identity_verifier)
         .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
             media_server_connections,
         )))
@@ -1271,7 +1522,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jellyfin_invite_uses_username_without_external_id() {
+    async fn auto_added_username_skips_reserved_recovery_admin() {
+        let app = test_app_with_identity(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![regular_user(
+                "recovery-admin-2",
+            )])),
+            Arc::new(TestExternalAccountRepository::default()),
+        );
+
+        let username = app
+            .unique_auto_added_username("recovery-admin")
+            .await
+            .expect("allocate auto-added username");
+
+        assert_eq!(username, "recovery-admin-3");
+    }
+
+    #[tokio::test]
+    async fn jellyfin_invite_requires_selected_external_id() {
         let admin = admin_user();
         let target = regular_user("user-1");
         let external_accounts = Arc::new(TestExternalAccountRepository::default());
@@ -1287,57 +1556,197 @@ mod tests {
                 ExternalAccountProvider::Jellyfin,
                 "jellyfin-main".to_string(),
                 " JellyUser ".to_string(),
+                None,
             )
-            .await
-            .expect("create jellyfin invite");
+            .await;
 
-        assert_eq!(account.provider, ExternalAccountProvider::Jellyfin);
-        assert_eq!(account.connection_id, "jellyfin-main");
-        assert_eq!(account.external_user_id, None);
-        assert_eq!(account.username, "JellyUser");
-        assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
-        assert_eq!(account.last_login_at, None);
+        assert!(
+            matches!(account, Err(AppError::Validation(message)) if message.contains("picker"))
+        );
     }
 
     #[tokio::test]
-    async fn duplicate_pending_jellyfin_username_for_connection_is_rejected() {
+    async fn jellyfin_invite_uses_selected_external_id() {
         let admin = admin_user();
         let target = regular_user("user-1");
-        let now = Utc::now();
-        let external_accounts = Arc::new(TestExternalAccountRepository::new(vec![
-            UserExternalAccount {
-                id: "pending-account".to_string(),
-                user_id: target.id.clone(),
-                provider: ExternalAccountProvider::Jellyfin,
-                connection_id: "jellyfin-main".to_string(),
-                external_user_id: None,
-                username: "JellyUser".to_string(),
-                display_name: None,
-                avatar_url: None,
-                status: ExternalAccountStatus::PendingClaim,
-                verified_at: None,
-                last_login_at: None,
-                created_at: now,
-                updated_at: now,
-            },
-        ]));
-        let app = test_app_with_identity(
+        let mut connection = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-main",
+        );
+        connection.api_key = Some("jellyfin-api-key".to_string());
+        let app = test_app_with_identity_media_servers_and_verifier(
             Arc::new(TestSettingsRepository::default()),
             Arc::new(TestUserRepository::new(vec![target.clone()])),
-            external_accounts,
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![connection],
+            Arc::new(TestExternalIdentityVerifier::with_jellyfin_users(vec![
+                JellyfinServerUser {
+                    id: "jellyfin-user-id".to_string(),
+                    username: "JellyUser".to_string(),
+                    display_name: Some("Jelly User".to_string()),
+                    avatar_url: Some("https://jellyfin.example.test/avatar.png".to_string()),
+                },
+            ])),
         );
-        let result = app
+        let account = app
             .create_external_account_invite(
                 &admin,
                 &target.id,
                 ExternalAccountProvider::Jellyfin,
                 "jellyfin-main".to_string(),
-                " jellyuser ".to_string(),
+                " JellyUser ".to_string(),
+                Some("jellyfin-user-id".to_string()),
             )
-            .await;
+            .await
+            .expect("create Jellyfin invite");
+
+        assert_eq!(account.provider, ExternalAccountProvider::Jellyfin);
+        assert_eq!(account.connection_id, "jellyfin-main");
+        assert_eq!(
+            account.external_user_id.as_deref(),
+            Some("jellyfin-user-id")
+        );
+        assert_eq!(account.username, "JellyUser");
+        assert_eq!(account.display_name.as_deref(), Some("Jelly User"));
+        assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
+        assert_eq!(account.last_login_at, None);
+    }
+
+    #[tokio::test]
+    async fn media_server_users_fail_open_across_connections() {
+        let admin = admin_user();
+        let mut jellyfin_connection = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-main",
+        );
+        jellyfin_connection.api_key = Some("jellyfin-api-key".to_string());
+        let mut failing_jellyfin_connection = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-fail",
+        );
+        failing_jellyfin_connection.api_key = Some("fail".to_string());
+        let mut plex_connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main");
+        plex_connection.api_key = Some("plex-token".to_string());
+        let missing_plex_connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-missing");
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::default()),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![
+                jellyfin_connection,
+                failing_jellyfin_connection,
+                plex_connection,
+                missing_plex_connection,
+            ],
+            Arc::new(TestExternalIdentityVerifier::with_users(
+                vec![JellyfinServerUser {
+                    id: "jellyfin-user-id".to_string(),
+                    username: "jellyfin-user".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+                vec![PlexServerUser {
+                    id: "plex-user-id".to_string(),
+                    username: "plex-user".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+            )),
+        );
+
+        let groups = app
+            .list_media_server_users(&admin, None)
+            .await
+            .expect("list media server users");
+        let groups_by_id = groups
+            .iter()
+            .map(|group| (group.connection_id.as_str(), group))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            groups_by_id["jellyfin-main"].status,
+            crate::MediaServerUserGroupStatus::Ready
+        );
+        assert_eq!(
+            groups_by_id["jellyfin-main"].users[0].id,
+            "jellyfin-user-id"
+        );
+        assert_eq!(
+            groups_by_id["plex-main"].status,
+            crate::MediaServerUserGroupStatus::Ready
+        );
+        assert_eq!(groups_by_id["plex-main"].users[0].id, "plex-user-id");
+        assert_eq!(
+            groups_by_id["plex-missing"].status,
+            crate::MediaServerUserGroupStatus::MissingCredentials
+        );
+        assert!(groups_by_id["plex-missing"].users.is_empty());
+        assert_eq!(
+            groups_by_id["jellyfin-fail"].status,
+            crate::MediaServerUserGroupStatus::Error
+        );
+        assert!(groups_by_id["jellyfin-fail"].users.is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_server_users_timeout_does_not_block_successful_connections() {
+        let admin = admin_user();
+        let mut stalled_jellyfin_connection = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-stall",
+        );
+        stalled_jellyfin_connection.api_key = Some("stall".to_string());
+        let mut plex_connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main");
+        plex_connection.api_key = Some("plex-token".to_string());
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::default()),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![stalled_jellyfin_connection, plex_connection],
+            Arc::new(TestExternalIdentityVerifier::with_users(
+                Vec::new(),
+                vec![PlexServerUser {
+                    id: "plex-user-id".to_string(),
+                    username: "plex-user".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+            )),
+        );
+
+        let started_at = std::time::Instant::now();
+        let groups = app
+            .list_media_server_users(&admin, None)
+            .await
+            .expect("list media server users");
 
         assert!(
-            matches!(result, Err(AppError::Validation(message)) if message.contains("pending invite"))
+            started_at.elapsed() < std::time::Duration::from_secs(1),
+            "stalled media server lookup should be bounded by the per-connection timeout"
+        );
+        let groups_by_id = groups
+            .iter()
+            .map(|group| (group.connection_id.as_str(), group))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            groups_by_id["plex-main"].status,
+            crate::MediaServerUserGroupStatus::Ready
+        );
+        assert_eq!(groups_by_id["plex-main"].users[0].id, "plex-user-id");
+        assert_eq!(
+            groups_by_id["jellyfin-stall"].status,
+            crate::MediaServerUserGroupStatus::Error
+        );
+        assert!(groups_by_id["jellyfin-stall"].users.is_empty());
+        assert!(
+            groups_by_id["jellyfin-stall"]
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Timed out after"))
         );
     }
 
@@ -1456,7 +1865,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plex_invite_remains_id_based() {
+    async fn plex_invite_requires_selected_external_id() {
         let admin = admin_user();
         let target = regular_user("user-1");
         let app = test_app_with_identity(
@@ -1471,6 +1880,45 @@ mod tests {
                 ExternalAccountProvider::Plex,
                 "plex-main".to_string(),
                 "plex-user-1".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(
+            matches!(account, Err(AppError::Validation(message)) if message.contains("picker"))
+        );
+    }
+
+    #[tokio::test]
+    async fn plex_invite_uses_selected_external_id() {
+        let admin = admin_user();
+        let target = regular_user("user-1");
+        let mut connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main");
+        connection.api_key = Some("plex-token".to_string());
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![target.clone()])),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![connection],
+            Arc::new(TestExternalIdentityVerifier::with_users(
+                Vec::new(),
+                vec![PlexServerUser {
+                    id: "plex-user-1".to_string(),
+                    username: "plexuser".to_string(),
+                    display_name: Some("Plex User".to_string()),
+                    avatar_url: Some("https://plex.tv/avatar.jpg".to_string()),
+                }],
+            )),
+        );
+        let account = app
+            .create_external_account_invite(
+                &admin,
+                &target.id,
+                ExternalAccountProvider::Plex,
+                "plex-main".to_string(),
+                "plexuser".to_string(),
+                Some("plex-user-1".to_string()),
             )
             .await
             .expect("create plex invite");
@@ -1478,7 +1926,8 @@ mod tests {
         assert_eq!(account.provider, ExternalAccountProvider::Plex);
         assert_eq!(account.connection_id, "plex-main");
         assert_eq!(account.external_user_id.as_deref(), Some("plex-user-1"));
-        assert_eq!(account.username, "plex-user-1");
+        assert_eq!(account.username, "plexuser");
+        assert_eq!(account.display_name.as_deref(), Some("Plex User"));
         assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
         assert_eq!(account.last_login_at, None);
     }
@@ -1489,10 +1938,33 @@ mod tests {
         let first = regular_user("user-1");
         let second = regular_user("user-2");
         let external_accounts = Arc::new(TestExternalAccountRepository::default());
-        let app = test_app_with_identity(
+        let mut jellyfin_connection = test_media_server_connection(
+            scryer_domain::MediaServerProvider::Jellyfin,
+            "jellyfin-main",
+        );
+        jellyfin_connection.api_key = Some("jellyfin-api-key".to_string());
+        let mut plex_connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main");
+        plex_connection.api_key = Some("plex-token".to_string());
+        let app = test_app_with_identity_media_servers_and_verifier(
             Arc::new(TestSettingsRepository::default()),
             Arc::new(TestUserRepository::new(vec![first.clone(), second.clone()])),
             external_accounts,
+            vec![jellyfin_connection, plex_connection],
+            Arc::new(TestExternalIdentityVerifier::with_users(
+                vec![JellyfinServerUser {
+                    id: "first-jellyfin-id".to_string(),
+                    username: "first-jellyfin".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+                vec![PlexServerUser {
+                    id: "second-plex-id".to_string(),
+                    username: "second-plex".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+            )),
         );
         app.create_external_account_invite(
             &admin,
@@ -1500,6 +1972,7 @@ mod tests {
             ExternalAccountProvider::Jellyfin,
             "jellyfin-main".to_string(),
             "first-jellyfin".to_string(),
+            Some("first-jellyfin-id".to_string()),
         )
         .await
         .expect("create first invite");
@@ -1509,6 +1982,7 @@ mod tests {
             ExternalAccountProvider::Plex,
             "plex-main".to_string(),
             "second-plex".to_string(),
+            Some("second-plex-id".to_string()),
         )
         .await
         .expect("create second invite");
@@ -1727,7 +2201,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn link_jellyfin_claims_pending_username_invite_without_external_id() {
+    async fn link_jellyfin_does_not_claim_pending_username_invite_without_external_id() {
         let admin = admin_user();
         let now = Utc::now();
         let app = test_app_with_external_accounts(
@@ -1764,22 +2238,14 @@ mod tests {
                 },
             )
             .await
-            .expect("link pending Jellyfin invite");
+            .expect("link Jellyfin account by immutable id");
 
-        assert_eq!(account.id, "pending-account");
-        assert_eq!(account.user_id, admin.id);
+        assert_ne!(account.id, "pending-account");
         assert_eq!(
             account.external_user_id.as_deref(),
             Some("jellyfin-user-id")
         );
         assert_eq!(account.status, ExternalAccountStatus::Active);
-        assert_eq!(account.display_name.as_deref(), Some("Remote User"));
-        assert_eq!(
-            account.avatar_url.as_deref(),
-            Some("https://jellyfin.example.test/avatar.png")
-        );
-        assert!(account.verified_at.is_some());
-        assert!(account.last_login_at.is_none());
     }
 
     #[tokio::test]
@@ -1803,7 +2269,7 @@ mod tests {
                 user_id: user.id.clone(),
                 provider: ExternalAccountProvider::Jellyfin,
                 connection_id: "jellyfin-main".to_string(),
-                external_user_id: None,
+                external_user_id: Some("remote-user".to_string()),
                 username: "Fresh-Name".to_string(),
                 display_name: None,
                 avatar_url: None,

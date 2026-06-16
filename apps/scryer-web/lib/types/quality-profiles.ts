@@ -5,7 +5,7 @@ export type ParsedQualityProfile = {
 
 export type ScoringPersonaId = "Balanced" | "Audiophile" | "Efficient" | "Compatible";
 
-export type QualityTargetId = "4k" | "1080p";
+export type QualityTargetId = "8k" | "4k" | "1080p";
 
 export type FacetQualityPrefs = {
   quality: QualityTargetId;

@@ -21,9 +21,10 @@ use crate::mappers::{
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type,
-    from_smg_version_compatibility_notice, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
+    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
+    from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_release_blocklist_entry,
+    from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -562,16 +563,16 @@ impl CatalogQueries {
 
         let SearchReleasesInput {
             title_id,
-            collection_id,
+            series_movie_link_id,
             season,
             episode,
             limit,
         } = input;
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
-        let results = match (collection_id, season, episode) {
-            (Some(collection_id), None, None) => app
-                .search_indexers_for_interstitial_movie(&actor, title_id, collection_id)
+        let results = match (series_movie_link_id, season, episode) {
+            (Some(series_movie_link_id), None, None) => app
+                .search_indexers_for_series_movie(&actor, title_id, series_movie_link_id)
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(season), Some(episode)) => app
@@ -589,7 +590,7 @@ impl CatalogQueries {
             }
             (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
                 return Err(Error::new(
-                    "collection searches cannot include season or episode",
+                    "series movie searches cannot include season or episode",
                 ));
             }
         };
@@ -1133,6 +1134,16 @@ impl SystemQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(notice.map(from_smg_version_compatibility_notice))
+    }
+
+    async fn smg_scryer_update_notice(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<SmgScryerUpdateNoticePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let _actor = actor_from_ctx(ctx)?;
+        let notice = app.smg_scryer_update_notice().await.map_err(to_gql_error)?;
+        Ok(notice.map(from_smg_scryer_update_notice))
     }
 
     async fn recycled_items(

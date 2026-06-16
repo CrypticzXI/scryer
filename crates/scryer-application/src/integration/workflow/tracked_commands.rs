@@ -155,6 +155,7 @@ impl AppUseCase {
             .download_submissions
             .record_submission(DownloadSubmission {
                 title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: title.facet.as_str().to_string(),
                 download_client_id: client_id.map(str::to_string),
                 download_client_type: client_type.to_string(),

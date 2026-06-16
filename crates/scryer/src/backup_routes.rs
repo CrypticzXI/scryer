@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, RawQuery, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, BackupInfo, BackupService, BackupStatus};
 use scryer_infrastructure::{
@@ -84,91 +84,37 @@ fn conflict_response(message: impl Into<String>) -> Response {
         .into_response()
 }
 
-fn decode_query_component(component: &str) -> Result<String, AppError> {
-    fn from_hex(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
-
-    let bytes = component.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            b'%' => {
-                if index + 2 >= bytes.len() {
-                    return Err(AppError::Unauthorized(
-                        "backup download ticket query is invalid".into(),
-                    ));
-                }
-                let Some(high) = from_hex(bytes[index + 1]) else {
-                    return Err(AppError::Unauthorized(
-                        "backup download ticket query is invalid".into(),
-                    ));
-                };
-                let Some(low) = from_hex(bytes[index + 2]) else {
-                    return Err(AppError::Unauthorized(
-                        "backup download ticket query is invalid".into(),
-                    ));
-                };
-                decoded.push((high << 4) | low);
-                index += 3;
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-
-    String::from_utf8(decoded)
-        .map_err(|_| AppError::Unauthorized("backup download ticket query is invalid".into()))
-}
-
-fn parse_backup_download_ticket(raw_query: Option<&str>) -> Result<String, AppError> {
-    let Some(raw_query) = raw_query else {
+fn parse_backup_download_authorization(
+    headers: &HeaderMap,
+    raw_query: Option<&str>,
+) -> Result<String, AppError> {
+    if raw_query
+        .as_ref()
+        .is_some_and(|query| query.split('&').any(|pair| pair.starts_with("ticket=")))
+    {
         return Err(AppError::Unauthorized(
-            "backup download ticket is required".into(),
+            "backup download ticket query is not accepted".into(),
+        ));
+    }
+
+    let Some(value) = headers.get(header::AUTHORIZATION) else {
+        return Err(AppError::Unauthorized(
+            "backup download authorization is required".into(),
         ));
     };
-    if raw_query.trim().is_empty() {
+    let value = value
+        .to_str()
+        .map_err(|_| AppError::Unauthorized("backup download authorization is invalid".into()))?;
+    let (scheme, token) = value
+        .split_once(' ')
+        .ok_or_else(|| AppError::Unauthorized("backup download authorization is invalid".into()))?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.trim().is_empty() || token.contains(' ') {
         return Err(AppError::Unauthorized(
-            "backup download ticket is required".into(),
+            "backup download authorization is invalid".into(),
         ));
     }
 
-    let mut ticket: Option<String> = None;
-    for pair in raw_query.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
-        let key = decode_query_component(raw_key)?;
-        if key != "ticket" {
-            continue;
-        }
-        let value = decode_query_component(raw_value)?;
-        if value.trim().is_empty() {
-            return Err(AppError::Unauthorized(
-                "backup download ticket is required".into(),
-            ));
-        }
-        if ticket.replace(value).is_some() {
-            return Err(AppError::Unauthorized(
-                "backup download ticket query is invalid".into(),
-            ));
-        }
-    }
-
-    ticket.ok_or_else(|| AppError::Unauthorized("backup download ticket is required".into()))
+    Ok(token.trim().to_string())
 }
 
 #[cfg(unix)]
@@ -293,9 +239,10 @@ fn load_backup_metadata(backup_dir: &Path, filename: &str) -> Result<BackupInfo,
 pub(crate) async fn download_backup_handler(
     State(state): State<BackupRouteState>,
     AxumPath(filename): AxumPath<String>,
+    headers: HeaderMap,
     RawQuery(raw_query): RawQuery,
 ) -> Response {
-    let ticket = match parse_backup_download_ticket(raw_query.as_deref()) {
+    let ticket = match parse_backup_download_authorization(&headers, raw_query.as_deref()) {
         Ok(ticket) => ticket,
         Err(error) => return map_app_error(error),
     };
@@ -485,22 +432,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_backup_download_ticket_requires_valid_ticket_query() {
-        let missing = parse_backup_download_ticket(None).unwrap_err();
+    fn parse_backup_download_authorization_requires_bearer_token() {
+        let missing = parse_backup_download_authorization(&HeaderMap::new(), None).unwrap_err();
         assert!(matches!(missing, AppError::Unauthorized(_)));
 
-        let blank = parse_backup_download_ticket(Some("ticket=")).unwrap_err();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer "));
+        let blank = parse_backup_download_authorization(&headers, None).unwrap_err();
         assert!(matches!(blank, AppError::Unauthorized(_)));
 
-        let malformed = parse_backup_download_ticket(Some("ticket=%zz")).unwrap_err();
-        assert!(matches!(malformed, AppError::Unauthorized(_)));
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic abc"));
+        let wrong_scheme = parse_backup_download_authorization(&headers, None).unwrap_err();
+        assert!(matches!(wrong_scheme, AppError::Unauthorized(_)));
     }
 
     #[test]
-    fn parse_backup_download_ticket_accepts_ticket_and_ignores_other_params() {
-        let ticket = parse_backup_download_ticket(Some("foo=bar&ticket=abc.def&baz=qux"))
-            .expect("ticket should parse");
+    fn parse_backup_download_authorization_accepts_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer abc.def"),
+        );
+
+        let ticket =
+            parse_backup_download_authorization(&headers, None).expect("ticket should parse");
         assert_eq!(ticket, "abc.def");
+    }
+
+    #[test]
+    fn parse_backup_download_authorization_rejects_ticket_query() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer abc.def"),
+        );
+
+        let error = parse_backup_download_authorization(&headers, Some("ticket=abc.def"))
+            .expect_err("query tickets should be rejected");
+        assert!(matches!(error, AppError::Unauthorized(_)));
     }
 
     #[tokio::test]

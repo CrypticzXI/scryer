@@ -45,11 +45,22 @@ function formatFacetPrefs(
   return (["movie", "series", "anime"] as ViewCategoryId[])
     .map((facet) => {
       const p = facetPrefs[facet];
-      const quality = p.quality === "4k" ? "4K" : "1080P";
+      const quality = formatQualityTarget(p.quality);
       const persona = t(`qualityProfile.persona${p.persona}`);
       return `${FACET_LABELS[facet]}: ${quality} ${persona}`;
     })
     .join(", ");
+}
+
+function formatQualityTarget(target: FacetQualityPrefs["quality"]): string {
+  switch (target) {
+    case "8k":
+      return "8K";
+    case "4k":
+      return "4K";
+    case "1080p":
+      return "1080P";
+  }
 }
 
 function activeWarmupPhaseState(

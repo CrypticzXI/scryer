@@ -92,3 +92,13 @@ export type SmgVersionCompatibilityNotice = {
   message: string;
   upgradeDeadline: string | null;
 };
+
+export type SmgScryerUpdateNotice = {
+  available: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  latestTag: string;
+  releaseUrl: string | null;
+  publishedAt: string | null;
+  checkedAt: string;
+};

@@ -41,14 +41,14 @@ impl MediaFileRepository for MediaFileStore {
             &self.datastore,
             "insert_media_file",
             "INSERT INTO media_files
-             (id, title_id, file_path, size_bytes, quality_id, scan_status, created_at,
+             (id, title_id, file_path, size_bytes, role, quality_id, scan_status, created_at,
               source_signature_scheme, source_signature_value,
               scene_name, release_group, source_type, resolution,
               video_codec_parsed, audio_codec_parsed, audio_channels_parsed,
               acquisition_score, scoring_log,
               indexer_source, grabbed_release_title, grabbed_at,
               edition, original_file_path, release_hash)
-             VALUES ({}, {}, {}, {}, {}, 'imported', {},
+             VALUES ({}, {}, {}, {}, {}, {}, 'imported', {},
                      {}, {},
                      {}, {}, {}, {},
                      {}, {}, {},
@@ -58,6 +58,7 @@ impl MediaFileRepository for MediaFileStore {
              ON CONFLICT(file_path) DO UPDATE SET
                 title_id = excluded.title_id,
                 size_bytes = excluded.size_bytes,
+                role = excluded.role,
                 quality_id = excluded.quality_id,
                 scan_status = excluded.scan_status,
                 source_signature_scheme = excluded.source_signature_scheme,
@@ -82,6 +83,7 @@ impl MediaFileRepository for MediaFileStore {
                 SqlArg::Text(input.title_id.clone()),
                 SqlArg::Text(input.file_path.clone()),
                 SqlArg::I64(input.size_bytes),
+                SqlArg::Text(input.role.as_str().to_string()),
                 SqlArg::OptText(input.quality_label.clone()),
                 SqlArg::Timestamp(now),
                 SqlArg::OptText(input.source_signature_scheme.clone()),
@@ -123,6 +125,26 @@ impl MediaFileRepository for MediaFileStore {
         Ok(())
     }
 
+    async fn link_file_to_series_movie(
+        &self,
+        file_id: &str,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        execute_write(
+            &self.datastore,
+            "link_file_to_series_movie",
+            "INSERT INTO file_series_movie_link_map (file_id, series_movie_link_id)
+             VALUES ({}, {})
+             ON CONFLICT(file_id, series_movie_link_id) DO NOTHING",
+            vec![
+                SqlArg::Text(file_id.to_string()),
+                SqlArg::Text(series_movie_link_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
         let dialect = dialect_for_datastore(&self.datastore);
         let sql = format!(
@@ -132,7 +154,7 @@ impl MediaFileRepository for MediaFileStore {
              WHERE mf.title_id = {{}}
                AND {}
              ORDER BY mf.created_at DESC",
-            media_file_select_columns("fem.episode_id"),
+            media_file_select_columns(dialect, "fem.episode_id"),
             live_media_file_predicate(dialect, "mf")
         );
         fetch_media_files(
@@ -165,7 +187,7 @@ impl MediaFileRepository for MediaFileStore {
                AND fem_target.episode_id IN ({placeholders})
              GROUP BY mf.id
              ORDER BY mf.created_at DESC",
-            media_file_select_columns("NULL"),
+            media_file_select_columns(dialect, "NULL"),
             episode_ids_aggregate(dialect),
             live_media_file_predicate(dialect, "mf")
         );
@@ -175,6 +197,29 @@ impl MediaFileRepository for MediaFileStore {
             .await?
             .iter()
             .map(row_to_episode_scoped_media_file)
+            .collect()
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        let dialect = dialect_for_datastore(&self.datastore);
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT DISTINCT fsmlm.series_movie_link_id
+                 FROM media_files mf
+                 INNER JOIN file_series_movie_link_map fsmlm ON fsmlm.file_id = mf.id
+                 WHERE mf.title_id = {{}}
+                   AND {}",
+                live_media_file_predicate(dialect, "mf")
+            ),
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await?;
+        rows.iter()
+            .map(|row| row.text("series_movie_link_id"))
             .collect()
     }
 
@@ -205,9 +250,15 @@ impl MediaFileRepository for MediaFileStore {
                  LEFT JOIN collections c
                         ON c.title_id = mf.title_id
                        AND c.ordered_path = mf.file_path
+                 LEFT JOIN file_series_movie_link_map fsmlm
+                        ON fsmlm.file_id = mf.id
                      WHERE mf.title_id IN ({placeholders})
                        AND {}
-                       AND (fem.file_id IS NOT NULL OR c.id IS NOT NULL)
+                       AND (
+                           fem.file_id IS NOT NULL
+                           OR c.id IS NOT NULL
+                           OR fsmlm.file_id IS NOT NULL
+                       )
                ) matched
               GROUP BY matched.title_id",
             live_media_file_predicate(dialect, "mf")
@@ -255,6 +306,7 @@ impl MediaFileRepository for MediaFileStore {
                   FROM media_files
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
+                   AND media_files.role = 'primary'
                    AND {normalized_quality} IS NOT NULL
              ) ranked
              WHERE quality_row = 1
@@ -312,6 +364,7 @@ impl MediaFileRepository for MediaFileStore {
                   LEFT JOIN episodes e ON e.id = fem.episode_id
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
+                   AND media_files.role = 'primary'
                    AND {normalized_quality} IS NOT NULL
                    AND (fem.episode_id IS NULL OR {})
              ) ranked
@@ -359,7 +412,7 @@ impl MediaFileRepository for MediaFileStore {
              FROM episodes e
              INNER JOIN collections c ON c.id = e.collection_id
              LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
-             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {}
+             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
              WHERE e.title_id IN ({placeholders})
                AND c.collection_type <> 'specials'
                AND c.collection_index <> '0'
@@ -483,6 +536,45 @@ impl MediaFileRepository for MediaFileStore {
         Ok(())
     }
 
+    async fn set_media_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        let mut ids = Vec::with_capacity(additional_file_ids.len() + 1);
+        ids.push(primary_file_id.to_string());
+        for file_id in additional_file_ids {
+            if file_id != primary_file_id && !ids.contains(file_id) {
+                ids.push(file_id.clone());
+            }
+        }
+
+        let sql = format!(
+            "UPDATE media_files
+                SET role = CASE WHEN id = {{}} THEN 'primary' ELSE 'additional' END
+              WHERE title_id = {{}}
+                AND id IN ({})",
+            placeholders(ids.len())
+        );
+        let mut args = vec![
+            SqlArg::Text(primary_file_id.to_string()),
+            SqlArg::Text(title_id.to_string()),
+        ];
+        args.extend(ids.iter().cloned().map(SqlArg::Text));
+
+        let updated =
+            execute_write(&self.datastore, "set_media_file_roles_for_title", sql, args).await?;
+        if updated != ids.len() as u64 {
+            return Err(AppError::Repository(format!(
+                "expected to update {} media file roles, updated {updated}",
+                ids.len()
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn replace_media_file_for_upgrade(
         &self,
         old_file_id: &str,
@@ -550,11 +642,12 @@ impl MediaFileRepository for MediaFileStore {
     }
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
+        let dialect = dialect_for_datastore(&self.datastore);
         let sql = format!(
             "SELECT {}
              FROM media_files mf
              WHERE mf.id = {{}}",
-            media_file_select_columns("NULL")
+            media_file_select_columns(dialect, "NULL")
         );
         fetch_optional_media_file(
             self.datastore.read_exec(),
@@ -565,12 +658,13 @@ impl MediaFileRepository for MediaFileStore {
     }
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        let dialect = dialect_for_datastore(&self.datastore);
         let sql = format!(
             "SELECT {}
              FROM media_files mf
              WHERE mf.file_path = {{}}
              LIMIT 1",
-            media_file_select_columns("NULL")
+            media_file_select_columns(dialect, "NULL")
         );
         fetch_optional_media_file(
             self.datastore.read_exec(),
@@ -666,10 +760,13 @@ fn serialized_media_analysis(analysis: &MediaFileAnalysis) -> AppResult<String> 
     canonical_json_text(analysis)
 }
 
-fn media_file_select_columns(episode_expr: &str) -> String {
+fn media_file_select_columns(dialect: SqlDialect, episode_expr: &str) -> String {
+    let series_movie_link_ids_json = series_movie_link_ids_aggregate(dialect);
     format!(
-        "mf.id, mf.title_id, {episode_expr} AS episode_id, mf.file_path,
-            mf.size_bytes, mf.source_signature_scheme, mf.source_signature_value,
+        "mf.id, mf.title_id, {episode_expr} AS episode_id,
+            {series_movie_link_ids_json} AS series_movie_link_ids_json,
+            mf.file_path,
+            mf.size_bytes, mf.role, mf.source_signature_scheme, mf.source_signature_value,
             mf.quality_id, mf.scan_status, mf.created_at,
             mf.video_codec, mf.video_width, mf.video_height,
             mf.video_bitrate_kbps, mf.video_bit_depth,
@@ -683,6 +780,35 @@ fn media_file_select_columns(episode_expr: &str) -> String {
             mf.indexer_source, mf.grabbed_release_title, mf.grabbed_at,
             mf.edition, mf.original_file_path, mf.release_hash",
     )
+}
+
+fn series_movie_link_ids_aggregate(dialect: SqlDialect) -> &'static str {
+    match dialect {
+        SqlDialect::Sqlite => {
+            "COALESCE(
+                (
+                    SELECT json_group_array(series_movie_link_id)
+                      FROM (
+                           SELECT DISTINCT fsmlm.series_movie_link_id AS series_movie_link_id
+                             FROM file_series_movie_link_map fsmlm
+                            WHERE fsmlm.file_id = mf.id
+                            ORDER BY fsmlm.series_movie_link_id
+                      )
+                ),
+                '[]'
+            )"
+        }
+        SqlDialect::Postgres => {
+            "COALESCE(
+                (
+                    SELECT jsonb_agg(DISTINCT fsmlm.series_movie_link_id)
+                      FROM file_series_movie_link_map fsmlm
+                     WHERE fsmlm.file_id = mf.id
+                ),
+                '[]'::jsonb
+            )::text"
+        }
+    }
 }
 
 fn episode_ids_aggregate(dialect: SqlDialect) -> &'static str {
@@ -769,8 +895,18 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         id: row.text("id")?,
         title_id: row.text("title_id")?,
         episode_id: row.opt_text("episode_id")?,
+        series_movie_link_ids: string_array_from_json_column(
+            row,
+            "series_movie_link_ids_json",
+            "media_files.series_movie_link_ids_json",
+        ),
         file_path: row.text("file_path")?,
         size_bytes: row.i64("size_bytes")?,
+        role: row
+            .opt_text("role")?
+            .as_deref()
+            .map(scryer_application::MediaFileRole::from_label)
+            .unwrap_or_default(),
         source_signature_scheme: row.opt_text("source_signature_scheme")?,
         source_signature_value: row.opt_text("source_signature_value")?,
         quality_label: row.opt_text("quality_id")?,
@@ -815,6 +951,28 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
     })
 }
 
+fn string_array_from_json_column(row: &SqlRow, column: &str, context: &str) -> Vec<String> {
+    match row.opt_text(column) {
+        Ok(Some(json)) => match serde_json::from_str::<Vec<String>>(&json) {
+            Ok(mut values) => {
+                values.sort();
+                values.dedup();
+                values
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    column,
+                    context,
+                    "failed to parse media file JSON string array column; treating row as empty"
+                );
+                Vec::new()
+            }
+        },
+        Ok(None) | Err(_) => Vec::new(),
+    }
+}
+
 fn parse_stored_video_codec(
     raw: Option<String>,
 ) -> AppResult<Option<scryer_application::VideoCodec>> {
@@ -827,20 +985,8 @@ fn parse_stored_video_codec(
 
 fn row_to_episode_scoped_media_file(row: &SqlRow) -> AppResult<EpisodeScopedMediaFile> {
     let media_file = row_to_title_media_file(row)?;
-    let mut episode_ids: Vec<String> = match row.opt_text("episode_ids_json") {
-        Ok(Some(json)) => match serde_json::from_str::<Vec<String>>(&json) {
-            Ok(episode_ids) => episode_ids,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    file_id = %media_file.id,
-                    "failed to parse media_files.episode_ids_json; treating row as unlinked"
-                );
-                Vec::new()
-            }
-        },
-        Ok(None) | Err(_) => Vec::new(),
-    };
+    let mut episode_ids =
+        string_array_from_json_column(row, "episode_ids_json", "media_files.episode_ids_json");
     episode_ids.sort();
     episode_ids.dedup();
 
@@ -1001,9 +1147,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("2".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1217,9 +1360,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("3".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -1400,9 +1540,6 @@ mod tests {
             narrative_order: None,
             first_episode_number: Some("1".to_string()),
             last_episode_number: Some("3".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
             monitored: true,
             created_at: Utc::now(),
         };

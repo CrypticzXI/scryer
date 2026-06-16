@@ -524,6 +524,7 @@ impl IndexerClient for ProwlarrSearchStub {
         _ids: HashMap<String, String>,
         _category: Option<String>,
         _facet: Option<String>,
+        _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,

@@ -1000,6 +1000,7 @@ impl DownloadClient for WeaverDownloadClient {
         let mut attributes = vec![
             json!({"key": "*scryer_title_id", "value": title.id.clone()}),
             json!({"key": "*scryer_facet", "value": facet_str}),
+            json!({"key": "*scryer_import_purpose", "value": request.purpose.as_str()}),
         ];
         if let Some(download_id) = request.download_id.as_deref() {
             attributes.push(json!({"key": "*scryer_download_id", "value": download_id}));

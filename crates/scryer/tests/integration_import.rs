@@ -193,6 +193,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 root_folders: None,
                 required_audio_languages: None,
                 folder_template: Some(template.to_string()),
+                rename_enabled: None,
                 rename_template: None,
                 rename_collision_policy: None,
                 rename_missing_metadata_policy: None,
@@ -242,6 +243,7 @@ async fn seed_movie_wanted_item(
         library_slug: None,
         episode_id: None,
         collection_id: None,
+        series_movie_link_id: None,
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
@@ -288,9 +290,6 @@ async fn seed_series_episode_with_duration(
         narrative_order: None,
         first_episode_number: Some("1".to_string()),
         last_episode_number: Some("1".to_string()),
-        interstitial_movie: None,
-        specials_movies: vec![],
-        interstitial_season_episode: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -345,6 +344,7 @@ async fn seed_episode_wanted_item(
         library_slug: None,
         episode_id: Some(episode.id.clone()),
         collection_id: None,
+        series_movie_link_id: None,
         season_number: Some("1".to_string()),
         episode_number: episode.episode_number.clone(),
         media_type: "series".to_string(),
@@ -1364,6 +1364,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
             episode_id: episode.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");
@@ -1430,6 +1431,7 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
             episode_id: episode.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");
@@ -1511,6 +1513,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
             episode_id: episode1.id.clone(),
             quality: Some("1080P".to_string()),
         }],
+        None,
     )
     .await
     .expect("execute manual import");

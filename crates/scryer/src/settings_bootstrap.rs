@@ -13,7 +13,7 @@ use scryer_application::{
     POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
     QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile,
     QualityProfileRepository, RECYCLE_BIN_ENABLED_KEY, RENAME_COLLISION_POLICY_GLOBAL_KEY,
-    RENAME_COLLISION_POLICY_KEY, RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_KEY, RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_ENABLED_KEY,
     RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
     RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
@@ -285,6 +285,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: RENAME_TEMPLATE_KEY,
             data_type: "string",
             default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: RENAME_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "true",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -564,6 +572,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             category: SETTINGS_CATEGORY_SERVICE,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "smg.version_compatibility_notice",
+            data_type: "json",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "smg.scryer_update_notice",
             data_type: "json",
             default_value_json: "null",
             is_sensitive: false,
@@ -1148,6 +1164,22 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(profiles, vec![customized_profile]);
+    }
+
+    #[test]
+    fn merge_default_quality_profiles_seeds_standard_defaults_when_empty() {
+        let (profiles, changed) = merge_default_quality_profiles(
+            Vec::new(),
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(changed);
+        assert!(profiles.iter().any(|profile| profile.id == "4k"));
+        assert!(profiles.iter().any(|profile| profile.id == "1080p"));
+        assert!(!profiles.iter().any(|profile| profile.id == "8k"));
     }
 }
 

@@ -17,7 +17,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 use crate::backup_import_normalization::{
     ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
-    strip_nonportable_backup_fields,
+    strip_nonportable_backup_fields, validate_restore_manifest_table_set,
 };
 
 #[derive(Clone, Debug)]
@@ -131,28 +131,7 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
     let payload = prepare_backup_restore_payload(bundle_path, passphrase)?;
     validate_backup_catalog(pool).await?;
     let export_tables = ordered_export_tables(pool).await?;
-    let expected_tables = export_tables.iter().cloned().collect::<BTreeSet<_>>();
-    let manifest_tables = payload
-        .manifest()
-        .row_counts
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if manifest_tables != expected_tables {
-        let missing = expected_tables
-            .difference(&manifest_tables)
-            .cloned()
-            .collect::<Vec<_>>();
-        let unexpected = manifest_tables
-            .difference(&expected_tables)
-            .cloned()
-            .collect::<Vec<_>>();
-        return Err(AppError::Validation(format!(
-            "backup bundle table set does not match the current restore catalog: missing [{}], unexpected [{}]",
-            missing.join(", "),
-            unexpected.join(", ")
-        )));
-    }
+    validate_restore_manifest_table_set(&payload.manifest().row_counts, &export_tables)?;
 
     let mut conn = pool.acquire().await.map_err(|error| {
         AppError::Repository(format!("failed to acquire restore connection: {error}"))
@@ -169,6 +148,15 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
 
     let tables_dir = payload.tables_dir();
     let restore_result = async {
+        sqlx::query("DELETE FROM title_image_variants")
+            .execute(&mut *conn)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to clear generated title image variants: {error}"
+                ))
+            })?;
+
         for table in export_tables.iter().rev() {
             let sql = format!("DELETE FROM {}", quote_identifier(table));
             sqlx::query(sqlx::AssertSqlSafe(&*sql))
@@ -215,7 +203,13 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
 
     crate::queries::title_search::rebuild_title_search_projection(pool).await?;
 
-    for (table, expected_rows) in &payload.manifest().row_counts {
+    for table in &export_tables {
+        let expected_rows = payload.manifest().row_counts.get(table).ok_or_else(|| {
+            AppError::Validation(format!(
+                "backup bundle table set does not match the current restore catalog: missing [{}], unexpected []",
+                table
+            ))
+        })?;
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
         let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
             .fetch_one(&mut *conn)
