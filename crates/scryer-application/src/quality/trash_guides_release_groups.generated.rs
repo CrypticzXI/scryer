@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-12";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-16";
 
 pub static GROUP_RULES: &[GroupRule] = &[
     GroupRule {
@@ -5103,26 +5103,6 @@ pub static GROUP_RULES: &[GroupRule] = &[
             tier: GroupTier::Bronze,
             facet: RuleFacet::Anime,
             source_context: SourceContext::Anime,
-        },
-    },
-    GroupRule {
-        matcher: "R&H",
-        match_kind: GroupMatchKind::Exact,
-        entry: GroupEntry {
-            name: "R&H",
-            tier: GroupTier::Banned,
-            facet: RuleFacet::Movie,
-            source_context: SourceContext::Any,
-        },
-    },
-    GroupRule {
-        matcher: "R&H",
-        match_kind: GroupMatchKind::Exact,
-        entry: GroupEntry {
-            name: "R&H",
-            tier: GroupTier::Banned,
-            facet: RuleFacet::Series,
-            source_context: SourceContext::Any,
         },
     },
     GroupRule {
@@ -17873,32 +17853,6 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         cf_name: "Anime BD Tier 04",
         spec_name: "Quetzal",
         source_path: "docs/json/sonarr/cf/anime-bd-tier-04.json",
-    },
-    TrashGuideRuleMetadata {
-        matcher: "R&H",
-        match_kind: GroupMatchKind::Exact,
-        tier: GroupTier::Banned,
-        facet: RuleFacet::Movie,
-        source_context: SourceContext::Any,
-        app: "radarr",
-        stem: "lq",
-        trash_id: "90a6f9a284dff5103f6346090e6280c8",
-        cf_name: "LQ",
-        spec_name: "R&H",
-        source_path: "docs/json/radarr/cf/lq.json",
-    },
-    TrashGuideRuleMetadata {
-        matcher: "R&H",
-        match_kind: GroupMatchKind::Exact,
-        tier: GroupTier::Banned,
-        facet: RuleFacet::Series,
-        source_context: SourceContext::Any,
-        app: "sonarr",
-        stem: "lq",
-        trash_id: "9c11cd3f07101cdba90a2d81cf0e56b4",
-        cf_name: "LQ",
-        spec_name: "R&H",
-        source_path: "docs/json/sonarr/cf/lq.json",
     },
     TrashGuideRuleMetadata {
         matcher: "RAI",

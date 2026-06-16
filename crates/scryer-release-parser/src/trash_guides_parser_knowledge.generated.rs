@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-12";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-16";
 
 pub static SERVICE_ALIAS_RULES: &[ServiceAliasRule] = &[
     ServiceAliasRule {
@@ -4165,6 +4165,21 @@ pub static BLOCKED_TITLE_RULES: &[BlockedTitleRule] = &[
         category: TitleCategoryScope::Any,
         pattern: TokenPattern {
             kind: TokenPatternKind::Sequence,
+            tokens: &["RH"],
+        },
+        app: "radarr",
+        stem: "lq-release-title",
+        trash_id: "e204b80c87be9497a8a6eaff48f72905",
+        cf_name: "LQ (Release Title)",
+        spec_name: "R&H",
+        source_path: "docs/json/radarr/cf/lq-release-title.json",
+    },
+    BlockedTitleRule {
+        code: "trash_guides_lq_release_title",
+        facet: RuleFacet::Movie,
+        category: TitleCategoryScope::Any,
+        pattern: TokenPattern {
+            kind: TokenPatternKind::Sequence,
             tokens: &["SWTYBLZ"],
         },
         app: "radarr",
@@ -4292,6 +4307,21 @@ pub static BLOCKED_TITLE_RULES: &[BlockedTitleRule] = &[
         trash_id: "e2315f990da2e2cbfc9fa5b7a6fcfe48",
         cf_name: "LQ (Release Title)",
         spec_name: "Feranki1980",
+        source_path: "docs/json/sonarr/cf/lq-release-title.json",
+    },
+    BlockedTitleRule {
+        code: "trash_guides_lq_release_title",
+        facet: RuleFacet::Series,
+        category: TitleCategoryScope::Any,
+        pattern: TokenPattern {
+            kind: TokenPatternKind::Sequence,
+            tokens: &["RH"],
+        },
+        app: "sonarr",
+        stem: "lq-release-title",
+        trash_id: "e2315f990da2e2cbfc9fa5b7a6fcfe48",
+        cf_name: "LQ (Release Title)",
+        spec_name: "R&H",
         source_path: "docs/json/sonarr/cf/lq-release-title.json",
     },
     BlockedTitleRule {
