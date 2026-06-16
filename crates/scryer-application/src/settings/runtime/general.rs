@@ -1,4 +1,5 @@
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
 fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
     let value = value.trim();
     let (hour, minute) = value

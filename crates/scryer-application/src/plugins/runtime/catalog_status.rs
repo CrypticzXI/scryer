@@ -8,25 +8,37 @@ impl AppUseCase {
         let stored_status = self.load_stored_plugin_catalog_status_payload().await?;
         let primary_redirect_url = plugin_catalog_url();
         let github_redirect_url = fallback_plugin_catalog_url().to_string();
-        let primary_available = fetch_plugin_bytes(
+        let primary_probe = fetch_verified_catalog_redirect_candidate(
             &primary_redirect_url,
             "primary plugin catalog redirect",
-            "plugin_catalog_status:primary",
         )
-        .await
-        .is_ok();
-        let github_available = if primary_available {
-            true
+        .await;
+        let (primary_available, primary_error) = match primary_probe {
+            Ok(_) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        };
+        let (github_available, github_error) = if primary_available {
+            (true, None)
         } else {
-            fetch_plugin_bytes(
+            match fetch_verified_catalog_redirect_candidate(
                 &github_redirect_url,
                 "GitHub plugin catalog redirect",
-                "plugin_catalog_status:github",
             )
             .await
-            .is_ok()
+            {
+                Ok(_) => (true, None),
+                Err(error) => (false, Some(error.to_string())),
+            }
         };
         let both_down = !primary_available && !github_available;
+        let last_error = both_down
+            .then(|| {
+                combined_plugin_catalog_probe_error(
+                    primary_error.as_deref(),
+                    github_error.as_deref(),
+                )
+            })
+            .flatten();
         let blocked_actions = if both_down {
             vec![
                 "catalog_refresh".to_string(),
@@ -54,17 +66,8 @@ impl AppUseCase {
         )
         .await?;
 
-        let last_error = self
-            .services
-            .customization
-            .plugin_installations
-            .list_plugin_catalog_sources()
-            .await?
-            .into_iter()
-            .find_map(|source| source.last_error);
-
         Ok(PluginCatalogStatus {
-            refresh_state: if last_error.is_some() || both_down {
+            refresh_state: if both_down {
                 "degraded".to_string()
             } else {
                 "ready".to_string()
@@ -78,6 +81,25 @@ impl AppUseCase {
         })
     }
 }
+
+fn combined_plugin_catalog_probe_error(
+    primary_error: Option<&str>,
+    github_error: Option<&str>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(error) = primary_error.filter(|error| !error.trim().is_empty()) {
+        parts.push(format!("primary plugin catalog redirect: {error}"));
+    }
+    if let Some(error) = github_error.filter(|error| !error.trim().is_empty()) {
+        parts.push(format!("GitHub plugin catalog redirect: {error}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
 impl AppUseCase {
     async fn load_stored_plugin_catalog_status_payload(
         &self,

@@ -4201,11 +4201,8 @@ async fn graphql_passkey_register_start_requires_authentication() {
     )
     .await;
 
-    let errors = body["errors"].as_array().expect("graphql errors");
-    let message = errors[0]["message"]
-        .as_str()
-        .expect("graphql error message");
-    assert_eq!(message, "authentication required");
+    let (_message, code) = first_graphql_error_message_and_code(&body);
+    assert_eq!(code, "AUTHENTICATION_REQUIRED");
 }
 
 #[tokio::test]
@@ -4325,11 +4322,8 @@ async fn graphql_my_passkeys_requires_authentication() {
     )
     .await;
 
-    let errors = body["errors"].as_array().expect("graphql errors");
-    let message = errors[0]["message"]
-        .as_str()
-        .expect("graphql error message");
-    assert_eq!(message, "authentication required");
+    let (_message, code) = first_graphql_error_message_and_code(&body);
+    assert_eq!(code, "AUTHENTICATION_REQUIRED");
 }
 
 #[tokio::test]
@@ -11947,6 +11941,77 @@ async fn graphql_smg_version_compatibility_notice_reads_persisted_notice() {
     );
 }
 
+#[tokio::test]
+async fn graphql_smg_scryer_update_notice_reads_persisted_notice() {
+    let ctx = TestContext::new().await;
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
+            category: "service".into(),
+            scope: "system".into(),
+            key_name: "smg.scryer_update_notice".into(),
+            data_type: "json".into(),
+            default_value_json: "null".into(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("update notice definition should seed");
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "smg.scryer_update_notice",
+            None,
+            json!({
+                "available": true,
+                "current_version": "0.16.0",
+                "latest_version": "0.16.1",
+                "latest_tag": "v0.16.1",
+                "release_url": "https://github.com/scryer-media/scryer/releases/tag/v0.16.1",
+                "published_at": "2026-06-14T12:00:00Z",
+                "checked_at": "2026-06-15T12:00:00Z",
+            })
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("update notice should persist");
+
+    let body = gql(
+        &ctx,
+        r#"{ smgScryerUpdateNotice { available currentVersion latestVersion latestTag releaseUrl publishedAt checkedAt } }"#,
+        json!({}),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["smgScryerUpdateNotice"]["available"], true);
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["currentVersion"],
+        "0.16.0"
+    );
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["latestVersion"],
+        "0.16.1"
+    );
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["latestTag"],
+        "v0.16.1"
+    );
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["releaseUrl"],
+        "https://github.com/scryer-media/scryer/releases/tag/v0.16.1"
+    );
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["publishedAt"],
+        "2026-06-14T12:00:00Z"
+    );
+    assert_eq!(
+        body["data"]["smgScryerUpdateNotice"]["checkedAt"],
+        "2026-06-15T12:00:00Z"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Activity / events
 // ---------------------------------------------------------------------------
@@ -13789,15 +13854,13 @@ async fn unauthenticated_request_returns_error() {
         !errors.is_empty(),
         "unauthenticated request should return errors"
     );
-    let messages: Vec<&str> = errors
+    let codes: Vec<&str> = errors
         .iter()
-        .filter_map(|e| e["message"].as_str())
+        .filter_map(|e| e["extensions"]["code"].as_str())
         .collect();
     assert!(
-        messages
-            .iter()
-            .any(|m| m.to_ascii_lowercase().contains("auth")),
-        "error message should mention authentication: {messages:?}"
+        codes.contains(&"AUTHENTICATION_REQUIRED"),
+        "error code should require authentication: {codes:?}"
     );
 }
 

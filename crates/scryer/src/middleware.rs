@@ -1,5 +1,5 @@
-use async_graphql::Data;
 use async_graphql::http::ALL_WEBSOCKET_PROTOCOLS;
+use async_graphql::{Data, ErrorExtensionValues, Response as GraphQLResponse, ServerError};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use axum::Json;
 use axum::body::Body;
@@ -11,6 +11,7 @@ use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims, JwtSess
 use scryer_domain::AppPermission;
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
@@ -20,6 +21,11 @@ use crate::rate_limit::{
 };
 
 const X_FORWARDED_PROTO: &str = "x-forwarded-proto";
+const GRAPHQL_POST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
+const GRAPHQL_POST_EXECUTION_TIMEOUT_CODE: &str = "GRAPHQL_EXECUTION_TIMEOUT";
+const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
+const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
+const MFA_STEP_UP_REQUIRED_STATUS_CODE: u16 = 460;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CorsConfig {
@@ -459,8 +465,7 @@ pub(crate) async fn graphql_handler(
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
     let actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
-    let mut batch = body.into_inner();
-    let response_status = graphql_response_status(&mut batch);
+    let batch = body.into_inner();
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(
         client_ip,
@@ -476,7 +481,7 @@ pub(crate) async fn graphql_handler(
         let batch_response = rate_limited_graphql_response(&decision);
         let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
         return Response::builder()
-            .status(response_status)
+            .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap();
@@ -496,34 +501,83 @@ pub(crate) async fn graphql_handler(
         batch
     };
 
-    // Wrap execution in a single-item stream so the future is dropped (cancelled)
-    // when hyper detects the client has disconnected.
     let schema = state.schema.clone();
     let rate_limiter = state.rate_limiter.clone();
-    let body_stream = futures_util::stream::once(async move {
-        let mut batch_response = schema.execute_batch(batch).await;
-        if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
-            && !precheck_login
-            && !batch_response.is_ok()
-            && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
+    let mut batch_response =
+        match tokio::time::timeout(GRAPHQL_POST_EXECUTION_TIMEOUT, schema.execute_batch(batch))
+            .await
         {
-            batch_response = rate_limited_graphql_response(&decision);
-        }
-        Ok::<_, std::io::Error>(
-            serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec()),
-        )
-    });
+            Ok(response) => response,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_seconds = GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs(),
+                    "graphql POST execution timed out"
+                );
+                graphql_execution_timeout_response()
+            }
+        };
+    if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
+        && !precheck_login
+        && !batch_response.is_ok()
+        && let Err(decision) = rate_limiter.record_failed_login(&rate_limit_key)
+    {
+        batch_response = rate_limited_graphql_response(&decision);
+    }
+    let response_status = graphql_response_status(&batch_response);
+    let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
 
     Response::builder()
         .status(response_status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from_stream(body_stream))
+        .body(Body::from(body))
         .unwrap()
 }
 
-fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
-    let _ = batch;
+fn graphql_response_status(response: &async_graphql::BatchResponse) -> StatusCode {
+    if graphql_response_has_error_code(response, AUTHENTICATION_REQUIRED_CODE) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    if graphql_response_has_error_code(response, MFA_STEP_UP_REQUIRED_CODE) {
+        return StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE)
+            .expect("MFA step-up status code is a valid HTTP status code");
+    }
+
     StatusCode::OK
+}
+
+fn graphql_response_has_error_code(response: &async_graphql::BatchResponse, code: &str) -> bool {
+    match response {
+        async_graphql::BatchResponse::Single(response) => response_has_error_code(response, code),
+        async_graphql::BatchResponse::Batch(responses) => responses
+            .iter()
+            .any(|response| response_has_error_code(response, code)),
+    }
+}
+
+fn response_has_error_code(response: &GraphQLResponse, code: &str) -> bool {
+    response.errors.iter().any(|error| {
+        let Some(extensions) = &error.extensions else {
+            return false;
+        };
+        matches!(extensions.get("code"), Some(async_graphql::Value::String(value)) if value == code)
+    })
+}
+
+fn graphql_execution_timeout_response() -> async_graphql::BatchResponse {
+    let mut extensions = ErrorExtensionValues::default();
+    extensions.set("code", GRAPHQL_POST_EXECUTION_TIMEOUT_CODE);
+    extensions.set("timeoutSeconds", GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs());
+
+    let mut error = ServerError::new(
+        format!(
+            "GraphQL request timed out after {} seconds",
+            GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs()
+        ),
+        None,
+    );
+    error.extensions = Some(extensions);
+    async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]))
 }
 
 #[derive(Clone)]
@@ -1077,48 +1131,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scan_library_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "mutation StartScan { scanLibrary(facet: movie) { sessionId } }",
-        ));
-
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+    fn graphql_error_response_with_code(code: &str) -> async_graphql::BatchResponse {
+        let mut extensions = ErrorExtensionValues::default();
+        extensions.set("code", code);
+        let mut error = ServerError::new("graphQL error", None);
+        error.extensions = Some(extensions);
+        async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]))
     }
 
     #[test]
-    fn rehydrate_all_metadata_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "mutation RehydrateAllMetadata { rehydrateAllMetadata(language: \"jpn\") }",
-        ));
+    fn graphql_authentication_required_response_uses_unauthorized_status() {
+        let response = graphql_error_response_with_code(AUTHENTICATION_REQUIRED_CODE);
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(graphql_response_status(&response), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
-    fn queue_manual_import_mutation_returns_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            r#"mutation QueueManualImport {
-                queueManualImport(input: {
-                    titleId: "title-1"
-                    clientType: "nzbget"
-                    downloadClientItemId: "download-1"
-                }) {
-                    importId
-                }
-            }"#,
-        ));
+    fn graphql_mfa_step_up_response_uses_step_up_status() {
+        let response = graphql_error_response_with_code(MFA_STEP_UP_REQUIRED_CODE);
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(
+            graphql_response_status(&response),
+            StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE).unwrap()
+        );
     }
 
     #[test]
-    fn non_scan_requests_keep_ok_status() {
-        let mut batch = async_graphql::BatchRequest::Single(async_graphql::Request::new(
-            "query ActiveScans { activeLibraryScans { sessionId } }",
-        ));
+    fn graphql_non_mfa_error_response_keeps_ok_status() {
+        let response = graphql_error_response_with_code("VALIDATION_FAILED");
 
-        assert_eq!(graphql_response_status(&mut batch), StatusCode::OK);
+        assert_eq!(graphql_response_status(&response), StatusCode::OK);
+    }
+
+    #[test]
+    fn graphql_batched_mfa_step_up_response_uses_step_up_status() {
+        let mut extensions = ErrorExtensionValues::default();
+        extensions.set("code", MFA_STEP_UP_REQUIRED_CODE);
+        let mut error = ServerError::new("MFA step-up required", None);
+        error.extensions = Some(extensions);
+        let response = async_graphql::BatchResponse::Batch(vec![
+            GraphQLResponse::new(async_graphql::Value::Null),
+            GraphQLResponse::from_errors(vec![error]),
+        ]);
+
+        assert_eq!(
+            graphql_response_status(&response),
+            StatusCode::from_u16(MFA_STEP_UP_REQUIRED_STATUS_CODE).unwrap()
+        );
+    }
+
+    #[test]
+    fn graphql_batched_authentication_required_takes_precedence_over_step_up() {
+        let mut auth_extensions = ErrorExtensionValues::default();
+        auth_extensions.set("code", AUTHENTICATION_REQUIRED_CODE);
+        let mut auth_error = ServerError::new("authentication required", None);
+        auth_error.extensions = Some(auth_extensions);
+
+        let mut mfa_extensions = ErrorExtensionValues::default();
+        mfa_extensions.set("code", MFA_STEP_UP_REQUIRED_CODE);
+        let mut mfa_error = ServerError::new("MFA step-up required", None);
+        mfa_error.extensions = Some(mfa_extensions);
+
+        let response = async_graphql::BatchResponse::Batch(vec![
+            GraphQLResponse::from_errors(vec![mfa_error]),
+            GraphQLResponse::from_errors(vec![auth_error]),
+        ]);
+
+        assert_eq!(graphql_response_status(&response), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn graphql_timeout_response_reports_sixty_second_execution_timeout() {
+        let response = graphql_execution_timeout_response();
+        let body = serde_json::to_value(&response).expect("timeout response serializes");
+
+        assert_eq!(
+            body["errors"][0]["message"],
+            "GraphQL request timed out after 60 seconds"
+        );
+        assert_eq!(
+            body["errors"][0]["extensions"]["code"],
+            GRAPHQL_POST_EXECUTION_TIMEOUT_CODE
+        );
+        assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 60);
     }
 
     #[test]

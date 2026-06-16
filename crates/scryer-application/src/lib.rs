@@ -398,7 +398,6 @@ pub use settings::keys::{
     TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
-pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
@@ -438,6 +437,7 @@ pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,
     ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
+pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {

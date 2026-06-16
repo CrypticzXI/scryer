@@ -2111,6 +2111,18 @@ export const smgVersionCompatibilityNoticeQuery = `query SmgVersionCompatibility
   }
 }`;
 
+export const smgScryerUpdateNoticeQuery = `query SmgScryerUpdateNotice {
+  smgScryerUpdateNotice {
+    available
+    currentVersion
+    latestVersion
+    latestTag
+    releaseUrl
+    publishedAt
+    checkedAt
+  }
+}`;
+
 export const scryerVersionQuery = `query ScryerVersion {
   scryerVersion
 }`;

@@ -776,6 +776,9 @@ const en: LocaleDictionary = {
     "This Scryer version is no longer supported. Upgrade now to continue using Scryer.",
   "smgUpgrade.minimumVersion": "Minimum supported version: {{version}}",
   "smgUpgrade.deadline": "Support cutoff: {{date}}",
+  "smgUpdate.title": "Scryer update available",
+  "smgUpdate.body": "You are running {{current}}. Latest is {{latest}}.",
+  "smgUpdate.releaseNotes": "Release notes",
 
   "title.addAndQueue": "Add Title and Queue",
   "title.addToCatalog": "Add to Catalog",

@@ -11,7 +11,8 @@ use scryer_application::{
     AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkArtworkUrlResult,
     BulkMetadataResult, EpisodeArtworkUrls, EpisodeMetadata, MetadataGateway, MetadataSearchItem,
     MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
-    SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, SettingsRepository, TitleArtworkUrls,
+    SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice,
+    TitleArtworkUrls,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -194,6 +195,23 @@ const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Deserialize)]
 struct VersionCompatibilitySuccessResponse {
     compatibility: Option<VersionCompatibilityDecisionPayload>,
+    update: Option<VersionCompatibilityUpdatePayload>,
+}
+
+#[derive(Deserialize)]
+struct VersionCompatibilityErrorResponse {
+    compatibility: Option<VersionCompatibilityDecisionPayload>,
+    update: Option<VersionCompatibilityUpdatePayload>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    minimum_version: Option<String>,
+    #[serde(default)]
+    your_version: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    upgrade_deadline: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -227,18 +245,108 @@ impl VersionCompatibilityDecisionPayload {
     }
 }
 
-fn parse_version_compatibility_success(
-    body: &[u8],
-) -> AppResult<Option<smg_enrollment::VersionIncompatible>> {
+#[derive(Deserialize)]
+struct VersionCompatibilityUpdatePayload {
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    current_version: String,
+    #[serde(default)]
+    latest_version: String,
+    #[serde(default)]
+    latest_tag: String,
+    #[serde(default)]
+    release_url: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    checked_at: String,
+}
+
+impl VersionCompatibilityUpdatePayload {
+    fn into_notice(self) -> Option<SmgScryerUpdateNotice> {
+        if !self.available || self.latest_version.trim().is_empty() {
+            return None;
+        }
+
+        Some(SmgScryerUpdateNotice {
+            available: true,
+            current_version: self.current_version,
+            latest_version: self.latest_version,
+            latest_tag: self.latest_tag,
+            release_url: self.release_url.filter(|value| !value.trim().is_empty()),
+            published_at: self.published_at.filter(|value| !value.trim().is_empty()),
+            checked_at: self.checked_at,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct VersionCompatibilityCheckResult {
+    compatibility_notice: Option<smg_enrollment::VersionIncompatible>,
+    update_notice: Option<SmgScryerUpdateNotice>,
+}
+
+fn parse_version_compatibility_success(body: &[u8]) -> AppResult<VersionCompatibilityCheckResult> {
     let parsed: VersionCompatibilitySuccessResponse =
         serde_json::from_slice(body).map_err(|error| {
             AppError::Repository(format!(
                 "failed to decode SMG version compatibility response: {error}"
             ))
         })?;
-    Ok(parsed
-        .compatibility
-        .and_then(VersionCompatibilityDecisionPayload::into_notice))
+    Ok(VersionCompatibilityCheckResult {
+        compatibility_notice: parsed
+            .compatibility
+            .and_then(VersionCompatibilityDecisionPayload::into_notice),
+        update_notice: parsed
+            .update
+            .and_then(VersionCompatibilityUpdatePayload::into_notice),
+    })
+}
+
+fn parse_version_compatibility_incompatible(
+    body: &[u8],
+) -> AppResult<VersionCompatibilityCheckResult> {
+    let parsed: VersionCompatibilityErrorResponse =
+        serde_json::from_slice(body).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to decode SMG version compatibility error response: {error}"
+            ))
+        })?;
+    let compatibility =
+        parsed
+            .compatibility
+            .unwrap_or_else(|| VersionCompatibilityDecisionPayload {
+                status: parsed.status.unwrap_or_else(|| "blocked".to_string()),
+                minimum_version: parsed
+                    .minimum_version
+                    .unwrap_or_else(|| "unknown".to_string()),
+                your_version: parsed.your_version.unwrap_or_else(|| "unknown".to_string()),
+                message: parsed.message.unwrap_or_default(),
+                upgrade_deadline: parsed.upgrade_deadline,
+            });
+    let compatibility_notice = compatibility.into_notice().ok_or_else(|| {
+        AppError::Repository("SMG version compatibility error did not include a notice".to_string())
+    })?;
+
+    Ok(VersionCompatibilityCheckResult {
+        compatibility_notice: Some(compatibility_notice),
+        update_notice: parsed
+            .update
+            .and_then(VersionCompatibilityUpdatePayload::into_notice),
+    })
+}
+
+fn is_version_incompatible_response(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .is_some_and(|error| error == "version_incompatible")
 }
 
 fn compatibility_poll_phase(instance_id: &str) -> Duration {
@@ -568,9 +676,10 @@ impl MetadataGatewayClient {
         true
     }
 
-    async fn store_version_compatibility_notice(
+    async fn store_version_compatibility_state(
         &self,
         notice: Option<smg_enrollment::VersionIncompatible>,
+        update_notice: Option<SmgScryerUpdateNotice>,
     ) -> AppResult<()> {
         let db = self.enrollment_store.as_ref().ok_or_else(|| {
             AppError::Repository(
@@ -579,6 +688,9 @@ impl MetadataGatewayClient {
             )
         })?;
         smg_enrollment::persist_version_compatibility_notice(&**db, notice.as_ref())
+            .await
+            .map_err(AppError::Repository)?;
+        smg_enrollment::persist_scryer_update_notice(&**db, update_notice.as_ref())
             .await
             .map_err(AppError::Repository)?;
         *self.version_incompatible.lock().await = notice;
@@ -734,10 +846,34 @@ impl MetadataGatewayClient {
                         "SMG version compatibility response read failed: {error}"
                     ))
                 })?;
-                let notice = parse_version_compatibility_success(&body)?;
-                self.store_version_compatibility_notice(notice.clone())
-                    .await?;
-                return Ok(notice);
+                let check = parse_version_compatibility_success(&body)?;
+                self.store_version_compatibility_state(
+                    check.compatibility_notice.clone(),
+                    check.update_notice,
+                )
+                .await?;
+                return Ok(check.compatibility_notice);
+            }
+
+            if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+                let body = response.bytes().await.map_err(|error| {
+                    AppError::Repository(format!(
+                        "SMG version compatibility response read failed: {error}"
+                    ))
+                })?;
+                if !is_version_incompatible_response(&body) {
+                    let raw = String::from_utf8_lossy(&body);
+                    return Err(AppError::Repository(format!(
+                        "SMG version compatibility check failed (HTTP {status}): {raw}"
+                    )));
+                }
+                let check = parse_version_compatibility_incompatible(&body)?;
+                self.store_version_compatibility_state(
+                    check.compatibility_notice.clone(),
+                    check.update_notice,
+                )
+                .await?;
+                return Ok(check.compatibility_notice);
             }
 
             let error = smg_enrollment::registration_response_error(
@@ -747,7 +883,7 @@ impl MetadataGatewayClient {
             .await;
             match error {
                 smg_enrollment::EnrollmentError::VersionIncompatible(incompatibility) => {
-                    self.store_version_compatibility_notice(Some(incompatibility.clone()))
+                    self.store_version_compatibility_state(Some(incompatibility.clone()), None)
                         .await?;
                     return Ok(Some(incompatibility));
                 }
@@ -1682,9 +1818,10 @@ mod tests {
     use super::{
         ArtworkItem, MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
         build_bulk_mixed_query, build_search_tvdb_batch_query, compatibility_poll_phase,
-        enrollment_retry_delay, next_version_compatibility_poll_delay_at, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_version_compatibility_success, pick_artwork_url,
-        validate_search_tvdb_batch_echo,
+        enrollment_retry_delay, is_version_incompatible_response,
+        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_incompatible,
+        parse_version_compatibility_success, pick_artwork_url, validate_search_tvdb_batch_echo,
     };
     use std::time::{Duration, SystemTime};
 
@@ -1954,9 +2091,10 @@ mod tests {
             }
         }"#;
 
-        let notice = parse_version_compatibility_success(body).expect("parse supported response");
+        let check = parse_version_compatibility_success(body).expect("parse supported response");
 
-        assert!(notice.is_none());
+        assert!(check.compatibility_notice.is_none());
+        assert!(check.update_notice.is_none());
     }
 
     #[test]
@@ -1971,14 +2109,117 @@ mod tests {
             }
         }"#;
 
-        let notice = parse_version_compatibility_success(body).expect("parse deprecated response");
-        let notice = notice.expect("deprecated notice");
+        let check = parse_version_compatibility_success(body).expect("parse deprecated response");
+        let notice = check.compatibility_notice.expect("deprecated notice");
 
         assert_eq!(notice.status, "deprecated");
         assert_eq!(notice.minimum_version, "0.12.1");
         assert_eq!(notice.your_version, "0.12.0");
         assert_eq!(notice.message, "Upgrade recommended soon.");
         assert_eq!(notice.upgrade_deadline.as_deref(), Some("2026-05-31"));
+        assert!(check.update_notice.is_none());
+    }
+
+    #[test]
+    fn parse_version_compatibility_success_preserves_available_update() {
+        let body = br#"{
+            "compatibility": {
+                "status": "supported",
+                "minimum_version": "",
+                "your_version": "0.16.0",
+                "message": ""
+            },
+            "update": {
+                "available": true,
+                "current_version": "0.16.0",
+                "latest_version": "0.16.1",
+                "latest_tag": "v0.16.1",
+                "release_url": "https://github.com/scryer-media/scryer/releases/tag/v0.16.1",
+                "published_at": "2026-06-14T12:00:00Z",
+                "checked_at": "2026-06-15T12:00:00Z"
+            }
+        }"#;
+
+        let check = parse_version_compatibility_success(body).expect("parse update response");
+        let update = check.update_notice.expect("update notice");
+
+        assert!(check.compatibility_notice.is_none());
+        assert!(update.available);
+        assert_eq!(update.current_version, "0.16.0");
+        assert_eq!(update.latest_version, "0.16.1");
+        assert_eq!(update.latest_tag, "v0.16.1");
+        assert_eq!(
+            update.release_url.as_deref(),
+            Some("https://github.com/scryer-media/scryer/releases/tag/v0.16.1")
+        );
+        assert_eq!(update.published_at.as_deref(), Some("2026-06-14T12:00:00Z"));
+        assert_eq!(update.checked_at, "2026-06-15T12:00:00Z");
+    }
+
+    #[test]
+    fn parse_version_compatibility_success_clears_unavailable_update() {
+        let body = br#"{
+            "compatibility": {
+                "status": "supported",
+                "your_version": "0.16.1"
+            },
+            "update": {
+                "available": false,
+                "current_version": "0.16.1",
+                "latest_version": "0.16.1",
+                "latest_tag": "v0.16.1",
+                "checked_at": "2026-06-15T12:00:00Z"
+            }
+        }"#;
+
+        let check = parse_version_compatibility_success(body).expect("parse update response");
+
+        assert!(check.compatibility_notice.is_none());
+        assert!(check.update_notice.is_none());
+    }
+
+    #[test]
+    fn parse_version_compatibility_incompatible_preserves_notice_and_update() {
+        let body = br#"{
+            "error": "version_incompatible",
+            "status": "blocked",
+            "minimum_version": "0.16.1",
+            "your_version": "0.15.0",
+            "message": "Upgrade required.",
+            "upgrade_deadline": "2026-06-30",
+            "update": {
+                "available": true,
+                "current_version": "0.15.0",
+                "latest_version": "0.16.1",
+                "latest_tag": "v0.16.1",
+                "checked_at": "2026-06-15T12:00:00Z"
+            }
+        }"#;
+
+        let check =
+            parse_version_compatibility_incompatible(body).expect("parse incompatible response");
+        let notice = check.compatibility_notice.expect("compatibility notice");
+        let update = check.update_notice.expect("update notice");
+
+        assert_eq!(notice.status, "blocked");
+        assert_eq!(notice.minimum_version, "0.16.1");
+        assert_eq!(notice.your_version, "0.15.0");
+        assert_eq!(notice.message, "Upgrade required.");
+        assert_eq!(notice.upgrade_deadline.as_deref(), Some("2026-06-30"));
+        assert_eq!(update.latest_version, "0.16.1");
+    }
+
+    #[test]
+    fn version_compatibility_error_kind_rejects_generic_validation_errors() {
+        let body = br#"{
+            "error": "invalid_request",
+            "message": "version is required"
+        }"#;
+
+        assert!(!is_version_incompatible_response(body));
+        assert!(is_version_incompatible_response(
+            br#"{ "error": "version_incompatible" }"#
+        ));
     }
 }
 

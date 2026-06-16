@@ -9,6 +9,8 @@ use scryer_application::{
 use scryer_domain::{AppPermission, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
+const AUTHENTICATION_REQUIRED_MESSAGE: &str = "authentication required";
+const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 pub const LOGIN_FAILED_MESSAGE: &str = "Sign-in failed. Check your sign-in details and try again.";
 
 /// Opaque handle to a log snapshot provider and subscription source.
@@ -343,7 +345,7 @@ pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
             "MFA enrollment must be completed before accessing Scryer".into(),
         )));
     }
-    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+    current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
 }
 
 pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
@@ -352,7 +354,13 @@ pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
             "MFA enrollment session required".into(),
         )));
     }
-    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+    current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
+}
+
+fn authentication_required_error() -> Error {
+    Error::new(AUTHENTICATION_REQUIRED_MESSAGE).extend_with(|_, extensions| {
+        extensions.set("code", AUTHENTICATION_REQUIRED_CODE);
+    })
 }
 
 pub async fn require_app_permission(
@@ -465,5 +473,16 @@ mod tests {
         );
         assert_eq!(error.message, "MFA code is required for password login");
         assert_eq!(graphql_error_code(&error), Some("MFA_STEP_UP_REQUIRED"));
+    }
+
+    #[test]
+    fn authentication_required_errors_are_coded() {
+        let error = authentication_required_error();
+
+        assert_eq!(error.message, AUTHENTICATION_REQUIRED_MESSAGE);
+        assert_eq!(
+            graphql_error_code(&error),
+            Some(AUTHENTICATION_REQUIRED_CODE)
+        );
     }
 }

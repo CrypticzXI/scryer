@@ -16,6 +16,7 @@ import {
   Loader2,
   MonitorCog,
   Settings,
+  CircleFadingArrowUp,
   WifiOff,
   X,
 } from "lucide-react";
@@ -65,6 +66,7 @@ import type {
   SettingsSection,
   ContentSettingsSection,
   OverviewTitleTarget,
+  SmgScryerUpdateNotice,
   SmgVersionCompatibilityNotice,
   SystemSection,
   WantedSection,
@@ -100,6 +102,7 @@ import {
   authRuntimeStateQuery,
   navigationBadgeCountsQuery,
   scryerVersionQuery,
+  smgScryerUpdateNoticeQuery,
   smgVersionCompatibilityNoticeQuery,
 } from "@/lib/graphql/queries";
 import { mfaVerifyStepUpMutation } from "@/lib/graphql/mutations";
@@ -112,6 +115,9 @@ import {
   type NavigationBadgesRefreshDetail,
 } from "@/lib/events/navigation-badges";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
+const SMG_SCRYER_UPDATE_NOTICE_KEY = "smg.scryer_update_notice";
+const SMG_SCRYER_UPDATE_DISMISSED_KEY = "scryer.smgUpdate.dismissed";
+const SMG_NOTICE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const CONFIG_STEP_UP_EXPIRY_LEEWAY_MS = 1_000;
 
 function scheduleAfterFirstPaint(callback: () => void) {
@@ -403,6 +409,71 @@ function SmgUpgradeBanner({
             </div>
           ) : null}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function buildSmgScryerUpdateDismissalValue(
+  notice: SmgScryerUpdateNotice | null,
+): string | null {
+  if (!notice?.available) {
+    return null;
+  }
+  const latest = notice.latestTag.trim() || notice.latestVersion.trim();
+  if (!latest) {
+    return null;
+  }
+  return `${latest}:${notice.latestVersion.trim()}`;
+}
+
+function SmgScryerUpdateBanner({
+  notice,
+  t,
+  onDismiss,
+}: {
+  notice: SmgScryerUpdateNotice;
+  t: TranslateFn;
+  onDismiss: () => void;
+}) {
+  const currentVersion = notice.currentVersion.trim();
+  const latestVersion = notice.latestVersion.trim();
+  const releaseUrl = notice.releaseUrl?.trim() || null;
+
+  return (
+    <div className="border-b border-sky-200/80 bg-sky-50/90 text-sky-950 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-100">
+      <div className="mx-auto flex w-full max-w-[1480px] items-center gap-3 px-4 py-2 text-sm">
+        <CircleFadingArrowUp
+          className="h-4 w-4 flex-none text-sky-600 dark:text-sky-300"
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1 truncate">
+          <span className="font-medium">{t("smgUpdate.title")}</span>
+          <span className="ml-2 text-sky-800/80 dark:text-sky-100/75">
+            {t("smgUpdate.body", {
+              current: currentVersion || t("label.unknown"),
+              latest: latestVersion || t("label.unknown"),
+            })}
+          </span>
+        </div>
+        {releaseUrl ? (
+          <a
+            href={releaseUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-none rounded-md border border-sky-300/80 px-2.5 py-1 text-xs font-medium text-sky-800 transition hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700 dark:text-sky-100 dark:hover:bg-sky-900"
+          >
+            {t("smgUpdate.releaseNotes")}
+          </a>
+        ) : null}
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="flex-none rounded-md p-1 text-sky-700 transition hover:bg-sky-100 hover:text-sky-950 dark:text-sky-200 dark:hover:bg-sky-900 dark:hover:text-white"
+          aria-label={t("label.dismiss")}
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
     </div>
   );
@@ -914,6 +985,18 @@ function AuthenticatedHomePage({
   const [scryerVersion, setScryerVersion] = useState<string | null>(null);
   const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
     useState<SmgVersionCompatibilityNotice | null>(null);
+  const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
+    useState<SmgScryerUpdateNotice | null>(null);
+  const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
+    () => {
+      if (typeof window === "undefined") {
+        return "";
+      }
+      return (
+        window.localStorage.getItem(SMG_SCRYER_UPDATE_DISMISSED_KEY) ?? ""
+      );
+    },
+  );
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
@@ -1085,20 +1168,41 @@ function AuthenticatedHomePage({
     }
   }, []);
 
+  const refreshSmgScryerUpdateNotice = useCallback(async () => {
+    try {
+      const { data, error } = await backendClient
+        .query<{
+          smgScryerUpdateNotice?: SmgScryerUpdateNotice | null;
+        }>(smgScryerUpdateNoticeQuery, {})
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      setSmgScryerUpdateNotice(data?.smgScryerUpdateNotice ?? null);
+    } catch (error) {
+      console.warn("Failed to refresh SMG Scryer update notice", error);
+    }
+  }, []);
+
   useEffect(() => {
     return scheduleAfterFirstPaint(() => {
       void refreshSmgVersionCompatibilityNotice();
+      void refreshSmgScryerUpdateNotice();
     });
-  }, [refreshSmgVersionCompatibilityNotice]);
+  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
 
   useSettingsSubscription(
     useCallback(
       (changedKeys) => {
-        if (changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY)) {
+        if (
+          changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY) ||
+          changedKeys.includes(SMG_SCRYER_UPDATE_NOTICE_KEY)
+        ) {
           void refreshSmgVersionCompatibilityNotice();
+          void refreshSmgScryerUpdateNotice();
         }
       },
-      [refreshSmgVersionCompatibilityNotice],
+      [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
     ),
   );
 
@@ -1109,20 +1213,27 @@ function AuthenticatedHomePage({
 
     const handleFocus = () => {
       void refreshSmgVersionCompatibilityNotice();
+      void refreshSmgScryerUpdateNotice();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void refreshSmgVersionCompatibilityNotice();
+        void refreshSmgScryerUpdateNotice();
       }
     };
 
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    const intervalId = window.setInterval(() => {
+      void refreshSmgVersionCompatibilityNotice();
+      void refreshSmgScryerUpdateNotice();
+    }, SMG_NOTICE_REFRESH_INTERVAL_MS);
     return () => {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.clearInterval(intervalId);
     };
-  }, [refreshSmgVersionCompatibilityNotice]);
+  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
 
   const refreshNavigationBadges = useCallback(async () => {
     try {
@@ -1659,6 +1770,28 @@ function AuthenticatedHomePage({
     (configStepUpPolicy.loading ||
       settingsStepUpPolicyLoadFailed ||
       settingsStepUpOpen);
+  const smgScryerUpdateDismissalValue = useMemo(
+    () => buildSmgScryerUpdateDismissalValue(smgScryerUpdateNotice),
+    [smgScryerUpdateNotice],
+  );
+  const showSmgScryerUpdateReminder =
+    !smgVersionCompatibilityNotice &&
+    Boolean(smgScryerUpdateNotice?.available) &&
+    Boolean(smgScryerUpdateDismissalValue) &&
+    dismissedSmgScryerUpdate !== smgScryerUpdateDismissalValue;
+
+  const dismissSmgScryerUpdateReminder = useCallback(() => {
+    if (!smgScryerUpdateDismissalValue) {
+      return;
+    }
+    setDismissedSmgScryerUpdate(smgScryerUpdateDismissalValue);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        SMG_SCRYER_UPDATE_DISMISSED_KEY,
+        smgScryerUpdateDismissalValue,
+      );
+    }
+  }, [smgScryerUpdateDismissalValue]);
 
   const navigateToSettingsProfile = useCallback(() => {
     navigateTo("settings", "profile", undefined, undefined, undefined);
@@ -1941,6 +2074,14 @@ function AuthenticatedHomePage({
                         <SmgUpgradeBanner
                           notice={smgVersionCompatibilityNotice}
                           t={t}
+                        />
+                      ) : null}
+
+                      {showSmgScryerUpdateReminder && smgScryerUpdateNotice ? (
+                        <SmgScryerUpdateBanner
+                          notice={smgScryerUpdateNotice}
+                          t={t}
+                          onDismiss={dismissSmgScryerUpdateReminder}
                         />
                       ) : null}
 

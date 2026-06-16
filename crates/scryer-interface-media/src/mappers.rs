@@ -10,8 +10,8 @@ use scryer_application::{
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleReleaseBlocklistEntry,
+    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
+    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1851,6 +1851,20 @@ pub fn from_smg_version_compatibility_notice(
         your_version: notice.your_version,
         message: notice.message,
         upgrade_deadline: notice.upgrade_deadline,
+    }
+}
+
+pub fn from_smg_scryer_update_notice(
+    notice: SmgScryerUpdateNotice,
+) -> SmgScryerUpdateNoticePayload {
+    SmgScryerUpdateNoticePayload {
+        available: notice.available,
+        current_version: notice.current_version,
+        latest_version: notice.latest_version,
+        latest_tag: notice.latest_tag,
+        release_url: notice.release_url,
+        published_at: notice.published_at,
+        checked_at: notice.checked_at,
     }
 }
 

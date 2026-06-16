@@ -21,9 +21,10 @@ use crate::mappers::{
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
     from_pending_import_counts, from_pending_release, from_provider_type,
-    from_smg_version_compatibility_notice, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
+    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
+    from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_release_blocklist_entry,
+    from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -1133,6 +1134,16 @@ impl SystemQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(notice.map(from_smg_version_compatibility_notice))
+    }
+
+    async fn smg_scryer_update_notice(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<SmgScryerUpdateNoticePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let _actor = actor_from_ctx(ctx)?;
+        let notice = app.smg_scryer_update_notice().await.map_err(to_gql_error)?;
+        Ok(notice.map(from_smg_scryer_update_notice))
     }
 
     async fn recycled_items(

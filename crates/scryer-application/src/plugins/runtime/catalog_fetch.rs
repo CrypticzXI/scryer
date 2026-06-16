@@ -429,15 +429,23 @@ fn provider_catalog_families_for_plugin_type(plugin_type: &str) -> Vec<ProviderC
         _ => ProviderCatalogFamily::all().into_iter().collect(),
     }
 }
-async fn fetch_plugin_bytes_from_locations(
+async fn fetch_plugin_bytes_from_locations_with_redirect_policy(
     locations: &[String],
     label: &str,
     scope_prefix: &str,
+    redirect_policy: PluginRedirectPolicy,
 ) -> AppResult<(Vec<u8>, String)> {
     let mut last_error = None;
     for (index, url) in locations.iter().enumerate() {
-        match fetch_plugin_bytes(url, label, format!("{scope_prefix}:{index}")).await {
-            Ok(bytes) => return Ok((bytes, url.clone())),
+        match fetch_plugin_bytes_with_redirect_policy(
+            url,
+            label,
+            format!("{scope_prefix}:{index}"),
+            redirect_policy,
+        )
+        .await
+        {
+            Ok(fetched) => return Ok((fetched.bytes, fetched.actual_url)),
             Err(error) => {
                 debug!(%url, error = %error, "plugin fetch location failed");
                 last_error = Some(error);
@@ -463,13 +471,34 @@ async fn fetch_signed_blob_from_locations(
     signature_urls: &[String],
     label: &str,
 ) -> AppResult<FetchedSignedBlob> {
+    fetch_signed_blob_from_locations_with_redirect_policy(
+        data_urls,
+        signature_urls,
+        label,
+        PluginRedirectPolicy::Reject,
+    )
+    .await
+}
+
+async fn fetch_signed_blob_from_locations_with_redirect_policy(
+    data_urls: &[String],
+    signature_urls: &[String],
+    label: &str,
+    redirect_policy: PluginRedirectPolicy,
+) -> AppResult<FetchedSignedBlob> {
     let scope = format!("verified_blob:{}", blake3_digest(label.as_bytes()));
-    let (raw, actual_url) =
-        fetch_plugin_bytes_from_locations(data_urls, label, &format!("{scope}:blob")).await?;
-    let (bundle, bundle_url) = fetch_plugin_bytes_from_locations(
+    let (raw, actual_url) = fetch_plugin_bytes_from_locations_with_redirect_policy(
+        data_urls,
+        label,
+        &format!("{scope}:blob"),
+        redirect_policy,
+    )
+    .await?;
+    let (bundle, bundle_url) = fetch_plugin_bytes_from_locations_with_redirect_policy(
         signature_urls,
         &format!("{label} signature"),
         &format!("{scope}:signature"),
+        redirect_policy,
     )
     .await?;
     let signature_bundle = decode_signature_bundle(bundle, &bundle_url).await?;
@@ -478,6 +507,36 @@ async fn fetch_signed_blob_from_locations(
         actual_url,
         signature_bundle,
     })
+}
+
+fn central_catalog_required_signer() -> RequiredSigner {
+    RequiredSigner {
+        github_repository: CENTRAL_CATALOG_REPO.to_string(),
+        github_workflow: Some(CENTRAL_CATALOG_WORKFLOW.to_string()),
+    }
+}
+
+async fn fetch_verified_catalog_redirect_candidate(
+    url: &str,
+    label: &str,
+) -> AppResult<(CatalogV3Redirect, String)> {
+    let data_urls = vec![url.to_string()];
+    let signature_urls = vec![redirect_bundle_url_for(url)];
+    let fetched = fetch_signed_blob_from_locations_with_redirect_policy(
+        &data_urls,
+        &signature_urls,
+        label,
+        PluginRedirectPolicy::FollowValidated,
+    )
+    .await?;
+    verify_signed_blob(
+        fetched.raw.clone(),
+        fetched.signature_bundle,
+        central_catalog_required_signer(),
+    )
+    .await?;
+    let redirect = parse_and_validate_catalog_v3_redirect(&fetched.raw)?;
+    Ok((redirect, fetched.actual_url))
 }
 fn validate_community_catalog_v3_delegate(
     source: &CatalogV3CommunitySource,
@@ -845,30 +904,13 @@ impl AppUseCase {
 }
 impl AppUseCase {
     async fn fetch_verified_catalog_redirect(&self) -> AppResult<(CatalogV3Redirect, String)> {
-        let signer = RequiredSigner {
-            github_repository: CENTRAL_CATALOG_REPO.to_string(),
-            github_workflow: Some(CENTRAL_CATALOG_WORKFLOW.to_string()),
-        };
         let primary_url = plugin_catalog_url();
         let fallback_url = fallback_plugin_catalog_url().to_string();
         let candidate_urls = vec![primary_url, fallback_url];
         let mut last_error = None;
         for url in candidate_urls {
-            let data_urls = vec![url.clone()];
-            let signature_urls = vec![redirect_bundle_url_for(&url)];
-            match self
-                .fetch_verified_blob_from_locations(
-                    &data_urls,
-                    &signature_urls,
-                    &signer,
-                    "plugin catalog redirect",
-                )
-                .await
-            {
-                Ok((raw, actual_url)) => {
-                    let redirect = parse_and_validate_catalog_v3_redirect(&raw)?;
-                    return Ok((redirect, actual_url));
-                }
+            match fetch_verified_catalog_redirect_candidate(&url, "plugin catalog redirect").await {
+                Ok((redirect, actual_url)) => return Ok((redirect, actual_url)),
                 Err(error) => {
                     debug!(redirect_url = %url, error = %error, "plugin catalog redirect candidate failed");
                     last_error = Some(error);

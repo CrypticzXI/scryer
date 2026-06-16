@@ -1509,6 +1509,17 @@ pub struct SmgVersionCompatibilityNotice {
     pub upgrade_deadline: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SmgScryerUpdateNotice {
+    pub available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub latest_tag: String,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub checked_at: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct IndexerQueryStats {
     pub indexer_id: String,
