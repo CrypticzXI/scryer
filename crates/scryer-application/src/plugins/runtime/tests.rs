@@ -419,9 +419,9 @@ mod signature_bundle_decode_tests {
 #[cfg(test)]
 mod plugin_http_client_tests {
     use super::{
-        PLUGIN_HTTP_MAX_VALIDATED_REDIRECTS, PluginHttpClientProfile,
-        combined_plugin_catalog_probe_error, fetch_plugin_bytes, plugin_http_client,
-        plugin_redirect_location_url,
+        PLUGIN_HTTP_MAX_VALIDATED_REDIRECTS, PluginHttpClientProfile, PluginRedirectPolicy,
+        combined_plugin_catalog_probe_error, fetch_plugin_bytes_with_redirect_policy,
+        plugin_http_client, plugin_redirect_location_url,
     };
     use crate::AppError;
 
@@ -446,10 +446,11 @@ mod plugin_http_client_tests {
 
     #[tokio::test]
     async fn plugin_artifact_fetch_rejects_private_destinations() {
-        let error = fetch_plugin_bytes(
+        let error = fetch_plugin_bytes_with_redirect_policy(
             "http://127.0.0.1/plugin.wasm",
             "test plugin artifact",
             "test-plugin-artifact",
+            PluginRedirectPolicy::Reject,
         )
         .await
         .expect_err("private plugin artifact URL should be rejected");

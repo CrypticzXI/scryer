@@ -12,6 +12,7 @@ enum PluginRedirectPolicy {
     FollowValidated,
 }
 
+#[derive(Debug)]
 struct FetchedPluginBytes {
     bytes: Vec<u8>,
     actual_url: String,
@@ -56,16 +57,6 @@ fn map_plugin_outbound_error(label: &str, error: OutboundHttpError) -> AppError 
         }
     }
 }
-async fn fetch_plugin_bytes(
-    url: &str,
-    label: &str,
-    scope: impl Into<String>,
-) -> AppResult<Vec<u8>> {
-    fetch_plugin_bytes_with_redirect_policy(url, label, scope, PluginRedirectPolicy::Reject)
-        .await
-        .map(|fetched| fetched.bytes)
-}
-
 async fn fetch_plugin_bytes_with_redirect_policy(
     url: &str,
     label: &str,
