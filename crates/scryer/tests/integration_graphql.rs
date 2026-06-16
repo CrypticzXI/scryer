@@ -10908,24 +10908,33 @@ async fn graphql_external_account_invites_expose_last_login() {
         &media_servers,
         MediaServerConnection {
             id: "jellyfin-main".to_string(),
-            provider: MediaServerProvider::Plex,
-            display_name: "Main Plex".to_string(),
-            base_url: "https://plex.example.test".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Main Jellyfin".to_string(),
+            base_url: ctx.smg_server.uri(),
             enabled: true,
             login_enabled: true,
             linking_enabled: false,
             auto_add_enabled: false,
             default_app_permissions: AppPermissionMask::NONE,
             default_library_grants: Vec::new(),
-            machine_id: Some("machine-1".to_string()),
-            api_key: None,
+            machine_id: None,
+            api_key: Some("jellyfin-api-key".to_string()),
             path_mappings: Vec::new(),
             created_at: now,
             updated_at: now,
         },
     )
     .await
-    .expect("seed Plex media server connection");
+    .expect("seed Jellyfin media server connection");
+
+    Mock::given(method("GET"))
+        .and(path("/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "Id": "jellyfin-user-id",
+            "Name": "jellyfin-user"
+        }])))
+        .mount(&ctx.smg_server)
+        .await;
 
     let invite = gql(
         &ctx,
@@ -10943,9 +10952,10 @@ async fn graphql_external_account_invites_expose_last_login() {
         json!({
             "input": {
                 "userId": user_id,
-                "provider": "plex",
+                "provider": "jellyfin",
                 "connectionId": "jellyfin-main",
-                "providerUserIdentifier": "plex-user"
+                "providerUserIdentifier": "jellyfin-user",
+                "providerUserId": "jellyfin-user-id"
             }
         }),
     )
@@ -10979,7 +10989,7 @@ async fn graphql_external_account_invites_expose_last_login() {
         .iter()
         .find(|row| row["userId"].as_str() == Some(user_id))
         .expect("created invite row");
-    assert_eq!(row["provider"], "plex");
+    assert_eq!(row["provider"], "jellyfin");
     assert_eq!(row["status"], "pending_claim");
     assert_eq!(row["lastLoginAt"], Value::Null);
 
