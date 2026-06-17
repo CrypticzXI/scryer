@@ -19,9 +19,10 @@ const LIBRARY_PROBE_SIGNATURE_FILE_SCHEME: &str = "file_snapshot_v1";
 pub(crate) const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize = 3;
 
 const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &["@eadir", ".@__thumb", "plex versions"];
-const LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES: &[&str] = &[
+const LIBRARY_IGNORED_MEDIA_SUBDIR_NAMES: &[&str] = &[
     "extras",
     "extrafanart",
+    "backdrops",
     "behind the scenes",
     "deleted scenes",
     "featurette",
@@ -35,8 +36,19 @@ const LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES: &[&str] = &[
     "samples",
     "short",
     "shorts",
+    "theme music",
     "trailer",
     "trailers",
+];
+const LIBRARY_IGNORED_MEDIA_EXTRA_FILE_SUFFIXES: &[&str] = &[
+    "trailer",
+    "other",
+    "behindthescenes",
+    "deleted",
+    "featurette",
+    "interview",
+    "scene",
+    "short",
 ];
 
 #[derive(Clone, Debug)]
@@ -99,6 +111,10 @@ pub(crate) async fn list_series_loose_root_files(root: &Path) -> AppResult<Vec<L
         })?;
         if !file_type.is_file()
             || should_skip_library_top_level_entry(&path, false)
+            || path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(is_ignored_media_extra_file_name)
             || !is_allowed_video_path(&path)
         {
             continue;
@@ -203,6 +219,10 @@ pub(crate) async fn list_movie_top_level_entries(
 
         if file_type.is_file()
             && !should_skip_library_top_level_entry(&path, false)
+            && !path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(is_ignored_media_extra_file_name)
             && is_allowed_video_path(&path)
         {
             results.push(MovieTopLevelEntry {
@@ -247,6 +267,10 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
                     batch.push(MovieTopLevelEntry { path, is_dir: true });
                 } else if file_type.is_file()
                     && !should_skip_library_top_level_entry(&path, false)
+                    && !path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(is_ignored_media_extra_file_name)
                     && is_allowed_video_path(&path)
                 {
                     batch.push(MovieTopLevelEntry {
@@ -294,23 +318,43 @@ pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
         || normalized.starts_with(".unmanic")
 }
 
-pub(crate) fn is_trailer_like_library_dir_name(name: &str) -> bool {
-    let normalized = name
-        .trim()
+fn normalized_library_name_words(name: &str) -> String {
+    name.trim()
         .nfkc()
         .flat_map(char::to_lowercase)
         .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
-        .collect::<String>();
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(crate) fn is_trailer_like_library_dir_name(name: &str) -> bool {
+    let normalized = normalized_library_name_words(name);
 
     normalized
         .split_whitespace()
         .any(|token| token == "trailer" || token == "trailers")
 }
 
-pub(crate) fn is_ignored_movie_subdir_name(name: &str) -> bool {
+pub(crate) fn is_ignored_media_subdir_name(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
-    LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES.contains(&normalized.as_str())
+    let normalized_words = normalized_library_name_words(name);
+    LIBRARY_IGNORED_MEDIA_SUBDIR_NAMES.contains(&normalized.as_str())
+        || LIBRARY_IGNORED_MEDIA_SUBDIR_NAMES.contains(&normalized_words.as_str())
         || is_trailer_like_library_dir_name(name)
+}
+
+pub(crate) fn is_ignored_media_extra_file_name(name: &str) -> bool {
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    LIBRARY_IGNORED_MEDIA_EXTRA_FILE_SUFFIXES
+        .iter()
+        .any(|suffix| stem.ends_with(&format!("-{suffix}")))
 }
 
 pub(crate) fn should_skip_library_top_level_entry(path: &Path, is_dir: bool) -> bool {
@@ -352,31 +396,14 @@ pub(crate) fn should_skip_library_subpath(root: &Path, path: &Path, is_dir: bool
 }
 
 pub(crate) fn should_skip_movie_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
-    if should_skip_library_subpath(root, path, is_dir) {
-        return true;
-    }
-
-    let Some(relative) = path.strip_prefix(root).ok() else {
-        return false;
-    };
-
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let std::path::Component::Normal(name) = component else {
-            continue;
-        };
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if (components.peek().is_some() || is_dir) && is_ignored_movie_subdir_name(name) {
-            return true;
-        }
-    }
-
-    false
+    should_skip_media_library_subpath(root, path, is_dir)
 }
 
 pub(crate) fn should_skip_episodic_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
+    should_skip_media_library_subpath(root, path, is_dir)
+}
+
+fn should_skip_media_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
     if should_skip_library_subpath(root, path, is_dir) {
         return true;
     }
@@ -393,7 +420,11 @@ pub(crate) fn should_skip_episodic_library_subpath(root: &Path, path: &Path, is_
         let Some(name) = name.to_str() else {
             continue;
         };
-        if (components.peek().is_some() || is_dir) && is_trailer_like_library_dir_name(name) {
+        if components.peek().is_some() || is_dir {
+            if is_ignored_media_subdir_name(name) {
+                return true;
+            }
+        } else if is_ignored_media_extra_file_name(name) {
             return true;
         }
     }
@@ -749,9 +780,15 @@ mod tests {
         tokio::fs::create_dir_all(dir.path().join("@eaDir"))
             .await
             .expect("@eaDir");
+        tokio::fs::create_dir_all(dir.path().join("Extras"))
+            .await
+            .expect("extras movie dir");
         tokio::fs::write(dir.path().join("Movie.B.2024.mkv"), b"video")
             .await
             .expect("movie file");
+        tokio::fs::write(dir.path().join("Movie.B.2024-trailer.mkv"), b"video")
+            .await
+            .expect("movie trailer file");
         tokio::fs::write(dir.path().join(".DS_Store"), b"junk")
             .await
             .expect(".DS_Store");
@@ -760,6 +797,46 @@ mod tests {
             .await
             .expect("movie entries");
 
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "Extras".to_string(),
+                "Movie A".to_string(),
+                "Movie.B.2024.mkv".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_movie_top_level_entries_batched_skips_extra_suffix_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        tokio::fs::create_dir_all(dir.path().join("Movie A"))
+            .await
+            .expect("movie dir");
+        tokio::fs::write(dir.path().join("Movie.B.2024.mkv"), b"video")
+            .await
+            .expect("movie file");
+        tokio::fs::write(dir.path().join("Movie.B.2024-trailer.mkv"), b"video")
+            .await
+            .expect("movie trailer file");
+
+        let mut receiver = stream_movie_top_level_entries_batched(dir.path(), 1)
+            .await
+            .expect("movie entry stream");
+        let mut entries = Vec::new();
+        while let Some(batch) = receiver.recv().await {
+            entries.extend(batch.expect("movie entry batch"));
+        }
+
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
         assert_eq!(
             entries
                 .iter()
@@ -783,41 +860,116 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_movie_library_subpath_skips_trailer_like_subdirectories() {
+    fn should_skip_movie_library_subpath_skips_extra_suffix_leaf_files() {
         let root = Path::new("/library");
 
         for path in [
-            Path::new("/library/Movie Title/Trailers/foo.mkv"),
-            Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
-            Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-trailer.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-other.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-behindthescenes.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-deleted.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-featurette.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-interview.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-scene.mkv"),
+            Path::new("/library/Movie Title/Movie.Title-short.mkv"),
         ] {
             assert!(
                 should_skip_movie_library_subpath(root, path, false),
-                "expected movie trailer folder to be skipped: {}",
+                "expected extra suffix file to be skipped: {}",
                 path.display()
             );
         }
     }
 
     #[test]
-    fn should_skip_episodic_library_subpath_skips_trailers_but_not_movie_extras() {
+    fn should_skip_movie_library_subpath_skips_sonarr_radarr_extra_subdirectories() {
+        let root = Path::new("/library");
+
+        for path in [
+            Path::new("/library/Movie Title/extras/foo.mkv"),
+            Path::new("/library/Movie Title/extrafanart/foo.mkv"),
+            Path::new("/library/Movie Title/backdrops/foo.mkv"),
+            Path::new("/library/Movie Title/behind the scenes/foo.mkv"),
+            Path::new("/library/Movie Title/deleted scenes/foo.mkv"),
+            Path::new("/library/Movie Title/featurette/foo.mkv"),
+            Path::new("/library/Movie Title/featurettes/foo.mkv"),
+            Path::new("/library/Movie Title/interview/foo.mkv"),
+            Path::new("/library/Movie Title/interviews/foo.mkv"),
+            Path::new("/library/Movie Title/other/foo.mkv"),
+            Path::new("/library/Movie Title/scene/foo.mkv"),
+            Path::new("/library/Movie Title/scenes/foo.mkv"),
+            Path::new("/library/Movie Title/sample/foo.mkv"),
+            Path::new("/library/Movie Title/samples/foo.mkv"),
+            Path::new("/library/Movie Title/short/foo.mkv"),
+            Path::new("/library/Movie Title/shorts/foo.mkv"),
+            Path::new("/library/Movie Title/theme music/foo.mkv"),
+            Path::new("/library/Movie Title/theme-music/foo.mkv"),
+            Path::new("/library/Movie Title/Trailers/foo.mkv"),
+            Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
+            Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
+        ] {
+            assert!(
+                should_skip_movie_library_subpath(root, path, false),
+                "expected movie extra folder to be skipped: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_episodic_library_subpath_skips_sonarr_radarr_extra_subdirectories() {
         let root = Path::new("/library/Anime Show");
 
-        assert!(should_skip_episodic_library_subpath(
-            root,
+        for path in [
+            Path::new("/library/Anime Show/extras/foo.mkv"),
+            Path::new("/library/Anime Show/Featurettes/foo.mkv"),
             Path::new("/library/Anime Show/Movie Trailers/foo.mkv"),
-            false,
-        ));
-        assert!(should_skip_episodic_library_subpath(
-            root,
             Path::new("/library/Anime Show/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Anime Show/theme_music/foo.mkv"),
+        ] {
+            assert!(
+                should_skip_episodic_library_subpath(root, path, false),
+                "expected episodic extra folder to be skipped: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_media_library_subpath_allows_root_named_extras() {
+        let root = Path::new("/library/Extras");
+
+        assert!(!should_skip_movie_library_subpath(
+            root,
+            Path::new("/library/Extras/Movie.Title.2024.mkv"),
             false,
         ));
         assert!(!should_skip_episodic_library_subpath(
             root,
-            Path::new("/library/Anime Show/extras/foo.mkv"),
+            Path::new("/library/Extras/Season 1/Episode.S01E01.mkv"),
             false,
         ));
+        assert!(should_skip_episodic_library_subpath(
+            root,
+            Path::new("/library/Extras/Season 1/Extras/Bonus.mkv"),
+            false,
+        ));
+    }
+
+    #[test]
+    fn should_skip_episodic_library_subpath_allows_sample_leaf_files() {
+        let root = Path::new("/library/Anime Show");
+        let path = Path::new("/library/Anime Show/Sample.2024.BluRay.mkv");
+
+        assert!(!should_skip_episodic_library_subpath(root, path, false));
+    }
+
+    #[test]
+    fn should_skip_episodic_library_subpath_skips_extra_suffix_leaf_files() {
+        let root = Path::new("/library/Anime Show");
+        let path = Path::new("/library/Anime Show/Episode.S01E01-trailer.mkv");
+
+        assert!(should_skip_episodic_library_subpath(root, path, false));
     }
 
     #[test]

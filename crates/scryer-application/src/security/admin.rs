@@ -4,6 +4,7 @@ use scryer_domain::ConfigurationChangeAction;
 
 const DEFAULT_ADMIN_USERNAME: &str = "admin";
 const RECOVERY_ADMIN_USERNAME: &str = "recovery-admin";
+const ANONYMOUS_AUDIT_USERNAME: &str = "anonymous";
 
 #[cfg(unix)]
 fn to_u64<T: Into<u64>>(value: T) -> u64 {
@@ -17,6 +18,22 @@ impl AppUseCase {
 
     pub(crate) fn is_reserved_recovery_username(username: &str) -> bool {
         Self::normalize_local_username(username).eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
+    }
+
+    pub(crate) fn is_reserved_local_username(username: &str) -> bool {
+        let normalized = Self::normalize_local_username(username);
+        normalized.eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
+            || normalized.eq_ignore_ascii_case(ANONYMOUS_AUDIT_USERNAME)
+    }
+
+    fn reserved_local_username_error(username: &str) -> AppError {
+        if Self::normalize_local_username(username).eq_ignore_ascii_case(ANONYMOUS_AUDIT_USERNAME) {
+            AppError::Validation("anonymous is reserved for authless audit attribution".into())
+        } else {
+            AppError::Validation(format!(
+                "{RECOVERY_ADMIN_USERNAME} is reserved for instance recovery"
+            ))
+        }
     }
 
     async fn ensure_user_admin_permission_masks(&self, user: &User) -> AppResult<()> {
@@ -212,6 +229,9 @@ impl AppUseCase {
         let username = Self::normalize_local_username(username);
         if username.is_empty() {
             return Err(AppError::Validation("admin username is required".into()));
+        }
+        if Self::is_reserved_local_username(username) {
+            return Err(Self::reserved_local_username_error(username));
         }
         if password.is_empty() {
             return Err(AppError::Validation("admin password is required".into()));
@@ -474,10 +494,8 @@ impl AppUseCase {
         if username.is_empty() {
             return Err(AppError::Validation("username is required".to_string()));
         }
-        if Self::is_reserved_recovery_username(&username) {
-            return Err(AppError::Validation(format!(
-                "{RECOVERY_ADMIN_USERNAME} is reserved for instance recovery"
-            )));
+        if Self::is_reserved_local_username(&username) {
+            return Err(Self::reserved_local_username_error(&username));
         }
         self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;

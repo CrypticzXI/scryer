@@ -27,6 +27,18 @@ const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
 const MFA_STEP_UP_REQUIRED_STATUS_CODE: u16 = 460;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AuthlessAccessPolicy {
+    pub(crate) allow_unauthenticated_public_access: bool,
+    pub(crate) recovery_mode: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthlessAccessGuardState {
+    pub(crate) auth_runtime: AuthRuntimeStateHandle,
+    pub(crate) policy: AuthlessAccessPolicy,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CorsConfig {
     pub(crate) allow_all: bool,
@@ -533,6 +545,44 @@ pub(crate) async fn graphql_handler(
         .unwrap()
 }
 
+pub(crate) async fn enforce_authless_access_guard(
+    State(state): State<AuthlessAccessGuardState>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let decision = authless_access_decision(
+        &state.auth_runtime.snapshot(),
+        state.policy,
+        request.headers(),
+        Some(remote_addr),
+    );
+
+    match decision {
+        AuthlessAccessDecision::Allow => next.run(request).await,
+        AuthlessAccessDecision::Reject(reason) => {
+            let method = request.method().clone();
+            let path = request.uri().path().to_string();
+            tracing::warn!(
+                remote_addr = %remote_addr,
+                method = %method,
+                path = %path,
+                recovery_mode = state.policy.recovery_mode,
+                reason = %reason,
+                "rejecting auth-disabled request from non-local client"
+            );
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Scryer authentication is disabled; public unauthenticated access is blocked"
+                        .to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 fn graphql_response_status(response: &async_graphql::BatchResponse) -> StatusCode {
     if graphql_response_has_error_code(response, AUTHENTICATION_REQUIRED_CODE) {
         return StatusCode::UNAUTHORIZED;
@@ -874,10 +924,82 @@ fn local_ip_bypass_active(
 
     if has_proxy_forwarding_headers(headers) {
         return is_trusted_proxy_ip(peer_ip)
-            && forwarded_client_ip(headers).is_some_and(is_local_network_ip);
+            && forwarded_client_ip_chain(headers)
+                .is_ok_and(|client_ips| client_ips.into_iter().all(is_local_network_ip));
     }
 
     is_local_network_ip(peer_ip)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum AuthlessAccessDecision {
+    Allow,
+    Reject(AuthlessAccessRejectReason),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum AuthlessAccessRejectReason {
+    MissingRemoteAddress,
+    PublicPeer(IpAddr),
+    PublicForwardedClient(IpAddr),
+    MalformedForwardedClient,
+}
+
+impl std::fmt::Display for AuthlessAccessRejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRemoteAddress => f.write_str("missing remote address"),
+            Self::PublicPeer(ip) => write!(f, "peer address {ip} is not private/local"),
+            Self::PublicForwardedClient(ip) => {
+                write!(f, "forwarded client address {ip} is not private/local")
+            }
+            Self::MalformedForwardedClient => {
+                f.write_str("forwarding headers are present but no valid client IP was found")
+            }
+        }
+    }
+}
+
+fn authless_access_decision(
+    snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
+    policy: AuthlessAccessPolicy,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> AuthlessAccessDecision {
+    if snapshot.effective_form_login_enabled {
+        return AuthlessAccessDecision::Allow;
+    }
+
+    if policy.allow_unauthenticated_public_access && !policy.recovery_mode {
+        return AuthlessAccessDecision::Allow;
+    }
+
+    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MissingRemoteAddress);
+    };
+
+    if !is_local_network_ip(peer_ip) {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(peer_ip));
+    }
+
+    if has_proxy_forwarding_headers(headers) {
+        return match forwarded_client_ip_chain(headers) {
+            Ok(client_ips) => match client_ips
+                .into_iter()
+                .find(|client_ip| !is_local_network_ip(*client_ip))
+            {
+                Some(public_ip) => AuthlessAccessDecision::Reject(
+                    AuthlessAccessRejectReason::PublicForwardedClient(public_ip),
+                ),
+                None => AuthlessAccessDecision::Allow,
+            },
+            Err(()) => {
+                AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
+            }
+        };
+    }
+
+    AuthlessAccessDecision::Allow
 }
 
 fn request_client_ip(headers: &HeaderMap, remote_addr: Option<SocketAddr>) -> Option<IpAddr> {
@@ -896,11 +1018,21 @@ fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
         .or_else(|| forwarded_header_client_ip(headers))
 }
 
+fn forwarded_client_ip_chain(headers: &HeaderMap) -> Result<Vec<IpAddr>, ()> {
+    let mut ips = Vec::new();
+    collect_x_forwarded_for_ips(headers, &mut ips)?;
+    collect_x_real_ip_ips(headers, &mut ips)?;
+    collect_forwarded_header_ips(headers, &mut ips)?;
+
+    if ips.is_empty() { Err(()) } else { Ok(ips) }
+}
+
 fn has_proxy_forwarding_headers(headers: &HeaderMap) -> bool {
     headers.contains_key("x-forwarded-for")
         || headers.contains_key("x-real-ip")
         || headers.contains_key(header::FORWARDED)
         || headers.contains_key("x-forwarded-host")
+        || headers.contains_key(X_FORWARDED_PROTO)
 }
 
 fn x_forwarded_for_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
@@ -932,6 +1064,41 @@ fn forwarded_header_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
                 })
             })
         })
+}
+
+fn collect_x_forwarded_for_ips(headers: &HeaderMap, ips: &mut Vec<IpAddr>) -> Result<(), ()> {
+    for value in headers.get_all("x-forwarded-for") {
+        let value = value.to_str().map_err(|_| ())?;
+        for token in value.split(',') {
+            ips.push(parse_forwarded_ip_token(token).ok_or(())?);
+        }
+    }
+    Ok(())
+}
+
+fn collect_x_real_ip_ips(headers: &HeaderMap, ips: &mut Vec<IpAddr>) -> Result<(), ()> {
+    for value in headers.get_all("x-real-ip") {
+        let value = value.to_str().map_err(|_| ())?;
+        ips.push(parse_forwarded_ip_token(value).ok_or(())?);
+    }
+    Ok(())
+}
+
+fn collect_forwarded_header_ips(headers: &HeaderMap, ips: &mut Vec<IpAddr>) -> Result<(), ()> {
+    for value in headers.get_all(header::FORWARDED) {
+        let value = value.to_str().map_err(|_| ())?;
+        for entry in value.split(',') {
+            for part in entry.split(';') {
+                let Some((name, raw_value)) = part.split_once('=') else {
+                    continue;
+                };
+                if name.trim().eq_ignore_ascii_case("for") {
+                    ips.push(parse_forwarded_ip_token(raw_value).ok_or(())?);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_forwarded_ip_token(raw: &str) -> Option<IpAddr> {
@@ -1073,9 +1240,12 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::http::HeaderValue;
+    use axum::routing::get;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::{LazyLock, Mutex};
+    use tower::ServiceExt;
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -1256,6 +1426,408 @@ mod tests {
         ))));
     }
 
+    fn auth_disabled_snapshot() -> scryer_interface::context::AuthRuntimeStateSnapshot {
+        scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: false,
+            skip_login_for_local_ips: false,
+            effective_form_login_enabled: false,
+            webauthn_configured: false,
+            passkey_enabled: false,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        }
+    }
+
+    fn auth_enabled_snapshot() -> scryer_interface::context::AuthRuntimeStateSnapshot {
+        scryer_interface::context::AuthRuntimeStateSnapshot {
+            form_login_enabled: true,
+            skip_login_for_local_ips: false,
+            effective_form_login_enabled: true,
+            webauthn_configured: false,
+            passkey_enabled: false,
+            env_override_active: false,
+            env_override_description: None,
+            epoch: 1,
+        }
+    }
+
+    fn protected_authless_policy() -> AuthlessAccessPolicy {
+        AuthlessAccessPolicy {
+            allow_unauthenticated_public_access: false,
+            recovery_mode: false,
+        }
+    }
+
+    fn public_authless_policy() -> AuthlessAccessPolicy {
+        AuthlessAccessPolicy {
+            allow_unauthenticated_public_access: true,
+            recovery_mode: false,
+        }
+    }
+
+    fn recovery_public_authless_policy() -> AuthlessAccessPolicy {
+        AuthlessAccessPolicy {
+            allow_unauthenticated_public_access: true,
+            recovery_mode: true,
+        }
+    }
+
+    #[test]
+    fn authless_guard_allows_auth_enabled_requests() {
+        let headers = HeaderMap::new();
+        let decision = authless_access_decision(
+            &auth_enabled_snapshot(),
+            protected_authless_policy(),
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+        );
+
+        assert_eq!(decision, AuthlessAccessDecision::Allow);
+    }
+
+    #[test]
+    fn authless_guard_allows_private_and_loopback_clients() {
+        let headers = HeaderMap::new();
+        for addr in [
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)),
+            SocketAddr::from((Ipv4Addr::new(10, 1, 2, 3), 3000)),
+            SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000)),
+            SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+            SocketAddr::from((Ipv4Addr::new(169, 254, 10, 20), 3000)),
+            SocketAddr::from((Ipv6Addr::LOCALHOST, 3000)),
+            SocketAddr::from((Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1), 3000)),
+            SocketAddr::from((Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 3000)),
+        ] {
+            assert_eq!(
+                authless_access_decision(
+                    &auth_disabled_snapshot(),
+                    protected_authless_policy(),
+                    &headers,
+                    Some(addr),
+                ),
+                AuthlessAccessDecision::Allow,
+                "{addr} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn authless_guard_rejects_public_clients() {
+        let headers = HeaderMap::new();
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 8, 8)
+            )))
+        );
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((
+                    Ipv6Addr::new(0x2001, 0x4860, 0, 0, 0, 0, 0, 0x8888),
+                    3000,
+                ))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V6(
+                Ipv6Addr::new(0x2001, 0x4860, 0, 0, 0, 0, 0, 0x8888)
+            )))
+        );
+    }
+
+    #[test]
+    fn authless_guard_public_override_allows_public_clients() {
+        let headers = HeaderMap::new();
+        let decision = authless_access_decision(
+            &auth_disabled_snapshot(),
+            public_authless_policy(),
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+        );
+
+        assert_eq!(decision, AuthlessAccessDecision::Allow);
+    }
+
+    #[test]
+    fn authless_guard_public_override_does_not_bypass_recovery_mode() {
+        let headers = HeaderMap::new();
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                recovery_public_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 8, 8)
+            )))
+        );
+    }
+
+    #[test]
+    fn authless_guard_does_not_trust_forwarded_headers_from_public_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("192.168.1.25"));
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 8, 8)
+            )))
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_forwarded_proto_without_client_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_public_forwarded_client_through_private_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicForwardedClient(
+                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+            ))
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_public_ip_anywhere_in_forwarded_for_chain() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 8.8.8.8"),
+        );
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicForwardedClient(
+                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+            ))
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_public_ip_anywhere_in_forwarded_header_chain() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::FORWARDED,
+            HeaderValue::from_static("for=192.168.1.25;proto=https, for=8.8.8.8"),
+        );
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicForwardedClient(
+                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+            ))
+        );
+    }
+
+    #[test]
+    fn authless_guard_allows_private_forwarded_client_through_private_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("192.168.1.25"));
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn authless_guard_allows_private_forwarded_chain_through_private_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.5"),
+        );
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn authless_guard_allows_forwarded_proto_with_private_client_chain() {
+        let mut headers = HeaderMap::new();
+        headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.5"),
+        );
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_malformed_forwarded_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
+        );
+    }
+
+    #[test]
+    fn authless_guard_rejects_malformed_ip_anywhere_in_forwarded_chain() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, not-an-ip"),
+        );
+
+        assert_eq!(
+            authless_access_decision(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            ),
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
+        );
+    }
+
+    fn authless_guard_test_app(
+        snapshot: scryer_interface::context::AuthRuntimeStateSnapshot,
+        policy: AuthlessAccessPolicy,
+    ) -> Router {
+        let state = AuthlessAccessGuardState {
+            auth_runtime: AuthRuntimeStateHandle::new(snapshot),
+            policy,
+        };
+        Router::new()
+            .route("/graphql", get(|| async { "graphql ok" }))
+            .route("/graphql/ws", get(|| async { "ws ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                enforce_authless_access_guard,
+            ))
+    }
+
+    fn request_with_peer(uri: &str, peer: SocketAddr) -> Request<Body> {
+        let mut request = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request");
+        request.extensions_mut().insert(ConnectInfo(peer));
+        request
+    }
+
+    #[tokio::test]
+    async fn authless_guard_middleware_allows_private_graphql_request() {
+        let app = authless_guard_test_app(auth_disabled_snapshot(), protected_authless_policy());
+
+        let response = app
+            .oneshot(request_with_peer(
+                "/graphql",
+                SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authless_guard_middleware_rejects_public_graphql_request() {
+        let app = authless_guard_test_app(auth_disabled_snapshot(), protected_authless_policy());
+
+        let response = app
+            .oneshot(request_with_peer(
+                "/graphql",
+                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn authless_guard_middleware_rejects_public_websocket_route_before_handler() {
+        let app = authless_guard_test_app(auth_disabled_snapshot(), protected_authless_policy());
+
+        let response = app
+            .oneshot(request_with_peer(
+                "/graphql/ws",
+                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     fn local_bypass_snapshot() -> scryer_interface::context::AuthRuntimeStateSnapshot {
         scryer_interface::context::AuthRuntimeStateSnapshot {
             form_login_enabled: true,
@@ -1379,6 +1951,39 @@ mod tests {
     }
 
     #[test]
+    fn local_ip_bypass_accepts_private_forwarded_chain_through_trusted_proxy() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.5"),
+        );
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_accepts_forwarded_proto_with_private_client_chain() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.5"),
+        );
+
+        assert!(local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
     fn local_ip_bypass_accepts_local_forwarded_ipv6_client_through_trusted_proxy() {
         let snapshot = local_bypass_snapshot();
         let mut headers = HeaderMap::new();
@@ -1388,6 +1993,19 @@ mod tests {
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_forwarded_proto_without_client_ip() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
         ));
     }
 
@@ -1418,6 +2036,38 @@ mod tests {
             "/assets/index-B3b5rA.js"
         ));
         assert!(skip_http_rate_limit(&Method::GET, "/manifest.json"));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_public_ip_anywhere_in_forwarded_for_chain() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 8.8.8.8"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_public_ip_anywhere_in_forwarded_header_chain() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::FORWARDED,
+            HeaderValue::from_static("for=192.168.1.25;proto=https, for=8.8.8.8"),
+        );
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
     }
 
     #[test]
@@ -1490,6 +2140,22 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
         headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+
+        assert!(!local_ip_bypass_active(
+            &snapshot,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+        ));
+    }
+
+    #[test]
+    fn local_ip_bypass_rejects_malformed_ip_anywhere_in_forwarded_chain() {
+        let snapshot = local_bypass_snapshot();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, not-an-ip"),
+        );
 
         assert!(!local_ip_bypass_active(
             &snapshot,

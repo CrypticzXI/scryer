@@ -7,6 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  applyRenameTemplatePreview,
+  validateRenameTemplateSyntax,
+  type RenameTemplateValidationIssue,
+} from "@/lib/utils/rename-template";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 type ParsedQualityProfile = {
@@ -104,49 +109,31 @@ function validateRenameTemplate(
   template: string,
   t: Translate,
 ): string | null {
-  if (!template.trim()) {
-    return t("settings.renameValidationEmpty");
+  return formatRenameValidationIssue(
+    validateRenameTemplateSyntax(template, VALID_RENAME_TOKENS),
+    t,
+  );
+}
+
+function formatRenameValidationIssue(
+  issue: RenameTemplateValidationIssue | null,
+  t: Translate,
+): string | null {
+  if (!issue) {
+    return null;
   }
 
-  let i = 0;
-  let escapedLiteralOpenCount = 0;
-  while (i < template.length) {
-    if (template.startsWith("{{", i)) {
-      escapedLiteralOpenCount += 1;
-      i += 2;
-      continue;
-    }
-    if (template.startsWith("}}", i)) {
-      if (escapedLiteralOpenCount > 0) {
-        escapedLiteralOpenCount -= 1;
-      }
-      i += 2;
-      continue;
-    }
-    if (template[i] === "{") {
-      const closeIndex = template.indexOf("}", i + 1);
-      if (closeIndex === -1) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const inner = template.slice(i + 1, closeIndex);
-      if (inner.includes("{")) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
-      if (!VALID_RENAME_TOKENS.has(tokenName)) {
-        return t("settings.renameValidationUnknownToken", { token: tokenName });
-      }
-      i = closeIndex + 1;
-    } else if (template[i] === "}") {
-      if (escapedLiteralOpenCount > 0) {
-        escapedLiteralOpenCount -= 1;
-        i++;
-        continue;
-      }
+  switch (issue.kind) {
+    case "empty":
+      return t("settings.renameValidationEmpty");
+    case "unmatchedOpen":
+      return t("settings.renameValidationUnmatchedOpen");
+    case "unmatchedClose":
       return t("settings.renameValidationUnmatchedClose");
-    } else {
-      i++;
-    }
+    case "unknownToken":
+      return t("settings.renameValidationUnknownToken", { token: issue.token });
+    case "invalidFilter":
+      return t("settings.renameValidationInvalidFilter", { filter: issue.filter });
   }
 
   return null;
@@ -221,60 +208,13 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
 };
 
 function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string | null {
-  if (!template.trim()) return null;
-  let result = "";
-  let i = 0;
-  let escapedLiteralOpenCount = 0;
   const sampleValues =
     scopeId === "movie"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
       : scopeId === "anime"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
-  while (i < template.length) {
-    if (template.startsWith("{{", i)) {
-      result += "{";
-      escapedLiteralOpenCount += 1;
-      i += 2;
-      continue;
-    }
-    if (template.startsWith("}}", i)) {
-      result += "}";
-      if (escapedLiteralOpenCount > 0) {
-        escapedLiteralOpenCount -= 1;
-      }
-      i += 2;
-      continue;
-    }
-    if (template[i] === "{") {
-      const closeIndex = template.indexOf("}", i + 1);
-      if (closeIndex === -1) return null;
-      const inner = template.slice(i + 1, closeIndex);
-      if (inner.includes("{")) return null;
-      const colonIdx = inner.indexOf(":");
-      const tokenName = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
-      const padWidth = colonIdx >= 0 ? parseInt(inner.slice(colonIdx + 1), 10) : 0;
-      if (!VALID_RENAME_TOKENS.has(tokenName)) return null;
-      let value = sampleValues[tokenName] ?? tokenName;
-      if (padWidth > 0 && /^\d+$/.test(value)) {
-        value = value.padStart(padWidth, "0");
-      }
-      result += value;
-      i = closeIndex + 1;
-    } else if (template[i] === "}") {
-      if (escapedLiteralOpenCount > 0) {
-        result += "}";
-        escapedLiteralOpenCount -= 1;
-        i++;
-        continue;
-      }
-      return null;
-    } else {
-      result += template[i];
-      i++;
-    }
-  }
-  return result;
+  return applyRenameTemplatePreview(template, VALID_RENAME_TOKENS, sampleValues);
 }
 
 // --- Component ---
@@ -481,6 +421,16 @@ export function RenameSettingsForm({
                   <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
                 </button>
               ))}
+            </div>
+            <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+              <p>
+                <span className="font-medium text-card-foreground">{t("settings.renameLiteralBracesLabel")}:</span>{" "}
+                <code className="text-emerald-600 dark:text-emerald-400">{"{{edition-{edition}}}"}</code>
+              </p>
+              <p>
+                <span className="font-medium text-card-foreground">{t("settings.renameSpaceFilterLabel")}:</span>{" "}
+                <code className="text-emerald-600 dark:text-emerald-400">{"{title|space:_}"}</code>
+              </p>
             </div>
           </div>
 

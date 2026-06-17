@@ -16911,6 +16911,38 @@ async fn create_user_rejects_recovery_admin_username() {
 }
 
 #[tokio::test]
+async fn create_user_rejects_anonymous_username() {
+    let (app, user) = bootstrap();
+
+    let result = app
+        .create_user(
+            &user,
+            "Anonymous".to_string(),
+            "password123".to_string(),
+            AppPermissionMask::NONE,
+            Vec::new(),
+        )
+        .await;
+
+    let Err(AppError::Validation(message)) = result else {
+        panic!("anonymous username should be reserved");
+    };
+    assert!(message.contains("anonymous is reserved"));
+}
+
+#[tokio::test]
+async fn ensure_default_admin_rejects_anonymous_username() {
+    let (app, _) = bootstrap();
+
+    let result = app.ensure_default_admin("anonymous", "password123").await;
+
+    let Err(AppError::Validation(message)) = result else {
+        panic!("anonymous default admin username should be reserved");
+    };
+    assert!(message.contains("anonymous is reserved"));
+}
+
+#[tokio::test]
 async fn delete_title_removes_title_from_catalog() {
     let (app, user) = bootstrap();
 

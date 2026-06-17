@@ -1092,16 +1092,21 @@ fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> 
     out
 }
 
+const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
+const RENAME_LITERAL_COLON_SENTINEL: char = '\u{E001}';
+
 fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let chars: Vec<char> = template.chars().collect();
     let mut cursor = 0usize;
+    let mut escaped_literal_open_count = 0usize;
 
     while cursor < chars.len() {
         let ch = chars[cursor];
         if ch == '{' {
             if chars.get(cursor + 1).is_some_and(|next| *next == '{') {
                 out.push('{');
+                escaped_literal_open_count += 1;
                 cursor += 2;
                 continue;
             }
@@ -1113,13 +1118,22 @@ fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, Strin
                 cursor = end_index + 1;
                 continue;
             }
-        } else if ch == '}' && chars.get(cursor + 1).is_some_and(|next| *next == '}') {
-            out.push('}');
-            cursor += 2;
-            continue;
+        } else if ch == '}' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                out.push('}');
+                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
+                cursor += 2;
+                continue;
+            }
+            if escaped_literal_open_count > 0 {
+                out.push('}');
+                escaped_literal_open_count -= 1;
+                cursor += 1;
+                continue;
+            }
         }
 
-        out.push(ch);
+        push_rename_literal_text_char(&mut out, ch, escaped_literal_open_count);
         cursor += 1;
     }
 
@@ -1127,7 +1141,33 @@ fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, Strin
 }
 
 pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    sanitize_filesystem_component(&render_rename_template_tokens(template, tokens))
+    restore_rename_literal_sentinels(&sanitize_filesystem_component(
+        &render_rename_template_tokens(template, tokens),
+    ))
+}
+
+fn push_rename_literal_text_char(out: &mut String, ch: char, escaped_literal_open_count: usize) {
+    if escaped_literal_open_count == 0 {
+        out.push(ch);
+        return;
+    }
+
+    match ch {
+        '|' => out.push(RENAME_LITERAL_PIPE_SENTINEL),
+        ':' => out.push(RENAME_LITERAL_COLON_SENTINEL),
+        _ => out.push(ch),
+    }
+}
+
+fn restore_rename_literal_sentinels(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            RENAME_LITERAL_PIPE_SENTINEL => '|',
+            RENAME_LITERAL_COLON_SENTINEL => ':',
+            _ => ch,
+        })
+        .collect()
 }
 
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
@@ -2331,13 +2371,22 @@ pub(crate) fn split_title_and_year_hint(raw_title: &str) -> (String, Option<Stri
     (trimmed.to_string(), None)
 }
 
+enum RenameTemplateTokenFilter {
+    Space(String),
+}
+
+struct RenameTemplateTokenSpec {
+    name: String,
+    pad_width: Option<usize>,
+    filters: Vec<RenameTemplateTokenFilter>,
+}
+
 fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -> String {
-    let (name, pad_width) = match token_spec.split_once(':') {
-        Some((n, fmt)) => (n.trim().to_lowercase(), fmt.trim().parse::<usize>().ok()),
-        None => (token_spec.trim().to_lowercase(), None),
+    let Some(spec) = parse_rename_template_token_spec(token_spec) else {
+        return String::new();
     };
-    let raw = tokens.get(&name).cloned().unwrap_or_default();
-    match pad_width {
+    let raw = tokens.get(&spec.name).cloned().unwrap_or_default();
+    let mut rendered = match spec.pad_width {
         Some(width) if width > 0 => {
             if raw.chars().all(|c| c.is_ascii_digit()) && !raw.is_empty() {
                 format!("{:0>width$}", raw, width = width)
@@ -2346,7 +2395,63 @@ fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -
             }
         }
         _ => raw,
+    };
+
+    for filter in spec.filters {
+        match filter {
+            RenameTemplateTokenFilter::Space(replacement) => {
+                rendered = replace_token_whitespace(&rendered, &replacement);
+            }
+        }
     }
+
+    rendered
+}
+
+fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTokenSpec> {
+    let mut parts = token_spec.split('|');
+    let token_core = parts.next().unwrap_or("").trim();
+    if token_core.is_empty() {
+        return None;
+    }
+    let (name, pad_width) = match token_core.split_once(':') {
+        Some((n, fmt)) => (n.trim().to_lowercase(), fmt.trim().parse::<usize>().ok()),
+        None => (token_core.trim().to_lowercase(), None),
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let mut filters = Vec::new();
+    for filter_spec in parts {
+        filters.push(parse_rename_template_token_filter(filter_spec)?);
+    }
+
+    Some(RenameTemplateTokenSpec {
+        name,
+        pad_width,
+        filters,
+    })
+}
+
+fn parse_rename_template_token_filter(filter_spec: &str) -> Option<RenameTemplateTokenFilter> {
+    let filter_spec = filter_spec.trim();
+    let replacement = filter_spec.strip_prefix("space:")?;
+    match replacement {
+        "_" | "." | "-" | "" => Some(RenameTemplateTokenFilter::Space(replacement.to_string())),
+        _ => None,
+    }
+}
+
+fn replace_token_whitespace(value: &str, replacement: &str) -> String {
+    let mut rendered = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            rendered.push_str(replacement);
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered
 }
 
 pub fn sanitize_filesystem_component(raw: &str) -> String {

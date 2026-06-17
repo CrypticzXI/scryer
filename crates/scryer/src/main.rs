@@ -72,8 +72,9 @@ use backup_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, CorsConfig, WebSocketOriginPolicy, cors_handler, graphql_handler,
-    graphql_ws_handler, health_handler, rate_limit_http_api,
+    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, CorsConfig, WebSocketOriginPolicy,
+    cors_handler, enforce_authless_access_guard, graphql_handler, graphql_ws_handler,
+    health_handler, rate_limit_http_api,
 };
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
@@ -91,6 +92,7 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
+const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -191,6 +193,7 @@ struct AuthModeConfig {
     env_override_description: Option<String>,
     used_legacy_dev_auto_login: bool,
     recovery_admin_password_set: bool,
+    allow_unauthenticated_public_access: bool,
 }
 
 impl AuthModeConfig {
@@ -647,7 +650,7 @@ async fn bootstrap_application(
     finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
-    bind: String,
+    _bind: String,
     cors: CorsConfig,
     shutdown_token: CancellationToken,
     log_ring_buffer: log_buffer::LogRingBuffer,
@@ -1137,7 +1140,7 @@ async fn bootstrap_application(
     let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
         .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
 
-    let auth_mode = resolve_auth_mode_from_env();
+    let auth_mode = resolve_auth_mode_from_env()?;
     app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
     if auth_mode.recovery_active() {
         let recovery_password = normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV)
@@ -1203,14 +1206,22 @@ async fn bootstrap_application(
             .map_err(|error| {
                 format!("failed to ensure default admin for disabled-auth mode: {error}")
             })?;
-        let addr: SocketAddr = bind.parse().expect("invalid bind address");
-        if !addr.ip().is_loopback() && !addr.ip().is_unspecified() {
+        if auth_mode.recovery_active() {
             tracing::warn!(
-                bind = %bind,
-                "authentication is disabled on a non-loopback bind address; all requests will act as admin"
+                env = RECOVERY_ADMIN_PASSWORD_ENV,
+                "running in recovery mode with authentication disabled; only private/local clients are allowed"
+            );
+        } else if auth_mode.allow_unauthenticated_public_access {
+            tracing::warn!(
+                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
+            );
+        } else {
+            tracing::warn!(
+                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                "running with authentication disabled; private/local clients act as admin and public clients are rejected unless explicitly allowed"
             );
         }
-        tracing::warn!("running with authentication disabled; all requests act as admin");
     }
     // Always run the download queue poller — it queries ALL enabled download
     // clients (NZBGet, SABnzbd, Weaver, plugins) and triggers imports for
@@ -1274,12 +1285,20 @@ async fn bootstrap_application(
     app_use_case.wake_title_image_loops();
 
     let rate_limiter = ScryerRateLimiter::from_env();
+    let authless_access_policy = AuthlessAccessPolicy {
+        allow_unauthenticated_public_access: auth_mode.allow_unauthenticated_public_access,
+        recovery_mode: auth_mode.recovery_active(),
+    };
     let auth_state = AuthState {
         app: app_use_case.clone(),
         schema: schema.clone(),
         auth_runtime: auth_runtime.clone(),
         rate_limiter: rate_limiter.clone(),
         ws_origin_policy: WebSocketOriginPolicy::from_env(&cors),
+    };
+    let authless_access_guard_state = AuthlessAccessGuardState {
+        auth_runtime: auth_runtime.clone(),
+        policy: authless_access_policy,
     };
 
     let cors_for_layer = cors.clone();
@@ -1355,6 +1374,10 @@ async fn bootstrap_application(
 
     let app = ws_router
         .merge(compressed_router)
+        .layer(axum::middleware::from_fn_with_state(
+            authless_access_guard_state,
+            enforce_authless_access_guard,
+        ))
         .layer(axum::middleware::from_fn(move |request, next| {
             cors_handler(request, next, cors_for_layer.clone())
         }));
@@ -1746,9 +1769,14 @@ fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
     recovery_admin_password_raw: Option<&str>,
-) -> AuthModeConfig {
+    allow_unauthenticated_public_access_raw: Option<&str>,
+) -> Result<AuthModeConfig, String> {
     let used_legacy_dev_auto_login = matches!(
         legacy_dev_auto_login_raw.and_then(parse_env_bool_value),
+        Some(true)
+    );
+    let allow_unauthenticated_public_access = matches!(
+        allow_unauthenticated_public_access_raw.and_then(parse_env_bool_value),
         Some(true)
     );
 
@@ -1756,37 +1784,46 @@ fn resolve_auth_mode(
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
     {
-        return AuthModeConfig {
+        if allow_unauthenticated_public_access {
+            return Err(format!(
+                "{ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV}=true cannot be used with {RECOVERY_ADMIN_PASSWORD_ENV}; recovery mode is private/local only"
+            ));
+        }
+        return Ok(AuthModeConfig {
             env_override_form_login_enabled: Some(false),
             env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
             used_legacy_dev_auto_login,
             recovery_admin_password_set: true,
-        };
+            allow_unauthenticated_public_access: false,
+        });
     }
 
     if let Some(auth_enabled) = auth_enabled_raw.and_then(parse_env_bool_value) {
-        return AuthModeConfig {
+        return Ok(AuthModeConfig {
             env_override_form_login_enabled: Some(auth_enabled),
             env_override_description: Some(format!("SCRYER_AUTH_ENABLED={auth_enabled}")),
             used_legacy_dev_auto_login: false,
             recovery_admin_password_set: false,
-        };
+            allow_unauthenticated_public_access,
+        });
     }
 
-    AuthModeConfig {
+    Ok(AuthModeConfig {
         env_override_form_login_enabled: used_legacy_dev_auto_login.then_some(false),
         env_override_description: used_legacy_dev_auto_login
             .then_some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
         used_legacy_dev_auto_login,
         recovery_admin_password_set: false,
-    }
+        allow_unauthenticated_public_access,
+    })
 }
 
-fn resolve_auth_mode_from_env() -> AuthModeConfig {
+fn resolve_auth_mode_from_env() -> Result<AuthModeConfig, String> {
     resolve_auth_mode(
         normalize_env_option("SCRYER_AUTH_ENABLED").as_deref(),
         normalize_env_option("SCRYER_DEV_AUTO_LOGIN").as_deref(),
         normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV).as_deref(),
+        normalize_env_option(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV).as_deref(),
     )
 }
 
@@ -2275,9 +2312,10 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV, SelfRestartController,
-        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
-        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts, title_image_handler,
+        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
+        SelfRestartController, bootstrap_plugin_installations,
+        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2386,12 +2424,13 @@ mod tests {
     #[test]
     fn auth_defaults_to_disabled() {
         assert_eq!(
-            resolve_auth_mode(None, None, None),
+            resolve_auth_mode(None, None, None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2399,12 +2438,13 @@ mod tests {
     #[test]
     fn explicit_auth_enabled_wins() {
         assert_eq!(
-            resolve_auth_mode(Some("true"), Some("true"), None),
+            resolve_auth_mode(Some("true"), Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(true),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2742,12 +2782,13 @@ mod tests {
     #[test]
     fn explicit_auth_disabled_wins_over_legacy_alias() {
         assert_eq!(
-            resolve_auth_mode(Some("false"), Some("true"), None),
+            resolve_auth_mode(Some("false"), Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=false".to_string()),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2755,12 +2796,13 @@ mod tests {
     #[test]
     fn legacy_dev_auto_login_disables_auth_when_new_flag_absent() {
         assert_eq!(
-            resolve_auth_mode(None, Some("true"), None),
+            resolve_auth_mode(None, Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
                 used_legacy_dev_auto_login: true,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2768,12 +2810,13 @@ mod tests {
     #[test]
     fn invalid_auth_flag_falls_back_to_default_disabled() {
         assert_eq!(
-            resolve_auth_mode(Some("garbage"), None, None),
+            resolve_auth_mode(Some("garbage"), None, None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2781,14 +2824,38 @@ mod tests {
     #[test]
     fn recovery_admin_password_implies_auth_disabled_and_wins_over_auth_enabled() {
         assert_eq!(
-            resolve_auth_mode(Some("true"), None, Some("new-password")),
+            resolve_auth_mode(Some("true"), None, Some("new-password"), None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: true,
+                allow_unauthenticated_public_access: false,
             }
         );
+    }
+
+    #[test]
+    fn unauthenticated_public_access_override_is_recorded_without_recovery() {
+        assert_eq!(
+            resolve_auth_mode(None, None, None, Some("true")).expect("auth mode"),
+            AuthModeConfig {
+                env_override_form_login_enabled: None,
+                env_override_description: None,
+                used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: true,
+            }
+        );
+    }
+
+    #[test]
+    fn unauthenticated_public_access_override_is_rejected_with_recovery() {
+        let error = resolve_auth_mode(None, None, Some("new-password"), Some("true"))
+            .expect_err("recovery and public unauthenticated access conflict");
+
+        assert!(error.contains(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV));
+        assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
     }
 
     #[tokio::test]

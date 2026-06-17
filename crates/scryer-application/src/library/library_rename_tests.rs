@@ -46,6 +46,48 @@ fn render_rename_template_literal_braces_around_resolved_token() {
 }
 
 #[test]
+fn render_rename_template_replaces_token_spaces_with_underscore() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|space:_}.{ext}", &t);
+    assert_eq!(result, "12_Years_a_Slave.mkv");
+}
+
+#[test]
+fn render_rename_template_replaces_token_spaces_with_dot() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|space:.}.{ext}", &t);
+    assert_eq!(result, "12.Years.a.Slave.mkv");
+}
+
+#[test]
+fn render_rename_template_replaces_token_spaces_with_dash() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|space:-}.{ext}", &t);
+    assert_eq!(result, "12-Years-a-Slave.mkv");
+}
+
+#[test]
+fn render_rename_template_removes_token_spaces() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|space:}.{ext}", &t);
+    assert_eq!(result, "12YearsaSlave.mkv");
+}
+
+#[test]
+fn render_rename_template_preserves_space_filter_in_literal_braces() {
+    let t = tokens(&[("ext", "mkv")]);
+    let result = render_rename_template("{{title|space:_}}.{ext}", &t);
+    assert_eq!(result, "{title|space:_}.mkv");
+}
+
+#[test]
+fn render_rename_template_replaces_token_spaces_inside_literal_braces() {
+    let t = tokens(&[("edition", "Directors Cut"), ("ext", "mkv")]);
+    let result = render_rename_template("{{edition-{edition|space:_}}}.{ext}", &t);
+    assert_eq!(result, "{edition-Directors_Cut}.mkv");
+}
+
+#[test]
 fn render_with_zero_padding() {
     let t = tokens(&[
         ("title", "Show"),
