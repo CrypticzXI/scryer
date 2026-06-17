@@ -18,11 +18,12 @@ use scryer_application::{
     start_background_download_delete_poller,
 };
 use scryer_domain::{
-    AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
-    DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id,
-    ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask, MediaFacet,
-    MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType, NewDomainEvent,
-    ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User, UserAuthorization,
+    AppPermissionMask, Collection, CollectionType, DomainEventActorKind, DomainEventPayload,
+    DomainEventStream, DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType,
+    ExternalId, Id, ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask,
+    MediaFacet, MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType,
+    NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User,
+    UserAuthorization,
 };
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
@@ -10387,7 +10388,7 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
 }
 
 #[tokio::test]
-async fn graphql_totp_enrollment_code_can_immediately_step_up() {
+async fn graphql_totp_enrollment_code_cannot_immediately_step_up() {
     let ctx = TestContext::new().await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let enrollment = ctx
@@ -10401,10 +10402,21 @@ async fn graphql_totp_enrollment_code_can_immediately_step_up() {
         .await
         .expect("complete TOTP enrollment");
 
-    ctx.app
+    let error = ctx
+        .app
         .mfa_verify_step_up(&admin, &code)
         .await
-        .expect("enrollment code should still be accepted for immediate step-up");
+        .expect_err("enrollment code should not be accepted for immediate step-up");
+    assert!(
+        error.to_string().contains("invalid TOTP code"),
+        "unexpected replay rejection: {error}"
+    );
+
+    let next_code = test_totp_code_for_step_offset(&enrollment.secret_base32, 1);
+    ctx.app
+        .mfa_verify_step_up(&admin, &next_code)
+        .await
+        .expect("later TOTP step should still verify");
 }
 
 #[tokio::test]
@@ -10508,6 +10520,25 @@ async fn graphql_settings_mutations_require_config_step_up() {
             json!({ "id": "missing-recycled-item" }),
         ),
         (
+            "executeExternalImport",
+            r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved } }"#,
+            json!({
+                "input": {
+                    "sonarr": null,
+                    "radarr": null,
+                    "prowlarr": null,
+                    "selectedMoviesPaths": [],
+                    "selectedSeriesPaths": [],
+                    "selectedAnimePaths": [],
+                    "selectedDownloadClientDedupKeys": [],
+                    "selectedIndexerDedupKeys": [],
+                    "downloadClientApiKeyOverrides": [],
+                    "downloadClientPasswordOverrides": [],
+                    "indexerApiKeyOverrides": []
+                }
+            }),
+        ),
+        (
             "createLibrary",
             r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
             json!({
@@ -10563,6 +10594,35 @@ async fn graphql_config_step_up_token_satisfies_protected_settings_mutation() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createUser"]["username"], "stepped_up_user");
+
+    let external_import = gql_with_token(
+        &ctx,
+        r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved errors } }"#,
+        json!({
+            "input": {
+                "sonarr": null,
+                "radarr": null,
+                "prowlarr": null,
+                "selectedMoviesPaths": [],
+                "selectedSeriesPaths": [],
+                "selectedAnimePaths": [],
+                "selectedDownloadClientDedupKeys": [],
+                "selectedIndexerDedupKeys": [],
+                "downloadClientApiKeyOverrides": [],
+                "downloadClientPasswordOverrides": [],
+                "indexerApiKeyOverrides": []
+            }
+        }),
+        step_up_token,
+    )
+    .await;
+    assert_no_errors(&external_import);
+    assert!(
+        external_import["data"]["executeExternalImport"]["errors"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "stepped-up external import should reach normal execution: {external_import}"
+    );
 }
 
 #[tokio::test]
@@ -12221,7 +12281,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12253,7 +12315,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12426,7 +12490,9 @@ async fn graphql_title_history_filters_by_episode_id() {
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12554,7 +12620,9 @@ async fn graphql_title_history_filters_skipped_import_by_episode_id() {
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12708,7 +12776,9 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,

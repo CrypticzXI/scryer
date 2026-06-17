@@ -131,7 +131,7 @@ impl AppUseCase {
             created_by_user_id: actor.id.clone(),
         };
         let submitted_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestSubmitted(MediaRequestSubmittedEventData {
                 request_id: request.id.clone(),
                 library_id: request.library_id.clone(),
@@ -277,7 +277,7 @@ impl AppUseCase {
             )
             .await?;
         let resolved_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestApproved(media_request_resolved_event_data(
                 &request,
                 Some(outcome.title.id.clone()),
@@ -338,7 +338,7 @@ impl AppUseCase {
             .load_manageable_pending_media_request(actor, request_id)
             .await?;
         let resolved_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestRejected(media_request_resolved_event_data(
                 &request, None, None, None,
             )),
@@ -390,7 +390,7 @@ impl AppUseCase {
         let requested_monitor_type =
             normalize_requested_monitor_type(&request.facet, input.requested_monitor_type)?;
         let updated_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestUpdated(media_request_submitted_event_data(
                 &request,
                 Some(requested_quality_profile_id.clone()),
@@ -421,7 +421,7 @@ impl AppUseCase {
             .await?;
         let canceled_at = chrono::Utc::now();
         let canceled_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestCanceled(media_request_resolved_event_data(
                 &request, None, None, None,
             )),
@@ -485,7 +485,7 @@ impl AppUseCase {
             )
             .await?;
         let resolved_event = new_global_domain_event(
-            Some(actor.id.clone()),
+            actor,
             DomainEventPayload::MediaRequestApproved(media_request_resolved_event_data(
                 &request,
                 Some(outcome.title.id.clone()),

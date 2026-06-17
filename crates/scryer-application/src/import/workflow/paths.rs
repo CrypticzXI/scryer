@@ -521,7 +521,7 @@ pub async fn try_import_completed_downloads(
         Ok(recovered) if recovered > 0 => {
             tracing::warn!(recovered, "recovered stale processing imports → failed");
             app.emit_import_recovery_completed_event(
-                Some(actor.id.clone()),
+                actor,
                 i64::try_from(recovered).unwrap_or(i64::MAX),
             )
             .await;

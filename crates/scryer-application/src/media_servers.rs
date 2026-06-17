@@ -144,7 +144,7 @@ impl AppUseCase {
             .create(connection)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(created.id.clone()),
             scryer_domain::ConfigurationChangeAction::Saved,
@@ -281,7 +281,7 @@ impl AppUseCase {
             .update(connection)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(updated.id.clone()),
             scryer_domain::ConfigurationChangeAction::Updated,
@@ -324,7 +324,7 @@ impl AppUseCase {
             .delete(id)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(id.to_string()),
             scryer_domain::ConfigurationChangeAction::Deleted,
@@ -1493,7 +1493,9 @@ mod tests {
                 sequence: 1,
                 event_id: event.event_id,
                 occurred_at: event.occurred_at,
+                actor_kind: event.actor_kind,
                 actor_user_id: event.actor_user_id,
+                actor_display_name: event.actor_display_name,
                 title_id: event.title_id,
                 facet: event.facet,
                 correlation_id: event.correlation_id,

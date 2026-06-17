@@ -33,6 +33,7 @@ async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
+    import_id: &str,
     rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
@@ -131,12 +132,15 @@ async fn execute_resolved_episode_import(
         let import_mode = app
             .resolve_import_mode(Some(&title.library_id), &title.facet)
             .await?;
-        let file_result = app
-            .services
-            .workflow
-            .file_importer
-            .import_file(source_video, &dest_path, import_mode)
-            .await?;
+        let file_result = import_file_with_record_progress(
+            app,
+            import_id,
+            source_video,
+            &dest_path,
+            import_mode,
+            None,
+        )
+        .await?;
         let media_file_input = crate::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
@@ -463,12 +467,15 @@ async fn execute_resolved_episode_import(
         }
     }
 
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(source_video, &dest_path, import_mode)
-        .await?;
+    let file_result = import_file_with_record_progress(
+        app,
+        import_id,
+        source_video,
+        &dest_path,
+        import_mode,
+        Some(&prepared.source_snapshot),
+    )
+    .await?;
 
     let has_existing = existing_files
         .iter()

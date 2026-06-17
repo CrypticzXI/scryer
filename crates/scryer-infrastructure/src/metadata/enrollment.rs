@@ -11,7 +11,9 @@ use scryer_outbound_http::{
     smg_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use crate::metadata::response_body::read_response_body_preview;
 
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
 const PQ_CLIENT_FAMILY: &str = "scryer-stable";
@@ -616,10 +618,18 @@ pub(crate) async fn registration_response_error(
         .and_then(|header| header.to_str().ok())
         .and_then(parse_retry_after)
         .map(|(delay, _source)| delay);
-    let body = response.text().await.unwrap_or_default();
+    let preview = match read_response_body_preview(response, operation).await {
+        Ok(preview) => preview,
+        Err(error) => {
+            return EnrollmentError::Other(format!(
+                "{operation} failed (HTTP {status}): response body read failed: {error}"
+            ));
+        }
+    };
 
     if status.as_u16() == 422
-        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
+        && !preview.truncated
+        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&preview.text)
         && parsed.get("error").and_then(|v| v.as_str()) == Some("version_incompatible")
     {
         return EnrollmentError::VersionIncompatible(VersionIncompatible {
@@ -651,14 +661,25 @@ pub(crate) async fn registration_response_error(
         });
     }
 
+    warn!(
+        operation,
+        status = %status,
+        body_preview = %preview.escaped_text(),
+        body_preview_bytes = preview.preview_bytes,
+        content_length = ?preview.content_length,
+        content_type = ?preview.content_type,
+        body_truncated = preview.truncated,
+        "SMG enrollment request failed"
+    );
+
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return EnrollmentError::RateLimited(RateLimited {
             retry_after,
-            message: format!("{operation} failed (HTTP {status}): {body}"),
+            message: format!("{operation} failed (HTTP {status})"),
         });
     }
 
-    EnrollmentError::Other(format!("{operation} failed (HTTP {status}): {body}"))
+    EnrollmentError::Other(format!("{operation} failed (HTTP {status})"))
 }
 
 fn pq_registration_proof_message(

@@ -180,6 +180,7 @@ function fillMissingQueueItemFields(
   primary: DownloadQueueItem,
   secondary: DownloadQueueItem,
 ): DownloadQueueItem {
+  const primaryHasImportOverlay = primary.importStatus !== null;
   return {
     ...primary,
     titleId: primary.titleId ?? secondary.titleId,
@@ -203,6 +204,24 @@ function fillMissingQueueItemFields(
     attentionRequired: primary.attentionRequired || secondary.attentionRequired,
     attentionReason: primary.attentionReason ?? secondary.attentionReason,
     importStatus: primary.importStatus ?? secondary.importStatus,
+    importTransferPhase: primaryHasImportOverlay
+      ? primary.importTransferPhase
+      : primary.importTransferPhase ?? secondary.importTransferPhase,
+    importTransferBytes: primaryHasImportOverlay
+      ? primary.importTransferBytes
+      : primary.importTransferBytes ?? secondary.importTransferBytes,
+    importTransferTotalBytes:
+      primaryHasImportOverlay
+        ? primary.importTransferTotalBytes
+        : primary.importTransferTotalBytes ?? secondary.importTransferTotalBytes,
+    importTransferStartedAt:
+      primaryHasImportOverlay
+        ? primary.importTransferStartedAt
+        : primary.importTransferStartedAt ?? secondary.importTransferStartedAt,
+    importTransferUpdatedAt:
+      primaryHasImportOverlay
+        ? primary.importTransferUpdatedAt
+        : primary.importTransferUpdatedAt ?? secondary.importTransferUpdatedAt,
     importErrorCode: primary.importErrorCode ?? secondary.importErrorCode,
     importErrorMessage: primary.importErrorMessage ?? secondary.importErrorMessage,
     importedAt: primary.importedAt ?? secondary.importedAt,

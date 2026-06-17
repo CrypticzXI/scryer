@@ -393,6 +393,40 @@ file = "postgres/migrations/0131_plex_media_server_api_key.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 132
+description = "import transfer progress"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0132_import_transfer_progress.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0132_import_transfer_progress.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 133
+description = "domain event actor audit"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0133_domain_event_actor_audit.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0133_domain_event_actor_audit.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

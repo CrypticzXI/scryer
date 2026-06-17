@@ -7,6 +7,9 @@ export type TitleHistoryEvent = {
   episodeIds: string[];
   collectionId: string | null;
   eventType: string;
+  actorKind: string | null;
+  actorUserId: string | null;
+  actorDisplayName: string | null;
   sourceTitle: string | null;
   displayTitle: string | null;
   sourceSystem: string | null;

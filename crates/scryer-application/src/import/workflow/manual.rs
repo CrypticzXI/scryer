@@ -943,6 +943,7 @@ fn manual_import_terminal_status_and_error(
 pub async fn execute_manual_import(
     app: &AppUseCase,
     actor: &User,
+    import_id: &str,
     title_id: &str,
     completed: Option<&CompletedDownload>,
     files: Vec<ManualImportFileMapping>,
@@ -1061,6 +1062,7 @@ pub async fn execute_manual_import(
             app,
             actor,
             &title,
+            import_id,
             rename_enabled,
             &rename_template,
             &full_folder_path,
@@ -1154,7 +1156,7 @@ pub async fn execute_manual_import(
             .map(|result| result.episode_id.clone())
             .collect::<Vec<_>>();
         app.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             &title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(&title),
@@ -1300,6 +1302,7 @@ pub async fn execute_queued_manual_import(
     let results = execute_manual_import(
         app,
         &actor,
+        import_id,
         title_id,
         completed.as_ref(),
         payload.files.clone(),

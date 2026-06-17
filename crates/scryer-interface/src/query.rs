@@ -775,6 +775,35 @@ impl ActivityQueries {
         Ok(events.into_iter().map(from_domain_event).collect())
     }
 
+    async fn audit_log(
+        &self,
+        ctx: &Context<'_>,
+        event_types: Option<Vec<DomainEventTypeValue>>,
+        title_id: Option<String>,
+        facet: Option<MediaFacetValue>,
+        after_sequence: Option<i64>,
+        before_sequence: Option<i64>,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<DomainEventEnvelopePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let filter = scryer_domain::DomainEventFilter {
+            event_types: event_types.map(|types| {
+                types
+                    .into_iter()
+                    .map(DomainEventTypeValue::into_domain)
+                    .collect()
+            }),
+            title_id,
+            facet: facet.map(MediaFacetValue::into_domain),
+            after_sequence,
+            before_sequence,
+            limit: limit.unwrap_or(100).max(1) as usize,
+        };
+        let events = app.audit_log(&actor, &filter).await.map_err(to_gql_error)?;
+        Ok(events.into_iter().map(from_domain_event).collect())
+    }
+
     async fn active_library_scans(
         &self,
         ctx: &Context<'_>,

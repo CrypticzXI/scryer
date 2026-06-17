@@ -213,6 +213,11 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     state
     displayState
     progressPercent
+    importTransferPhase
+    importTransferBytes
+    importTransferTotalBytes
+    importTransferStartedAt
+    importTransferUpdatedAt
     sizeBytes
     remainingSeconds
     queuedAt
@@ -1201,7 +1206,9 @@ export const activityQuery = `query Activity($limit: Int, $offset: Int) {
     severity
     channels
     message
+    actorKind
     actorUserId
+    actorDisplayName
     titleId
     occurredAt
   }
@@ -1213,7 +1220,9 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
     kind
     severity
     channels
+    actorKind
     actorUserId
+    actorDisplayName
     titleId
     facet
     message
@@ -1225,7 +1234,9 @@ const DOMAIN_EVENT_ENVELOPE_FIELDS = `
     sequence
     eventId
     occurredAt
+    actorKind
     actorUserId
+    actorDisplayName
     titleId
     facet
     eventType
@@ -1236,6 +1247,19 @@ const DOMAIN_EVENT_ENVELOPE_FIELDS = `
 export const libraryScanDomainEventsQuery = `query LibraryScanDomainEvents($afterSequence: Int, $limit: Int) {
   domainEvents(
     eventTypes: [library_scan_started, library_scan_title_discovered, library_scan_progressed, library_scan_completed, library_scan_canceled, library_scan_failed]
+    afterSequence: $afterSequence
+    limit: $limit
+  ) {
+${DOMAIN_EVENT_ENVELOPE_FIELDS}
+  }
+}`;
+
+export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: String, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
+  auditLog(
+    eventTypes: $eventTypes
+    titleId: $titleId
+    facet: $facet
+    beforeSequence: $beforeSequence
     afterSequence: $afterSequence
     limit: $limit
   ) {
@@ -2685,6 +2709,9 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       episodeIds
       collectionId
       eventType
+      actorKind
+      actorUserId
+      actorDisplayName
       sourceTitle
       displayTitle
       sourceSystem

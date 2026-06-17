@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::Utc;
 
-use crate::domain_events::{new_title_domain_event, title_context_snapshot};
+use crate::domain_events::{DomainEventActor, new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
@@ -14,6 +14,8 @@ use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
 };
 use tracing::warn;
+
+const SOURCE_CHANGED_AFTER_PROBE_CODE: &str = "source_changed_after_probe";
 
 pub(crate) enum ImportedFileGateDecision {
     Accepted(Box<ImportedFileAcceptance>),
@@ -30,6 +32,7 @@ pub(crate) struct PreparedImportCandidate {
     pub parsed: crate::ParsedReleaseMetadata,
     pub accepted: Box<ImportedFileAcceptance>,
     pub rescore_changes: Vec<String>,
+    pub source_snapshot: scryer_domain::ImportSourceSnapshot,
 }
 
 #[derive(Debug)]
@@ -38,6 +41,21 @@ pub struct ImportedFileRejection {
     pub recycle_reason: &'static str,
     pub skip_reason: Option<ImportSkipReason>,
     pub blocking_rule_codes: Vec<String>,
+}
+
+fn import_source_changed_rejection(
+    path: &Path,
+    detail: impl std::fmt::Display,
+) -> ImportedFileRejection {
+    ImportedFileRejection {
+        message: format!(
+            "import source changed after validation probe: {} ({detail})",
+            path.display()
+        ),
+        recycle_reason: "import_source_changed_after_probe",
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        blocking_rule_codes: vec![SOURCE_CHANGED_AFTER_PROBE_CODE.to_string()],
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -618,6 +636,14 @@ pub(crate) async fn prepare_import_candidate(
     is_filler: bool,
     runtime_sample_validation: RuntimeSampleValidation,
 ) -> Result<PreparedImportCandidate, ImportedFileRejection> {
+    let source_snapshot_before = app
+        .services
+        .workflow
+        .file_importer
+        .snapshot_import_source(path)
+        .await
+        .map_err(|err| import_source_changed_rejection(path, err))?;
+
     match probe_and_validate(
         app,
         title,
@@ -634,6 +660,20 @@ pub(crate) async fn prepare_import_candidate(
     {
         ImportedFileGateDecision::Rejected(rejection) => Err(rejection),
         ImportedFileGateDecision::Accepted(accepted) => {
+            let source_snapshot_after = app
+                .services
+                .workflow
+                .file_importer
+                .snapshot_import_source(path)
+                .await
+                .map_err(|err| import_source_changed_rejection(path, err))?;
+            if source_snapshot_after != source_snapshot_before {
+                return Err(import_source_changed_rejection(
+                    path,
+                    "source identity or content proof changed",
+                ));
+            }
+
             let (parsed, rescore_changes) = rescore_from_mediainfo(parsed, accepted.as_ref());
             if !rescore_changes.is_empty() {
                 tracing::debug!(
@@ -648,6 +688,7 @@ pub(crate) async fn prepare_import_candidate(
                 parsed,
                 accepted,
                 rescore_changes,
+                source_snapshot: source_snapshot_after,
             })
         }
     }
@@ -844,7 +885,7 @@ pub(crate) async fn persist_media_analysis_result(
 
 pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
-    actor_user_id: Option<&str>,
+    actor: impl Into<DomainEventActor>,
     title: &Title,
     completed_name: &str,
     path: &Path,
@@ -853,7 +894,7 @@ pub(crate) async fn reject_source_file_before_import(
 ) {
     finalize_import_rejection(
         app,
-        actor_user_id,
+        actor,
         title,
         completed_name,
         path,
@@ -865,7 +906,7 @@ pub(crate) async fn reject_source_file_before_import(
 
 async fn finalize_import_rejection(
     app: &AppUseCase,
-    actor_user_id: Option<&str>,
+    actor: impl Into<DomainEventActor>,
     title: &Title,
     completed_name: &str,
     path: &Path,
@@ -927,7 +968,7 @@ async fn finalize_import_rejection(
     }
     let _ = app
         .append_domain_event(new_title_domain_event(
-            actor_user_id.map(str::to_owned),
+            actor,
             title,
             DomainEventPayload::ImportRejected(ImportRejectedEventData {
                 title: Some(title_context_snapshot(title)),

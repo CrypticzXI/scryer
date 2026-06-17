@@ -73,6 +73,15 @@ impl ImportRepository for NullImportRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn update_import_transfer_progress(
+        &self,
+        _: &str,
+        _: scryer_domain::ImportTransferPhase,
+        _: i64,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn recover_stale_processing_imports(&self, _stale_seconds: i64) -> AppResult<u64> {
         Ok(0)
     }
@@ -346,11 +355,21 @@ pub struct NullFileImporter;
 
 #[async_trait]
 impl FileImporter for NullFileImporter {
+    async fn snapshot_import_source(
+        &self,
+        _source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot> {
+        Err(AppError::Repository(
+            "file importer is not configured".to_string(),
+        ))
+    }
+
     async fn import_file(
         &self,
         _source: &Path,
         _dest: &Path,
         _mode: scryer_domain::ImportMode,
+        _expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     ) -> AppResult<ImportFileResult> {
         Err(AppError::Repository(
             "file importer is not configured".to_string(),

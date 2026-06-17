@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use common::TestContext;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, PostProcessingContext, TitleRepository, run_post_processing,
+    ActivityKind, ActivitySeverity, DomainEventActor, PostProcessingContext, TitleRepository,
+    run_post_processing,
 };
 use scryer_domain::{
     AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet,
@@ -120,7 +121,7 @@ fn movie_context(
 ) -> PostProcessingContext {
     PostProcessingContext {
         app: app.clone(),
-        actor_id: None,
+        actor: DomainEventActor::system(),
         title_id: "title-pp-test".to_string(),
         title_name: "Test Movie".to_string(),
         facet: MediaFacet::Movie,
@@ -253,7 +254,7 @@ async fn script_receives_environment_variables() {
 
     let pp_ctx = PostProcessingContext {
         app: ctx.app.clone(),
-        actor_id: None,
+        actor: DomainEventActor::system(),
         title_id: "title-env-test".to_string(),
         title_name: "Env Test Movie".to_string(),
         facet: MediaFacet::Movie,
@@ -332,7 +333,7 @@ async fn series_facet_uses_series_script() {
 
     let pp_ctx = PostProcessingContext {
         app: ctx.app.clone(),
-        actor_id: None,
+        actor: DomainEventActor::system(),
         title_id: "title-series-pp".to_string(),
         title_name: "Test Show".to_string(),
         facet: MediaFacet::Series,
@@ -366,7 +367,7 @@ async fn anime_facet_uses_anime_script() {
 
     let pp_ctx = PostProcessingContext {
         app: ctx.app.clone(),
-        actor_id: None,
+        actor: DomainEventActor::system(),
         title_id: "title-anime-pp".to_string(),
         title_name: "Test Anime".to_string(),
         facet: MediaFacet::Anime,

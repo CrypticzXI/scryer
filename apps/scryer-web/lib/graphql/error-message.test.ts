@@ -94,3 +94,23 @@ test("queue validation failure normalizes into global status text that toasts as
   assert.equal(message, "no download client enabled for library movie_default_library");
   assert.equal(classifyStatusToastLevel(message), "error");
 });
+
+test("SMG HTML embedded in GraphQL errors remains ordinary error status text", () => {
+  const message = userFacingGraphQlErrorMessage(
+    {
+      graphQLErrors: [
+        {
+          message:
+            "[GraphQL] repository: metadata gateway request failed (502 Bad Gateway): <!DOCTYPE html><html><body>Bad gateway</body></html>",
+        },
+      ],
+    },
+    "metadata search failed",
+  );
+
+  assert.equal(
+    message,
+    "metadata gateway request failed (502 Bad Gateway): <!DOCTYPE html><html><body>Bad gateway</body></html>",
+  );
+  assert.equal(classifyStatusToastLevel(message), "error");
+});

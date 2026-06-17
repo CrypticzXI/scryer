@@ -45,7 +45,9 @@ export type ActivityEvent = {
   channels: ActivityChannel[];
   eventType?: ActivityKind;
   message: string;
+  actorKind?: string | null;
   actorUserId?: string | null;
+  actorDisplayName?: string | null;
   titleId?: string | null;
   facet?: Facet | null;
   occurredAt?: string | null;

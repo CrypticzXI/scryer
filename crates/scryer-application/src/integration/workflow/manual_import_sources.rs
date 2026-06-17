@@ -1,9 +1,5 @@
 fn apply_manual_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
-    item.import_status = Some(record.status);
-    item.imported_at = record
-        .finished_at
-        .clone()
-        .or(Some(record.updated_at.clone()));
+    apply_import_record_overlay_to_queue_item(item, record);
 
     if let Some(result_json) = record.result_json.as_deref()
         && let Ok(result) = serde_json::from_str::<crate::ManualImportExecutionResult>(result_json)
@@ -239,7 +235,7 @@ impl AppUseCase {
             None => None,
         };
         self.emit_import_requested_event(
-            Some(actor.id.clone()),
+            actor,
             title.as_ref(),
             normalized_client_type,
             source_ref,
@@ -304,7 +300,7 @@ impl AppUseCase {
 
         let title = self.services.catalog.titles.get_by_id(&title_id).await?;
         self.emit_import_requested_event(
-            Some(actor.id.clone()),
+            actor,
             title.as_ref(),
             client_type,
             source_ref,

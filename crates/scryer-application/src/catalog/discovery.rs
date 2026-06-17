@@ -1150,7 +1150,7 @@ impl AppUseCase {
             .await;
 
         self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
+            actor,
             subject.category.clone(),
             subject.queries.first().cloned(),
             results.len() as i64,
@@ -1217,7 +1217,7 @@ impl AppUseCase {
             .await;
 
         self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
+            actor,
             subject.category.clone(),
             subject.queries.first().cloned(),
             results.len() as i64,
@@ -1269,7 +1269,7 @@ impl AppUseCase {
             .await;
 
         self.emit_discovery_search_completed_event(
-            Some(actor.id.clone()),
+            actor,
             subject.category.clone(),
             subject.queries.first().cloned(),
             results.len() as i64,

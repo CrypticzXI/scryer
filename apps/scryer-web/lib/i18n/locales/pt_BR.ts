@@ -480,6 +480,12 @@ const pt_BR: LocaleDictionary = {
   "settings.renameTokenYear": "Ano de lançamento",
   "settings.renameTokenQuality": "Qualidade (ex: 1080p)",
   "settings.renameTokenEdition": "Edição (ex: Director's Cut)",
+  "settings.renameTokenImdbId": "ID do IMDb",
+  "settings.renameTokenTmdbId": "ID do TMDb",
+  "settings.renameTokenTvdbId": "ID do TVDb",
+  "settings.renameTokenAnidbId": "ID do AniDB",
+  "settings.renameTokenMalId": "ID do MAL",
+  "settings.renameTokenAnilistId": "ID do AniList",
   "settings.renameTokenSource": "Fonte (ex: BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Codec de vídeo (ex: x265)",
   "settings.renameTokenAudioCodec": "Codec de áudio (ex: DTS)",
@@ -495,6 +501,8 @@ const pt_BR: LocaleDictionary = {
   "settings.renameValidationUnmatchedClose":
     "Chave de fechamento '}' sem abrir",
   "settings.renameValidationUnknownToken": "Token desconhecido: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "Templates de pasta aceitam {title}, {year} e tokens de ID externos. Token inválido: {{token}}",
   "settings.renameValidationEmpty":
     "O template de renomeação não pode estar vazio",
   "settings.renameComingSoon":
@@ -767,6 +775,7 @@ const pt_BR: LocaleDictionary = {
   "queue.state.postProcessing": "Pós-processamento",
   "queue.state.paused": "Pausado",
   "queue.state.completed": "Concluído",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Importação pendente",
   "queue.state.importBlocked": "Importação bloqueada",
   "queue.state.failed": "Falhou",
@@ -779,6 +788,8 @@ const pt_BR: LocaleDictionary = {
     "{{downloading}} baixando, {{waiting}} aguardando importação, {{attention}} precisa de atenção",
   "queue.manualImport": "Importar manualmente",
   "queue.manualImporting": "Adicionando à fila…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Importação manual adicionada à fila.",
   "queue.manualImportFailed": "Falha na importação manual.",
   "queue.removeFailed": "Falha ao remover",

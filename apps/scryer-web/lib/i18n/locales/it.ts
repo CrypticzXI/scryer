@@ -479,6 +479,12 @@ const it: LocaleDictionary = {
   "settings.renameTokenYear": "Anno di uscita",
   "settings.renameTokenQuality": "Qualità (es. 1080p)",
   "settings.renameTokenEdition": "Edizione (es. Director's Cut)",
+  "settings.renameTokenImdbId": "ID IMDb",
+  "settings.renameTokenTmdbId": "ID TMDb",
+  "settings.renameTokenTvdbId": "ID TVDb",
+  "settings.renameTokenAnidbId": "ID AniDB",
+  "settings.renameTokenMalId": "ID MAL",
+  "settings.renameTokenAnilistId": "ID AniList",
   "settings.renameTokenSource": "Sorgente (es. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Codec video (es. x265)",
   "settings.renameTokenAudioCodec": "Codec audio (es. DTS)",
@@ -493,6 +499,8 @@ const it: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Parentesi aperta '{' non chiusa",
   "settings.renameValidationUnmatchedClose": "Parentesi chiusa '}' non aperta",
   "settings.renameValidationUnknownToken": "Token sconosciuto: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "I template delle cartelle supportano {title}, {year} e i token ID esterni. Token non valido: {{token}}",
   "settings.renameValidationEmpty":
     "Il template di rinomina non può essere vuoto",
   "settings.renameComingSoon":
@@ -764,6 +772,7 @@ const it: LocaleDictionary = {
   "queue.state.postProcessing": "Post-elaborazione",
   "queue.state.paused": "In pausa",
   "queue.state.completed": "Completato",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Importazione in attesa",
   "queue.state.importBlocked": "Importazione bloccata",
   "queue.state.failed": "Fallito",
@@ -776,6 +785,8 @@ const it: LocaleDictionary = {
     "{{downloading}} in download, {{waiting}} in attesa di importazione, {{attention}} richiede attenzione",
   "queue.manualImport": "Importazione manuale",
   "queue.manualImporting": "Aggiunta alla coda…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Importazione manuale accodata.",
   "queue.manualImportFailed": "Importazione manuale non riuscita.",
   "queue.removeFailed": "Rimozione non riuscita",

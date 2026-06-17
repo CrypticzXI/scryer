@@ -3,7 +3,9 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{AppError, AppResult, DomainEventRepository};
-use scryer_domain::{DomainEvent, DomainEventFilter, NewDomainEvent, TitleHistoryEventType};
+use scryer_domain::{
+    DomainEvent, DomainEventFilter, DomainEventType, NewDomainEvent, TitleHistoryEventType,
+};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRuntime, StoreDatastore};
 
@@ -95,13 +97,14 @@ impl DomainEventRepository for DomainEventStore {
         if title_ids.is_empty() {
             return Ok(0);
         }
-        let mut args = Vec::with_capacity(title_ids.len());
+        let mut args = Vec::with_capacity(title_ids.len() + 1);
         args.extend(title_ids.iter().cloned().map(SqlArg::Text));
+        args.push(SqlArg::Text(DomainEventType::TitleDeleted.as_str().into()));
         let rows = execute_write(
             &self.datastore,
             "delete_domain_events_for_title_ids",
             format!(
-                "DELETE FROM domain_events WHERE title_id IN ({})",
+                "DELETE FROM domain_events WHERE title_id IN ({}) AND event_type <> {{}}",
                 placeholders(title_ids.len())
             ),
             args,

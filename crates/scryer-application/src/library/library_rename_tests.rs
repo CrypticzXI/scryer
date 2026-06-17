@@ -1,6 +1,6 @@
 use super::*;
 use chrono::Utc;
-use scryer_domain::{Collection, CollectionType, MediaFacet, Title};
+use scryer_domain::{Collection, CollectionType, ExternalId, MediaFacet, Title};
 use std::collections::BTreeMap;
 
 fn tokens(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -29,6 +29,20 @@ fn render_full_movie_template() {
     ]);
     let result = render_rename_template("{title} ({year}) - {quality}.{ext}", &t);
     assert_eq!(result, "Neon Cipher (2010) - 1080p.mkv");
+}
+
+#[test]
+fn render_rename_template_literal_braces_with_double_brace_escape() {
+    let t = tokens(&[("ext", "mkv")]);
+    let result = render_rename_template("{{edition-Directors Cut}}.{ext}", &t);
+    assert_eq!(result, "{edition-Directors Cut}.mkv");
+}
+
+#[test]
+fn render_rename_template_literal_braces_around_resolved_token() {
+    let t = tokens(&[("edition", "IMAX"), ("ext", "mkv")]);
+    let result = render_rename_template("{{edition-{edition}}}.{ext}", &t);
+    assert_eq!(result, "{edition-IMAX}.mkv");
 }
 
 #[test]
@@ -100,6 +114,69 @@ fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
     let path =
         configured_title_folder_path("/library/movies", &title, "{title} ({year})", Some(2025));
     assert_eq!(path, std::path::Path::new("/library/movies/Movie (2024)"));
+}
+
+#[test]
+fn title_folder_tokens_include_external_ids_and_prefer_normalized_imdb() {
+    let mut title = test_movie_title("Movie");
+    title.imdb_id = Some("https://www.imdb.com/title/tt0468569/".to_string());
+    title.external_ids = vec![
+        ExternalId {
+            source: "imdb".to_string(),
+            value: "tt0000001".to_string(),
+        },
+        ExternalId {
+            source: "TMDB".to_string(),
+            value: " 155 ".to_string(),
+        },
+        ExternalId {
+            source: "tvdb".to_string(),
+            value: " 123456 ".to_string(),
+        },
+        ExternalId {
+            source: "anidb".to_string(),
+            value: " 69 ".to_string(),
+        },
+        ExternalId {
+            source: "mal".to_string(),
+            value: " 21 ".to_string(),
+        },
+        ExternalId {
+            source: "anilist".to_string(),
+            value: " 21 ".to_string(),
+        },
+    ];
+
+    let tokens = build_title_folder_tokens(&title, None);
+
+    assert_eq!(tokens.get("imdb_id").map(String::as_str), Some("tt0468569"));
+    assert_eq!(tokens.get("tmdb_id").map(String::as_str), Some("155"));
+    assert_eq!(tokens.get("tvdb_id").map(String::as_str), Some("123456"));
+    assert_eq!(tokens.get("anidb_id").map(String::as_str), Some("69"));
+    assert_eq!(tokens.get("mal_id").map(String::as_str), Some("21"));
+    assert_eq!(tokens.get("anilist_id").map(String::as_str), Some("21"));
+}
+
+#[test]
+fn title_folder_template_accepts_external_id_tokens_and_trims_missing_groups() {
+    validate_title_folder_template("{title} [{tmdb_id}]").expect("external ID token is allowed");
+    validate_title_folder_template("{title} [{tmdb_id:8}]")
+        .expect("external ID token padding is allowed");
+
+    let mut title = test_movie_title("Movie");
+    title.external_ids = vec![ExternalId {
+        source: "tmdb".to_string(),
+        value: "155".to_string(),
+    }];
+    let tokens = build_title_folder_tokens(&title, None);
+    let rendered = render_title_folder_template("{title} [{tmdb_id:8}]", &tokens);
+
+    assert_eq!(rendered, "Movie [00000155]");
+
+    let title = test_movie_title("Movie");
+    let tokens = build_title_folder_tokens(&title, None);
+    let rendered = render_title_folder_template("{title} [{tmdb_id}]", &tokens);
+    assert_eq!(rendered, "Movie");
 }
 
 #[test]
@@ -541,6 +618,59 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
     assert_eq!(
         items[0].normalized_filename.as_deref(),
         Some("Movie (2024) [2160p H.265 DTS X 7.1].mkv")
+    );
+}
+
+#[test]
+fn movie_rename_items_render_external_id_tokens() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let current_path = dir.path().join("Movie.2024.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&current_path, b"movie").expect("seed movie file");
+    let current_path = current_path.to_string_lossy().to_string();
+
+    let mut title = test_movie_title("Movie (2024)");
+    title.imdb_id = Some("0468569".to_string());
+    title.external_ids = vec![
+        ExternalId {
+            source: "tmdb".to_string(),
+            value: "155".to_string(),
+        },
+        ExternalId {
+            source: "tvdb".to_string(),
+            value: "123456".to_string(),
+        },
+        ExternalId {
+            source: "anidb".to_string(),
+            value: "69".to_string(),
+        },
+        ExternalId {
+            source: "mal".to_string(),
+            value: "21".to_string(),
+        },
+        ExternalId {
+            source: "anilist".to_string(),
+            value: "21".to_string(),
+        },
+    ];
+    let collection = test_movie_collection(&current_path);
+    let media_file = test_media_file(&current_path);
+    let mut planned_targets = std::collections::HashSet::new();
+    let mut options = MovieRenamePlanOptions {
+        media_root: dir.path().to_str().expect("tempdir path"),
+        folder_template: "{title} ({year}) [{tmdb_id}]",
+        template: "{title} ({year}) [{imdb_id} {tmdb_id} {tvdb_id} {anidb_id} {mal_id} {anilist_id}].{ext}",
+        collision_policy: &RenameCollisionPolicy::Skip,
+        missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
+        planned_targets: &mut planned_targets,
+    };
+
+    let items =
+        build_movie_rename_plan_items(&title, vec![collection], vec![media_file], &mut options);
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].normalized_filename.as_deref(),
+        Some("Movie (2024) [tt0468569 155 123456 69 21 21].mkv")
     );
 }
 

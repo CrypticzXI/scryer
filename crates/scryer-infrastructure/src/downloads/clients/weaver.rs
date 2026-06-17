@@ -780,6 +780,11 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         } else {
             job.progress_percent.round().clamp(0.0, 100.0) as u8
         },
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: Some(job.total_bytes as i64),
         remaining_seconds: None,
         queued_at: Some(job.created_at.to_rfc3339()),

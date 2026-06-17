@@ -393,6 +393,13 @@ export function buildRouteCommands({
           keywords: ["system", "jobs", "scheduler", "background", "rss", "library"],
           icon: MonitorCog,
           onSelect: buildNavigate(onNavigate, "system", undefined, undefined, "jobs"),
+        } satisfies RouteCommand, {
+          id: "system-audit",
+          label: t("system.auditTitle"),
+          description: t("system.auditTitle"),
+          keywords: ["system", "audit", "events", "log", "history", "delete"],
+          icon: ClipboardList,
+          onSelect: buildNavigate(onNavigate, "system", undefined, undefined, "audit"),
         } satisfies RouteCommand]
       : []),
   ];

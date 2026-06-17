@@ -648,19 +648,19 @@ async fn resolve_actor(
     let actor = if !snapshot.effective_form_login_enabled {
         resolve_default_user(&state.app)
             .await
-            .map(|user| (user, AuthenticatedTokenClaims::default()))
+            .map(|user| (anonymous_user(user), AuthenticatedTokenClaims::default()))
     } else {
         match authorization_token_from_headers(headers) {
             Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
                 Ok((user, token_claims)) => Some((user, token_claims)),
                 Err(_) if local_bypass => resolve_default_user(&state.app)
                     .await
-                    .map(|user| (user, mfa_bypass_token_claims())),
+                    .map(|user| (anonymous_user(user), mfa_bypass_token_claims())),
                 Err(_) => None,
             },
             Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app)
                 .await
-                .map(|user| (user, mfa_bypass_token_claims())),
+                .map(|user| (anonymous_user(user), mfa_bypass_token_claims())),
             Ok(None) | Err(_) => None,
         }
     };
@@ -682,6 +682,11 @@ async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain
         Ok(None) => app_use_case.find_or_create_default_user().await.ok(),
         Err(_) => None,
     }
+}
+
+fn anonymous_user(mut user: scryer_domain::User) -> scryer_domain::User {
+    user.username = "Anonymous".to_string();
+    user
 }
 
 fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {

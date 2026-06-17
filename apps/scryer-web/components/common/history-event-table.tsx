@@ -68,6 +68,10 @@ function secondarySourceLabel(event: TitleHistoryEvent): string | null {
   return values.length > 0 ? values.join(" • ") : null;
 }
 
+function actorLabel(event: TitleHistoryEvent): string {
+  return event.actorDisplayName ?? event.actorUserId ?? event.actorKind ?? "\u2014";
+}
+
 function canRetryEvent(event: TitleHistoryEvent, onRetry?: (importId: string, password?: string) => Promise<void>): boolean {
   return Boolean(
     onRetry &&
@@ -80,6 +84,7 @@ export function HistoryEventTable({
   events,
   showTitle = false,
   showFacet = false,
+  showActor = false,
   titleNameMap,
   emptyMessage,
   onRetry,
@@ -87,6 +92,7 @@ export function HistoryEventTable({
   events: TitleHistoryEvent[];
   showTitle?: boolean;
   showFacet?: boolean;
+  showActor?: boolean;
   titleNameMap?: Record<string, string>;
   emptyMessage?: string;
   onRetry?: (importId: string, password?: string) => Promise<void>;
@@ -102,6 +108,7 @@ export function HistoryEventTable({
     (showTitle ? 1 : 0) +
     1 + // source
     (showFacet ? 1 : 0) +
+    (showActor ? 1 : 0) +
     1 + // quality
     1 + // date
     (showActions ? 1 : 0);
@@ -151,7 +158,7 @@ export function HistoryEventTable({
 
   return (
     <div className="overflow-x-auto">
-      <Table className={showTitle || showFacet || showActions ? "min-w-[980px]" : "min-w-[720px]"}>
+      <Table className={showTitle || showFacet || showActor || showActions ? "min-w-[1080px]" : "min-w-[720px]"}>
         <TableHeader>
           <TableRow>
             <TableHead className="w-10" />
@@ -162,6 +169,9 @@ export function HistoryEventTable({
             <TableHead>{t("history.sourceTitle")}</TableHead>
             {showFacet ? (
               <TableHead className="w-28">{t("history.facet")}</TableHead>
+            ) : null}
+            {showActor ? (
+              <TableHead className="w-36">{t("history.actor")}</TableHead>
             ) : null}
             <TableHead className="w-28">{t("history.quality")}</TableHead>
             <TableHead className="w-44">{t("history.date")}</TableHead>
@@ -240,6 +250,11 @@ export function HistoryEventTable({
                   {showFacet ? (
                     <TableCell className="align-top text-sm text-muted-foreground">
                       {formatFacetLabel(event.facet)}
+                    </TableCell>
+                  ) : null}
+                  {showActor ? (
+                    <TableCell className="align-top text-sm text-muted-foreground">
+                      {actorLabel(event)}
                     </TableCell>
                   ) : null}
                   <TableCell className="align-top text-sm text-muted-foreground">

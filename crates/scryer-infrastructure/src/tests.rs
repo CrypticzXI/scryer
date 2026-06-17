@@ -4314,7 +4314,9 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
     let event = NewDomainEvent {
         event_id: Id::new().0,
         occurred_at: Utc::now(),
+        actor_kind: scryer_domain::DomainEventActorKind::System,
         actor_user_id: None,
+        actor_display_name: "System".to_string(),
         title_id: Some(title.id.clone()),
         facet: Some(title.facet.clone()),
         correlation_id: None,

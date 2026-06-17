@@ -4,7 +4,9 @@ use scryer_application::{
     AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageRepository,
     TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec,
 };
-use scryer_domain::{DomainEvent, DomainEventStream, Id, MediaFacet, NewDomainEvent};
+use scryer_domain::{
+    DomainEvent, DomainEventActorKind, DomainEventStream, Id, MediaFacet, NewDomainEvent,
+};
 use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
 
@@ -12,7 +14,7 @@ use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
 };
 
-const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
+const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
 
 #[derive(Clone)]
 pub struct TitleImageStore {
@@ -694,7 +696,10 @@ fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
         sequence: row.i64("sequence")?,
         event_id: row.text("event_id")?,
         occurred_at: row.timestamp("occurred_at")?,
+        actor_kind: DomainEventActorKind::parse(row.text("actor_kind")?.as_str())
+            .unwrap_or(DomainEventActorKind::System),
         actor_user_id: row.opt_text("actor_user_id")?,
+        actor_display_name: row.text("actor_display_name")?,
         title_id: row.opt_text("title_id")?,
         facet: row
             .opt_text("facet")?

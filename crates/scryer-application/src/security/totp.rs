@@ -181,7 +181,7 @@ impl AppUseCase {
         let normalized_code = normalize_totp_code(code, profile.digits)?;
         let secret = base32_decode(&challenge.secret_base32)?;
         let now = Utc::now();
-        let Some(_step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
+        let Some(step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
             return Err(AppError::TotpInvalidCode(
                 "TOTP code did not match the enrollment secret".into(),
             ));
@@ -194,7 +194,7 @@ impl AppUseCase {
             algorithm: profile.algorithm.storage_value().to_string(),
             digits: profile.digits,
             period_seconds: profile.period_seconds,
-            last_accepted_step: None,
+            last_accepted_step: Some(step),
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
             last_used_at: None,

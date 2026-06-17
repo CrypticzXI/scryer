@@ -260,13 +260,21 @@ fn extract_url_origin(raw: &str) -> Option<String> {
 
     Some(format!("{scheme}://{authority}"))
 }
-fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+fn apply_import_record_overlay_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
     item.import_status = Some(record.status);
+    item.import_transfer_phase = record.import_transfer_phase;
+    item.import_transfer_bytes = record.import_transfer_bytes;
+    item.import_transfer_total_bytes = record.import_transfer_total_bytes;
+    item.import_transfer_started_at = record.import_transfer_started_at.clone();
+    item.import_transfer_updated_at = record.import_transfer_updated_at.clone();
     item.imported_at = record
         .finished_at
         .clone()
         .or(Some(record.updated_at.clone()));
+}
 
+fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+    apply_import_record_overlay_to_queue_item(item, record);
     if let Some(result_json) = record.result_json.as_deref()
         && let Ok(result) = serde_json::from_str::<scryer_domain::ImportResult>(result_json)
         && let Some(error_msg) = result.error_message
@@ -372,11 +380,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
     let mut seen_client_items = HashSet::new();
     for (index, item) in items.iter().enumerate() {
         let current = download_queue_item_source_identity(item);
-        push_source_identity_candidate(
-            &mut client_items,
-            &mut seen_client_items,
-            current.clone(),
-        );
+        push_source_identity_candidate(&mut client_items, &mut seen_client_items, current.clone());
         if current.client_id.is_none() {
             push_source_identity_candidate(
                 &mut client_items,
@@ -385,7 +389,8 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             );
         }
 
-        if let Some(original) = original_source_identities.and_then(|identities| identities.get(index))
+        if let Some(original) =
+            original_source_identities.and_then(|identities| identities.get(index))
         {
             push_source_identity_candidate(
                 &mut client_items,
@@ -497,7 +502,10 @@ async fn find_submission_for_queue_item_by_download_id(
         if client_type.is_empty() {
             return;
         }
-        let key = (normalized_download_client_id(client_id), client_type.to_string());
+        let key = (
+            normalized_download_client_id(client_id),
+            client_type.to_string(),
+        );
         if seen.insert(key.clone()) {
             candidates.push(key);
         }
@@ -1185,6 +1193,53 @@ impl AppUseCase {
             .await?;
         Ok(visible.into_iter().next())
     }
+
+    pub async fn update_import_transfer_progress_and_notify(
+        &self,
+        import_id: &str,
+        phase: scryer_domain::ImportTransferPhase,
+        bytes: u64,
+        total_bytes: u64,
+    ) -> AppResult<()> {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        let total_bytes = i64::try_from(total_bytes).unwrap_or(i64::MAX);
+        self.services
+            .workflow
+            .imports
+            .update_import_transfer_progress(import_id, phase, bytes, total_bytes)
+            .await?;
+
+        let Some(record) = self
+            .services
+            .workflow
+            .imports
+            .get_import_by_id(import_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(item) = self
+            .find_download_queue_item_raw(
+                record.source_client_id.as_deref(),
+                Some(record.source_system.as_str()),
+                record.source_ref.as_str(),
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let key = download_queue_projection_key(&item);
+        let event = new_download_queue_domain_event(
+            None,
+            key,
+            DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
+                item,
+            }),
+        );
+        let _ = self.append_domain_event(event).await;
+        Ok(())
+    }
 }
 impl AppUseCase {
     pub async fn find_download_queue_scope(
@@ -1322,6 +1377,11 @@ fn merge_download_queue_item(existing: &mut DownloadQueueItem, incoming: Downloa
     }
     if incoming.import_status.is_some() {
         existing.import_status = incoming.import_status;
+        existing.import_transfer_phase = incoming.import_transfer_phase;
+        existing.import_transfer_bytes = incoming.import_transfer_bytes;
+        existing.import_transfer_total_bytes = incoming.import_transfer_total_bytes;
+        existing.import_transfer_started_at = incoming.import_transfer_started_at.clone();
+        existing.import_transfer_updated_at = incoming.import_transfer_updated_at.clone();
     }
     if incoming.import_error_message.is_some() {
         existing.import_error_message = incoming.import_error_message.clone();

@@ -1064,6 +1064,16 @@ pub struct DownloadQueueItem {
     pub client_type: String,
     pub state: DownloadQueueState,
     pub progress_percent: u8,
+    #[serde(default)]
+    pub import_transfer_phase: Option<ImportTransferPhase>,
+    #[serde(default)]
+    pub import_transfer_bytes: Option<i64>,
+    #[serde(default)]
+    pub import_transfer_total_bytes: Option<i64>,
+    #[serde(default)]
+    pub import_transfer_started_at: Option<String>,
+    #[serde(default)]
+    pub import_transfer_updated_at: Option<String>,
     pub size_bytes: Option<i64>,
     pub remaining_seconds: Option<i64>,
     pub queued_at: Option<String>,
@@ -1235,6 +1245,30 @@ impl ImportStatus {
 
     pub fn is_active(self) -> bool {
         matches!(self, Self::Pending | Self::Running | Self::Processing)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportTransferPhase {
+    Copying,
+    Finalizing,
+}
+
+impl ImportTransferPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Copying => "copying",
+            Self::Finalizing => "finalizing",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "copying" => Some(Self::Copying),
+            "finalizing" => Some(Self::Finalizing),
+            _ => None,
+        }
     }
 }
 
@@ -1475,6 +1509,11 @@ pub struct ImportRecord {
     pub payload_json: String,
     pub result_json: Option<String>,
     pub download_id: Option<String>,
+    pub import_transfer_phase: Option<ImportTransferPhase>,
+    pub import_transfer_bytes: Option<i64>,
+    pub import_transfer_total_bytes: Option<i64>,
+    pub import_transfer_started_at: Option<String>,
+    pub import_transfer_updated_at: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
@@ -1498,6 +1537,12 @@ pub struct ImportSourceCleanupGuard {
     pub source_identity: ImportSourceIdentity,
     pub source_proof: ImportContentProof,
     pub dest_proof: ImportContentProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportSourceSnapshot {
+    pub identity: ImportSourceIdentity,
+    pub proof: ImportContentProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1545,6 +1590,8 @@ pub enum TitleHistoryEventType {
     Imported,
     ImportFailed,
     ImportSkipped,
+    FileUpgraded,
+    FileRecycled,
     FileDeleted,
     FileRenamed,
     DownloadIgnored,
@@ -1562,6 +1609,8 @@ impl TitleHistoryEventType {
             Self::Imported => "imported",
             Self::ImportFailed => "import_failed",
             Self::ImportSkipped => "import_skipped",
+            Self::FileUpgraded => "file_upgraded",
+            Self::FileRecycled => "file_recycled",
             Self::FileDeleted => "file_deleted",
             Self::FileRenamed => "file_renamed",
             Self::DownloadIgnored => "download_ignored",
@@ -1579,6 +1628,8 @@ impl TitleHistoryEventType {
             "imported" => Some(Self::Imported),
             "import_failed" => Some(Self::ImportFailed),
             "import_skipped" => Some(Self::ImportSkipped),
+            "file_upgraded" => Some(Self::FileUpgraded),
+            "file_recycled" => Some(Self::FileRecycled),
             "file_deleted" => Some(Self::FileDeleted),
             "file_renamed" => Some(Self::FileRenamed),
             "download_ignored" => Some(Self::DownloadIgnored),
@@ -1649,6 +1700,12 @@ pub struct TitleHistoryRecord {
     pub episode_ids: Vec<String>,
     pub collection_id: Option<String>,
     pub event_type: TitleHistoryEventType,
+    #[serde(default)]
+    pub actor_kind: Option<DomainEventActorKind>,
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
+    #[serde(default)]
+    pub actor_display_name: Option<String>,
     pub source_title: Option<String>,
     #[serde(default)]
     pub display_title: Option<String>,
@@ -2187,7 +2244,19 @@ pub struct MediaFileRenamedEventData {
 pub enum MediaFileDeletedReason {
     Deleted,
     UpgradeCleanup,
+    RecycleBinPurged,
     MissingOnDisk,
+}
+
+impl MediaFileDeletedReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deleted => "deleted",
+            Self::UpgradeCleanup => "upgrade_cleanup",
+            Self::RecycleBinPurged => "recycle_bin_purged",
+            Self::MissingOnDisk => "missing_on_disk",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2595,12 +2664,41 @@ impl DomainEventStream {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainEventActorKind {
+    User,
+    Anonymous,
+    System,
+}
+
+impl DomainEventActorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Anonymous => "anonymous",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "anonymous" => Some(Self::Anonymous),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DomainEvent {
     pub sequence: i64,
     pub event_id: String,
     pub occurred_at: DateTime<Utc>,
+    pub actor_kind: DomainEventActorKind,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub facet: Option<MediaFacet>,
     pub correlation_id: Option<String>,
@@ -2614,7 +2712,9 @@ pub struct DomainEvent {
 pub struct NewDomainEvent {
     pub event_id: String,
     pub occurred_at: DateTime<Utc>,
+    pub actor_kind: DomainEventActorKind,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub facet: Option<MediaFacet>,
     pub correlation_id: Option<String>,

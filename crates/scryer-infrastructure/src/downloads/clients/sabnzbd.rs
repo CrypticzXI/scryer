@@ -854,6 +854,11 @@ impl DownloadClient for SabnzbdDownloadClient {
                     client_type: "sabnzbd".to_string(),
                     state,
                     progress_percent: percentage,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes,
                     remaining_seconds,
                     queued_at: None,
@@ -933,6 +938,11 @@ impl DownloadClient for SabnzbdDownloadClient {
                     } else {
                         0
                     },
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes: extract_i64_value(slot.get("bytes")),
                     remaining_seconds: None,
                     queued_at: extract_i64_value(slot.get("time_added")).map(|v| v.to_string()),
@@ -1013,6 +1023,11 @@ impl DownloadClient for SabnzbdDownloadClient {
                     } else {
                         0
                     },
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes: extract_i64_value(slot.get("bytes")),
                     remaining_seconds: None,
                     queued_at: extract_i64_value(slot.get("time_added"))

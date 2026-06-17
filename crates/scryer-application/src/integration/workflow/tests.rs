@@ -1,17 +1,19 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadQueueBucket, apply_tracked_download_queue_metadata,
-        canonicalize_download_queue_item_clients, classify_download_queue_item,
-        collect_download_client_filter_options, dedupe_download_queue_items,
-        derive_download_queue_display_state, download_queue_client_filter_key,
-        synthetic_terminal_download_queue_item, tracked_download_queue_snapshot,
+        DownloadQueueBucket, apply_manual_import_record_to_queue_item,
+        apply_tracked_download_queue_metadata, canonicalize_download_queue_item_clients,
+        classify_download_queue_item, collect_download_client_filter_options,
+        dedupe_download_queue_items, derive_download_queue_display_state,
+        download_queue_client_filter_key, synthetic_terminal_download_queue_item,
+        tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
     use chrono::Utc;
     use scryer_domain::{
         DownloadClientConfig, DownloadClientStatus, DownloadQueueItem, DownloadQueueState,
-        ImportStatus, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
+        ImportRecord, ImportStatus, ImportTransferPhase, ImportType, TitleMatchType,
+        TrackedDownloadState, TrackedDownloadStatus,
     };
 
     fn item(id: &str, state: DownloadQueueState) -> DownloadQueueItem {
@@ -27,6 +29,11 @@ mod tests {
             client_type: "weaver".to_string(),
             state,
             progress_percent: 100,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: Some(100),
             remaining_seconds: None,
             queued_at: Some(Utc::now().timestamp_millis().to_string()),
@@ -47,6 +54,53 @@ mod tests {
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
         }
+    }
+
+    #[test]
+    fn manual_import_record_overlay_includes_transfer_progress() {
+        let mut queue_item = item("job-1", DownloadQueueState::Completed);
+        let record = ImportRecord {
+            id: "import-1".to_string(),
+            source_client_id: Some("client-1".to_string()),
+            source_system: "weaver".to_string(),
+            source_ref: "job-1".to_string(),
+            import_type: ImportType::ManualImport,
+            status: ImportStatus::Processing,
+            payload_json: "{}".to_string(),
+            result_json: None,
+            download_id: None,
+            import_transfer_phase: Some(ImportTransferPhase::Copying),
+            import_transfer_bytes: Some(524_288),
+            import_transfer_total_bytes: Some(1_048_576),
+            import_transfer_started_at: Some("2026-06-17T12:00:00Z".to_string()),
+            import_transfer_updated_at: Some("2026-06-17T12:00:01Z".to_string()),
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-06-17T12:00:00Z".to_string(),
+            updated_at: "2026-06-17T12:00:01Z".to_string(),
+        };
+
+        apply_manual_import_record_to_queue_item(&mut queue_item, &record);
+
+        assert_eq!(queue_item.import_status, Some(ImportStatus::Processing));
+        assert_eq!(
+            queue_item.import_transfer_phase,
+            Some(ImportTransferPhase::Copying)
+        );
+        assert_eq!(queue_item.import_transfer_bytes, Some(524_288));
+        assert_eq!(queue_item.import_transfer_total_bytes, Some(1_048_576));
+        assert_eq!(
+            queue_item.import_transfer_started_at.as_deref(),
+            Some("2026-06-17T12:00:00Z")
+        );
+        assert_eq!(
+            queue_item.import_transfer_updated_at.as_deref(),
+            Some("2026-06-17T12:00:01Z")
+        );
+        assert_eq!(
+            queue_item.imported_at.as_deref(),
+            Some("2026-06-17T12:00:01Z")
+        );
     }
 
     fn client_config(

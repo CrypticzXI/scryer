@@ -5,16 +5,16 @@
 //! or deleted.
 
 use crate::domain_events::{
-    created_media_update, deleted_media_update, modified_media_update, new_title_domain_event,
-    title_context_snapshot,
+    DomainEventActor, created_media_update, deleted_media_update, modified_media_update,
+    new_title_domain_event, title_context_snapshot,
 };
 use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
 use scryer_domain::{
-    DomainEventPayload, ImportMode, ImportSourceCleanupGuard, MediaFileUpgradedEventData, Title,
-    User,
+    DomainEventPayload, ImportMode, ImportSourceCleanupGuard, MediaFileDeletedEventData,
+    MediaFileDeletedReason, MediaFileUpgradedEventData, Title, User,
 };
 use std::path::{Path, PathBuf};
 
@@ -42,7 +42,7 @@ pub enum UpgradeResult {
 )]
 pub(crate) async fn execute_upgrade(
     app: &AppUseCase,
-    _actor: &User,
+    actor: &User,
     title: &Title,
     existing_file: &TitleMediaFile,
     source_path: &std::path::Path,
@@ -57,6 +57,7 @@ pub(crate) async fn execute_upgrade(
     import_mode: ImportMode,
 ) -> AppResult<UpgradeResult> {
     ensure_old_file_disposition_ready(recycle_config)?;
+    let audit_actor = DomainEventActor::from(actor);
 
     let old_path = stored_path_to_path_buf(&existing_file.file_path);
     let dest_path_string = path_to_stored_string(dest_path);
@@ -111,12 +112,9 @@ pub(crate) async fn execute_upgrade(
     )
     .await?;
 
-    if import_mode == ImportMode::Move {
-        remove_upgrade_import_source_after_verified_commit(app, &replacement).await?;
-    }
-
     append_upgrade_event(
         app,
+        audit_actor.clone(),
         title,
         existing_file,
         &replacement.new_file_id,
@@ -125,6 +123,14 @@ pub(crate) async fn execute_upgrade(
         final_score,
     )
     .await?;
+
+    if recycle_entry_committed {
+        append_upgrade_recycle_event(app, audit_actor.clone(), title, existing_file).await;
+    }
+
+    if import_mode == ImportMode::Move {
+        remove_upgrade_import_source_after_verified_commit(app, &replacement).await?;
+    }
 
     Ok(UpgradeResult::Upgraded(UpgradeOutcome {
         old_score,
@@ -181,7 +187,12 @@ async fn prepare_replacement_before_old_removal(
         .services
         .workflow
         .file_importer
-        .import_file(source_path, import_path, import_mode)
+        .import_file(
+            source_path,
+            import_path,
+            import_mode,
+            Some(&prepared.source_snapshot),
+        )
         .await
         .map_err(|err| {
             AppError::Repository(format!(
@@ -712,6 +723,7 @@ async fn remove_upgrade_import_source_after_verified_commit(
 
 async fn append_upgrade_event(
     app: &AppUseCase,
+    actor: DomainEventActor,
     title: &Title,
     existing_file: &TitleMediaFile,
     new_file_id: &str,
@@ -728,7 +740,7 @@ async fn append_upgrade_event(
         ]
     };
     app.append_domain_event(new_title_domain_event(
-        None,
+        actor,
         title,
         DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
             title: title_context_snapshot(title),
@@ -741,6 +753,34 @@ async fn append_upgrade_event(
     ))
     .await
     .map(|_| ())
+}
+
+async fn append_upgrade_recycle_event(
+    app: &AppUseCase,
+    actor: DomainEventActor,
+    title: &Title,
+    existing_file: &TitleMediaFile,
+) {
+    let _ = app
+        .append_domain_event(new_title_domain_event(
+            actor,
+            title,
+            DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
+                title: title_context_snapshot(title),
+                media_updates: vec![deleted_media_update(existing_file.file_path.clone())],
+                file_id: Some(existing_file.id.clone()),
+                reason: MediaFileDeletedReason::UpgradeCleanup,
+                episode_ids: Vec::new(),
+            }),
+        ))
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                error = %error,
+                file_id = %existing_file.id,
+                "old media file recycled during upgrade but audit event could not be recorded"
+            );
+        });
 }
 
 async fn remove_imported_replacement(dest_path: &std::path::Path) {

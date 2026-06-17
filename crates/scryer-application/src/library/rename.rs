@@ -571,7 +571,7 @@ impl AppUseCase {
                 .collect();
             if let Err(error) = self
                 .append_domain_event(new_title_domain_event(
-                    Some(actor.id.clone()),
+                    actor,
                     &title,
                     DomainEventPayload::MediaFileRenamed(MediaFileRenamedEventData {
                         title: title_context_snapshot(&title),
@@ -1092,8 +1092,42 @@ fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> 
     out
 }
 
+fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = template.chars().collect();
+    let mut cursor = 0usize;
+
+    while cursor < chars.len() {
+        let ch = chars[cursor];
+        if ch == '{' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '{') {
+                out.push('{');
+                cursor += 2;
+                continue;
+            }
+
+            if let Some(end) = chars[cursor + 1..].iter().position(|c| *c == '}') {
+                let end_index = cursor + 1 + end;
+                let token_spec: String = chars[cursor + 1..end_index].iter().collect();
+                out.push_str(&resolve_template_token(tokens, token_spec.trim()));
+                cursor = end_index + 1;
+                continue;
+            }
+        } else if ch == '}' && chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+            out.push('}');
+            cursor += 2;
+            continue;
+        }
+
+        out.push(ch);
+        cursor += 1;
+    }
+
+    out
+}
+
 pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    sanitize_filesystem_component(&render_template_tokens(template, tokens))
+    sanitize_filesystem_component(&render_rename_template_tokens(template, tokens))
 }
 
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
@@ -1138,8 +1172,11 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
                 "folder template contains an unmatched '{'".to_string(),
             ));
         }
-        let token_name = token_spec.trim().to_ascii_lowercase();
-        if !matches!(token_name.as_str(), "title" | "year") {
+        let token_name = token_spec
+            .split_once(':')
+            .map_or(token_spec.trim(), |(name, _)| name.trim())
+            .to_ascii_lowercase();
+        if !is_supported_title_folder_token(&token_name) {
             return Err(AppError::Validation(format!(
                 "unsupported folder template token: {{{}}}",
                 token_spec.trim()
@@ -1206,10 +1243,12 @@ pub(crate) fn build_title_folder_tokens(
     let resolved_year = title_year_hint
         .or_else(|| title.year.map(|value| value.to_string()))
         .unwrap_or_default();
-    BTreeMap::from([
+    let mut tokens = BTreeMap::from([
         ("title".to_string(), title_token),
         ("year".to_string(), resolved_year),
-    ])
+    ]);
+    insert_title_external_id_tokens(&mut tokens, title);
+    tokens
 }
 
 pub(crate) fn configured_title_folder_path(
@@ -1499,6 +1538,54 @@ fn insert_common_rename_tokens(tokens: &mut BTreeMap<String, String>, common: Re
     tokens.insert("audio_channels".to_string(), common.audio_channels);
     tokens.insert("group".to_string(), common.group);
     tokens.insert("ext".to_string(), common.extension);
+}
+
+const TITLE_EXTERNAL_ID_TOKENS: [(&str, &str); 6] = [
+    ("imdb_id", "imdb"),
+    ("tmdb_id", "tmdb"),
+    ("tvdb_id", "tvdb"),
+    ("anidb_id", "anidb"),
+    ("mal_id", "mal"),
+    ("anilist_id", "anilist"),
+];
+
+fn is_supported_title_folder_token(token: &str) -> bool {
+    matches!(token, "title" | "year")
+        || TITLE_EXTERNAL_ID_TOKENS
+            .iter()
+            .any(|(token_name, _)| *token_name == token)
+}
+
+fn insert_title_external_id_tokens(tokens: &mut BTreeMap<String, String>, title: &Title) {
+    for (token_name, source) in TITLE_EXTERNAL_ID_TOKENS {
+        let value = if source == "imdb" {
+            imdb_id_from_title(title)
+        } else {
+            title_external_id_value(title, source)
+        }
+        .unwrap_or_default();
+        tokens.insert(token_name.to_string(), value);
+    }
+}
+
+fn imdb_id_from_title(title: &Title) -> Option<String> {
+    title
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+        .or_else(|| {
+            title_external_id_value(title, "imdb")
+                .and_then(|id| crate::normalize::normalize_imdb_id(&id))
+        })
+}
+
+fn title_external_id_value(title: &Title, source: &str) -> Option<String> {
+    title
+        .external_ids
+        .iter()
+        .find(|id| id.source.eq_ignore_ascii_case(source))
+        .map(|id| id.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn resolved_analysis_labels_for_media_file(
@@ -1824,6 +1911,7 @@ fn build_series_media_file_rename_plan_item(
 
     let mut tokens = BTreeMap::new();
     insert_common_rename_tokens(&mut tokens, common.common);
+    insert_title_external_id_tokens(&mut tokens, title);
     tokens.insert("season".to_string(), rename_metadata.season.clone());
     tokens.insert(
         "season_order".to_string(),
@@ -2194,6 +2282,7 @@ fn build_movie_rename_plan_item(
     let mut tokens = BTreeMap::new();
     let edition = common.edition.clone();
     insert_common_rename_tokens(&mut tokens, common.common);
+    insert_title_external_id_tokens(&mut tokens, title);
     tokens.insert("edition".to_string(), edition);
     let rendered = match resolve_rendered_rename_filename(
         &source_file,

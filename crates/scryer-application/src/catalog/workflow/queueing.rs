@@ -670,7 +670,7 @@ impl AppUseCase {
         let grabbed_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
 
         self.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             title,
             DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
                 title: title_context_snapshot(title),

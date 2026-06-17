@@ -743,7 +743,7 @@ function MainContent({
 }
 
 export default function HomePage() {
-  const { serviceRestarting, setServiceRestarting } = useBackendRestarting();
+  const { serviceRestarting } = useBackendRestarting();
   const {
     token,
     user,
@@ -825,7 +825,6 @@ export default function HomePage() {
       authenticatedUser={user}
       adoptSession={adoptSession}
       serviceRestarting={serviceRestarting}
-      setServiceRestarting={setServiceRestarting}
     />
   );
 }
@@ -835,13 +834,11 @@ function AuthenticatedHomePage({
   authenticatedUser,
   adoptSession,
   serviceRestarting,
-  setServiceRestarting,
 }: {
   authToken: string | null;
   authenticatedUser: AuthUser;
   adoptSession: (nextToken: string, nextUser: AuthUser | null) => void;
   serviceRestarting: boolean;
-  setServiceRestarting: (value: boolean) => void;
 }) {
   const isOnline = useOnlineStatus();
   const { canPrompt, isInstalled, isIosSafari, promptInstall } =
@@ -964,12 +961,7 @@ function AuthenticatedHomePage({
   } = useLanguage(searchParams);
 
   const [, setGlobalStatusRaw] = useState("");
-  const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw, {
-    onServiceRestarting: useCallback(
-      () => setServiceRestarting(true),
-      [setServiceRestarting],
-    ),
-  });
+  const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw);
   type NavigationBadgeCountsPayload = {
     pendingImportCounts?: PendingImportCounts | null;
     pendingMediaRequestCounts?: PendingImportCounts | null;

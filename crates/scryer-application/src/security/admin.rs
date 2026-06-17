@@ -525,7 +525,7 @@ impl AppUseCase {
             .await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user",
             Some(user.id.clone()),
             ConfigurationChangeAction::Saved,
@@ -664,7 +664,7 @@ impl AppUseCase {
             .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_password",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -704,7 +704,7 @@ impl AppUseCase {
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_permissions",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -746,7 +746,7 @@ impl AppUseCase {
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_permissions",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -774,7 +774,7 @@ impl AppUseCase {
         self.services.identity.users.delete(user_id).await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user",
             Some(user.id),
             ConfigurationChangeAction::Deleted,
@@ -808,7 +808,7 @@ impl AppUseCase {
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_mfa",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,

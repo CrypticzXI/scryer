@@ -4,6 +4,7 @@ use super::backup_bundle::{
     LEGACY_BACKUP_PLAINTEXT_EXTENSION,
 };
 use super::*;
+use crate::domain_events::DomainEventActor;
 use crate::types::{BackupStatus, BackupTrigger};
 use chrono::TimeZone;
 use scryer_domain::{ConfigurationChangeAction, Id};
@@ -418,7 +419,7 @@ impl AppUseCase {
 
     async fn complete_backup_request(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         prepared: PreparedBackupRequest,
         passphrase: Option<String>,
     ) -> AppResult<BackupInfo> {
@@ -473,7 +474,7 @@ impl AppUseCase {
         }
 
         self.emit_configuration_changed_event(
-            actor_user_id,
+            actor,
             "backup",
             Some(filename),
             ConfigurationChangeAction::Saved,
@@ -489,7 +490,7 @@ impl AppUseCase {
 
     async fn create_backup_inline(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         trigger: BackupTrigger,
         passphrase: Option<&str>,
     ) -> AppResult<BackupInfo> {
@@ -502,7 +503,7 @@ impl AppUseCase {
             trigger = prepared.queued.trigger.as_str(),
             "backup bundle starting"
         );
-        self.complete_backup_request(actor_user_id, prepared, passphrase.map(str::to_string))
+        self.complete_backup_request(actor, prepared, passphrase.map(str::to_string))
             .await
     }
 
@@ -548,12 +549,12 @@ impl AppUseCase {
         );
 
         let app = self.clone();
-        let actor_id = Some(actor.id.clone());
+        let actor_event = DomainEventActor::from(actor);
         let passphrase_for_task = passphrase.map(str::to_string);
         tokio::spawn(async move {
             let _execution_guard = execution_guard;
             if let Err(error) = app
-                .complete_backup_request(actor_id, prepared, passphrase_for_task)
+                .complete_backup_request(actor_event, prepared, passphrase_for_task)
                 .await
             {
                 warn!(error = %error, "manual backup bundle task failed");
@@ -634,7 +635,7 @@ impl AppUseCase {
 
         info!(filename, "backup deleted");
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "backup",
             Some(filename.to_string()),
             ConfigurationChangeAction::Deleted,
@@ -699,17 +700,12 @@ impl AppUseCase {
             });
         }
 
-        let actor = self.find_or_create_default_user().await?;
         let passphrase = self
             .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
             .await?
             .filter(|value| !value.is_empty());
         let info = self
-            .create_backup_inline(
-                Some(actor.id.clone()),
-                BackupTrigger::Auto,
-                passphrase.as_deref(),
-            )
+            .create_backup_inline(None, BackupTrigger::Auto, passphrase.as_deref())
             .await?;
         let pruned_count = self
             .enforce_auto_backup_retention(AUTO_BACKUP_RETENTION_COUNT)

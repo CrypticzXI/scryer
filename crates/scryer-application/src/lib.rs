@@ -184,6 +184,7 @@ pub use contracts::{
     SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
     WantedSearchOutcome,
 };
+pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
     DownloadClientRemotePathMapping, apply_remote_path_mappings_to_completed_download,
     apply_remote_path_mappings_to_status, has_download_client_remote_path_mappings,
@@ -313,12 +314,13 @@ pub use ports::{
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
-    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
-    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
-    IndexerPluginProvider, IndexerStatsTracker, JellyfinServerUser, JobRunRepository,
-    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
-    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportFileTransferProgress,
+    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
+    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
+    IndexerStatsTracker, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
+    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
+    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
+    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,

@@ -864,6 +864,15 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         state: DownloadQueueStateValue::from_domain(item.state),
         display_state,
         progress_percent: i32::from(item.progress_percent),
+        import_transfer_phase: item
+            .import_transfer_phase
+            .map(|phase| phase.as_str().to_string()),
+        import_transfer_bytes: item.import_transfer_bytes.map(|value| value.to_string()),
+        import_transfer_total_bytes: item
+            .import_transfer_total_bytes
+            .map(|value| value.to_string()),
+        import_transfer_started_at: item.import_transfer_started_at,
+        import_transfer_updated_at: item.import_transfer_updated_at,
         size_bytes: item.size_bytes.map(|value| value.to_string()),
         remaining_seconds: item
             .remaining_seconds
@@ -1672,7 +1681,9 @@ pub fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
             .into_iter()
             .map(ActivityChannelValue::from_application)
             .collect(),
+        actor_kind: event.actor_kind.as_str().to_string(),
         actor_user_id: event.actor_user_id,
+        actor_display_name: event.actor_display_name,
         title_id: event.title_id,
         facet: event.facet.as_deref().and_then(MediaFacetValue::parse),
         message: event.message,
@@ -2127,7 +2138,9 @@ pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
         sequence: event.sequence,
         event_id: event.event_id,
         occurred_at: event.occurred_at.to_rfc3339(),
+        actor_kind: event.actor_kind.as_str().to_string(),
         actor_user_id: event.actor_user_id,
+        actor_display_name: event.actor_display_name,
         title_id: event.title_id,
         facet: event.facet.map(MediaFacetValue::from_domain),
         event_type: DomainEventTypeValue::from_domain(event.payload.event_type()),
@@ -2289,6 +2302,11 @@ pub fn from_title_history_record(record: TitleHistoryRecord) -> TitleHistoryEven
         episode_ids: record.episode_ids,
         collection_id: record.collection_id,
         event_type: record.event_type.as_str().to_string(),
+        actor_kind: record
+            .actor_kind
+            .map(|actor_kind| actor_kind.as_str().to_string()),
+        actor_user_id: record.actor_user_id,
+        actor_display_name: record.actor_display_name,
         source_title: record.source_title,
         display_title: record.display_title,
         source_system: record.source_system,
@@ -2348,6 +2366,11 @@ mod tests {
             source_system: "weaver".to_string(),
             source_ref: "10495".to_string(),
             download_id: None,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             import_type: ImportType::SeriesDownload,
             status: ImportStatus::Completed,
             payload_json: serde_json::to_string(&payload).expect("serialize completed download"),

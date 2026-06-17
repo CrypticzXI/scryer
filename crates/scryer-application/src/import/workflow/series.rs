@@ -231,7 +231,7 @@ async fn import_series_download(
 
     if imported_count > 0 && !move_import_has_failure {
         app.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(title),
@@ -656,6 +656,7 @@ async fn import_single_episode_file(
         app,
         actor,
         title,
+        import_id,
         rename_enabled,
         rename_template,
         title_folder_path,
@@ -715,7 +716,7 @@ async fn import_single_episode_file(
 
                 spawn_post_processing(PostProcessingContext {
                     app: app.clone(),
-                    actor_id: Some(actor.id.clone()),
+                    actor: crate::domain_events::DomainEventActor::from(actor),
                     title_id: title.id.clone(),
                     title_name: title.name.clone(),
                     facet: title.facet.clone(),
@@ -774,7 +775,7 @@ async fn import_single_episode_file(
             if *finalize_before_import {
                 crate::post_download_gate::reject_source_file_before_import(
                     app,
-                    Some(&actor.id),
+                    crate::domain_events::DomainEventActor::from(actor),
                     title,
                     &completed.name,
                     source_video,

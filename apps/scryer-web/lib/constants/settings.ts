@@ -131,6 +131,7 @@ export const CONTENT_SETTINGS_SUB_PAGE_PATH_TO_ID: Record<string, ContentSetting
 export const SYSTEM_SECTION_PATH_TO_ID: Record<string, SystemSection> = {
   overview: "overview",
   jobs: "jobs",
+  audit: "audit",
 };
 
 export const ACTIVITY_SECTION_PATH_TO_ID: Record<string, ActivitySection> = {

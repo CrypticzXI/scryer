@@ -27,7 +27,7 @@ impl AppUseCase {
                 .await?;
         }
         self.emit_download_queue_item_command_issued_event(
-            Some(actor.id.clone()),
+            actor,
             download_client_item_id.to_string(),
             scryer_domain::DownloadQueueCommandAction::Pause,
         )
@@ -64,7 +64,7 @@ impl AppUseCase {
                 .await?;
         }
         self.emit_download_queue_item_command_issued_event(
-            Some(actor.id.clone()),
+            actor,
             download_client_item_id.to_string(),
             scryer_domain::DownloadQueueCommandAction::Resume,
         )
@@ -103,7 +103,7 @@ impl AppUseCase {
             )
             .await?;
         self.emit_download_queue_item_command_issued_event(
-            Some(actor.id.clone()),
+            actor,
             download_client_item_id.to_string(),
             scryer_domain::DownloadQueueCommandAction::Delete,
         )

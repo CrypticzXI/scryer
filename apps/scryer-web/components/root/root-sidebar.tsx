@@ -173,6 +173,7 @@ const MEDIA_SETTINGS_SUB_PAGES: Array<{ id: ContentSettingsSection; labelKey: st
 const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "overview", labelKey: "system.title" },
   { id: "jobs", labelKey: "system.jobsTitle" },
+  { id: "audit", labelKey: "system.auditTitle" },
 ];
 
 const ACTIVITY_SUB_PAGES: Array<{ id: ActivitySection; labelKey: string }> = [

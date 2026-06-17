@@ -389,7 +389,7 @@ pub async fn start_download_queue_poller(
 
                         publish_download_queue_snapshot_events(
                             &app,
-                            Some(actor.id.clone()),
+                            None,
                             &mut previous_items,
                             &items,
                         )

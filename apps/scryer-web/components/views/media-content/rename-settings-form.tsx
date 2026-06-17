@@ -46,6 +46,7 @@ const VALID_RENAME_TOKENS = new Set([
   "title", "year", "quality", "edition", "source",
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
   "season", "season_order", "episode", "episode_title", "absolute_episode",
+  "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
 ]);
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -62,6 +63,15 @@ const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = 
 const MOVIE_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "year", labelKey: "settings.renameTokenYear" },
   { token: "edition", labelKey: "settings.renameTokenEdition" },
+];
+
+const EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
+  { token: "imdb_id", labelKey: "settings.renameTokenImdbId" },
+  { token: "tmdb_id", labelKey: "settings.renameTokenTmdbId" },
+  { token: "tvdb_id", labelKey: "settings.renameTokenTvdbId" },
+  { token: "anidb_id", labelKey: "settings.renameTokenAnidbId" },
+  { token: "mal_id", labelKey: "settings.renameTokenMalId" },
+  { token: "anilist_id", labelKey: "settings.renameTokenAnilistId" },
 ];
 
 const SERIES_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -87,7 +97,7 @@ function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; l
   const shared = scopeId === "series"
     ? SHARED_RENAME_TOKEN_DESCRIPTIONS.filter((token) => token.token !== "group")
     : SHARED_RENAME_TOKEN_DESCRIPTIONS;
-  return [...scopeSpecific, ...shared];
+  return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
 function validateRenameTemplate(
@@ -99,7 +109,20 @@ function validateRenameTemplate(
   }
 
   let i = 0;
+  let escapedLiteralOpenCount = 0;
   while (i < template.length) {
+    if (template.startsWith("{{", i)) {
+      escapedLiteralOpenCount += 1;
+      i += 2;
+      continue;
+    }
+    if (template.startsWith("}}", i)) {
+      if (escapedLiteralOpenCount > 0) {
+        escapedLiteralOpenCount -= 1;
+      }
+      i += 2;
+      continue;
+    }
     if (template[i] === "{") {
       const closeIndex = template.indexOf("}", i + 1);
       if (closeIndex === -1) {
@@ -115,6 +138,11 @@ function validateRenameTemplate(
       }
       i = closeIndex + 1;
     } else if (template[i] === "}") {
+      if (escapedLiteralOpenCount > 0) {
+        escapedLiteralOpenCount -= 1;
+        i++;
+        continue;
+      }
       return t("settings.renameValidationUnmatchedClose");
     } else {
       i++;
@@ -135,6 +163,12 @@ const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
   audio_channels: "5.1",
   group: "FraMeSToR",
   ext: "mkv",
+  imdb_id: "tt0468569",
+  tmdb_id: "155",
+  tvdb_id: "123456",
+  anidb_id: "",
+  mal_id: "",
+  anilist_id: "",
   season: "1",
   episode: "5",
   episode_title: "Pilot",
@@ -151,6 +185,12 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
   audio_channels: "2.0",
   group: "NTb",
   ext: "mkv",
+  imdb_id: "tt0108778",
+  tmdb_id: "1668",
+  tvdb_id: "79168",
+  anidb_id: "",
+  mal_id: "",
+  anilist_id: "",
   season: "5",
   episode: "12",
   episode_title: "The One with the Embryos",
@@ -167,6 +207,12 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
   audio_channels: "2.0",
   group: "SubsPlease",
   ext: "mkv",
+  imdb_id: "tt0388629",
+  tmdb_id: "37854",
+  tvdb_id: "81797",
+  anidb_id: "69",
+  mal_id: "21",
+  anilist_id: "21",
   season: "1",
   season_order: "1",
   episode: "1",
@@ -178,6 +224,7 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
   if (!template.trim()) return null;
   let result = "";
   let i = 0;
+  let escapedLiteralOpenCount = 0;
   const sampleValues =
     scopeId === "movie"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
@@ -185,6 +232,20 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
   while (i < template.length) {
+    if (template.startsWith("{{", i)) {
+      result += "{";
+      escapedLiteralOpenCount += 1;
+      i += 2;
+      continue;
+    }
+    if (template.startsWith("}}", i)) {
+      result += "}";
+      if (escapedLiteralOpenCount > 0) {
+        escapedLiteralOpenCount -= 1;
+      }
+      i += 2;
+      continue;
+    }
     if (template[i] === "{") {
       const closeIndex = template.indexOf("}", i + 1);
       if (closeIndex === -1) return null;
@@ -201,6 +262,12 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
       result += value;
       i = closeIndex + 1;
     } else if (template[i] === "}") {
+      if (escapedLiteralOpenCount > 0) {
+        result += "}";
+        escapedLiteralOpenCount -= 1;
+        i++;
+        continue;
+      }
       return null;
     } else {
       result += template[i];

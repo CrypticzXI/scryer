@@ -1,3 +1,5 @@
+use crate::domain_events::DomainEventActor;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DownloadQueueBucket {
     Activity,
@@ -297,10 +299,11 @@ fn download_queue_projection_key(item: &DownloadQueueItem) -> String {
 }
 pub async fn publish_download_queue_snapshot_events(
     app: &AppUseCase,
-    actor_user_id: Option<String>,
+    actor: impl Into<DomainEventActor>,
     previous_items: &mut HashMap<String, DownloadQueueItem>,
     items: &[DownloadQueueItem],
 ) {
+    let actor = actor.into();
     let mut next_items = HashMap::with_capacity(items.len());
     let mut domain_events = Vec::new();
 
@@ -311,7 +314,7 @@ pub async fn publish_download_queue_snapshot_events(
             .is_none_or(|previous| previous != item);
         if changed {
             domain_events.push(new_download_queue_domain_event(
-                actor_user_id.clone(),
+                actor.clone(),
                 key.clone(),
                 DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
                     item: item.clone(),
@@ -324,7 +327,7 @@ pub async fn publish_download_queue_snapshot_events(
     for (key, previous_item) in previous_items.iter() {
         if !next_items.contains_key(key) {
             domain_events.push(new_download_queue_domain_event(
-                actor_user_id.clone(),
+                actor.clone(),
                 key.clone(),
                 DomainEventPayload::DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData {
                     download_client_item_id: previous_item.download_client_item_id.clone(),

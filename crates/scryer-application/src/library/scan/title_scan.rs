@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain_events::DomainEventActor;
 use crate::library::movie_scan_scope::MovieScanScope;
 use crate::library_filename_parser::{
     LibraryFilenameExistingRecord, LibraryFilenameFallbackPolicy, LibraryFilenameParseInput,
@@ -1391,7 +1392,7 @@ impl AppUseCase {
         let mut analyzed_files = 0usize;
         let mut external_subtitle_cache =
             crate::subtitles::ExternalSubtitleDirectoryCache::default();
-        let actor_user_id = Some(actor.id.clone());
+        let actor_event = DomainEventActor::from(actor);
 
         'file_chunks: for file_chunk in discovered_files.chunks(TITLE_SCAN_FILE_BATCH_SIZE) {
             if library_scan_cancel_requested(cancel_token.as_ref()) {
@@ -1732,7 +1733,7 @@ impl AppUseCase {
             }
 
             if title_updated_in_batch {
-                self.emit_title_updated_activity(actor_user_id.clone(), &title)
+                self.emit_title_updated_activity(actor_event.clone(), &title)
                     .await;
             }
 
@@ -1800,14 +1801,8 @@ impl AppUseCase {
                 {
                     let tags = merge_title_scan_option_tags(title.tags.clone(), use_season_folders);
                     let db_started = Instant::now();
-                    self.apply_title_metadata_update(
-                        Some(actor.id.clone()),
-                        &title.id,
-                        None,
-                        None,
-                        Some(tags),
-                    )
-                    .await?;
+                    self.apply_title_metadata_update(actor, &title.id, None, None, Some(tags))
+                        .await?;
                     db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                     title_updated_after_scan = true;
                 }
@@ -1825,7 +1820,7 @@ impl AppUseCase {
             }
 
             if title_updated_after_scan {
-                self.emit_title_updated_activity(actor_user_id, &title)
+                self.emit_title_updated_activity(actor_event.clone(), &title)
                     .await;
             }
         }

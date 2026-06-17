@@ -561,14 +561,69 @@ impl MockUserRepo {
 #[derive(Default, Clone)]
 struct CopyingFileImporter;
 
+fn test_import_source_snapshot(path: &Path) -> AppResult<scryer_domain::ImportSourceSnapshot> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        AppError::Repository(format!(
+            "failed to stat import source {}: {err}",
+            path.display()
+        ))
+    })?;
+    let bytes = std::fs::read(path).map_err(|err| {
+        AppError::Repository(format!(
+            "failed to read import source {}: {err}",
+            path.display()
+        ))
+    })?;
+
+    Ok(scryer_domain::ImportSourceSnapshot {
+        identity: scryer_domain::ImportSourceIdentity {
+            file: scryer_domain::ImportFileIdentity {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                #[cfg(unix)]
+                dev: metadata.dev(),
+                #[cfg(unix)]
+                ino: metadata.ino(),
+            },
+            kind: scryer_domain::ImportSourceIdentityKind::Regular,
+        },
+        proof: scryer_domain::ImportContentProof {
+            size_bytes: metadata.len(),
+            sample_bytes: bytes.len() as u64,
+            sample_blake3: blake3::hash(&bytes).to_hex().to_string(),
+        },
+    })
+}
+
 #[async_trait]
 impl FileImporter for CopyingFileImporter {
+    async fn snapshot_import_source(
+        &self,
+        source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot> {
+        test_import_source_snapshot(source)
+    }
+
     async fn import_file(
         &self,
         source: &Path,
         dest: &Path,
         mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     ) -> AppResult<scryer_domain::ImportFileResult> {
+        if let Some(expected_source) = expected_source {
+            let actual = test_import_source_snapshot(source)?;
+            if &actual != expected_source {
+                return Err(AppError::Repository(format!(
+                    "import source changed after validation: {}",
+                    source.display()
+                )));
+            }
+        }
+
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|err| {
                 AppError::Repository(format!(
@@ -1051,6 +1106,11 @@ impl ImportRepository for TrackingImportRepo {
             payload_json,
             result_json: None,
             download_id,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             started_at: None,
             finished_at: None,
             created_at: now.clone(),
@@ -1094,7 +1154,32 @@ impl ImportRepository for TrackingImportRepo {
         }
         if status.is_terminal() {
             record.finished_at = Some(now.clone());
+            record.import_transfer_phase = None;
         }
+        record.updated_at = now;
+        Ok(())
+    }
+
+    async fn update_import_transfer_progress(
+        &self,
+        id: &str,
+        phase: scryer_domain::ImportTransferPhase,
+        bytes: i64,
+        total_bytes: i64,
+    ) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        let mut records = self.records.lock().await;
+        let record = records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("import record {id}")))?;
+        record.import_transfer_phase = Some(phase);
+        record.import_transfer_bytes = Some(bytes.max(0));
+        record.import_transfer_total_bytes = Some(total_bytes.max(bytes));
+        if record.import_transfer_started_at.is_none() {
+            record.import_transfer_started_at = Some(now.clone());
+        }
+        record.import_transfer_updated_at = Some(now.clone());
         record.updated_at = now;
         Ok(())
     }
@@ -1360,7 +1445,9 @@ impl DomainEventRepository for MockDomainEventRepo {
             sequence,
             event_id: event.event_id,
             occurred_at: event.occurred_at,
+            actor_kind: event.actor_kind,
             actor_user_id: event.actor_user_id,
+            actor_display_name: event.actor_display_name,
             title_id: event.title_id,
             facet: event.facet,
             correlation_id: event.correlation_id,
@@ -1540,7 +1627,9 @@ async fn append_mock_media_request_event(
         sequence: 0,
         event_id: event.event_id,
         occurred_at: event.occurred_at,
+        actor_kind: event.actor_kind,
         actor_user_id: event.actor_user_id,
+        actor_display_name: event.actor_display_name,
         title_id: event.title_id,
         facet: event.facet,
         correlation_id: event.correlation_id,
@@ -17073,6 +17162,11 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             client_type: "nzbget".to_string(),
             state: DownloadQueueState::Queued,
             progress_percent: 0,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,
@@ -17105,6 +17199,11 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             client_type: "sabnzbd".to_string(),
             state: DownloadQueueState::Queued,
             progress_percent: 0,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,
@@ -17137,6 +17236,11 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             client_type: "sabnzbd".to_string(),
             state: DownloadQueueState::Queued,
             progress_percent: 0,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,
@@ -17247,6 +17351,11 @@ async fn list_download_queue_does_not_treat_stub_submission_as_origin() {
         client_type: "sabnzbd".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 0,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -17315,6 +17424,11 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Completed,
         progress_percent: 100,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -17412,6 +17526,11 @@ async fn list_download_queue_for_title_uses_title_scoped_client_query() {
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 0,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -17483,6 +17602,11 @@ fn queue_history_fixture_item(
         client_type: "nzbget".to_string(),
         state,
         progress_percent: 100,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -18355,6 +18479,11 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
         payload_json: String::new(),
         result_json: None,
         download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -18414,6 +18543,11 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
         payload_json: String::new(),
         result_json: None,
         download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -18471,6 +18605,11 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
         payload_json: String::new(),
         result_json: None,
         download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -19251,6 +19390,11 @@ async fn try_import_completed_downloads_uses_download_submission_fallback_for_un
         payload_json: String::new(),
         result_json: None,
         download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         started_at: Some(now.clone()),
         finished_at: Some(now.clone()),
         created_at: now.clone(),
@@ -19850,6 +19994,11 @@ async fn download_queue_subscription_bootstraps_from_live_queue_without_history_
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 10,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -20183,6 +20332,11 @@ fn failed_history_item(download_client_item_id: &str, title_name: &str) -> Downl
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Failed,
         progress_percent: 100,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -22317,6 +22471,11 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 0,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -22518,6 +22677,11 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 0,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,
@@ -24254,6 +24418,11 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         client_type: "nzbget".to_string(),
         state: DownloadQueueState::Queued,
         progress_percent: 0,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: None,
         remaining_seconds: None,
         queued_at: None,

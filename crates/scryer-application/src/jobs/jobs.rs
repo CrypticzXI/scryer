@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_events::new_job_run_domain_event;
+use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
 use crate::event_views::replay_active_job_runs;
 use chrono::Utc;
 use scryer_domain::{
@@ -361,9 +361,10 @@ impl AppUseCase {
             .job_run_tracker
             .upsert_active_run(run_payload.clone())
             .await;
+        let event_actor = DomainEventActor::from(actor);
         let _ = self
             .append_domain_event(new_job_run_domain_event(
-                Some(actor.id.clone()),
+                event_actor.clone(),
                 run.id.clone(),
                 DomainEventPayload::JobRunStarted(JobRunStartedEventData {
                     run_id: run.id.clone(),
@@ -377,7 +378,7 @@ impl AppUseCase {
         let app = self.clone();
         let actor = actor.clone();
         tokio::spawn(async move {
-            if let Err(error) = app.run_job_run(run, Some(actor)).await {
+            if let Err(error) = app.run_job_run(run, Some(actor), event_actor).await {
                 warn!(job_key = job_key.as_str(), error = %error, "manual job trigger failed");
             }
         });
@@ -418,7 +419,8 @@ impl AppUseCase {
                 }),
             ))
             .await;
-        self.run_job_run(run, None).await
+        self.run_job_run(run, None, DomainEventActor::system())
+            .await
     }
 
     async fn run_scheduled_background_library_refresh_jobs_now(
@@ -472,7 +474,9 @@ impl AppUseCase {
                 ))
                 .await;
 
-            if let Err(error) = self.run_job_run(run, Some(actor.clone())).await
+            if let Err(error) = self
+                .run_job_run(run, Some(actor.clone()), DomainEventActor::system())
+                .await
                 && first_error.is_none()
             {
                 first_error = Some(error.to_string());
@@ -593,11 +597,17 @@ impl AppUseCase {
             .await
     }
 
-    async fn run_job_run(&self, run: JobRunRecord, actor: Option<User>) -> AppResult<()> {
+    async fn run_job_run(
+        &self,
+        run: JobRunRecord,
+        actor: Option<User>,
+        event_actor: DomainEventActor,
+    ) -> AppResult<()> {
         match self.execute_job_body(&run, actor).await {
             Ok(outcome) => {
                 self.finish_job_run(
                     run,
+                    event_actor,
                     outcome.summary_text,
                     outcome.summary_json,
                     outcome.library_scan_progress,
@@ -606,7 +616,8 @@ impl AppUseCase {
                 .await
             }
             Err(error) => {
-                self.fail_job_run(run, error.to_string()).await?;
+                self.fail_job_run(run, event_actor, error.to_string())
+                    .await?;
                 Err(error)
             }
         }
@@ -846,6 +857,7 @@ impl AppUseCase {
     async fn finish_job_run(
         &self,
         mut run: JobRunRecord,
+        event_actor: DomainEventActor,
         summary_text: Option<String>,
         summary_json: Option<String>,
         library_scan_progress: Option<LibraryScanSession>,
@@ -889,7 +901,7 @@ impl AppUseCase {
         };
         let _ = self
             .append_domain_event(new_job_run_domain_event(
-                updated.actor_user_id.clone(),
+                event_actor,
                 updated.id.clone(),
                 payload,
             ))
@@ -897,7 +909,12 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn fail_job_run(&self, mut run: JobRunRecord, error_text: String) -> AppResult<()> {
+    async fn fail_job_run(
+        &self,
+        mut run: JobRunRecord,
+        event_actor: DomainEventActor,
+        error_text: String,
+    ) -> AppResult<()> {
         let completed_at = Utc::now();
         run.status = JobRunStatus::Failed;
         run.progress_json = Some(json!({ "status": run.status.as_str() }).to_string());
@@ -913,7 +930,7 @@ impl AppUseCase {
             .await;
         let _ = self
             .append_domain_event(new_job_run_domain_event(
-                updated.actor_user_id.clone(),
+                event_actor,
                 updated.id.clone(),
                 DomainEventPayload::JobRunFailed(JobRunFailedEventData {
                     run_id: updated.id.clone(),

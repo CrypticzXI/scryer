@@ -1,8 +1,11 @@
 use async_trait::async_trait;
-use scryer_application::{AppError, AppResult, FileImporter};
+use scryer_application::{
+    AppError, AppResult, FileImporter, ImportFileTransferProgress, ImportFileTransferProgressSender,
+};
 use scryer_domain::{
     ImportContentProof, ImportFileIdentity, ImportFileResult, ImportMode, ImportSourceCleanupGuard,
-    ImportSourceIdentity, ImportSourceIdentityKind, ImportStrategy,
+    ImportSourceIdentity, ImportSourceIdentityKind, ImportSourceSnapshot, ImportStrategy,
+    ImportTransferPhase,
 };
 use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -15,6 +18,7 @@ use std::os::unix::fs::{MetadataExt, symlink};
 const IMPORT_CONTENT_PROOF_SAMPLE_BYTES: usize = 1024 * 1024;
 const TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO: i32 = 9;
 const IMPORT_COPY_MAX_ATTEMPTS: usize = 3;
+const IMPORT_COPY_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct FsFileImporter;
 
@@ -213,6 +217,44 @@ fn source_identity_from_fingerprint(
             },
         },
     }
+}
+
+fn stable_import_source_snapshot(
+    path: &Path,
+    initial_fingerprint: Option<&ImportSourceFingerprint>,
+) -> AppResult<ImportSourceSnapshot> {
+    let initial = match initial_fingerprint {
+        Some(fingerprint) => fingerprint.clone(),
+        None => fingerprint_import_source(path)?,
+    };
+    let proof = import_content_proof(path)?;
+    ensure_same_source(path, &initial)?;
+    Ok(ImportSourceSnapshot {
+        identity: source_identity_from_fingerprint(&initial),
+        proof,
+    })
+}
+
+fn snapshot_import_source_blocking(path: PathBuf) -> AppResult<ImportSourceSnapshot> {
+    stable_import_source_snapshot(&path, None)
+}
+
+fn ensure_expected_source_snapshot(
+    path: &Path,
+    current_fingerprint: &ImportSourceFingerprint,
+    expected: Option<&ImportSourceSnapshot>,
+) -> AppResult<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = stable_import_source_snapshot(path, Some(current_fingerprint))?;
+    if &actual != expected {
+        return Err(AppError::Repository(format!(
+            "import source changed after validation: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn import_file_identity_from_fingerprint(file: &FileFingerprint) -> ImportFileIdentity {
@@ -712,13 +754,30 @@ fn import_copy_retry_delay(attempt: usize) -> Duration {
     }
 }
 
+fn report_import_transfer_progress(
+    progress: Option<&ImportFileTransferProgressSender>,
+    phase: ImportTransferPhase,
+    bytes: u64,
+    total_bytes: u64,
+) {
+    if let Some(progress) = progress {
+        let _ = progress.send(ImportFileTransferProgress {
+            phase,
+            bytes,
+            total_bytes,
+        });
+    }
+}
+
 fn copy_regular_source_to_destination_once(
     source: &Path,
     dest: &Path,
     temp_dest: &Path,
     source_fingerprint: &ImportSourceFingerprint,
+    size: u64,
     options: ImportFileOptions,
     attempt: usize,
+    progress: Option<&ImportFileTransferProgressSender>,
 ) -> Result<(), ImportCopyAttemptError> {
     ensure_same_source(source, source_fingerprint)
         .map_err(io_other)
@@ -743,8 +802,23 @@ fn copy_regular_source_to_destination_once(
         .map_err(|error| ImportCopyAttemptError::new("temp create", error))?;
     force_copy_attempt_error(&mut temp_file, &options, attempt)
         .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
-    std::io::copy(&mut source_file, &mut temp_file)
-        .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
+    report_import_transfer_progress(progress, ImportTransferPhase::Copying, 0, size);
+    let mut copied = 0u64;
+    let mut buffer = vec![0u8; IMPORT_COPY_BUFFER_BYTES];
+    loop {
+        let read = source_file
+            .read(&mut buffer)
+            .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
+        if read == 0 {
+            break;
+        }
+        temp_file
+            .write_all(&buffer[..read])
+            .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
+        copied = copied.saturating_add(read as u64);
+        report_import_transfer_progress(progress, ImportTransferPhase::Copying, copied, size);
+    }
+    report_import_transfer_progress(progress, ImportTransferPhase::Finalizing, copied, size);
     temp_file
         .flush()
         .map_err(|error| ImportCopyAttemptError::new("flush", error))?;
@@ -769,6 +843,7 @@ fn copy_regular_source_to_destination(
     source_fingerprint: &ImportSourceFingerprint,
     size: u64,
     options: ImportFileOptions,
+    progress: Option<&ImportFileTransferProgressSender>,
 ) -> AppResult<()> {
     let temp_dest = dest.with_extension("tmp_import");
     let mut attempt = 1usize;
@@ -790,8 +865,10 @@ fn copy_regular_source_to_destination(
             dest,
             &temp_dest,
             source_fingerprint,
+            size,
             options,
             attempt,
+            progress,
         ) {
             Ok(()) => break,
             Err(error) => {
@@ -917,8 +994,11 @@ fn import_hardlink_or_copy_blocking(
     dest: PathBuf,
     options: ImportFileOptions,
     source_cleanup_required: bool,
+    expected_source: Option<ImportSourceSnapshot>,
+    progress: Option<ImportFileTransferProgressSender>,
 ) -> AppResult<ImportFileResult> {
     let (source_fingerprint, size, destination_guard) = prepare_import_destination(&source, &dest)?;
+    ensure_expected_source_snapshot(&source, &source_fingerprint, expected_source.as_ref())?;
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
         import_symlink_source(&source, &dest, &source_fingerprint, size)?;
@@ -1000,7 +1080,14 @@ fn import_hardlink_or_copy_blocking(
         }
     }
 
-    copy_regular_source_to_destination(&source, &dest, &source_fingerprint, size, options)?;
+    copy_regular_source_to_destination(
+        &source,
+        &dest,
+        &source_fingerprint,
+        size,
+        options,
+        progress.as_ref(),
+    )?;
     validate_import_destination_guard(&destination_guard, &dest)?;
 
     let source_cleanup = cleanup_guard_after_placement(
@@ -1024,28 +1111,66 @@ fn import_file_blocking(
     dest: PathBuf,
     mode: ImportMode,
     options: ImportFileOptions,
+    expected_source: Option<ImportSourceSnapshot>,
+    progress: Option<ImportFileTransferProgressSender>,
 ) -> AppResult<ImportFileResult> {
     match mode {
-        ImportMode::HardlinkOrCopy => {
-            import_hardlink_or_copy_blocking(source, dest, ImportFileOptions::default(), false)
+        ImportMode::HardlinkOrCopy => import_hardlink_or_copy_blocking(
+            source,
+            dest,
+            ImportFileOptions::default(),
+            false,
+            expected_source,
+            progress,
+        ),
+        ImportMode::Move => {
+            import_hardlink_or_copy_blocking(source, dest, options, true, expected_source, progress)
         }
-        ImportMode::Move => import_hardlink_or_copy_blocking(source, dest, options, true),
     }
 }
 
 #[async_trait]
 impl FileImporter for FsFileImporter {
+    async fn snapshot_import_source(&self, source: &Path) -> AppResult<ImportSourceSnapshot> {
+        let source = source.to_path_buf();
+
+        tokio::task::spawn_blocking(move || snapshot_import_source_blocking(source))
+            .await
+            .map_err(|e| AppError::Repository(format!("import snapshot task panicked: {}", e)))?
+    }
+
     async fn import_file(
         &self,
         source: &Path,
         dest: &Path,
         mode: ImportMode,
+        expected_source: Option<&ImportSourceSnapshot>,
+    ) -> AppResult<ImportFileResult> {
+        self.import_file_with_progress(source, dest, mode, expected_source, None)
+            .await
+    }
+
+    async fn import_file_with_progress(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: ImportMode,
+        expected_source: Option<&ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
     ) -> AppResult<ImportFileResult> {
         let source = source.to_path_buf();
         let dest = dest.to_path_buf();
+        let expected_source = expected_source.cloned();
 
         tokio::task::spawn_blocking(move || {
-            import_file_blocking(source, dest, mode, ImportFileOptions::default())
+            import_file_blocking(
+                source,
+                dest,
+                mode,
+                ImportFileOptions::default(),
+                expected_source,
+                progress,
+            )
         })
         .await
         .map_err(|e| AppError::Repository(format!("import task panicked: {}", e)))?
@@ -1082,7 +1207,7 @@ mod tests {
         let dest = dir.path().join("library").join("Imported.Movie.mkv");
 
         let result = FsFileImporter::new()
-            .import_file(&source, &dest, ImportMode::HardlinkOrCopy)
+            .import_file(&source, &dest, ImportMode::HardlinkOrCopy, None)
             .await
             .expect("import file");
 
@@ -1097,6 +1222,57 @@ mod tests {
             std::fs::read(&dest).expect("read dest"),
             b"fake video bytes"
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_import_source_is_stable_for_regular_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+
+        let importer = FsFileImporter::new();
+        let snapshot = importer
+            .snapshot_import_source(&source)
+            .await
+            .expect("snapshot source");
+        let second_snapshot = importer
+            .snapshot_import_source(&source)
+            .await
+            .expect("snapshot source again");
+
+        assert_eq!(snapshot, second_snapshot);
+        assert!(matches!(
+            snapshot.identity.kind,
+            ImportSourceIdentityKind::Regular
+        ));
+        assert_eq!(snapshot.proof.size_bytes, 16);
+    }
+
+    #[tokio::test]
+    async fn import_file_rejects_replaced_regular_source_after_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        let importer = FsFileImporter::new();
+        let snapshot = importer
+            .snapshot_import_source(&source)
+            .await
+            .expect("snapshot source");
+        std::fs::write(&source, b"changed video bytes").expect("replace source");
+
+        let error = importer
+            .import_file(&source, &dest, ImportMode::HardlinkOrCopy, Some(&snapshot))
+            .await
+            .expect_err("changed source should fail import");
+
+        assert!(
+            error
+                .to_string()
+                .contains("import source changed after validation")
+        );
+        assert!(!dest.exists());
     }
 
     #[test]
@@ -1131,7 +1307,7 @@ mod tests {
         let dest = dir.path().join("library").join("Imported.Movie.mkv");
 
         let result = FsFileImporter::new()
-            .import_file(&source, &dest, ImportMode::Move)
+            .import_file(&source, &dest, ImportMode::Move, None)
             .await
             .expect("place file");
 
@@ -1164,6 +1340,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("move placement fallback");
 
@@ -1189,6 +1367,53 @@ mod tests {
     }
 
     #[test]
+    fn cross_device_copy_reports_transfer_progress() {
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let dest_dir = tempfile::tempdir().expect("dest tempdir");
+        let source = source_dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dest_dir.path().join("Imported.Movie.mkv");
+        let total_bytes = std::fs::metadata(&source).expect("source metadata").len();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let result = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::Move,
+            ImportFileOptions {
+                force_cross_device_move: true,
+                ..Default::default()
+            },
+            None,
+            Some(progress_tx),
+        )
+        .expect("move placement fallback");
+
+        assert_eq!(result.strategy, ImportStrategy::Copy);
+
+        let mut updates = Vec::new();
+        while let Ok(update) = progress_rx.try_recv() {
+            updates.push(update);
+        }
+
+        assert!(updates.iter().any(|update| {
+            update.phase == ImportTransferPhase::Copying
+                && update.bytes == 0
+                && update.total_bytes == total_bytes
+        }));
+        assert!(updates.iter().any(|update| {
+            update.phase == ImportTransferPhase::Copying
+                && update.bytes == total_bytes
+                && update.total_bytes == total_bytes
+        }));
+        assert!(updates.iter().any(|update| {
+            update.phase == ImportTransferPhase::Finalizing
+                && update.bytes == total_bytes
+                && update.total_bytes == total_bytes
+        }));
+    }
+
+    #[test]
     fn move_mode_copy_failure_leaves_source() {
         let source_dir = tempfile::tempdir().expect("source tempdir");
         let dest_dir = tempfile::tempdir().expect("dest tempdir");
@@ -1205,6 +1430,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect_err("copy should fail");
 
@@ -1231,6 +1458,8 @@ mod tests {
                 force_transient_copy_failures: 1,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("copy should retry and succeed");
 
@@ -1261,6 +1490,8 @@ mod tests {
                 force_transient_copy_failures: 3,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect_err("copy should fail after retry budget");
 
@@ -1290,6 +1521,8 @@ mod tests {
                 force_non_transient_copy_failure: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect_err("copy should fail without retry");
 
@@ -1318,6 +1551,8 @@ mod tests {
                 force_copy_verification_failure: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect_err("verification should fail");
 
@@ -1342,6 +1577,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1376,6 +1613,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1408,6 +1647,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1439,6 +1680,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1470,6 +1713,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1504,6 +1749,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1538,6 +1785,8 @@ mod tests {
                 force_cross_device_move: true,
                 ..Default::default()
             },
+            None,
+            None,
         )
         .expect("place file");
 
@@ -1566,7 +1815,7 @@ mod tests {
         let dest_dir = tempfile::tempdir().expect("dest tempdir");
         let dest_path = dest_dir.path().join("Imported.Movie.mkv");
         let result = FsFileImporter::new()
-            .import_file(&source_link, &dest_path, ImportMode::HardlinkOrCopy)
+            .import_file(&source_link, &dest_path, ImportMode::HardlinkOrCopy, None)
             .await
             .expect("import symlink");
 
@@ -1591,6 +1840,46 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn import_file_rejects_retargeted_symlink_source_after_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_target = dir.path().join("source-target.mkv");
+        let replacement_target = dir.path().join("replacement-target.mkv");
+        std::fs::write(&source_target, b"fake video bytes").expect("write target");
+        std::fs::write(&replacement_target, b"other video bytes").expect("write replacement");
+        let source_link = dir.path().join("source-link.mkv");
+        symlink(PathBuf::from("source-target.mkv"), &source_link).expect("create source symlink");
+
+        let importer = FsFileImporter::new();
+        let snapshot = importer
+            .snapshot_import_source(&source_link)
+            .await
+            .expect("snapshot symlink source");
+        std::fs::remove_file(&source_link).expect("remove old source symlink");
+        symlink(PathBuf::from("replacement-target.mkv"), &source_link)
+            .expect("retarget source symlink");
+
+        let dest_dir = tempfile::tempdir().expect("dest tempdir");
+        let dest_path = dest_dir.path().join("Imported.Movie.mkv");
+        let error = importer
+            .import_file(
+                &source_link,
+                &dest_path,
+                ImportMode::HardlinkOrCopy,
+                Some(&snapshot),
+            )
+            .await
+            .expect_err("changed symlink source should fail import");
+
+        assert!(
+            error
+                .to_string()
+                .contains("import source changed after validation")
+        );
+        assert!(!dest_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn move_mode_cleanup_removes_source_symlink_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source_target = dir.path().join("source-target.mkv");
@@ -1601,7 +1890,7 @@ mod tests {
         let dest_dir = tempfile::tempdir().expect("dest tempdir");
         let dest_path = dest_dir.path().join("Imported.Movie.mkv");
         let result = FsFileImporter::new()
-            .import_file(&source_link, &dest_path, ImportMode::Move)
+            .import_file(&source_link, &dest_path, ImportMode::Move, None)
             .await
             .expect("import symlink");
 
@@ -1633,7 +1922,7 @@ mod tests {
         let dest_dir = tempfile::tempdir().expect("dest tempdir");
         let dest_path = dest_dir.path().join("Imported.Movie.mkv");
         let error = FsFileImporter::new()
-            .import_file(&source_link, &dest_path, ImportMode::HardlinkOrCopy)
+            .import_file(&source_link, &dest_path, ImportMode::HardlinkOrCopy, None)
             .await
             .expect_err("broken symlink should fail");
 

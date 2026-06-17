@@ -1357,6 +1357,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-success-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1424,6 +1425,7 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-existing-folder-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1506,6 +1508,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-broader-incumbent-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain_events::{
-    new_download_queue_domain_event, new_global_domain_event, new_title_domain_event,
-    title_context_snapshot,
+    DomainEventActor, new_download_queue_domain_event, new_global_domain_event,
+    new_title_domain_event, title_context_snapshot,
 };
 use crate::event_views::{
     activity_event_from_domain_event, history_event_from_domain_event,
@@ -270,6 +270,8 @@ pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
     TitleHistoryEventType::Imported,
     TitleHistoryEventType::ImportFailed,
     TitleHistoryEventType::ImportSkipped,
+    TitleHistoryEventType::FileUpgraded,
+    TitleHistoryEventType::FileRecycled,
     TitleHistoryEventType::FileDeleted,
     TitleHistoryEventType::FileRenamed,
     TitleHistoryEventType::Rematched,
@@ -282,6 +284,7 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::ImportRejected,
     DomainEventType::DownloadFailed,
     DomainEventType::ReleaseBlocklisted,
+    DomainEventType::MediaFileUpgraded,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
     DomainEventType::MediaRequestSubmitted,
@@ -517,6 +520,9 @@ fn media_request_title_history_records(
             episode_ids: Vec::new(),
             collection_id: None,
             event_type: TitleHistoryEventType::Requested,
+            actor_kind: Some(event.actor_kind),
+            actor_user_id: event.actor_user_id.clone(),
+            actor_display_name: Some(event.actor_display_name.clone()),
             source_title: Some(data.title_name.clone()),
             display_title: Some(data.title_name.clone()),
             source_system: Some("smg".to_string()),
@@ -711,12 +717,13 @@ impl AppUseCase {
     /// scan- or workflow-specific refresh signals.
     pub(crate) async fn emit_title_updated_activity(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title: &Title,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_title_domain_event(
-                actor_user_id,
+                actor,
                 title,
                 DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
                     title: title_context_snapshot(title),
@@ -734,14 +741,15 @@ impl AppUseCase {
 
     pub async fn emit_configuration_changed_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         resource_type: impl Into<String>,
         resource_id: Option<String>,
         action: ConfigurationChangeAction,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_global_domain_event(
-                actor_user_id,
+                actor,
                 DomainEventPayload::ConfigurationChanged(ConfigurationChangedEventData {
                     resource_type: resource_type.into(),
                     resource_id,
@@ -756,14 +764,15 @@ impl AppUseCase {
 
     pub(crate) async fn emit_discovery_search_completed_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         search_type: impl Into<String>,
         query: Option<String>,
         result_count: i64,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_global_domain_event(
-                actor_user_id,
+                actor,
                 DomainEventPayload::DiscoverySearchCompleted(DiscoverySearchCompletedEventData {
                     search_type: search_type.into(),
                     query,
@@ -804,13 +813,14 @@ impl AppUseCase {
 
     pub(crate) async fn emit_acquisition_search_completed_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title: &Title,
         result_count: i64,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_title_domain_event(
-                actor_user_id,
+                actor,
                 title,
                 DomainEventPayload::AcquisitionSearchCompleted(
                     AcquisitionSearchCompletedEventData {
@@ -831,14 +841,15 @@ impl AppUseCase {
 
     pub(crate) async fn emit_acquisition_candidate_rejected_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title: &Title,
         source_title: impl Into<String>,
         reason_code: impl Into<String>,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_title_domain_event(
-                actor_user_id,
+                actor,
                 title,
                 DomainEventPayload::AcquisitionCandidateRejected(
                     AcquisitionCandidateRejectedEventData {
@@ -860,12 +871,13 @@ impl AppUseCase {
 
     pub(crate) async fn emit_import_requested_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title: Option<&Title>,
         client_type: impl Into<String>,
         source_ref: impl Into<String>,
         request_kind: ImportRequestKind,
     ) {
+        let actor = actor.into();
         let client_type = client_type.into();
         let source_ref = source_ref.into();
         let payload = DomainEventPayload::ImportRequested(ImportRequestedEventData {
@@ -877,11 +889,11 @@ impl AppUseCase {
 
         let result = match title {
             Some(title) => {
-                self.append_domain_event(new_title_domain_event(actor_user_id, title, payload))
+                self.append_domain_event(new_title_domain_event(actor, title, payload))
                     .await
             }
             None => {
-                self.append_domain_event(new_global_domain_event(actor_user_id, payload))
+                self.append_domain_event(new_global_domain_event(actor, payload))
                     .await
             }
         };
@@ -893,12 +905,13 @@ impl AppUseCase {
 
     pub(crate) async fn emit_import_recovery_completed_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         recovered_count: i64,
     ) {
+        let actor = actor.into();
         if let Err(error) = self
             .append_domain_event(new_global_domain_event(
-                actor_user_id,
+                actor,
                 DomainEventPayload::ImportRecoveryCompleted(ImportRecoveryCompletedEventData {
                     recovered_count,
                 }),
@@ -911,14 +924,15 @@ impl AppUseCase {
 
     pub(crate) async fn emit_download_queue_item_command_issued_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         item_id: impl Into<String>,
         action: DownloadQueueCommandAction,
     ) {
+        let actor = actor.into();
         let item_id = item_id.into();
         if let Err(error) = self
             .append_domain_event(new_download_queue_domain_event(
-                actor_user_id,
+                actor,
                 item_id.clone(),
                 DomainEventPayload::DownloadQueueItemCommandIssued(
                     DownloadQueueItemCommandIssuedEventData {
@@ -935,16 +949,17 @@ impl AppUseCase {
 
     pub(crate) async fn emit_post_processing_completed_event(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title: &Title,
         script_name: impl Into<String>,
         result: PostProcessingResult,
         exit_code: Option<i32>,
     ) {
+        let actor = actor.into();
         let script_name = script_name.into();
         if let Err(error) = self
             .append_domain_event(new_title_domain_event(
-                actor_user_id,
+                actor,
                 title,
                 DomainEventPayload::PostProcessingCompleted(PostProcessingCompletedEventData {
                     title: title_context_snapshot(title),
@@ -1204,6 +1219,22 @@ impl AppUseCase {
             }
         }
         Ok(visible)
+    }
+
+    pub async fn audit_log(
+        &self,
+        actor: &User,
+        filter: &DomainEventFilter,
+    ) -> AppResult<Vec<DomainEvent>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let mut filter = filter.clone();
+        filter.limit = if filter.limit == 0 {
+            100
+        } else {
+            filter.limit.min(500)
+        };
+        self.services.events.domain_events.list(&filter).await
     }
 
     pub async fn list_activity_events_after_sequence(

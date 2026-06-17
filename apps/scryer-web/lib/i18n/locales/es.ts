@@ -487,6 +487,12 @@ const es: LocaleDictionary = {
   "settings.renameTokenYear": "Año de lanzamiento",
   "settings.renameTokenQuality": "Calidad (ej. 1080p)",
   "settings.renameTokenEdition": "Edición (ej. Director's Cut)",
+  "settings.renameTokenImdbId": "ID de IMDb",
+  "settings.renameTokenTmdbId": "ID de TMDb",
+  "settings.renameTokenTvdbId": "ID de TVDb",
+  "settings.renameTokenAnidbId": "ID de AniDB",
+  "settings.renameTokenMalId": "ID de MAL",
+  "settings.renameTokenAnilistId": "ID de AniList",
   "settings.renameTokenSource": "Fuente (ej. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Códec de video (ej. x265)",
   "settings.renameTokenAudioCodec": "Códec de audio (ej. DTS)",
@@ -501,6 +507,8 @@ const es: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Llave de apertura '{' sin cerrar",
   "settings.renameValidationUnmatchedClose": "Llave de cierre '}' sin abrir",
   "settings.renameValidationUnknownToken": "Token desconocido: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "Las plantillas de carpeta admiten {title}, {year} y tokens de ID externos. Token no válido: {{token}}",
   "settings.renameValidationEmpty":
     "La plantilla de renombrado no puede estar vacía",
   "settings.renameComingSoon":
@@ -776,6 +784,7 @@ const es: LocaleDictionary = {
   "queue.state.postProcessing": "Post-procesamiento",
   "queue.state.paused": "Pausado",
   "queue.state.completed": "Completado",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Importación pendiente",
   "queue.state.importBlocked": "Importación bloqueada",
   "queue.state.failed": "Fallido",
@@ -788,6 +797,8 @@ const es: LocaleDictionary = {
     "{{downloading}} descargando, {{waiting}} esperando importación, {{attention}} requiere atención",
   "queue.manualImport": "Importar manualmente",
   "queue.manualImporting": "Añadiendo a la cola…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Importación manual en cola.",
   "queue.manualImportFailed": "Error en la importación manual.",
   "queue.removeFailed": "Error al eliminar",

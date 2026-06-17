@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use scryer_domain::DomainEventActorKind;
 #[cfg(test)]
 use scryer_domain::Title;
 #[cfg(test)]
@@ -192,7 +193,9 @@ pub struct ActivityEvent {
     pub kind: ActivityKind,
     pub severity: ActivitySeverity,
     pub channels: Vec<ActivityChannel>,
+    pub actor_kind: DomainEventActorKind,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub facet: Option<String>,
     pub message: String,
@@ -208,12 +211,24 @@ impl ActivityEvent {
         severity: ActivitySeverity,
         channels: Vec<ActivityChannel>,
     ) -> Self {
+        let actor_kind = if actor_user_id.is_some() {
+            DomainEventActorKind::User
+        } else {
+            DomainEventActorKind::System
+        };
+        let actor_display_name = actor_user_id
+            .as_deref()
+            .filter(|user_id| !user_id.trim().is_empty())
+            .unwrap_or("System")
+            .to_string();
         Self {
             id: Id::new().0,
             kind,
             severity,
             channels,
+            actor_kind,
             actor_user_id,
+            actor_display_name,
             title_id,
             facet: None,
             message,

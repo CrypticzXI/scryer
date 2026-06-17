@@ -485,6 +485,12 @@ const fr: LocaleDictionary = {
   "settings.renameTokenYear": "Année de sortie",
   "settings.renameTokenQuality": "Qualité (ex. 1080p)",
   "settings.renameTokenEdition": "Édition (ex. Director's Cut)",
+  "settings.renameTokenImdbId": "ID IMDb",
+  "settings.renameTokenTmdbId": "ID TMDb",
+  "settings.renameTokenTvdbId": "ID TVDb",
+  "settings.renameTokenAnidbId": "ID AniDB",
+  "settings.renameTokenMalId": "ID MAL",
+  "settings.renameTokenAnilistId": "ID AniList",
   "settings.renameTokenSource": "Source (ex. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Codec vidéo (ex. x265)",
   "settings.renameTokenAudioCodec": "Codec audio (ex. DTS)",
@@ -501,6 +507,8 @@ const fr: LocaleDictionary = {
   "settings.renameValidationUnmatchedClose":
     "Accolade fermante '}' non appariée",
   "settings.renameValidationUnknownToken": "Jeton inconnu : {{token}}",
+  "settings.folderValidationUnknownToken":
+    "Les modèles de dossier prennent en charge {title}, {year} et les jetons d'ID externes. Jeton invalide : {{token}}",
   "settings.renameValidationEmpty":
     "Le modèle de renommage ne peut pas être vide",
   "settings.renameComingSoon": "Les règles de renommage arrivent bientôt.",
@@ -775,6 +783,7 @@ const fr: LocaleDictionary = {
   "queue.state.postProcessing": "Post-traitement",
   "queue.state.paused": "En pause",
   "queue.state.completed": "Terminé",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Importation en attente",
   "queue.state.importBlocked": "Importation bloquée",
   "queue.state.failed": "Échoué",
@@ -787,6 +796,8 @@ const fr: LocaleDictionary = {
     "{{downloading}} en téléchargement, {{waiting}} en attente d'importation, {{attention}} nécessite une attention",
   "queue.manualImport": "Importation manuelle",
   "queue.manualImporting": "Ajout à la file…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Importation manuelle mise en file d'attente.",
   "queue.manualImportFailed": "Échec de l'importation manuelle.",
   "queue.removeFailed": "Échec de la suppression",

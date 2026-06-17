@@ -430,12 +430,15 @@ async fn import_additional_movie_download(
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(source_video, &dest_path, import_mode)
-        .await?;
+    let file_result = import_file_with_record_progress(
+        app,
+        import_id,
+        source_video,
+        &dest_path,
+        import_mode,
+        None,
+    )
+    .await?;
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
@@ -555,7 +558,7 @@ async fn import_additional_movie_download(
 
     let _ = app
         .append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(title),
@@ -664,7 +667,7 @@ async fn import_movie_download(
         Err(rejection) => {
             crate::post_download_gate::reject_source_file_before_import(
                 app,
-                Some(&actor.id),
+                crate::domain_events::DomainEventActor::from(actor),
                 title,
                 &completed.name,
                 &source_video,
@@ -941,12 +944,15 @@ async fn import_movie_download(
         }
     }
 
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(&source_video, &dest_path, import_mode)
-        .await?;
+    let file_result = import_file_with_record_progress(
+        app,
+        import_id,
+        &source_video,
+        &dest_path,
+        import_mode,
+        Some(&prepared.source_snapshot),
+    )
+    .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let nfo_enabled = app
@@ -1083,7 +1089,7 @@ async fn import_movie_download(
 
     spawn_post_processing(PostProcessingContext {
         app: app.clone(),
-        actor_id: Some(actor.id.clone()),
+        actor: crate::domain_events::DomainEventActor::from(actor),
         title_id: title.id.clone(),
         title_name: title.name.clone(),
         facet: title.facet.clone(),
@@ -1130,7 +1136,7 @@ async fn import_movie_download(
 
     let _ = app
         .append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(title),
@@ -1336,7 +1342,7 @@ async fn import_series_movie_download(
         Err(rejection) => {
             crate::post_download_gate::reject_source_file_before_import(
                 app,
-                Some(&actor.id),
+                crate::domain_events::DomainEventActor::from(actor),
                 title,
                 &completed.name,
                 &source_video,
@@ -1621,12 +1627,15 @@ async fn import_series_movie_download(
     }
 
     // Import file (hardlink or copy)
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(&source_video, &dest_path, import_mode)
-        .await?;
+    let file_result = import_file_with_record_progress(
+        app,
+        import_id,
+        &source_video,
+        &dest_path,
+        import_mode,
+        Some(&prepared.source_snapshot),
+    )
+    .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let acq_score = crate::post_download_gate::compute_acquisition_score(
@@ -1779,7 +1788,7 @@ async fn import_series_movie_download(
     // Spawn post-processing
     spawn_post_processing(PostProcessingContext {
         app: app.clone(),
-        actor_id: Some(actor.id.clone()),
+        actor: crate::domain_events::DomainEventActor::from(actor),
         title_id: title.id.clone(),
         title_name: title.name.clone(),
         facet: title.facet.clone(),
@@ -1823,7 +1832,7 @@ async fn import_series_movie_download(
         .await?;
 
     app.append_domain_event(new_title_domain_event(
-        Some(actor.id.clone()),
+        actor,
         title,
         DomainEventPayload::ImportCompleted(ImportCompletedEventData {
             title: title_context_snapshot(title),

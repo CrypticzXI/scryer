@@ -1,6 +1,8 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
+use scryer_domain::{
+    ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
+};
 use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -1234,6 +1236,14 @@ pub trait ImportRepository: Send + Sync {
         result_json: Option<String>,
     ) -> AppResult<()>;
 
+    async fn update_import_transfer_progress(
+        &self,
+        import_id: &str,
+        phase: ImportTransferPhase,
+        bytes: i64,
+        total_bytes: i64,
+    ) -> AppResult<()>;
+
     async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64>;
 
     async fn recover_stale_processing_imports_for_type(
@@ -1346,14 +1356,42 @@ pub trait WorkflowOperationRepository: Send + Sync {
     ) -> AppResult<WorkflowOperationInfo>;
 }
 
+#[derive(Clone, Debug)]
+pub struct ImportFileTransferProgress {
+    pub phase: ImportTransferPhase,
+    pub bytes: u64,
+    pub total_bytes: u64,
+}
+
+pub type ImportFileTransferProgressSender =
+    tokio::sync::mpsc::UnboundedSender<ImportFileTransferProgress>;
+
 #[async_trait]
 pub trait FileImporter: Send + Sync {
+    async fn snapshot_import_source(
+        &self,
+        source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot>;
+
     async fn import_file(
         &self,
         source: &Path,
         dest: &Path,
         mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     ) -> AppResult<ImportFileResult>;
+
+    async fn import_file_with_progress(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
+    ) -> AppResult<ImportFileResult> {
+        let _ = progress;
+        self.import_file(source, dest, mode, expected_source).await
+    }
 
     async fn remove_import_source_after_verified_import(
         &self,

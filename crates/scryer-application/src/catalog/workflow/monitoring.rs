@@ -42,7 +42,7 @@ impl AppUseCase {
     /// Canonical owner for direct title monitoring changes.
     async fn apply_title_monitoring_change(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         title_id: &str,
         monitored: bool,
     ) -> AppResult<Title> {
@@ -58,7 +58,7 @@ impl AppUseCase {
         }
 
         let title = self.persist_title_monitoring(title_id, monitored).await?;
-        self.emit_title_updated_activity(actor_user_id, &title)
+        self.emit_title_updated_activity(actor, &title)
             .await;
         Ok(title)
     }
@@ -519,7 +519,7 @@ impl AppUseCase {
     /// so propagation and immediate acquisition behavior cannot drift.
     async fn apply_collection_monitoring_change(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         collection_id: &str,
         monitored: bool,
         propagate_to_episodes: bool,
@@ -589,7 +589,7 @@ impl AppUseCase {
         }
 
         if let Some(title) = final_title {
-            self.emit_title_updated_activity(actor_user_id, &title)
+            self.emit_title_updated_activity(actor, &title)
                 .await;
         }
 
@@ -602,7 +602,7 @@ impl AppUseCase {
     /// propagation and immediate acquisition behavior stay single-sourced.
     async fn apply_episode_monitoring_change(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         episode_id: &str,
         monitored: bool,
         sync_title_if_already_monitored: bool,
@@ -680,7 +680,7 @@ impl AppUseCase {
         }
 
         if let Some(title) = final_title {
-            self.emit_title_updated_activity(actor_user_id, &title)
+            self.emit_title_updated_activity(actor, &title)
                 .await;
         }
 
@@ -750,7 +750,7 @@ impl AppUseCase {
         }
 
         if let Some(title) = final_title {
-            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+            self.emit_title_updated_activity(actor, &title)
                 .await;
         }
 
@@ -778,7 +778,7 @@ impl AppUseCase {
         )
         .await?;
 
-        self.apply_title_monitoring_change(Some(actor.id.clone()), id, monitored)
+        self.apply_title_monitoring_change(actor, id, monitored)
             .await
     }
 }
@@ -812,7 +812,7 @@ impl AppUseCase {
 
         let collection = self
             .apply_collection_monitoring_change(
-                Some(actor.id.clone()),
+                actor,
                 collection_id,
                 monitored,
                 true,
@@ -851,7 +851,7 @@ impl AppUseCase {
         .await?;
 
         let episode = self
-            .apply_episode_monitoring_change(Some(actor.id.clone()), episode_id, monitored, true)
+            .apply_episode_monitoring_change(actor, episode_id, monitored, true)
             .await?;
         Ok(episode)
     }
@@ -939,7 +939,7 @@ impl AppUseCase {
         if let Some(monitored) = monitored {
             collection = Some(
                 self.apply_collection_monitoring_change(
-                    Some(actor.id.clone()),
+                    actor,
                     &collection_id,
                     monitored,
                     true,
@@ -1042,7 +1042,7 @@ impl AppUseCase {
         if let Some(monitored) = monitored {
             episode = Some(
                 self.apply_episode_monitoring_change(
-                    Some(actor.id.clone()),
+                    actor,
                     &episode_id,
                     monitored,
                     true,

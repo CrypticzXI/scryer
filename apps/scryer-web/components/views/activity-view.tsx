@@ -134,7 +134,7 @@ const queueStateLabels: Record<string, string> = {
   post_processing: "queue.state.postProcessing",
   paused: "queue.state.paused",
   completed: "queue.state.completed",
-  importing: "queue.manualImporting",
+  importing: "queue.state.importing",
   removing: "queue.deleting",
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
@@ -282,6 +282,7 @@ type QueueRowPresentation = {
   displayStateKey: string;
   percent: number;
   remainingLabel: string | null;
+  hasTransferProgress: boolean;
   needsManualImport: boolean;
   statusLabel: string;
   failureReason: string;
@@ -307,8 +308,20 @@ function deriveQueueRowPresentation(
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
   const failureReason = buildQueueStatusDetail(queueItem);
   const displayStateKey = queueItem.displayState;
-  const percent = formatProgress(queueItem.progressPercent);
-  const remainingLabel = formatRemainingDuration(queueItem.remainingSeconds);
+  const transferBytes = parseByteCount(queueItem.importTransferBytes);
+  const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
+  const hasTransferProgress =
+    displayStateKey === "importing" &&
+    queueItem.importTransferPhase !== null &&
+    transferBytes !== null &&
+    transferTotalBytes !== null &&
+    transferTotalBytes > 0;
+  const percent = hasTransferProgress
+    ? formatProgress((transferBytes / transferTotalBytes) * 100)
+    : formatProgress(queueItem.progressPercent);
+  const remainingLabel = hasTransferProgress
+    ? `${formatByteCount(transferBytes)} / ${formatByteCount(transferTotalBytes)}`
+    : formatRemainingDuration(queueItem.remainingSeconds);
   const needsManualImport =
     queueItem.attentionRequired ||
     queueStateAttention[stateKey] ||
@@ -322,9 +335,13 @@ function deriveQueueRowPresentation(
           ? "queue.state.extracting"
           : "queue.state.postProcessing";
   const statusLabel =
-    displayStateKey === "post_processing"
-      ? t(postProcessingStatusKey)
-      : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
+    queueItem.importTransferPhase === "copying"
+      ? t("queue.transfer.copying")
+      : queueItem.importTransferPhase === "finalizing"
+        ? t("queue.transfer.finalizing")
+        : displayStateKey === "post_processing"
+          ? t(postProcessingStatusKey)
+          : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
       displayStateKey === "remove_failed" ||
@@ -374,6 +391,7 @@ function deriveQueueRowPresentation(
     displayStateKey,
     percent,
     remainingLabel,
+    hasTransferProgress,
     needsManualImport,
     statusLabel,
     failureReason,
@@ -621,11 +639,18 @@ function ActivityQueueDetailsPanel({
   );
 }
 
-function formatBytes(sizeBytes: string | null): string {
+function parseByteCount(sizeBytes: string | null): number | null {
   if (!sizeBytes) {
-    return "\u2014";
+    return null;
   }
   const bytes = Number.parseFloat(sizeBytes);
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return null;
+  }
+  return bytes;
+}
+
+function formatByteCount(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) {
     return "\u2014";
   }
@@ -642,6 +667,11 @@ function formatBytes(sizeBytes: string | null): string {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
+function formatBytes(sizeBytes: string | null): string {
+  const bytes = parseByteCount(sizeBytes);
+  return bytes === null ? "\u2014" : formatByteCount(bytes);
+}
+
 function formatProgress(progressPercent: number): number {
   if (!Number.isFinite(progressPercent)) {
     return 0;
@@ -653,6 +683,21 @@ function formatProgress(progressPercent: number): number {
     return 100;
   }
   return Math.round(progressPercent);
+}
+
+function effectiveQueueItemProgress(queueItem: DownloadQueueItem): number {
+  const transferBytes = parseByteCount(queueItem.importTransferBytes);
+  const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
+  if (
+    queueItem.displayState === "importing" &&
+    queueItem.importTransferPhase !== null &&
+    transferBytes !== null &&
+    transferTotalBytes !== null &&
+    transferTotalBytes > 0
+  ) {
+    return formatProgress((transferBytes / transferTotalBytes) * 100);
+  }
+  return formatProgress(queueItem.progressPercent);
 }
 
 function formatRemainingDuration(remainingSeconds: number | null): string | null {
@@ -976,7 +1021,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           break;
         }
         case "progress": {
-          comparison = formatProgress(leftItem.progressPercent) - formatProgress(rightItem.progressPercent);
+          comparison =
+            effectiveQueueItemProgress(leftItem) - effectiveQueueItemProgress(rightItem);
           break;
         }
         case "size": {
@@ -1574,7 +1620,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   </p>
                 )}
               </TableCell>
-              {activeTab === "activity" ? (
+              {activeTab === "activity" || activeTab === "import" ? (
                 <TableCell className="w-52 min-w-52 align-middle">
                   <ActivityProgressBar
                     percent={row.percent}
@@ -1820,7 +1866,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             {row.hasExpandableDetails && isExpanded ? (
               <TableRow>
                 <TableCell
-                  colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
+                  colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
                   className="bg-muted/10 p-3"
                 >
                   <ActivityQueueDetailsPanel
@@ -1839,7 +1885,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       {showHistorySpinner ? (
         <TableRow>
           <TableCell
-            colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
+            colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
             className="py-4 text-center text-sm text-muted-foreground"
           >
             <span className="inline-flex items-center">
@@ -1983,7 +2029,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 <Table
                   className={cn(
                     "table-fixed",
-                    activeTab === "activity" ? "min-w-[820px]" : "min-w-[700px]",
+                    activeTab === "activity" || activeTab === "import"
+                      ? "min-w-[820px]"
+                      : "min-w-[700px]",
                   )}
                 >
                   <TableHeader>
@@ -2007,7 +2055,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       {renderSortableHeader("title", t("queue.title"), "w-[34%] min-w-0")}
                       {renderSortableHeader("client", t("queue.client"), "w-32 min-w-0")}
                       {renderSortableHeader("status", t("queue.status"), "w-44 min-w-0")}
-                      {activeTab === "activity"
+                      {activeTab === "activity" || activeTab === "import"
                         ? renderSortableHeader("progress", t("queue.progress"), "w-52 min-w-52")
                         : null}
                       {renderSortableHeader("size", t("queue.size"), "w-24 min-w-24")}
@@ -2018,7 +2066,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     {sortedQueueItems.length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 6 : 5}
+                          colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
                           className={queueLoading ? "p-0" : "text-sm text-muted-foreground"}
                         >
                           {queueLoading ? (

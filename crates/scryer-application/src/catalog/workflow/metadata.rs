@@ -102,7 +102,7 @@ impl AppUseCase {
 impl AppUseCase {
     pub(crate) async fn apply_title_metadata_update(
         &self,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         id: &str,
         name: Option<String>,
         facet: Option<MediaFacet>,
@@ -114,7 +114,7 @@ impl AppUseCase {
             .titles
             .update_metadata(id, name, facet, tags)
             .await?;
-        self.emit_title_updated_activity(actor_user_id, &title)
+        self.emit_title_updated_activity(actor, &title)
             .await;
         Ok(title)
     }
@@ -147,7 +147,7 @@ impl AppUseCase {
         )
         .await?;
 
-        self.apply_title_metadata_update(Some(actor.id.clone()), id, name, facet, tags)
+        self.apply_title_metadata_update(actor, id, name, facet, tags)
             .await
     }
 
@@ -207,7 +207,7 @@ impl AppUseCase {
                 .media_files
                 .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
                 .await?;
-            self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+            self.emit_title_updated_activity(actor, &title)
                 .await;
             return Ok(title);
         }
@@ -237,7 +237,7 @@ impl AppUseCase {
             .media_files
             .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
             .await?;
-        self.emit_title_updated_activity(Some(actor.id.clone()), &title)
+        self.emit_title_updated_activity(actor, &title)
             .await;
         Ok(title)
     }
@@ -439,7 +439,7 @@ impl AppUseCase {
 
         let old_tvdb_id = extract_tvdb_id(&existing_title).map(|id| id.to_string());
         self.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             &refreshed_title,
             DomainEventPayload::TitleRematched(TitleRematchedEventData {
                 title: title_context_snapshot(&refreshed_title),
@@ -449,7 +449,7 @@ impl AppUseCase {
             }),
         ))
         .await?;
-        self.emit_title_updated_activity(Some(actor.id.clone()), &refreshed_title)
+        self.emit_title_updated_activity(actor, &refreshed_title)
             .await;
 
         Ok(FixTitleMatchResult {
