@@ -213,14 +213,9 @@ impl AppUseCase {
                     None
                 };
                 let update_available = inst
-                    .and_then(|installation| {
-                        selected_release.as_ref().and_then(|release| {
-                            parse_catalog_release_version(&entry.id, release)
-                                .zip(semver::Version::parse(installation.version.as_str()).ok())
-                        })
-                    })
-                    .is_some_and(|(selected_version, installed_version)| {
-                        selected_version > installed_version
+                    .zip(selected)
+                    .is_some_and(|(installation, resolved)| {
+                        catalog_plugin_update_available(installation, resolved)
                     });
 
                 result.push(RegistryPlugin {
@@ -289,15 +284,9 @@ impl AppUseCase {
                         &resolved.catalog_entry.provider_type,
                     ))
                 });
-            let update_available = inst
-                .and_then(|installation| {
-                    semver::Version::parse(resolved.release.version.trim_start_matches('v'))
-                        .ok()
-                        .zip(semver::Version::parse(installation.version.as_str()).ok())
-                })
-                .is_some_and(|(selected_version, installed_version)| {
-                    selected_version > installed_version
-                });
+            let update_available = inst.is_some_and(|installation| {
+                catalog_plugin_update_available(installation, &resolved)
+            });
 
             result.push(RegistryPlugin {
                 id: resolved.catalog_entry.id.clone(),

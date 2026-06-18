@@ -263,6 +263,86 @@ fn installed_catalog_release(
         })
         .cloned()
 }
+fn catalog_artifact_requires_simd(artifact: &CatalogV3PluginArtifact) -> bool {
+    artifact.required_features.iter().any(|feature| {
+        matches!(
+            feature.trim().to_ascii_lowercase().as_str(),
+            "simd128" | "relaxed-simd"
+        )
+    })
+}
+fn parsed_digest_matches(candidate: &str, algorithm: &str, digest: &str) -> bool {
+    parse_digest_string(candidate).is_ok_and(|(candidate_algorithm, candidate_digest)| {
+        candidate_algorithm.eq_ignore_ascii_case(algorithm)
+            && candidate_digest.eq_ignore_ascii_case(digest)
+    })
+}
+fn installed_wasm_matches_catalog_artifact(
+    installation: &PluginInstallation,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    let (Some(algorithm), Some(digest)) = (
+        installation.wasm_digest_algo.as_deref(),
+        installation.wasm_digest.as_deref(),
+    ) else {
+        return false;
+    };
+    artifact
+        .wasm_digests
+        .iter()
+        .any(|candidate| parsed_digest_matches(candidate, algorithm, digest))
+}
+fn installed_artifact_matches_catalog_artifact(
+    installation: &PluginInstallation,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    if installation.wasm_digest_algo.is_some() && installation.wasm_digest.is_some() {
+        return installed_wasm_matches_catalog_artifact(installation, artifact);
+    }
+    if let Some(artifact_digest) = installation.artifact_digest.as_deref()
+        && let Ok((algorithm, digest)) = parse_digest_string(artifact_digest)
+    {
+        return artifact
+            .digests
+            .iter()
+            .any(|candidate| parsed_digest_matches(candidate, &algorithm, &digest));
+    }
+    installation
+        .source_url
+        .as_deref()
+        .is_some_and(|source_url| source_url.trim() == artifact.url.trim())
+}
+fn same_version_simd_artifact_update_available(
+    installation: &PluginInstallation,
+    release: &CatalogV3PluginRelease,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    release.sdk_constraint == installation.sdk_constraint
+        && catalog_artifact_requires_simd(artifact)
+        && !installed_artifact_matches_catalog_artifact(installation, artifact)
+}
+fn catalog_plugin_update_available(
+    installation: &PluginInstallation,
+    resolved: &CatalogPluginResolution,
+) -> bool {
+    let Some(selected_version) =
+        parse_catalog_release_version(&resolved.catalog_entry.id, &resolved.release)
+    else {
+        return false;
+    };
+    let Ok(installed_version) = semver::Version::parse(installation.version.as_str()) else {
+        return false;
+    };
+    match selected_version.cmp(&installed_version) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Equal => same_version_simd_artifact_update_available(
+            installation,
+            &resolved.release,
+            &resolved.artifact,
+        ),
+        std::cmp::Ordering::Less => false,
+    }
+}
 fn artifact_required_features_supported(
     artifact: &CatalogV3PluginArtifact,
     supported_features: &HashSet<String>,

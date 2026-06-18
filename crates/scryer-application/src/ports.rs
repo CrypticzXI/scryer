@@ -2093,6 +2093,9 @@ pub trait IndexerPluginProvider: Send + Sync {
 #[async_trait]
 pub trait IndexerManagementClient: Send + Sync {
     async fn validate_connection(&self) -> AppResult<IndexerValidationResult>;
+    async fn preview_sync_plan(&self, parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
+        self.plan_sync(parent_config_id).await
+    }
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
         Err(AppError::Repository(
             "managed child sync is not supported for this provider".to_string(),

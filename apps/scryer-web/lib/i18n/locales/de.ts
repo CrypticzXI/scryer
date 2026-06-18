@@ -1076,6 +1076,8 @@ const de: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Update: v{{version}}",
   "settings.pluginUpgrade": "Auf v{{version}} aktualisieren",
+  "settings.pluginOptimizedBuildAvailable": "Optimierter Build verfügbar",
+  "settings.pluginInstallOptimizedBuild": "Optimierten Build installieren",
   "settings.pluginNoCompatibleRelease":
     "Keine kompatible Version für diese Scryer-Version",
   "settings.pluginNewerReleaseRequiresNewerScryer":

@@ -1695,6 +1695,8 @@ const en: LocaleDictionary = {
   "settings.pluginBytes": "WASM {{bytes}}",
   "settings.pluginUpdateAvailable": "Update: v{{version}}",
   "settings.pluginUpgrade": "Upgrade to v{{version}}",
+  "settings.pluginOptimizedBuildAvailable": "Optimized build available",
+  "settings.pluginInstallOptimizedBuild": "Install optimized build",
   "settings.pluginNoCompatibleRelease":
     "No compatible release for this Scryer version",
   "settings.pluginNewerReleaseRequiresNewerScryer":

@@ -1036,6 +1036,8 @@ const ko: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "업데이트: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}으로 업그레이드",
+  "settings.pluginOptimizedBuildAvailable": "최적화된 빌드 사용 가능",
+  "settings.pluginInstallOptimizedBuild": "최적화된 빌드 설치",
   "settings.pluginNoCompatibleRelease":
     "이 Scryer 버전과 호환되는 릴리스가 없습니다",
   "settings.pluginNewerReleaseRequiresNewerScryer":

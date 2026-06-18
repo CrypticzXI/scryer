@@ -399,6 +399,10 @@ function PluginTable({
               showActions === "installed" && plugin.installedVersion
                 ? plugin.installedVersion
                 : plugin.version;
+            const sameVersionOptimizedUpgrade =
+              plugin.updateAvailable
+              && plugin.isInstalled
+              && plugin.installedVersion === plugin.version;
             const blockedLabel = blockedReasonLabel(plugin, t);
             const bytesLabel = formatPluginBytes(plugin.bytes);
             return (
@@ -449,7 +453,9 @@ function PluginTable({
                   {t("settings.pluginVersion", { version: displayVersion })}
                   {plugin.updateAvailable && (
                     <div className="text-xs text-yellow-400">
-                      {t("settings.pluginUpdateAvailable", { version: plugin.version })}
+                      {sameVersionOptimizedUpgrade
+                        ? t("settings.pluginOptimizedBuildAvailable")
+                        : t("settings.pluginUpdateAvailable", { version: plugin.version })}
                     </div>
                   )}
                   {blockedLabel && (
@@ -534,7 +540,11 @@ function PluginTable({
                             tone="upgrade"
                             disabled={isBusy || upgradeBlocked}
                             onClick={() => onUpgradePlugin(plugin)}
-                            label={t("settings.pluginUpgrade", { version: plugin.version })}
+                            label={
+                              sameVersionOptimizedUpgrade
+                                ? t("settings.pluginInstallOptimizedBuild")
+                                : t("settings.pluginUpgrade", { version: plugin.version })
+                            }
                           >
                             {isUpgrading ? (
                               <Loader2 className="h-4 w-4 animate-spin" />

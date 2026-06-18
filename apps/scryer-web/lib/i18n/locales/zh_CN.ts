@@ -1006,6 +1006,8 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新：v{{version}}",
   "settings.pluginUpgrade": "升级到 v{{version}}",
+  "settings.pluginOptimizedBuildAvailable": "优化构建可用",
+  "settings.pluginInstallOptimizedBuild": "安装优化构建",
   "settings.pluginNoCompatibleRelease":
     "当前 Scryer 版本没有兼容的发布版本",
   "settings.pluginNewerReleaseRequiresNewerScryer":

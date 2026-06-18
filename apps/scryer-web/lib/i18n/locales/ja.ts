@@ -1056,6 +1056,8 @@ const ja: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新あり: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}にアップグレード",
+  "settings.pluginOptimizedBuildAvailable": "最適化ビルドがあります",
+  "settings.pluginInstallOptimizedBuild": "最適化ビルドをインストール",
   "settings.pluginNoCompatibleRelease":
     "このScryerバージョンに対応するリリースはありません",
   "settings.pluginNewerReleaseRequiresNewerScryer":

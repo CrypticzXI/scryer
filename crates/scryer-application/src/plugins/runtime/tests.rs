@@ -196,6 +196,18 @@ mod catalog_artifact_selection_tests {
         }
     }
 
+    fn artifact_with_digests(
+        required_features: &[&str],
+        url: &str,
+        artifact_digest: &str,
+        wasm_digest: &str,
+    ) -> CatalogV3PluginArtifact {
+        let mut artifact = artifact(required_features, url);
+        artifact.digests = vec![artifact_digest.to_string()];
+        artifact.wasm_digests = vec![wasm_digest.to_string()];
+        artifact
+    }
+
     fn release(artifacts: Vec<CatalogV3PluginArtifact>) -> CatalogV3PluginRelease {
         CatalogV3PluginRelease {
             version: "1.0.0".to_string(),
@@ -222,6 +234,63 @@ mod catalog_artifact_selection_tests {
                 github_workflow: None,
             },
             releases,
+        }
+    }
+
+    fn installed_plugin(
+        version: &str,
+        wasm_digest: Option<&str>,
+        artifact_digest: Option<&str>,
+        source_url: Option<&str>,
+    ) -> PluginInstallation {
+        let now = Utc::now();
+        let (wasm_digest_algo, wasm_digest) = wasm_digest
+            .map(parse_digest_string)
+            .transpose()
+            .unwrap()
+            .map(|(algorithm, digest)| (Some(algorithm), Some(digest)))
+            .unwrap_or((None, None));
+        PluginInstallation {
+            id: "install-1".to_string(),
+            plugin_id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: "Alpha plugin".to_string(),
+            version: version.to_string(),
+            sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            scryer_constraint: None,
+            plugin_type: "indexer".to_string(),
+            provider_type: "alpha".to_string(),
+            source_kind: PluginSourceKind::Downloaded,
+            is_enabled: true,
+            is_builtin: false,
+            wasm_encoding: PluginWasmEncoding::Zstd,
+            wasm_digest_algo,
+            source_url: source_url.map(str::to_string),
+            support_tier: PluginSupportTier::Official,
+            publisher: None,
+            docs_url: None,
+            source_repo: None,
+            manifest_url: source_url.map(str::to_string),
+            wasm_digest,
+            artifact_digest: artifact_digest.map(str::to_string),
+            descriptor_json: None,
+            installed_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn resolution(
+        release: CatalogV3PluginRelease,
+        artifact: CatalogV3PluginArtifact,
+    ) -> CatalogPluginResolution {
+        CatalogPluginResolution {
+            catalog_entry: plugin(vec![release.clone()]),
+            release,
+            artifact,
+            source_kind: PluginSourceKind::Downloaded,
+            effective_support_tier: PluginSupportTier::Official,
+            github_repo: GitHubRepo::parse("https://github.com/scryer-media/alpha").unwrap(),
         }
     }
 
@@ -347,6 +416,100 @@ mod catalog_artifact_selection_tests {
             selected.required_features,
             vec!["simd128".to_string(), "relaxed-simd".to_string()]
         );
+    }
+
+    #[test]
+    fn same_version_simd_artifact_counts_as_update_when_installed_artifact_differs() {
+        let selected = artifact_with_digests(
+            &["simd128"],
+            "https://example.invalid/plugin-simd.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin.zst"),
+        );
+        let resolved = resolution(release.clone(), selected.clone());
+
+        assert!(same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+        assert!(catalog_plugin_update_available(&installation, &resolved));
+    }
+
+    #[test]
+    fn same_version_selected_simd_artifact_does_not_count_as_update() {
+        let selected = artifact_with_digests(
+            &["simd128", "relaxed-simd"],
+            "https://example.invalid/plugin-relaxed.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:4444444444444444444444444444444444444444444444444444444444444444"),
+            None,
+            Some("https://example.invalid/plugin-relaxed.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn same_version_non_simd_artifact_does_not_count_as_update() {
+        let selected = artifact_with_digests(
+            &[],
+            "https://example.invalid/plugin.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin-old.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn same_wasm_digest_does_not_count_encoding_only_change_as_update() {
+        let selected = artifact_with_digests(
+            &["simd128"],
+            "https://example.invalid/plugin-simd.br",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin-simd.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
     }
 
     #[test]

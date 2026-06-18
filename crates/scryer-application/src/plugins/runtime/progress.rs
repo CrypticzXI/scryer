@@ -340,7 +340,15 @@ impl AppUseCase {
                 installation.version
             ))
         })?;
-        if selected_version <= installed_version {
+        let same_version_optimized_update = selected_version == installed_version
+            && same_version_simd_artifact_update_available(
+                &installation,
+                &resolved.release,
+                &resolved.artifact,
+            );
+        if selected_version < installed_version
+            || (selected_version == installed_version && !same_version_optimized_update)
+        {
             return Err(AppError::Validation(format!(
                 "plugin '{}' is already at version {} (selected release is {})",
                 resolved.catalog_entry.id, installation.version, resolved.release.version
