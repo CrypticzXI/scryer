@@ -1030,6 +1030,15 @@ pub struct PasskeySummaryPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct OAuthConnectedAppPayload {
+    pub grant_id: String,
+    pub client_id: String,
+    pub client_name: String,
+    pub authorized_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct ExternalIdPayload {
     pub source: String,
     pub value: String,

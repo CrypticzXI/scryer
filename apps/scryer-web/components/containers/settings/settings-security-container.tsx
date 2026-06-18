@@ -11,6 +11,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useAuth } from "@/lib/hooks/use-auth";
 import type { SecuritySettings } from "@/lib/types/settings";
 import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
+import { LatestWinsSaveQueue } from "@/lib/utils/latest-wins-save-queue";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -62,12 +63,18 @@ export function SettingsSecurityContainer() {
   const [passwordMinLengthDraft, setPasswordMinLengthDraft] = React.useState(
     String(DEFAULT_SECURITY_SETTINGS.passwordMinLength),
   );
-  const passwordMinLengthSavePromiseRef = React.useRef<Promise<SecuritySettings | null> | null>(
-    null,
-  );
+  const settingsRef = React.useRef(settings);
+  const passwordMinLengthSaveQueueRef = React.useRef<LatestWinsSaveQueue<string> | null>(null);
+  if (passwordMinLengthSaveQueueRef.current == null) {
+    passwordMinLengthSaveQueueRef.current = new LatestWinsSaveQueue<string>();
+  }
   const passwordMinLengthSaveToastRequestedRef = React.useRef(false);
   const canManageExternalInvites =
     user != null && hasAppPermission(user, APP_PERMISSIONS.manageUsers);
+
+  React.useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   React.useEffect(() => {
     setPasswordMinLengthDraft(String(settings.passwordMinLength));
@@ -140,84 +147,75 @@ export function SettingsSecurityContainer() {
     } as SecuritySettings;
   }, [client, t]);
 
-  const submitPasswordMinLength = React.useCallback(async (
-    showSuccessToast: boolean,
-    draftOverride?: string,
-  ) => {
-    if (showSuccessToast) {
-      passwordMinLengthSaveToastRequestedRef.current = true;
-    }
-
-    if (passwordMinLengthSavePromiseRef.current) {
-      return passwordMinLengthSavePromiseRef.current;
-    }
-
-    if (loading || confirmBusy || saveBusy) {
-      return null;
-    }
-
-    const submittedDraft = draftOverride ?? passwordMinLengthDraft;
+  const runPasswordMinLengthSave = React.useCallback(async (submittedDraft: string) => {
+    const currentSettings = settingsRef.current;
     const submittedPasswordMinLength = parsePasswordMinLengthDraft(submittedDraft);
 
     if (submittedPasswordMinLength == null) {
-      setPasswordMinLengthDraft(String(settings.passwordMinLength));
+      setPasswordMinLengthDraft(String(currentSettings.passwordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
       toast.error(
         t("settings.securityPasswordMinLengthInvalid", {
           min: MIN_PASSWORD_LENGTH,
         }),
       );
-      return null;
+      return;
     }
 
-    if (submittedPasswordMinLength === settings.passwordMinLength) {
+    if (submittedPasswordMinLength === currentSettings.passwordMinLength) {
       setPasswordMinLengthDraft(String(submittedPasswordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
+      return;
+    }
+
+    setSaveBusy(true);
+    try {
+      const nextSettings = await applySecuritySettings(
+        currentSettings.formLoginEnabled,
+        submittedPasswordMinLength,
+        currentSettings.skipLoginForLocalIps,
+        currentSettings.mfaRequireConfigStepUp,
+        currentSettings.mfaRequirePasswordLogin,
+        currentSettings.totpRequireJellyfinLogin,
+      );
+      settingsRef.current = nextSettings;
+      setSettings(nextSettings);
+      setPasswordMinLengthDraft(String(nextSettings.passwordMinLength));
+      if (passwordMinLengthSaveToastRequestedRef.current) {
+        toast.success(t("settings.securityPreferenceSaved"));
+      }
+    } catch (error) {
+      setPasswordMinLengthDraft(String(settingsRef.current.passwordMinLength));
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    } finally {
+      passwordMinLengthSaveToastRequestedRef.current = false;
+      setSaveBusy(false);
+    }
+  }, [applySecuritySettings, t]);
+
+  const submitPasswordMinLength = React.useCallback(async (
+    showSuccessToast: boolean,
+    draftOverride?: string,
+  ): Promise<SecuritySettings | null> => {
+    if (showSuccessToast) {
+      passwordMinLengthSaveToastRequestedRef.current = true;
+    }
+
+    if (loading || confirmBusy) {
       return null;
     }
 
-    const savePromise = (async () => {
-      setSaveBusy(true);
-      try {
-        const nextSettings = await applySecuritySettings(
-          settings.formLoginEnabled,
-          submittedPasswordMinLength,
-          settings.skipLoginForLocalIps,
-          settings.mfaRequireConfigStepUp,
-          settings.mfaRequirePasswordLogin,
-          settings.totpRequireJellyfinLogin,
-        );
-        setSettings(nextSettings);
-        if (passwordMinLengthSaveToastRequestedRef.current) {
-          toast.success(t("settings.securityPreferenceSaved"));
-        }
-        return nextSettings;
-      } catch (error) {
-        setPasswordMinLengthDraft(String(settings.passwordMinLength));
-        toast.error(errorMessage(error, t("settings.securitySaveFailed")));
-        return null;
-      } finally {
-        passwordMinLengthSaveToastRequestedRef.current = false;
-        passwordMinLengthSavePromiseRef.current = null;
-        setSaveBusy(false);
-      }
-    })();
-
-    passwordMinLengthSavePromiseRef.current = savePromise;
-    return savePromise;
+    const submittedDraft = draftOverride ?? passwordMinLengthDraft;
+    await passwordMinLengthSaveQueueRef.current?.enqueue(
+      submittedDraft,
+      runPasswordMinLengthSave,
+    );
+    return settingsRef.current;
   }, [
-    applySecuritySettings,
     confirmBusy,
     loading,
     passwordMinLengthDraft,
-    saveBusy,
-    settings.formLoginEnabled,
-    settings.passwordMinLength,
-    settings.skipLoginForLocalIps,
-    settings.mfaRequireConfigStepUp,
-    settings.totpRequireJellyfinLogin,
-    settings.mfaRequirePasswordLogin,
-    t,
+    runPasswordMinLengthSave,
   ]);
 
   const handleToggle = React.useCallback((enabled: boolean) => {

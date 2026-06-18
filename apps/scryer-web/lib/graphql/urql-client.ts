@@ -3,6 +3,7 @@ import {
   fetchExchange,
   subscriptionExchange,
 } from "@urql/core";
+import { getAuthlessWebClientProof } from "@/lib/authless-web-client";
 import { clearClientAuthSession, getAuthToken } from "@/lib/hooks/use-auth";
 import { getRuntimeBasePath, getRuntimeGraphqlUrl } from "@/lib/runtime-config";
 import { wsClient } from "@/lib/graphql/ws-client";
@@ -107,8 +108,37 @@ async function backendHealthLooksOk(): Promise<boolean> {
   }
 }
 
+function inputPath(input: RequestInfo | URL): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+    return new URL(raw, window.location.origin).pathname;
+  } catch {
+    return null;
+  }
+}
+
+async function withAuthlessProof(input: RequestInfo | URL, init?: RequestInit) {
+  if (typeof window === "undefined" || getAuthToken()) {
+    return init;
+  }
+  const graphqlPath = new URL(getRuntimeGraphqlUrl(), window.location.origin).pathname;
+  if (inputPath(input) !== graphqlPath) {
+    return init;
+  }
+  const proof = await getAuthlessWebClientProof();
+  if (!proof) {
+    return init;
+  }
+  const headers = new Headers(init?.headers);
+  headers.set("x-scryer-web-client", proof);
+  return { ...init, credentials: "include" as RequestCredentials, headers };
+}
+
 export const scryerFetch: typeof fetch = async (input, init) => {
-  const response = await fetch(input, init);
+  const response = await fetch(input, await withAuthlessProof(input, init));
   if (response.status === 401) {
     redirectToLogin();
     throw new TypeError("Authentication required");

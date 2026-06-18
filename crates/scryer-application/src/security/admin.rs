@@ -16,7 +16,7 @@ impl AppUseCase {
         scryer_domain::UserAuthorization::full_admin().app
     }
 
-    pub(crate) fn is_reserved_recovery_username(username: &str) -> bool {
+    pub fn is_reserved_recovery_username(username: &str) -> bool {
         Self::normalize_local_username(username).eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
     }
 
@@ -561,6 +561,8 @@ impl AppUseCase {
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
         Ok(user)
     }
@@ -680,6 +682,8 @@ impl AppUseCase {
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             actor,
@@ -789,6 +793,8 @@ impl AppUseCase {
             return Err(AppError::Validation("cannot delete current user".into()));
         }
 
+        self.revoke_oauth_refresh_grants_for_user(user_id, "user_deleted")
+            .await?;
         self.services.identity.users.delete(user_id).await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.emit_configuration_changed_event(
@@ -822,6 +828,8 @@ impl AppUseCase {
             .identity
             .totp
             .reset_user_mfa_and_invalidate_sessions(user_id, &auth_session_version)
+            .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "auth_session_changed")
             .await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;

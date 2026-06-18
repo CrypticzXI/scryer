@@ -33,7 +33,9 @@ use crate::{
     LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
+    NotificationChannelRepository, NotificationSubscriptionRepository,
+    OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
+    OAuthRefreshRotation, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
     PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
@@ -1772,6 +1774,99 @@ impl TotpRepository for NullTotpRepository {
 
     async fn clear_failed_attempts(&self, _: &str) -> AppResult<u64> {
         Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullOAuthRepository;
+
+#[async_trait]
+impl OAuthRepository for NullOAuthRepository {
+    async fn create_authorization_code(
+        &self,
+        _: OAuthAuthorizationCodeRecord,
+    ) -> AppResult<OAuthAuthorizationCodeRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_authorization_code(
+        &self,
+        _: &str,
+    ) -> AppResult<Option<OAuthAuthorizationCodeRecord>> {
+        Ok(None)
+    }
+
+    async fn consume_authorization_code(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn create_refresh_grant(
+        &self,
+        _: OAuthRefreshGrantRecord,
+        _: OAuthRefreshTokenRecord,
+    ) -> AppResult<OAuthRefreshGrantRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_refresh_token(
+        &self,
+        _: &str,
+    ) -> AppResult<Option<(OAuthRefreshTokenRecord, OAuthRefreshGrantRecord)>> {
+        Ok(None)
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+        _: OAuthRefreshTokenRecord,
+    ) -> AppResult<Option<OAuthRefreshRotation>> {
+        Ok(None)
+    }
+
+    async fn revoke_refresh_grant(
+        &self,
+        _: &str,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn revoke_refresh_family(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn revoke_user_refresh_grants(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn touch_refresh_grant_last_used(
+        &self,
+        _: &str,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn list_connected_apps(&self, _: &str) -> AppResult<Vec<OAuthConnectedAppRecord>> {
+        Ok(Vec::new())
     }
 }
 

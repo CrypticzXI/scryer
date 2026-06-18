@@ -6,6 +6,7 @@ import { RouteErrorBoundary } from "./error-boundary";
 
 const RootPageShell = lazy(() => import("@/components/root/root-page-shell"));
 const LoginPage = lazy(() => import("@/src/pages/login"));
+const OAuthAuthorizePage = lazy(() => import("@/src/pages/oauth-authorize"));
 const SetupPage = lazy(() => import("@/src/pages/setup"));
 
 function ShellRoute() {
@@ -34,6 +35,14 @@ export const router = createBrowserRouter(
           element: (
             <Suspense fallback={<PageShellFallback />}>
               <SetupPage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "/oauth/authorize",
+          element: (
+            <Suspense fallback={<PageShellFallback />}>
+              <OAuthAuthorizePage />
             </Suspense>
           ),
         },

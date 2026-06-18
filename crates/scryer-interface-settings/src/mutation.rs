@@ -14,8 +14,8 @@ use scryer_application::{
 };
 
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, require_config_step_up, to_gql_error, to_login_gql_error,
+    app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx,
+    require_config_step_up, require_interactive_actor, to_gql_error, to_login_gql_error,
     to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
@@ -563,7 +563,7 @@ impl SettingsMutations {
         input: UpdateSubtitleSettingsInput,
     ) -> GqlResult<SubtitleSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let settings = app
@@ -606,7 +606,7 @@ impl SettingsMutations {
         input: UpdateAcquisitionSettingsInput,
     ) -> GqlResult<AcquisitionSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let settings = app
@@ -635,7 +635,7 @@ impl SettingsMutations {
         input: UpdateGeneralSettingsInput,
     ) -> GqlResult<GeneralSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let settings = app
@@ -655,7 +655,7 @@ impl SettingsMutations {
 
     async fn clear_title_image_cache(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.clear_title_image_cache(&actor)
             .await
@@ -668,7 +668,7 @@ impl SettingsMutations {
         input: UpdateRecycleBinSettingsInput,
     ) -> GqlResult<RecycleBinSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let settings = app
@@ -690,7 +690,7 @@ impl SettingsMutations {
         input: UpdateAutoBackupSettingsInput,
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let settings = app
@@ -714,7 +714,7 @@ impl SettingsMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .acknowledge_auto_backup_disabled_missing_key_notice(&actor)
             .await
@@ -729,7 +729,7 @@ impl SettingsMutations {
         input: UpdateSecuritySettingsInput,
     ) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         require_config_step_up(ctx).await?;
 
@@ -761,7 +761,7 @@ impl SettingsMutations {
         input: CreateMediaServerConnectionInput,
     ) -> GqlResult<MediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.create_media_server_connection(&actor, media_server_draft(input))
             .await
@@ -775,7 +775,7 @@ impl SettingsMutations {
         input: UpdateMediaServerConnectionInput,
     ) -> GqlResult<MediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.update_media_server_connection(&actor, media_server_patch(input))
             .await
@@ -789,7 +789,7 @@ impl SettingsMutations {
         id: String,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.delete_media_server_connection(&actor, &id)
             .await
@@ -804,7 +804,7 @@ impl SettingsMutations {
         plex_auth_token: Option<String>,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.test_media_server_connection(&actor, &id, plex_auth_token.as_deref())
             .await
@@ -818,7 +818,7 @@ impl SettingsMutations {
         plex_auth_token: String,
     ) -> GqlResult<Vec<PlexServerDiscoveryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.discover_plex_media_servers(&actor, &plex_auth_token)
             .await
@@ -837,7 +837,7 @@ impl SettingsMutations {
         input: DelayProfileInput,
     ) -> GqlResult<DelayProfilePayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
 
         let profile = app
@@ -873,7 +873,7 @@ impl SettingsMutations {
         input: DeleteDelayProfileInput,
     ) -> GqlResult<DelayProfileDeletionPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         let id = app
             .delete_delay_profile(&actor, &input.id)
@@ -888,7 +888,7 @@ impl SettingsMutations {
         input: UpdateMediaSettingsInput,
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         let scope = input.scope;
         let import_mode = parse_import_mode_input(input.import_mode)?;
@@ -933,7 +933,7 @@ impl SettingsMutations {
         input: UpdateLibraryPathsInput,
     ) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.update_library_paths(
             &actor,
@@ -954,7 +954,7 @@ impl SettingsMutations {
         input: UpdateServiceSettingsInput,
     ) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.update_service_settings(
             &actor,
@@ -974,7 +974,7 @@ impl SettingsMutations {
         input: SaveQualityProfileSettingsInput,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         let current = app
             .get_quality_profile_settings(&actor)
@@ -1038,7 +1038,7 @@ impl SettingsMutations {
         input: UpdateDownloadClientRoutingInput,
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         let scope = input.scope;
         app.update_download_client_routing(
@@ -1076,7 +1076,7 @@ impl SettingsMutations {
         input: UpdateIndexerRoutingInput,
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         let scope = input.scope;
         app.update_indexer_routing(
@@ -1109,7 +1109,7 @@ impl SettingsMutations {
         input: DeleteQualityProfileInput,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         require_config_step_up(ctx).await?;
         app.delete_quality_profile(&actor, &input.profile_id)
             .await
@@ -1122,7 +1122,7 @@ impl SettingsMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<WebauthnChallengePayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         app.webauthn_register_start(&actor, auth_runtime.snapshot().effective_form_login_enabled)
             .await
@@ -1136,7 +1136,7 @@ impl SettingsMutations {
         input: WebauthnRegisterCompleteInput,
     ) -> GqlResult<PasskeySummaryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         app.webauthn_register_complete(
             &actor,
@@ -1159,7 +1159,7 @@ impl SettingsMutations {
         let actor = if mfa.session_scope == scryer_application::JwtSessionScope::MfaEnrollment {
             mfa_enrollment_actor_from_ctx(ctx)?
         } else {
-            actor_from_ctx(ctx)?
+            require_interactive_actor(ctx)?
         };
         app.totp_enrollment_start(&actor)
             .await
@@ -1173,7 +1173,7 @@ impl SettingsMutations {
         input: TotpEnrollmentCompleteInput,
     ) -> GqlResult<TotpEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.totp_enrollment_complete(&actor, &input.challenge_id, &input.code)
             .await
             .map(from_totp_enrollment_complete)
@@ -1207,7 +1207,7 @@ impl SettingsMutations {
         input: TotpVerifyInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let mfa_step_up_verified_until = app
             .mfa_verify_step_up(&actor, &input.code)
             .await
@@ -1221,7 +1221,7 @@ impl SettingsMutations {
         input: TotpVerifyInput,
     ) -> GqlResult<TotpStatusPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.totp_disable(&actor, &input.code)
             .await
             .map(from_totp_status)
@@ -1234,7 +1234,7 @@ impl SettingsMutations {
         input: TotpVerifyInput,
     ) -> GqlResult<TotpEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.totp_regenerate_recovery_codes(&actor, &input.code)
             .await
             .map(from_totp_enrollment_complete)
@@ -1307,7 +1307,7 @@ impl SettingsMutations {
 
     async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         app.delete_my_passkey(
             &actor,
@@ -1317,6 +1317,14 @@ impl SettingsMutations {
         .await
         .map(|_| true)
         .map_err(to_gql_error)
+    }
+
+    async fn revoke_my_oauth_app(&self, ctx: &Context<'_>, grant_id: String) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
+        app.revoke_oauth_connected_app(&actor.id, &grant_id)
+            .await
+            .map_err(to_gql_error)
     }
 
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
@@ -1360,7 +1368,7 @@ impl SettingsMutations {
     /// Mark the setup wizard as complete.
     async fn complete_setup(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.complete_setup(&actor).await.map_err(to_gql_error)
     }
 }

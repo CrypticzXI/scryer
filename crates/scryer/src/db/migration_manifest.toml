@@ -427,6 +427,23 @@ file = "postgres/migrations/0133_domain_event_actor_audit.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 134
+description = "oauth integrations"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0134_oauth_integrations.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0134_oauth_integrations.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

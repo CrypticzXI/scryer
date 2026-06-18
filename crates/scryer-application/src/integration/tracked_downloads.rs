@@ -362,6 +362,7 @@ impl TrackedDownloadService {
     // ── Title Resolution ─────────────────────────────────────────────────
 
     async fn resolve_title(app: &AppUseCase, td: &mut TrackedDownload) {
+        let can_clear_stale_unmatched_state = should_clear_stale_unmatched_state_on_submission(td);
         let mut existing_submission = app
             .services
             .workflow
@@ -386,6 +387,16 @@ impl TrackedDownloadService {
             td.facet = Some(sub.facet.clone());
             td.source_title = sub.source_title.clone();
             td.match_type = TitleMatchType::Submission;
+            if can_clear_stale_unmatched_state {
+                td.status = TrackedDownloadStatus::Ok;
+                td.status_messages.clear();
+                if td.state == TrackedDownloadState::ImportBlocked
+                    && !td.import_attempted
+                    && td.path_missing_since.is_none()
+                {
+                    td.state = TrackedDownloadState::Downloading;
+                }
+            }
             return;
         }
 
@@ -571,6 +582,14 @@ fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) 
         .is_none_or(str::is_empty)
 }
 
+fn should_clear_stale_unmatched_state_on_submission(td: &TrackedDownload) -> bool {
+    !title_id_present(td.title_id.as_deref())
+        && matches!(
+            td.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        )
+}
+
 pub(crate) async fn publish_runtime_tracked_download_snapshot(
     app: &AppUseCase,
     tracked: &TrackedDownload,
@@ -655,6 +674,10 @@ fn should_reresolve_title(
         return true;
     }
 
+    if should_retry_late_submission_resolution(existing, incoming) {
+        return true;
+    }
+
     if !title_id_present(existing.client_item.title_id.as_deref())
         && title_id_present(incoming.title_id.as_deref())
     {
@@ -684,6 +707,18 @@ fn should_reresolve_title(
     }
 
     false
+}
+
+fn should_retry_late_submission_resolution(
+    existing: &TrackedDownload,
+    incoming: &DownloadQueueItem,
+) -> bool {
+    !title_id_present(existing.title_id.as_deref())
+        && matches!(
+            existing.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        )
+        && !download_submission_identity_is_empty(&observed_queue_item_identity(incoming))
 }
 
 pub(crate) async fn assign_title_to_tracked_download(
@@ -992,6 +1027,8 @@ mod tests {
     struct TestDownloadSubmissionRepo {
         submission: Option<crate::DownloadSubmission>,
         submission_identity: Option<crate::DownloadSubmissionIdentity>,
+        mutable_submission: Option<Arc<Mutex<Option<crate::DownloadSubmission>>>>,
+        mutable_submission_identity: Option<Arc<Mutex<Option<crate::DownloadSubmissionIdentity>>>>,
         tracked_state: Option<String>,
         tracked_state_updates: Arc<Mutex<Vec<String>>>,
         recorded_submissions: Arc<Mutex<Vec<crate::DownloadSubmission>>>,
@@ -1032,6 +1069,24 @@ mod tests {
         ))
     }
 
+    impl TestDownloadSubmissionRepo {
+        async fn current_submission(&self) -> Option<crate::DownloadSubmission> {
+            if let Some(submission) = self.mutable_submission.as_ref() {
+                return submission.lock().await.clone();
+            }
+
+            self.submission.clone()
+        }
+
+        async fn current_submission_identity(&self) -> Option<crate::DownloadSubmissionIdentity> {
+            if let Some(identity) = self.mutable_submission_identity.as_ref() {
+                return identity.lock().await.clone();
+            }
+
+            self.submission_identity.clone()
+        }
+    }
+
     #[async_trait]
     impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         async fn record_submission(&self, submission: crate::DownloadSubmission) -> AppResult<()> {
@@ -1043,13 +1098,9 @@ mod tests {
             &self,
             identity: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
-            Ok(self
-                .submission
-                .as_ref()
-                .filter(|submission| {
-                    DownloadSourceIdentity::from_submission(submission) == *identity
-                })
-                .cloned())
+            Ok(self.current_submission().await.filter(|submission| {
+                DownloadSourceIdentity::from_submission(submission) == *identity
+            }))
         }
 
         async fn list_by_download_id(
@@ -1058,7 +1109,7 @@ mod tests {
             client_type: &str,
             download_id: &str,
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
-            let Some(submission) = self.submission.as_ref() else {
+            let Some(submission) = self.current_submission().await else {
                 return Ok(vec![]);
             };
             let matches_submission = submission.download_client_id.as_deref().unwrap_or("")
@@ -1067,7 +1118,8 @@ mod tests {
                     .download_client_type
                     .eq_ignore_ascii_case(client_type);
             let matches_identity = self
-                .submission_identity
+                .current_submission_identity()
+                .await
                 .as_ref()
                 .and_then(|identity| identity.download_id.as_deref())
                 == Some(download_id);
@@ -1081,14 +1133,14 @@ mod tests {
             &self,
             _: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmissionIdentity>> {
-            Ok(self.submission_identity.clone())
+            Ok(self.current_submission_identity().await)
         }
 
         async fn list_for_client_items(
             &self,
             _: &[DownloadSourceIdentity],
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
-            Ok(self.submission.clone().into_iter().collect())
+            Ok(self.current_submission().await.into_iter().collect())
         }
 
         async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {
@@ -2131,6 +2183,80 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn late_submission_promotes_titleless_unmatched_download_and_clears_stale_import_block() {
+        let download_id = "e9527810bc94e83401584069306f1064ca28762a";
+        let mutable_submission = Arc::new(Mutex::new(None));
+        let mutable_submission_identity = Arc::new(Mutex::new(None));
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            mutable_submission: Some(mutable_submission.clone()),
+            mutable_submission_identity: Some(mutable_submission_identity.clone()),
+            ..Default::default()
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(
+            Arc::new(TestTitleRepo::default()),
+            download_submissions,
+            imports,
+        );
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "qbittorrent".to_string();
+        item.client_name = "qbittorrent".to_string();
+        item.download_client_item_id = download_id.to_string();
+        item.download_id = Some(download_id.to_string());
+        item.title_id = None;
+        item.title_name = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string();
+        item.facet = None;
+        item.is_scryer_origin = true;
+
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item.clone()).await;
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert!(tracked.title_id.is_none());
+        assert!(matches!(
+            tracked.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        ));
+
+        let tracked = tracker.find_mut(&tracked_id).expect("tracked download mut");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        tracked.warn("Unable to resolve title from completed download");
+
+        *mutable_submission.lock().await = Some(crate::DownloadSubmission {
+            title_id: "title-1".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: download_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            request_signature: None,
+            scope: crate::SubmissionScope::Title,
+        });
+        *mutable_submission_identity.lock().await = Some(crate::DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        });
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.facet.as_deref(), Some("movie"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert_eq!(
+            tracked.source_title.as_deref(),
+            Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb")
+        );
+        assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+        assert!(tracked.status_messages.is_empty());
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(!tracked.import_attempted);
+    }
+
     fn build_completed_download(
         client_type: &str,
         item_id: &str,
@@ -2210,6 +2336,8 @@ mod tests {
             submission_identity: Some(crate::DownloadSubmissionIdentity {
                 download_id: Some(download_id.to_string()),
             }),
+            mutable_submission: None,
+            mutable_submission_identity: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
@@ -2452,6 +2580,8 @@ mod tests {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: None,
             submission_identity: None,
+            mutable_submission: None,
+            mutable_submission_identity: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),

@@ -1070,6 +1070,7 @@ pub struct AppIdentityServices {
     pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
     pub(crate) totp: Arc<dyn TotpRepository>,
+    pub(crate) oauth: Arc<dyn OAuthRepository>,
 }
 
 #[derive(Clone)]
@@ -1312,6 +1313,7 @@ impl AppServices {
                 external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
                 totp: Arc::new(null_repositories::NullTotpRepository),
+                oauth: Arc::new(null_repositories::NullOAuthRepository),
             },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
@@ -1588,6 +1590,7 @@ impl AppServicesBuilder {
         identity.external_accounts,
         Arc<dyn UserExternalAccountRepository>
     );
+    app_services_builder_setter!(with_oauth_store, identity.oauth, Arc<dyn OAuthRepository>);
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: PluginInstallationRepository

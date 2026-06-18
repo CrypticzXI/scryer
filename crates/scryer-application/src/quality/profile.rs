@@ -1249,9 +1249,12 @@ pub fn apply_size_scoring_for_category(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::release_parser::parse_release_metadata;
+    use crate::release_parser::{parse_release_metadata, parse_release_metadata_for_target};
     use crate::scoring_weights::{
         ScoringOverrides, ScoringPersona, balanced_weights, build_weights,
+    };
+    use scryer_release_parser::{
+        ContextEpisode, ContextFacetHint, ContextTitle, ReleaseParseContext,
     };
 
     #[test]
@@ -1335,6 +1338,50 @@ mod tests {
                 .block_codes
                 .iter()
                 .any(|code| code == "quality_missing_and_profile_disallows_unknown")
+        );
+    }
+
+    #[test]
+    fn context_episode_title_does_not_trigger_source_low_quality_theatrical() {
+        let profile = QualityProfile::parse(
+            r#"{
+                "id":"context-protected",
+                "name":"Context protected",
+                "criteria": {
+                    "quality_tiers":["1080p","720p"],
+                    "allow_unknown_quality":false,
+                    "allow_upgrades":true
+                }
+            }"#,
+        )
+        .expect("profile must parse");
+        let context = ReleaseParseContext {
+            facet_hint: ContextFacetHint::Series,
+            title: ContextTitle {
+                name: "Fixture Series".to_string(),
+            },
+            aliases: Vec::new(),
+            known_years: Vec::new(),
+            imdb_ids: Vec::new(),
+            episodes: vec![ContextEpisode {
+                season: Some(2),
+                episode: Some(4),
+                title: Some("Camera Token".to_string()),
+                ..Default::default()
+            }],
+        };
+        let release = parse_release_metadata_for_target(
+            "Fixture.Series.S02E04.Camera.Token.1080p.WEB-DL.H264-Group",
+            &context,
+        );
+        let result = evaluate_against_profile(&profile, &release, false, &balanced_weights());
+
+        assert!(result.allowed);
+        assert!(
+            !result
+                .block_codes
+                .iter()
+                .any(|code| code == "source_low_quality_theatrical")
         );
     }
 

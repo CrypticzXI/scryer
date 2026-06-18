@@ -36,6 +36,28 @@ fn context(facet_hint: ContextFacetHint, title: &str) -> ReleaseParseContext {
     }
 }
 
+fn context_with_episode_title(title: &str, episode_title: &str) -> ReleaseParseContext {
+    let mut target = context(ContextFacetHint::Series, title);
+    target.episodes.push(ContextEpisode {
+        season: Some(2),
+        episode: Some(4),
+        title: Some(episode_title.to_string()),
+        ..Default::default()
+    });
+    target
+}
+
+fn context_with_episode_alias(title: &str, episode_alias: &str) -> ReleaseParseContext {
+    let mut target = context(ContextFacetHint::Series, title);
+    target.episodes.push(ContextEpisode {
+        season: Some(2),
+        episode: Some(4),
+        title_aliases: vec![episode_alias.to_string()],
+        ..Default::default()
+    });
+    target
+}
+
 #[test]
 fn lex_and_parse_standard_episode_release() {
     let analysis = analyze_release_for_target(
@@ -135,6 +157,77 @@ fn parser_accepts_unicode_separator_release() {
 
     assert_eq!(candidate.family, ParseFamily::StandardEpisode);
     assert_eq!(candidate.projected.normalized_title, "SHOW NAME");
+}
+
+#[test]
+fn context_episode_title_tokens_are_not_source_metadata() {
+    let target = context_with_episode_title("Fixture Series", "Camera Token");
+    let analysis = analyze_release_for_target(
+        "Fixture.Series.S02E04.Camera.Token.1080p.WEB-DL.H264-Group",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
+    assert!(
+        candidate
+            .context_evidence
+            .iter()
+            .any(|evidence| evidence == "context:episode_title_hit")
+    );
+}
+
+#[test]
+fn real_cam_source_still_parses_as_cam() {
+    let target = context_with_episode_title("Fixture Series", "Neutral Token");
+    let analysis = analyze_release_for_target(
+        "Fixture.Series.S02E04.Neutral.Token.1080p.CAM.H264-Group",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("CAM")
+    );
+}
+
+#[test]
+fn metadata_like_episode_alias_tokens_are_protected() {
+    let target = context_with_episode_alias("Fixture Series", "CAM Token");
+    let analysis = analyze_release_for_target(
+        "Fixture.Series.S02E04.CAM.Token.1080p.WEB-DL.H264-Group",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
+    assert!(
+        candidate
+            .context_evidence
+            .iter()
+            .any(|evidence| evidence == "context:episode_title_hit")
+    );
+}
+
+#[test]
+fn single_token_source_like_alias_is_not_globally_protected() {
+    let target = context_with_episode_alias("Fixture Series", "CAM");
+    let analysis =
+        analyze_release_for_target("Fixture.Series.S02E04.1080p.CAM.H264-Group", &target);
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("CAM")
+    );
 }
 
 #[test]

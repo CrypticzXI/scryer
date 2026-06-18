@@ -1,4 +1,5 @@
 import { createClient } from "graphql-ws";
+import { getAuthlessWebClientProof } from "@/lib/authless-web-client";
 import { getAuthToken } from "@/lib/hooks/use-auth";
 import { getRuntimeGraphqlUrl } from "@/lib/runtime-config";
 
@@ -17,9 +18,13 @@ function resolveWsUrl(): string {
 
 export const wsClient = createClient({
   url: resolveWsUrl(),
-  connectionParams: () => {
+  connectionParams: async () => {
     const token = getAuthToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    if (token) {
+      return { Authorization: `Bearer ${token}` };
+    }
+    const proof = await getAuthlessWebClientProof();
+    return proof ? { authlessWebClientProof: proof } : {};
   },
   // Keep the connection alive for 3s after the last subscriber leaves.
   // Prevents React StrictMode's unmount/remount cycle from killing the

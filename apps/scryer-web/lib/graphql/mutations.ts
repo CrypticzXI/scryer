@@ -67,6 +67,10 @@ export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
   deleteMyPasskey(id: $id)
 }`;
 
+export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: String!) {
+  revokeMyOauthApp(grantId: $grantId)
+}`;
+
 export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
   totpEnrollmentStart {
     challengeId

@@ -7,6 +7,7 @@ mod base_path;
 mod init;
 mod log_buffer;
 mod middleware;
+mod oauth_routes;
 mod rate_limit;
 mod settings_bootstrap;
 mod splash;
@@ -72,10 +73,12 @@ use backup_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, CorsConfig, WebSocketOriginPolicy,
-    cors_handler, enforce_authless_access_guard, graphql_handler, graphql_ws_handler,
-    health_handler, rate_limit_http_api,
+    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofState,
+    CorsConfig, WebSocketOriginPolicy, authless_web_client_proof_handler, cors_handler,
+    enforce_authless_access_guard, graphql_handler, graphql_ws_handler, health_handler,
+    rate_limit_http_api,
 };
+use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
@@ -1302,12 +1305,14 @@ async fn bootstrap_application(
         allow_unauthenticated_public_access: auth_mode.allow_unauthenticated_public_access,
         recovery_mode: auth_mode.recovery_active(),
     };
+    let authless_web_client_proof = AuthlessWebClientProofState::new();
     let auth_state = AuthState {
         app: app_use_case.clone(),
         schema: schema.clone(),
         auth_runtime: auth_runtime.clone(),
         rate_limiter: rate_limiter.clone(),
         ws_origin_policy: WebSocketOriginPolicy::from_env(&cors),
+        authless_web_client_proof: authless_web_client_proof.clone(),
     };
     let authless_access_guard_state = AuthlessAccessGuardState {
         auth_runtime: auth_runtime.clone(),
@@ -1324,6 +1329,9 @@ async fn bootstrap_application(
     let backup_route_state = BackupRouteState {
         app: app_use_case.clone(),
     };
+    let oauth_route_state = OAuthRouteState {
+        app: app_use_case.clone(),
+    };
     let ws_auth_state = auth_state.clone();
 
     // WebSocket route must be outside CompressionLayer — compression wraps the
@@ -1336,6 +1344,12 @@ async fn bootstrap_application(
 
     let mut compressed_router = Router::new()
         .route("/health", get(health_handler))
+        .route(
+            "/authless-client",
+            get(authless_web_client_proof_handler).with_state(authless_web_client_proof.clone()),
+        )
+        .merge(oauth_router(oauth_route_state))
+        .route("/oauth/authorize", get(ui_fallback))
         .route(
             "/graphql",
             post(graphql_handler).with_state(auth_state.clone()),

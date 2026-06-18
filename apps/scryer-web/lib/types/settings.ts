@@ -187,6 +187,14 @@ export type PasskeySummary = {
   lastUsedAt: string | null;
 };
 
+export type OAuthConnectedApp = {
+  grantId: string;
+  clientId: string;
+  clientName: string;
+  authorizedAt: string;
+  lastUsedAt: string | null;
+};
+
 export type TotpStatus = {
   enabled: boolean;
   createdAt: string | null;

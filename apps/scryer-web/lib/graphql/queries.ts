@@ -2027,6 +2027,16 @@ export const myPasskeysQuery = `query MyPasskeys {
   }
 }`;
 
+export const myOauthAppsQuery = `query MyOauthApps {
+  myOauthApps {
+    grantId
+    clientId
+    clientName
+    authorizedAt
+    lastUsedAt
+  }
+}`;
+
 export const myTotpQuery = `query MyTotp {
   myTotp {
     enabled

@@ -366,6 +366,26 @@ pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthActorSession {
+    pub client_id: String,
+    pub grant_id: String,
+}
+
+pub fn oauth_actor_session_from_ctx(ctx: &Context<'_>) -> Option<OAuthActorSession> {
+    ctx.data_opt::<OAuthActorSession>().cloned()
+}
+
+pub fn require_interactive_actor(ctx: &Context<'_>) -> GqlResult<User> {
+    let actor = actor_from_ctx(ctx)?;
+    if oauth_actor_session_from_ctx(ctx).is_some() {
+        return Err(to_gql_error(AppError::Unauthorized(
+            "OAuth access tokens cannot manage Scryer profile or settings".into(),
+        )));
+    }
+    Ok(actor)
+}
+
 pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::MfaEnrollment {
         return Err(to_gql_error(AppError::MfaEnrollmentRequired(
@@ -398,11 +418,11 @@ pub async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<User> {
         .snapshot()
         .effective_form_login_enabled
     {
-        return actor_from_ctx(ctx);
+        return require_interactive_actor(ctx);
     }
 
     let app = app_from_ctx(ctx)?;
-    let actor = actor_from_ctx(ctx)?;
+    let actor = require_interactive_actor(ctx)?;
     let mfa = mfa_verification_from_ctx(ctx);
     app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
         .await

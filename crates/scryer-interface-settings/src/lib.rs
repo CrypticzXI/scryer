@@ -2,7 +2,8 @@ mod mutation;
 
 use async_graphql::{Context, Object, Result as GqlResult};
 use scryer_interface_core::{
-    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
+    AuthRuntimeStateSnapshot, app_from_ctx, auth_runtime_from_ctx, require_interactive_actor,
+    to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_config, from_download_client_routing_entry,
@@ -50,6 +51,18 @@ fn from_recycle_bin_settings(
 ) -> RecycleBinSettingsPayload {
     RecycleBinSettingsPayload {
         enabled: settings.enabled,
+    }
+}
+
+fn from_oauth_connected_app(
+    app: scryer_application::OAuthConnectedAppSummary,
+) -> OAuthConnectedAppPayload {
+    OAuthConnectedAppPayload {
+        grant_id: app.grant_id,
+        client_id: app.client_id,
+        client_name: app.client_name,
+        authorized_at: app.authorized_at.to_rfc3339(),
+        last_used_at: app.last_used_at.map(|value| value.to_rfc3339()),
     }
 }
 
@@ -252,7 +265,7 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
 impl SettingsQueries {
     async fn subtitle_settings(&self, ctx: &Context<'_>) -> GqlResult<SubtitleSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .get_subtitle_settings(&actor)
             .await
@@ -265,7 +278,7 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<AcquisitionSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .get_acquisition_settings(&actor)
             .await
@@ -275,7 +288,7 @@ impl SettingsQueries {
 
     async fn general_settings(&self, ctx: &Context<'_>) -> GqlResult<GeneralSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .get_general_settings(&actor)
             .await
@@ -288,7 +301,7 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<RecycleBinSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .get_recycle_bin_settings(&actor)
             .await
@@ -301,7 +314,7 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let settings = app
             .get_auto_backup_settings(&actor)
             .await
@@ -311,7 +324,7 @@ impl SettingsQueries {
 
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         let settings = app
             .get_security_settings(&actor)
@@ -338,7 +351,7 @@ impl SettingsQueries {
         provider: Option<MediaServerProviderValue>,
     ) -> GqlResult<Vec<MediaServerConnectionPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.list_media_server_connections(
             &actor,
             provider.map(MediaServerProviderValue::into_domain),
@@ -359,7 +372,7 @@ impl SettingsQueries {
         id: String,
     ) -> GqlResult<Option<MediaServerConnectionPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_media_server_connection(&actor, &id)
             .await
             .map(|connection| connection.map(from_media_server_connection))
@@ -373,7 +386,7 @@ impl SettingsQueries {
         search: Option<String>,
     ) -> GqlResult<Vec<JellyfinServerUserPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.list_jellyfin_server_users(&actor, &connection_id, search.as_deref())
             .await
             .map(|users| users.into_iter().map(from_jellyfin_server_user).collect())
@@ -386,7 +399,7 @@ impl SettingsQueries {
         search: Option<String>,
     ) -> GqlResult<Vec<MediaServerUserGroupPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.list_media_server_users(&actor, search.as_deref())
             .await
             .map(|groups| {
@@ -410,7 +423,7 @@ impl SettingsQueries {
 
     async fn my_passkeys(&self, ctx: &Context<'_>) -> GqlResult<Vec<PasskeySummaryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
         app.list_my_passkeys(&actor, auth_runtime.snapshot().effective_form_login_enabled)
             .await
@@ -420,16 +433,25 @@ impl SettingsQueries {
 
     async fn my_totp(&self, ctx: &Context<'_>) -> GqlResult<TotpStatusPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.totp_status(&actor)
             .await
             .map(from_totp_status)
             .map_err(to_gql_error)
     }
 
+    async fn my_oauth_apps(&self, ctx: &Context<'_>) -> GqlResult<Vec<OAuthConnectedAppPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
+        app.list_oauth_connected_apps(&actor.id)
+            .await
+            .map(|apps| apps.into_iter().map(from_oauth_connected_app).collect())
+            .map_err(to_gql_error)
+    }
+
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let profiles = app.get_delay_profiles(&actor).await.map_err(to_gql_error)?;
         Ok(profiles.into_iter().map(from_delay_profile).collect())
     }
@@ -440,7 +462,7 @@ impl SettingsQueries {
         scope: ContentScopeValue,
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_media_settings(&actor, scope.into_media_facet())
             .await
             .map(|settings| from_media_settings(scope, settings))
@@ -449,7 +471,7 @@ impl SettingsQueries {
 
     async fn library_paths(&self, ctx: &Context<'_>) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_library_paths(&actor)
             .await
             .map(from_library_paths_settings)
@@ -458,7 +480,7 @@ impl SettingsQueries {
 
     async fn service_settings(&self, ctx: &Context<'_>) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_service_settings(&actor)
             .await
             .map(from_service_settings)
@@ -470,7 +492,7 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_quality_profile_settings(&actor)
             .await
             .map(from_quality_profile_settings)
@@ -483,7 +505,7 @@ impl SettingsQueries {
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_download_client_routing(&actor, scope.as_scope_id())
             .await
             .map(|entries| {
@@ -501,7 +523,7 @@ impl SettingsQueries {
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         app.get_indexer_routing(&actor, scope.as_scope_id())
             .await
             .map(|entries| {
@@ -519,7 +541,7 @@ impl SettingsQueries {
         provider_type: Option<String>,
     ) -> GqlResult<Vec<IndexerConfigPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let configs = app
             .list_indexer_configs(&actor, provider_type)
             .await
@@ -569,7 +591,7 @@ impl SettingsQueries {
         client_type: Option<String>,
     ) -> GqlResult<Vec<DownloadClientConfigPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let configs = app
             .list_download_client_configs(&actor, client_type)
             .await
@@ -586,7 +608,7 @@ impl SettingsQueries {
         provider_type: Option<String>,
     ) -> GqlResult<Vec<SubtitleProviderConfigPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let configs = app
             .list_subtitle_provider_configs(&actor)
             .await
@@ -607,7 +629,7 @@ impl SettingsQueries {
 
     async fn users(&self, ctx: &Context<'_>) -> GqlResult<Vec<UserPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor = require_interactive_actor(ctx)?;
         let users = app.list_users(&actor).await.map_err(to_gql_error)?;
         let mut payloads = Vec::with_capacity(users.len());
         for user in users {

@@ -6,10 +6,11 @@ use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
     LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
-    MediaServerConnectionRepository, PluginInstallationRepository, PostProcessingScriptRepository,
-    QualityProfileRepository, RuleSetRepository, SettingsRepository, ShowRepository,
-    SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
-    TotpRepository, UserExternalAccountRepository, UserRepository, WebauthnRepository,
+    MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
+    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
+    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
+    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
+    UserRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
@@ -26,7 +27,7 @@ use crate::{
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
     IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
     MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
-    NotificationStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
+    NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
     QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
     SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
     SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
@@ -620,6 +621,7 @@ enum DatastoreStores {
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         totp_store: Arc<TotpStore>,
+        oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -658,6 +660,7 @@ enum DatastoreStores {
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         totp_store: Arc<TotpStore>,
+        oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -715,6 +718,7 @@ impl DatastoreAssembly {
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
+        let oauth_store = Arc::new(OAuthStore::new(datastore.clone()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -780,6 +784,7 @@ impl DatastoreAssembly {
             user_store,
             webauthn_store,
             totp_store,
+            oauth_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -831,6 +836,7 @@ impl DatastoreAssembly {
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
+        let oauth_store = Arc::new(OAuthStore::new(datastore.clone()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -894,6 +900,7 @@ impl DatastoreAssembly {
             user_store,
             webauthn_store,
             totp_store,
+            oauth_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -1194,6 +1201,7 @@ impl DatastoreAssembly {
                 user_store,
                 webauthn_store,
                 totp_store,
+                oauth_store,
                 release_store,
                 library_probe_store,
                 library_scan_unmatched_store,
@@ -1224,6 +1232,7 @@ impl DatastoreAssembly {
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
+                let oauth: Arc<dyn OAuthRepository> = oauth_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
                 let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
@@ -1243,6 +1252,7 @@ impl DatastoreAssembly {
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_external_account_store(external_accounts)
+                .with_oauth_store(oauth)
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
@@ -1282,6 +1292,7 @@ impl DatastoreAssembly {
                 user_store,
                 webauthn_store,
                 totp_store,
+                oauth_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
@@ -1312,6 +1323,7 @@ impl DatastoreAssembly {
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
+                let oauth: Arc<dyn OAuthRepository> = oauth_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
                 let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
@@ -1331,6 +1343,7 @@ impl DatastoreAssembly {
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_external_account_store(external_accounts)
+                .with_oauth_store(oauth)
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)

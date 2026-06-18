@@ -21,6 +21,7 @@ impl AppUseCase {
     const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
     const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
     const MFA_ENROLLMENT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
+    pub(crate) const OAUTH_ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
@@ -435,6 +436,23 @@ impl AppUseCase {
         .await
     }
 
+    pub async fn issue_oauth_access_token(
+        &self,
+        actor: &User,
+        client_id: &str,
+        grant_id: &str,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            None,
+            None,
+            JwtSessionScope::Full,
+            Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+            Some((client_id.to_string(), grant_id.to_string())),
+        )
+        .await
+    }
+
     async fn issue_access_token_with_mfa_and_scope(
         &self,
         actor: &User,
@@ -442,6 +460,26 @@ impl AppUseCase {
         mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
         auth_scope: JwtSessionScope,
         ttl_seconds: i64,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            auth_scope,
+            ttl_seconds,
+            None,
+        )
+        .await
+    }
+
+    async fn issue_access_token_with_mfa_scope_and_oauth(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        auth_scope: JwtSessionScope,
+        ttl_seconds: i64,
+        oauth: Option<(String, String)>,
     ) -> AppResult<String> {
         let actor = self.load_user_for_auth_payload(actor).await?;
         let signing_seed = actor
@@ -455,6 +493,9 @@ impl AppUseCase {
 
         let app_permissions = Self::canonical_app_permission_claims(&actor);
         let library_permissions = Self::canonical_library_permission_claims(&actor);
+        let (oauth_client_id, oauth_grant_id) = oauth
+            .map(|(client_id, grant_id)| (Some(client_id), Some(grant_id)))
+            .unwrap_or((None, None));
 
         let claims = JwtClaims {
             sub: actor.id.clone(),
@@ -467,6 +508,8 @@ impl AppUseCase {
             mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
             mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
             auth_scope,
+            oauth_client_id,
+            oauth_grant_id,
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -888,6 +931,8 @@ impl AppUseCase {
                         mfa_verified_until: claims.mfa_verified_until,
                         mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
                         session_scope: claims.auth_scope,
+                        oauth_client_id: claims.oauth_client_id,
+                        oauth_grant_id: claims.oauth_grant_id,
                     },
                 )
             })

@@ -61,3 +61,18 @@ export function getRuntimeBasePath(): string {
 export function getRuntimeGraphqlUrl(): string {
   return runtimeConfig.graphqlUrl;
 }
+
+export function getRuntimeBackendUrl(path: string): string {
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  if (typeof window === "undefined") {
+    const basePath = runtimeConfig.basePath === "/" ? "" : runtimeConfig.basePath;
+    return `${basePath}${suffix}`;
+  }
+
+  const url = new URL(runtimeConfig.graphqlUrl, window.location.origin);
+  const apiBasePath = url.pathname.replace(/\/graphql\/?$/, "").replace(/\/+$/, "");
+  url.pathname = `${apiBasePath}${suffix}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}

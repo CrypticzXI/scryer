@@ -1,0 +1,438 @@
+use axum::Form;
+use axum::Json;
+use axum::Router;
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use scryer_application::{AppError, AppUseCase, JwtSessionScope, OAUTH_LIBRARY_SCOPE};
+
+use crate::middleware::parse_bearer_token;
+
+#[derive(Clone)]
+pub(crate) struct OAuthRouteState {
+    pub(crate) app: AppUseCase,
+}
+
+pub(crate) fn oauth_router(state: OAuthRouteState) -> Router {
+    Router::new()
+        .route("/oauth/authorize/decision", post(oauth_authorize_decision))
+        .route("/oauth/token", post(oauth_token))
+        .route("/oauth/revoke", post(oauth_revoke))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth_metadata),
+        )
+        .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthAuthorizeDecisionRequest {
+    approved: bool,
+    response_type: String,
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    code_challenge_method: String,
+    scope: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthAuthorizeDecisionResponse {
+    redirect_uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthTokenRequest {
+    grant_type: Option<String>,
+    client_id: Option<String>,
+    code: Option<String>,
+    redirect_uri: Option<String>,
+    code_verifier: Option<String>,
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthRevokeRequest {
+    token: Option<String>,
+    #[serde(rename = "token_type_hint")]
+    _token_type_hint: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: i64,
+    refresh_token: String,
+    scope: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthErrorResponse {
+    error: &'static str,
+    error_description: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthMetadataResponse {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    revocation_endpoint: String,
+    response_types_supported: Vec<&'static str>,
+    grant_types_supported: Vec<&'static str>,
+    scopes_supported: Vec<&'static str>,
+    token_endpoint_auth_methods_supported: Vec<&'static str>,
+    revocation_endpoint_auth_methods_supported: Vec<&'static str>,
+    code_challenge_methods_supported: Vec<&'static str>,
+}
+
+async fn oauth_authorize_decision(
+    State(state): State<OAuthRouteState>,
+    headers: HeaderMap,
+    Json(input): Json<OAuthAuthorizeDecisionRequest>,
+) -> Response {
+    match oauth_authorize_decision_inner(state, headers, input).await {
+        Ok(response) => Json(response).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn oauth_authorize_decision_inner(
+    state: OAuthRouteState,
+    headers: HeaderMap,
+    input: OAuthAuthorizeDecisionRequest,
+) -> Result<OAuthAuthorizeDecisionResponse, Response> {
+    let token = bearer_token_from_headers(&headers).ok_or_else(|| {
+        oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_request",
+            "authorization requires a logged-in Scryer session",
+        )
+    })?;
+    let (user, claims) = state
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .map_err(|_| {
+            oauth_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_request",
+                "invalid session",
+            )
+        })?;
+    if claims.session_scope != JwtSessionScope::Full
+        || claims.oauth_client_id.is_some()
+        || AppUseCase::is_reserved_recovery_username(&user.username)
+    {
+        return Err(oauth_error(
+            StatusCode::FORBIDDEN,
+            "access_denied",
+            "this session cannot authorize OAuth clients",
+        ));
+    }
+    state
+        .app
+        .validate_oauth_redirect_uri(&input.client_id, &input.redirect_uri)
+        .map_err(oauth_validation_error)?;
+    if input.response_type != "code" {
+        return Ok(OAuthAuthorizeDecisionResponse {
+            redirect_uri: oauth_redirect_error(
+                &input.redirect_uri,
+                "unsupported_response_type",
+                "only response_type=code is supported",
+                input.state.as_deref(),
+            )?,
+        });
+    }
+    let scope = match state.app.validate_oauth_scope(input.scope.as_deref()) {
+        Ok(scope) => scope,
+        Err(err) => {
+            return Ok(OAuthAuthorizeDecisionResponse {
+                redirect_uri: oauth_redirect_error(
+                    &input.redirect_uri,
+                    "invalid_scope",
+                    &oauth_error_description(&err),
+                    input.state.as_deref(),
+                )?,
+            });
+        }
+    };
+    if !input.approved {
+        return Ok(OAuthAuthorizeDecisionResponse {
+            redirect_uri: oauth_redirect_error(
+                &input.redirect_uri,
+                "access_denied",
+                "authorization was denied",
+                input.state.as_deref(),
+            )?,
+        });
+    }
+    let code = state
+        .app
+        .create_oauth_authorization_code(
+            &user,
+            &input.client_id,
+            &input.redirect_uri,
+            &scope,
+            &input.code_challenge,
+            &input.code_challenge_method,
+        )
+        .await
+        .map_err(oauth_validation_error)?;
+    let mut redirect = Url::parse(&input.redirect_uri).map_err(|_| {
+        oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid redirect_uri",
+        )
+    })?;
+    redirect.query_pairs_mut().append_pair("code", &code.code);
+    if let Some(state_value) = input.state.as_deref() {
+        redirect.query_pairs_mut().append_pair("state", state_value);
+    }
+    Ok(OAuthAuthorizeDecisionResponse {
+        redirect_uri: redirect.to_string(),
+    })
+}
+
+async fn oauth_token(
+    State(state): State<OAuthRouteState>,
+    Form(input): Form<OAuthTokenRequest>,
+) -> Response {
+    let Some(grant_type) = input
+        .grant_type
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "grant_type is required",
+        );
+    };
+    let Some(client_id) = input.client_id.as_deref().filter(|value| !value.is_empty()) else {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id is required",
+        );
+    };
+    if state.app.oauth_client_info(client_id).is_none() {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client",
+            "unknown OAuth client",
+        );
+    }
+    let result = match grant_type {
+        "authorization_code" => {
+            let Some(code) = input.code.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "code is required",
+                );
+            };
+            let Some(redirect_uri) = input.redirect_uri.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "redirect_uri is required",
+                );
+            };
+            let Some(code_verifier) = input.code_verifier.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "code_verifier is required",
+                );
+            };
+            state
+                .app
+                .exchange_oauth_authorization_code(client_id, code, redirect_uri, code_verifier)
+                .await
+        }
+        "refresh_token" => {
+            let Some(refresh_token) = input.refresh_token.as_deref() else {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "refresh_token is required",
+                );
+            };
+            state
+                .app
+                .refresh_oauth_token(client_id, refresh_token)
+                .await
+        }
+        _ => {
+            return oauth_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_grant_type",
+                "only authorization_code and refresh_token are supported",
+            );
+        }
+    };
+    match result {
+        Ok(pair) => oauth_token_response(OAuthTokenResponse {
+            access_token: pair.access_token,
+            token_type: "Bearer",
+            expires_in: pair.expires_in,
+            refresh_token: pair.refresh_token,
+            scope: pair.scope,
+        }),
+        Err(err) => oauth_app_error(err),
+    }
+}
+
+async fn oauth_revoke(
+    State(state): State<OAuthRouteState>,
+    Form(input): Form<OAuthRevokeRequest>,
+) -> Response {
+    let Some(token) = input.token.as_deref().filter(|value| !value.is_empty()) else {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "token is required",
+        );
+    };
+    if let Err(err) = state.app.revoke_oauth_refresh_token(token).await {
+        tracing::debug!(error = %err, "OAuth token revocation did not match an active refresh token");
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn oauth_metadata(headers: HeaderMap) -> Json<OAuthMetadataResponse> {
+    let issuer = request_origin(&headers);
+    Json(OAuthMetadataResponse {
+        issuer: issuer.clone(),
+        authorization_endpoint: format!("{issuer}/oauth/authorize"),
+        token_endpoint: format!("{issuer}/oauth/token"),
+        revocation_endpoint: format!("{issuer}/oauth/revoke"),
+        response_types_supported: vec!["code"],
+        grant_types_supported: vec!["authorization_code", "refresh_token"],
+        scopes_supported: vec![OAUTH_LIBRARY_SCOPE],
+        token_endpoint_auth_methods_supported: vec!["none"],
+        revocation_endpoint_auth_methods_supported: vec!["none"],
+        code_challenge_methods_supported: vec!["S256"],
+    })
+}
+
+fn bearer_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    parse_bearer_token(value)
+}
+
+fn oauth_redirect_error(
+    redirect_uri: &str,
+    error: &str,
+    description: &str,
+    state: Option<&str>,
+) -> Result<String, Response> {
+    let mut redirect = Url::parse(redirect_uri).map_err(|_| {
+        oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid redirect_uri",
+        )
+    })?;
+    redirect.query_pairs_mut().append_pair("error", error);
+    redirect
+        .query_pairs_mut()
+        .append_pair("error_description", description);
+    if let Some(state) = state {
+        redirect.query_pairs_mut().append_pair("state", state);
+    }
+    Ok(redirect.to_string())
+}
+
+fn oauth_validation_error(err: AppError) -> Response {
+    match err {
+        AppError::Unauthorized(message) => {
+            oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant", message)
+        }
+        AppError::Validation(message) if message == "invalid OAuth scope" => {
+            oauth_error(StatusCode::BAD_REQUEST, "invalid_scope", message)
+        }
+        AppError::Validation(message) => {
+            oauth_error(StatusCode::BAD_REQUEST, "invalid_request", message)
+        }
+        other => oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            other.to_string(),
+        ),
+    }
+}
+
+fn oauth_app_error(err: AppError) -> Response {
+    match err {
+        AppError::Unauthorized(message) => {
+            oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant", message)
+        }
+        AppError::Validation(message) if message == "invalid OAuth scope" => {
+            oauth_error(StatusCode::BAD_REQUEST, "invalid_scope", message)
+        }
+        AppError::Validation(message) => {
+            oauth_error(StatusCode::BAD_REQUEST, "invalid_request", message)
+        }
+        other => oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            other.to_string(),
+        ),
+    }
+}
+
+fn oauth_token_response(body: OAuthTokenResponse) -> Response {
+    let mut response = Json(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn oauth_error_description(err: &AppError) -> String {
+    match err {
+        AppError::Validation(message) | AppError::Unauthorized(message) => message.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn oauth_error(
+    status: StatusCode,
+    error: &'static str,
+    description: impl Into<String>,
+) -> Response {
+    (
+        status,
+        Json(OAuthErrorResponse {
+            error,
+            error_description: description.into(),
+        }),
+    )
+        .into_response()
+}
+
+fn request_origin(headers: &HeaderMap) -> String {
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("http");
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    format!("{proto}://{host}")
+}

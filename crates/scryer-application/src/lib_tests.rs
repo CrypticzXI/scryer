@@ -29292,6 +29292,8 @@ async fn token_signed_without_auth_session_version_authenticates() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        oauth_client_id: None,
+        oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -29964,6 +29966,8 @@ async fn expired_token_returns_unauthorized() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        oauth_client_id: None,
+        oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -30000,6 +30004,8 @@ async fn wrong_issuer_token_returns_unauthorized() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        oauth_client_id: None,
+        oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -30258,6 +30264,8 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        oauth_client_id: None,
+        oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);

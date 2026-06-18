@@ -485,6 +485,64 @@ pub trait UserRepository: Send + Sync {
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
+#[async_trait]
+pub trait OAuthRepository: Send + Sync {
+    async fn create_authorization_code(
+        &self,
+        record: OAuthAuthorizationCodeRecord,
+    ) -> AppResult<OAuthAuthorizationCodeRecord>;
+    async fn get_authorization_code(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<OAuthAuthorizationCodeRecord>>;
+    async fn consume_authorization_code(
+        &self,
+        id: &str,
+        consumed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
+    async fn create_refresh_grant(
+        &self,
+        grant: OAuthRefreshGrantRecord,
+        token: OAuthRefreshTokenRecord,
+    ) -> AppResult<OAuthRefreshGrantRecord>;
+    async fn get_refresh_token(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<(OAuthRefreshTokenRecord, OAuthRefreshGrantRecord)>>;
+    async fn rotate_refresh_token(
+        &self,
+        token_id: &str,
+        consumed_at: chrono::DateTime<chrono::Utc>,
+        next_token: OAuthRefreshTokenRecord,
+    ) -> AppResult<Option<OAuthRefreshRotation>>;
+    async fn revoke_refresh_grant(
+        &self,
+        grant_id: &str,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<bool>;
+    async fn revoke_refresh_family(
+        &self,
+        family_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
+    async fn revoke_user_refresh_grants(
+        &self,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
+    async fn touch_refresh_grant_last_used(
+        &self,
+        grant_id: &str,
+        client_id: &str,
+        used_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
+    async fn list_connected_apps(&self, user_id: &str) -> AppResult<Vec<OAuthConnectedAppRecord>>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedExternalIdentity {
     pub provider: scryer_domain::ExternalAccountProvider,
