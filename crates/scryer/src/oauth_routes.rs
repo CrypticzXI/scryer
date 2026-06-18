@@ -436,3 +436,61 @@ fn request_origin(headers: &HeaderMap) -> String {
         .unwrap_or("localhost");
     format!("{proto}://{host}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirect_error_uses_standard_fields_and_preserves_state() {
+        let redirect = oauth_redirect_error(
+            "http://127.0.0.1:49152/callback?existing=1",
+            "invalid_scope",
+            "unsupported scope",
+            Some("state value"),
+        )
+        .expect("redirect");
+        let url = Url::parse(&redirect).expect("url");
+        let pairs = url
+            .query_pairs()
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(pairs.get("existing").map(String::as_str), Some("1"));
+        assert_eq!(
+            pairs.get("error").map(String::as_str),
+            Some("invalid_scope")
+        );
+        assert_eq!(
+            pairs.get("error_description").map(String::as_str),
+            Some("unsupported scope")
+        );
+        assert_eq!(pairs.get("state").map(String::as_str), Some("state value"));
+    }
+
+    #[test]
+    fn token_response_sets_standard_no_store_headers() {
+        let response = oauth_token_response(OAuthTokenResponse {
+            access_token: "access".to_string(),
+            token_type: "Bearer",
+            expires_in: 300,
+            refresh_token: "refresh".to_string(),
+            scope: OAUTH_LIBRARY_SCOPE.to_string(),
+        });
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+    }
+}
