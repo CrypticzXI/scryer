@@ -1,9 +1,9 @@
 // async-graphql schema expansion exceeded the default macro recursion depth.
 #![recursion_limit = "256"]
 
-mod admin_routes;
 mod backup_routes;
 mod base_path;
+mod http_error;
 mod init;
 mod log_buffer;
 mod middleware;
@@ -11,6 +11,7 @@ mod oauth_routes;
 mod rate_limit;
 mod settings_bootstrap;
 mod splash;
+mod startup_auth;
 mod startup_migrations;
 mod ui_assets;
 
@@ -26,7 +27,7 @@ use std::sync::{
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -64,10 +65,6 @@ use tower_http::compression::CompressionLayer;
 use url::Url;
 use webauthn_rs::WebauthnBuilder;
 
-use admin_routes::{
-    AdminSettingsQuery, admin_migrations_handler, admin_settings_list,
-    ensure_admin_password_configured,
-};
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
 };
@@ -88,6 +85,7 @@ use settings_bootstrap::{
     seed_service_settings_from_environment,
 };
 use splash::{BootstrapStatus, SplashState, build_splash_router};
+use startup_auth::ensure_admin_password_configured;
 use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
@@ -1320,12 +1318,6 @@ async fn bootstrap_application(
     };
 
     let cors_for_layer = cors.clone();
-    let admin_migrations_db = bootstrap_settings_store.clone();
-    let admin_migrations_app = app_use_case.clone();
-    let admin_migrations_auth_runtime = auth_runtime.clone();
-    let admin_settings_db = bootstrap_settings_store.clone();
-    let admin_settings_app = app_use_case.clone();
-    let admin_settings_auth_runtime = auth_runtime.clone();
     let backup_route_state = BackupRouteState {
         app: app_use_case.clone(),
     };
@@ -1359,38 +1351,7 @@ async fn bootstrap_application(
             get(title_image_handler).with_state(title_images_for_route),
         )
         .route(
-            "/admin/migrations",
-            get(
-                move |headers: HeaderMap, ConnectInfo(remote_addr): ConnectInfo<SocketAddr>| {
-                    admin_migrations_handler(
-                        admin_migrations_db.clone(),
-                        admin_migrations_app.clone(),
-                        admin_migrations_auth_runtime.clone(),
-                        headers,
-                        remote_addr,
-                    )
-                },
-            ),
-        )
-        .route(
-            "/admin/settings",
-            get(
-                move |headers: HeaderMap,
-                      ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
-                      Query(query): Query<AdminSettingsQuery>| {
-                    admin_settings_list(
-                        admin_settings_db.clone(),
-                        admin_settings_app.clone(),
-                        admin_settings_auth_runtime.clone(),
-                        headers,
-                        remote_addr,
-                        query,
-                    )
-                },
-            ),
-        )
-        .route(
-            "/admin/backups/{filename}/download",
+            "/backups/{filename}/download",
             get(download_backup_handler).with_state(backup_route_state),
         )
         .fallback(get(ui_fallback))

@@ -94,7 +94,7 @@ impl BackupMutations {
         let encoded_filename = encode_path_segment(&filename);
 
         Ok(BackupDownloadUrlPayload {
-            download_url: format!("/admin/backups/{encoded_filename}/download"),
+            download_url: format!("/backups/{encoded_filename}/download"),
             download_authorization_token: ticket.token,
             expires_at: ticket.expires_at,
         })

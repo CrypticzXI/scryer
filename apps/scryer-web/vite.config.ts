@@ -151,11 +151,31 @@ export default defineConfig(({ command, mode }) => ({
         changeOrigin: true,
         ws: true,
       },
+      "/.well-known/oauth-authorization-server": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: false,
+      },
+      "/oauth/authorize/decision": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+      },
+      "/oauth/token": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+      },
+      "/oauth/revoke": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+      },
       "/health": {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
       },
       "/admin": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+      },
+      "/backups": {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
       },

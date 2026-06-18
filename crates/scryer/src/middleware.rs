@@ -9,10 +9,8 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use scryer_application::{
-    AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
-};
-use scryer_domain::{AppPermission, AppPermissionMask, Id};
+use scryer_application::{AppError, AppResult, AppUseCase, AuthenticatedTokenClaims};
+use scryer_domain::{AppPermissionMask, Id};
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
 };
@@ -21,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::admin_routes::ErrorResponse;
 use crate::base_path::BasePath;
+use crate::http_error::ErrorResponse;
 use crate::rate_limit::{
     RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
     should_precheck_graphql_login,
@@ -649,14 +647,16 @@ pub(crate) async fn graphql_ws_handler(
                         .and_then(|v| v.as_str());
                     let actor = resolve_ws_connection_init_actor(
                         &app_for_init,
-                        auth_enabled,
-                        local_bypass_active,
-                        initial_actor.clone(),
-                        auth_value,
-                        authless_proof_required,
-                        &proof_state,
-                        &headers_for_init,
-                        proof_value,
+                        WsConnectionInitActorRequest {
+                            auth_enabled,
+                            local_bypass_active,
+                            initial_actor: initial_actor.clone(),
+                            auth_value,
+                            authless_proof_required,
+                            proof_state: &proof_state,
+                            headers: &headers_for_init,
+                            proof_value,
+                        },
                     )
                     .await?;
                     Ok(graphql_ws_connection_data(connection_epoch, actor))
@@ -700,7 +700,6 @@ pub(crate) async fn graphql_handler(
             "Scryer web client proof is required for unauthenticated access",
         );
     }
-    touch_oauth_grant_last_used(&state.app, actor.as_ref()).await;
     let batch = body.into_inner();
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(
@@ -722,6 +721,7 @@ pub(crate) async fn graphql_handler(
             .body(Body::from(body))
             .unwrap();
     }
+    touch_oauth_grant_last_used(&state.app, actor.as_ref()).await;
     let batch = if let Some(actor) = actor {
         let oauth_session = actor.oauth_session();
         match batch {
@@ -960,17 +960,32 @@ fn touch_oauth_grant_last_used_background(app: &AppUseCase, actor: &ResolvedActo
     });
 }
 
-async fn resolve_ws_connection_init_actor(
-    app: &AppUseCase,
+struct WsConnectionInitActorRequest<'a> {
     auth_enabled: bool,
     local_bypass_active: bool,
     initial_actor: Option<ResolvedActor>,
-    auth_value: Option<&str>,
+    auth_value: Option<&'a str>,
     authless_proof_required: bool,
-    proof_state: &AuthlessWebClientProofState,
-    headers: &HeaderMap,
-    proof_value: Option<&str>,
+    proof_state: &'a AuthlessWebClientProofState,
+    headers: &'a HeaderMap,
+    proof_value: Option<&'a str>,
+}
+
+async fn resolve_ws_connection_init_actor(
+    app: &AppUseCase,
+    request: WsConnectionInitActorRequest<'_>,
 ) -> Result<Option<ResolvedActor>, async_graphql::Error> {
+    let WsConnectionInitActorRequest {
+        auth_enabled,
+        local_bypass_active,
+        initial_actor,
+        auth_value,
+        authless_proof_required,
+        proof_state,
+        headers,
+        proof_value,
+    } = request;
+
     if let Some(raw) = auth_value {
         return match parse_bearer_token(raw) {
             Some(token) => match app.authenticate_token_with_claims(token).await {
@@ -1040,40 +1055,46 @@ async fn resolve_actor(
 ) -> Option<ResolvedActor> {
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
-    let actor = if !snapshot.effective_form_login_enabled {
-        resolve_default_user(&state.app).await.map(|user| {
-            (
-                anonymous_user(user),
-                AuthenticatedTokenClaims::default(),
-                ResolvedActorSource::AuthlessDefault,
-            )
-        })
-    } else {
-        match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
-                Ok((user, token_claims)) => {
-                    Some((user, token_claims, ResolvedActorSource::AuthenticatedToken))
-                }
-                Err(_) if local_bypass => resolve_default_user(&state.app).await.map(|user| {
-                    (
-                        anonymous_user(user),
-                        mfa_bypass_token_claims(),
-                        ResolvedActorSource::AuthlessDefault,
-                    )
-                }),
-                Err(_) => None,
-            },
-            Ok(None) | Err(_) if local_bypass => {
+    let actor = match authorization_token_from_headers(headers) {
+        Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
+            Ok((user, token_claims)) => {
+                Some((user, token_claims, ResolvedActorSource::AuthenticatedToken))
+            }
+            Err(_) if !snapshot.effective_form_login_enabled => {
                 resolve_default_user(&state.app).await.map(|user| {
                     (
                         anonymous_user(user),
-                        mfa_bypass_token_claims(),
+                        AuthenticatedTokenClaims::default(),
                         ResolvedActorSource::AuthlessDefault,
                     )
                 })
             }
-            Ok(None) | Err(_) => None,
+            Err(_) if local_bypass => resolve_default_user(&state.app).await.map(|user| {
+                (
+                    anonymous_user(user),
+                    mfa_bypass_token_claims(),
+                    ResolvedActorSource::AuthlessDefault,
+                )
+            }),
+            Err(_) => None,
+        },
+        Ok(None) | Err(_) if !snapshot.effective_form_login_enabled => {
+            resolve_default_user(&state.app).await.map(|user| {
+                (
+                    anonymous_user(user),
+                    AuthenticatedTokenClaims::default(),
+                    ResolvedActorSource::AuthlessDefault,
+                )
+            })
         }
+        Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app).await.map(|user| {
+            (
+                anonymous_user(user),
+                mfa_bypass_token_claims(),
+                ResolvedActorSource::AuthlessDefault,
+            )
+        }),
+        Ok(None) | Err(_) => None,
     };
 
     match actor {
@@ -1124,16 +1145,6 @@ fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {
     }
 }
 
-fn ensure_full_session_claims(claims: &AuthenticatedTokenClaims) -> Result<(), AppError> {
-    if claims.session_scope == JwtSessionScope::MfaEnrollment {
-        return Err(AppError::MfaEnrollmentRequired(
-            "MFA enrollment must be completed before accessing Scryer".into(),
-        ));
-    }
-
-    Ok(())
-}
-
 fn authorization_token_from_headers(headers: &HeaderMap) -> Result<Option<&str>, AppError> {
     let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
         return Ok(None);
@@ -1159,51 +1170,6 @@ pub(crate) fn parse_bearer_token(raw: &str) -> Option<&str> {
         Some(token)
     } else {
         None
-    }
-}
-
-pub(crate) async fn resolve_actor_with_app_permission(
-    app_use_case: &AppUseCase,
-    auth_runtime: &AuthRuntimeStateHandle,
-    headers: &HeaderMap,
-    remote_addr: Option<SocketAddr>,
-    required_permission: AppPermission,
-) -> Result<String, AppError> {
-    let snapshot = auth_runtime.snapshot();
-    let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
-    let actor = if !snapshot.effective_form_login_enabled {
-        resolve_default_user_required(app_use_case).await?
-    } else {
-        match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match app_use_case.authenticate_token_with_claims(token).await {
-                Ok((actor, claims)) => {
-                    ensure_full_session_claims(&claims)?;
-                    actor
-                }
-                Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
-                Err(error) => return Err(error),
-            },
-            Ok(None) if local_bypass => resolve_default_user_required(app_use_case).await?,
-            Ok(None) => return Err(AppError::Unauthorized("authorization required".into())),
-            Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
-            Err(error) => return Err(error),
-        }
-    };
-
-    let actor = app_use_case.attach_user_authorization(actor).await?;
-    app_use_case
-        .require_app_permission(&actor, required_permission)
-        .await?;
-
-    Ok(actor.id)
-}
-
-async fn resolve_default_user_required(
-    app_use_case: &AppUseCase,
-) -> Result<scryer_domain::User, AppError> {
-    match app_use_case.find_default_user().await? {
-        Some(user) => Ok(user),
-        None => app_use_case.find_or_create_default_user().await,
     }
 }
 
@@ -1557,8 +1523,7 @@ fn skip_http_rate_limit(_method: &Method, path: &str) -> bool {
 }
 
 fn is_rate_limited_http_api_path(path: &str) -> bool {
-    path == "/admin"
-        || path.starts_with("/admin/")
+    path.starts_with("/backups/")
         || path == "/api"
         || path.starts_with("/api/")
         || path == "/oauth/token"
@@ -2473,18 +2438,6 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_scoped_claims_are_not_full_admin_sessions() {
-        let claims = AuthenticatedTokenClaims {
-            session_scope: JwtSessionScope::MfaEnrollment,
-            ..AuthenticatedTokenClaims::default()
-        };
-
-        let error = ensure_full_session_claims(&claims).expect_err("enrollment scope rejected");
-
-        assert!(matches!(error, AppError::MfaEnrollmentRequired(_)));
-    }
-
-    #[test]
     fn forwarded_headers_from_trusted_proxy_are_used() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2614,8 +2567,11 @@ mod tests {
     }
 
     #[test]
-    fn admin_routes_still_consume_http_api_quota() {
-        assert!(!skip_http_rate_limit(&Method::GET, "/admin/settings"));
+    fn ticket_download_and_api_routes_consume_http_api_quota() {
+        assert!(!skip_http_rate_limit(
+            &Method::GET,
+            "/backups/scryer.scryer-backup.enc/download"
+        ));
         assert!(!skip_http_rate_limit(&Method::GET, "/api/system/jobs"));
     }
 

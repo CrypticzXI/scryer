@@ -4459,7 +4459,7 @@ async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
         .expect("download url should be present");
     assert_eq!(
         download_url,
-        "/admin/backups/backup_20260515_abcd1234.tar.zst/download"
+        "/backups/backup_20260515_abcd1234.tar.zst/download"
     );
     let token = body["data"]["prepareBackupDownload"]["downloadAuthorizationToken"]
         .as_str()
@@ -4525,7 +4525,7 @@ async fn prepare_backup_download_percent_encodes_reserved_filename_characters() 
         .as_str()
         .expect("download url should be present");
     assert_eq!(
-        download_url, "/admin/backups/backup%202026%20%23%25%3F.tar.zst/download",
+        download_url, "/backups/backup%202026%20%23%25%3F.tar.zst/download",
         "expected percent-encoded path segment without query ticket"
     );
     assert!(

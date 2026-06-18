@@ -18,6 +18,7 @@ use std::thread;
 use xtask_support::{TaskContext, ok, run_status, step, warn};
 
 mod media_fixtures;
+mod oauth_dev_flow;
 mod profile;
 mod seed;
 
@@ -89,6 +90,8 @@ enum Commands {
     TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
     MediaFixtures(media_fixtures::MediaFixturesArgs),
+    #[command(name = "oauth")]
+    OAuth(OAuthArgs),
     Sdk(SdkArgs),
     Ci(CiArgs),
     Stack(StackArgs),
@@ -155,6 +158,17 @@ struct RebaselineArgs {
 struct SdkArgs {
     #[command(subcommand)]
     command: SdkCommand,
+}
+
+#[derive(Args)]
+struct OAuthArgs {
+    #[command(subcommand)]
+    command: OAuthCommand,
+}
+
+#[derive(Subcommand)]
+enum OAuthCommand {
+    DevFlow(oauth_dev_flow::OAuthDevFlowArgs),
 }
 
 #[derive(Subcommand)]
@@ -327,6 +341,9 @@ fn main() -> Result<()> {
             media_fixtures::MediaFixturesCommand::Generate(args) => {
                 media_fixtures::generate(&ctx, &args)
             }
+        },
+        Commands::OAuth(args) => match args.command {
+            OAuthCommand::DevFlow(args) => oauth_dev_flow::run(&ctx, args),
         },
         Commands::Sdk(args) => delegate_sdk(&ctx, &args),
         Commands::Ci(args) => delegate_ci(&ctx, &args),

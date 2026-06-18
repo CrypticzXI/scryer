@@ -149,7 +149,8 @@ async fn oauth_authorize_decision_inner(
                 "unsupported_response_type",
                 "only response_type=code is supported",
                 input.state.as_deref(),
-            )?,
+            )
+            .map_err(|response| *response)?,
         });
     }
     let scope = match state.app.validate_oauth_scope(input.scope.as_deref()) {
@@ -161,7 +162,8 @@ async fn oauth_authorize_decision_inner(
                     "invalid_scope",
                     &oauth_error_description(&err),
                     input.state.as_deref(),
-                )?,
+                )
+                .map_err(|response| *response)?,
             });
         }
     };
@@ -172,7 +174,8 @@ async fn oauth_authorize_decision_inner(
                 "access_denied",
                 "authorization was denied",
                 input.state.as_deref(),
-            )?,
+            )
+            .map_err(|response| *response)?,
         });
     }
     let code = state
@@ -336,13 +339,13 @@ fn oauth_redirect_error(
     error: &str,
     description: &str,
     state: Option<&str>,
-) -> Result<String, Response> {
+) -> Result<String, Box<Response>> {
     let mut redirect = Url::parse(redirect_uri).map_err(|_| {
-        oauth_error(
+        Box::new(oauth_error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "invalid redirect_uri",
-        )
+        ))
     })?;
     redirect.query_pairs_mut().append_pair("error", error);
     redirect

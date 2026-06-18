@@ -600,6 +600,18 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "oauth_authorization_codes",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "oauth_refresh_grants",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "oauth_refresh_tokens",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "pending_releases",
         classification: BackupTableClassification::Export,
     },
@@ -1561,6 +1573,29 @@ mod tests {
             .map(|entry| entry.classification);
 
         assert_eq!(classification, Some(BackupTableClassification::Export));
+    }
+
+    #[test]
+    fn backup_table_catalog_preserves_oauth_grants_but_not_codes() {
+        for (table, expected) in [
+            (
+                "oauth_authorization_codes",
+                BackupTableClassification::Ignore,
+            ),
+            ("oauth_refresh_grants", BackupTableClassification::Export),
+            ("oauth_refresh_tokens", BackupTableClassification::Export),
+        ] {
+            let classification = BACKUP_TABLE_CATALOG
+                .iter()
+                .find(|entry| entry.table == table)
+                .map(|entry| entry.classification);
+
+            assert_eq!(
+                classification,
+                Some(expected),
+                "{table} should have the intended backup classification"
+            );
+        }
     }
 
     #[test]
