@@ -166,6 +166,7 @@ export type AutoBackupSettings = {
   enabled: boolean;
   dailyTimeLocal: string;
   autoBackupKeyPresent: boolean;
+  autoBackupDisabledMissingKeyNotice: boolean;
   nextRunAt: string | null;
 };
 

@@ -296,6 +296,16 @@ fn ensure_owner_only_permissions(_path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_backup_passphrase(passphrase: &str) -> AppResult<()> {
+    if passphrase.trim().is_empty() {
+        return Err(AppError::Validation(
+            "backup password is required for full backups".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Backup export wiring carries all export inputs explicitly"
@@ -304,7 +314,7 @@ async fn export_backup_file(
     exporter: Arc<dyn LogicalBackupExporter>,
     backup_dir: &Path,
     filename: &str,
-    passphrase: Option<&str>,
+    passphrase: &str,
     source_engine: String,
     source_migration_key: Option<String>,
     secrets: BackupExportSecrets,
@@ -314,7 +324,7 @@ async fn export_backup_file(
     let outcome = exporter
         .export_backup_bundle(BackupBundleExportRequest {
             output_path: output_path.clone(),
-            passphrase: passphrase.map(str::to_string),
+            passphrase: passphrase.to_string(),
             source_migration_key,
             source_scryer_version: env!("CARGO_PKG_VERSION").to_string(),
             source_engine,
@@ -421,17 +431,18 @@ impl AppUseCase {
         &self,
         actor: impl Into<DomainEventActor>,
         prepared: PreparedBackupRequest,
-        passphrase: Option<String>,
+        passphrase: String,
     ) -> AppResult<BackupInfo> {
         let filename = prepared.queued.filename.clone();
         let trigger = prepared.queued.trigger;
         let result = run_backup_operation_with_timeout(BACKUP_EXECUTION_TIMEOUT, async {
+            validate_backup_passphrase(&passphrase)?;
             let secrets = self.collect_backup_export_secrets().await?;
             export_backup_file(
                 self.services.config.logical_backup_exporter.clone(),
                 &prepared.dir,
                 &filename,
-                passphrase.as_deref(),
+                &passphrase,
                 prepared.source_engine.clone(),
                 prepared.source_migration_key.clone(),
                 secrets,
@@ -492,28 +503,24 @@ impl AppUseCase {
         &self,
         actor: impl Into<DomainEventActor>,
         trigger: BackupTrigger,
-        passphrase: Option<&str>,
+        passphrase: &str,
     ) -> AppResult<BackupInfo> {
-        let prepared = self
-            .prepare_backup_request(trigger, passphrase.is_some())
-            .await?;
+        validate_backup_passphrase(passphrase)?;
+        let prepared = self.prepare_backup_request(trigger, true).await?;
         info!(
             filename = %prepared.queued.filename,
             encrypted = prepared.queued.encrypted,
             trigger = prepared.queued.trigger.as_str(),
             "backup bundle starting"
         );
-        self.complete_backup_request(actor, prepared, passphrase.map(str::to_string))
+        self.complete_backup_request(actor, prepared, passphrase.to_string())
             .await
     }
 
-    pub async fn create_backup(
-        &self,
-        actor: &User,
-        passphrase: Option<&str>,
-    ) -> AppResult<BackupInfo> {
+    pub async fn create_backup(&self, actor: &User, passphrase: &str) -> AppResult<BackupInfo> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+        validate_backup_passphrase(passphrase)?;
 
         let Some(execution_guard) = self
             .runtime
@@ -536,9 +543,8 @@ impl AppUseCase {
             ));
         }
 
-        let passphrase = passphrase.filter(|value| !value.is_empty());
         let prepared = self
-            .prepare_backup_request(BackupTrigger::Manual, passphrase.is_some())
+            .prepare_backup_request(BackupTrigger::Manual, true)
             .await?;
         let queued = prepared.queued.clone();
         info!(
@@ -550,7 +556,7 @@ impl AppUseCase {
 
         let app = self.clone();
         let actor_event = DomainEventActor::from(actor);
-        let passphrase_for_task = passphrase.map(str::to_string);
+        let passphrase_for_task = passphrase.to_string();
         tokio::spawn(async move {
             let _execution_guard = execution_guard;
             if let Err(error) = app
@@ -703,9 +709,14 @@ impl AppUseCase {
         let passphrase = self
             .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
             .await?
-            .filter(|value| !value.is_empty());
+            .filter(|value| !value.trim().is_empty());
+        let Some(passphrase) = passphrase else {
+            return Ok(AutoBackupRunOutcome::Skipped {
+                reason: "Skipped because automatic backup key is not configured".to_string(),
+            });
+        };
         let info = self
-            .create_backup_inline(None, BackupTrigger::Auto, passphrase.as_deref())
+            .create_backup_inline(None, BackupTrigger::Auto, &passphrase)
             .await?;
         let pruned_count = self
             .enforce_auto_backup_retention(AUTO_BACKUP_RETENTION_COUNT)

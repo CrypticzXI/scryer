@@ -685,14 +685,23 @@ async fn bootstrap_application(
 
     // Bootstrap encryption master key (env > keystore > legacy DB migration > auto-generate).
     let t = std::time::Instant::now();
-    let migrated_indexers = datastore
+    let encryption_bootstrap = datastore
         .bootstrap_encryption()
         .await
         .map_err(|e| format!("failed to bootstrap datastore encryption: {e}"))?;
-    if migrated_indexers > 0 {
+    if encryption_bootstrap.migrated_indexer_configs > 0 {
         tracing::info!(
-            migrated = migrated_indexers,
+            migrated = encryption_bootstrap.migrated_indexer_configs,
             "migrated legacy indexer base/api fields into config_json"
+        );
+    }
+    if encryption_bootstrap.encrypted_release_attempt_source_passwords > 0
+        || encryption_bootstrap.encrypted_pending_release_source_passwords > 0
+    {
+        tracing::info!(
+            release_attempts = encryption_bootstrap.encrypted_release_attempt_source_passwords,
+            pending_releases = encryption_bootstrap.encrypted_pending_release_source_passwords,
+            "encrypted legacy release source passwords"
         );
     }
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
@@ -1086,6 +1095,10 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0004_auto_backup_missing_key_disable::disable_auto_backups_without_key(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     if let Err(error) = app_use_case
         .repair_legacy_jellyfin_external_account_invites()
         .await
@@ -1303,6 +1316,8 @@ async fn bootstrap_application(
 
     let cors_for_layer = cors.clone();
     let admin_migrations_db = bootstrap_settings_store.clone();
+    let admin_migrations_app = app_use_case.clone();
+    let admin_migrations_auth_runtime = auth_runtime.clone();
     let admin_settings_db = bootstrap_settings_store.clone();
     let admin_settings_app = app_use_case.clone();
     let admin_settings_auth_runtime = auth_runtime.clone();
@@ -1331,7 +1346,17 @@ async fn bootstrap_application(
         )
         .route(
             "/admin/migrations",
-            get(move || admin_migrations_handler(admin_migrations_db.clone())),
+            get(
+                move |headers: HeaderMap, ConnectInfo(remote_addr): ConnectInfo<SocketAddr>| {
+                    admin_migrations_handler(
+                        admin_migrations_db.clone(),
+                        admin_migrations_app.clone(),
+                        admin_migrations_auth_runtime.clone(),
+                        headers,
+                        remote_addr,
+                    )
+                },
+            ),
         )
         .route(
             "/admin/settings",

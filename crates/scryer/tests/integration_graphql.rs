@@ -280,6 +280,15 @@ fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]
     .expect("write backup metadata");
 }
 
+fn backup_dir_is_empty(ctx: &TestContext) -> bool {
+    let backup_dir = ctx.app.backup_dir();
+    !backup_dir.exists()
+        || std::fs::read_dir(backup_dir)
+            .expect("read backup dir")
+            .next()
+            .is_none()
+}
+
 async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &str) {
     let body = gql(
         ctx,
@@ -4328,6 +4337,76 @@ async fn graphql_my_passkeys_requires_authentication() {
 }
 
 #[tokio::test]
+async fn create_backup_requires_password_argument() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation CreateBackup {
+          createBackup {
+            filename
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    assert!(
+        errors
+            .first()
+            .and_then(|error| error["message"].as_str())
+            .is_some_and(|message| message.contains("password")),
+        "expected missing password error: {body}"
+    );
+    assert!(backup_dir_is_empty(&ctx));
+}
+
+#[tokio::test]
+async fn create_backup_rejects_blank_passwords_without_queuing_backup() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+
+    for password_literal in ["\"\"", "\"   \""] {
+        let body = schema_exec(
+            &ctx,
+            &format!(
+                r#"
+                mutation CreateBackup {{
+                  createBackup(password: {password_literal}) {{
+                    filename
+                  }}
+                }}
+                "#
+            ),
+            Some(admin.clone()),
+        )
+        .await;
+
+        let errors = body["errors"].as_array().expect("graphql errors");
+        assert!(
+            errors
+                .first()
+                .and_then(|error| error["message"].as_str())
+                .is_some_and(|message| message.contains("backup password is required")),
+            "expected blank password validation error: {body}"
+        );
+        assert!(backup_dir_is_empty(&ctx));
+    }
+}
+
+#[tokio::test]
 async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
     let ctx = TestContext::new().await;
     let admin = ctx
@@ -5732,10 +5811,13 @@ async fn graphql_traverses_core_graph_relationships() {
         published_at: None,
         info_hash: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .insert_pending_release(&pending_release)
-        .await
-        .expect("seed pending release");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&pending_release)
+    .await
+    .expect("seed pending release");
 
     let body = gql(
         &ctx,
@@ -10111,29 +10193,32 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed wanted item");
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .insert_pending_release(&PendingRelease {
-            id: Id::new().0,
-            wanted_item_id: "wanted-delete".to_string(),
-            title_id: id.clone(),
-            release_title: "Delete With Cleanup 2026".to_string(),
-            release_url: Some("https://example.invalid/release.nzb".to_string()),
-            source_kind: None,
-            release_size_bytes: Some(1_024),
-            release_score: 100,
-            scoring_log_json: None,
-            indexer_source: Some("test-indexer".to_string()),
-            release_guid: Some("guid-delete".to_string()),
-            added_at: "2026-03-12T00:00:00Z".to_string(),
-            delay_until: "2026-03-13T00:00:00Z".to_string(),
-            status: scryer_application::PendingReleaseStatus::Waiting,
-            grabbed_at: None,
-            source_password: None,
-            published_at: None,
-            info_hash: None,
-        })
-        .await
-        .expect("seed pending release");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: "wanted-delete".to_string(),
+        title_id: id.clone(),
+        release_title: "Delete With Cleanup 2026".to_string(),
+        release_url: Some("https://example.invalid/release.nzb".to_string()),
+        source_kind: None,
+        release_size_bytes: Some(1_024),
+        release_score: 100,
+        scoring_log_json: None,
+        indexer_source: Some("test-indexer".to_string()),
+        release_guid: Some("guid-delete".to_string()),
+        added_at: "2026-03-12T00:00:00Z".to_string(),
+        delay_until: "2026-03-13T00:00:00Z".to_string(),
+        status: scryer_application::PendingReleaseStatus::Waiting,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+    })
+    .await
+    .expect("seed pending release");
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
@@ -10173,12 +10258,15 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             .is_empty()
     );
     assert!(
-        scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-            .list_waiting_pending_releases()
-            .await
-            .expect("pending releases")
-            .iter()
-            .all(|entry| entry.title_id != id)
+        scryer_infrastructure::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        )
+        .list_waiting_pending_releases()
+        .await
+        .expect("pending releases")
+        .iter()
+        .all(|entry| entry.title_id != id)
     );
     assert!(
         workflow_store
@@ -10495,7 +10583,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "createBackup",
-            r#"mutation { createBackup { filename } }"#,
+            r#"mutation { createBackup(password: "step-up-backup-pass") { filename } }"#,
             json!({}),
         ),
         (
@@ -11324,7 +11412,8 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title()
         .await
         .expect("seed blocklist entry");
 
-    let release_store = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore());
+    let release_store =
+        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
     scryer_application::ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         Some(title_id.clone()),

@@ -769,16 +769,29 @@ fn report_import_transfer_progress(
     }
 }
 
-fn copy_regular_source_to_destination_once(
-    source: &Path,
-    dest: &Path,
-    temp_dest: &Path,
-    source_fingerprint: &ImportSourceFingerprint,
+struct ImportCopyAttempt<'a> {
+    source: &'a Path,
+    dest: &'a Path,
+    temp_dest: &'a Path,
+    source_fingerprint: &'a ImportSourceFingerprint,
     size: u64,
+    progress: Option<&'a ImportFileTransferProgressSender>,
+}
+
+fn copy_regular_source_to_destination_once(
+    attempt_context: ImportCopyAttempt<'_>,
     options: ImportFileOptions,
     attempt: usize,
-    progress: Option<&ImportFileTransferProgressSender>,
 ) -> Result<(), ImportCopyAttemptError> {
+    let ImportCopyAttempt {
+        source,
+        dest,
+        temp_dest,
+        source_fingerprint,
+        size,
+        progress,
+    } = attempt_context;
+
     ensure_same_source(source, source_fingerprint)
         .map_err(io_other)
         .map_err(|error| ImportCopyAttemptError::new("source preflight", error))?;
@@ -861,14 +874,16 @@ fn copy_regular_source_to_destination(
         }
 
         match copy_regular_source_to_destination_once(
-            source,
-            dest,
-            &temp_dest,
-            source_fingerprint,
-            size,
+            ImportCopyAttempt {
+                source,
+                dest,
+                temp_dest: &temp_dest,
+                source_fingerprint,
+                size,
+                progress,
+            },
             options,
             attempt,
-            progress,
         ) {
             Ok(()) => break,
             Err(error) => {

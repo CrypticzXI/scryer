@@ -109,6 +109,7 @@ fn from_auto_backup_settings(
         enabled: settings.enabled,
         daily_time_local: settings.daily_time_local,
         auto_backup_key_present: settings.auto_backup_key_present,
+        auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
         next_run_at: settings.next_run_at,
     }
 }
@@ -702,6 +703,20 @@ impl SettingsMutations {
                     clear_auto_backup_key: input.clear_auto_backup_key,
                 },
             )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_auto_backup_settings(settings))
+    }
+
+    async fn acknowledge_auto_backup_disabled_missing_key_notice(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<AutoBackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .acknowledge_auto_backup_disabled_missing_key_notice(&actor)
             .await
             .map_err(to_gql_error)?;
 

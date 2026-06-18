@@ -3,6 +3,7 @@ use std::collections::HashSet;
 #[cfg(feature = "runtime-plugin-trust")]
 use std::{
     collections::BTreeMap,
+    io::Read,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -65,6 +66,11 @@ const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 #[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
+pub const PLUGIN_CATALOG_JSON_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
+pub const PLUGIN_CATALOG_REDIRECT_OUTPUT_LIMIT: u64 = 2 * 1024 * 1024;
+pub const PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT: u64 = 2 * 1024 * 1024;
+pub const RULE_PACK_MANIFEST_FALLBACK_OUTPUT_LIMIT: u64 = 32 * 1024 * 1024;
+pub const MANUAL_PLUGIN_WASM_OUTPUT_LIMIT: u64 = 128 * 1024 * 1024;
 #[cfg(feature = "runtime-plugin-trust")]
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 #[cfg(feature = "runtime-plugin-trust")]
@@ -248,6 +254,8 @@ pub struct CatalogV3RulePackRelease {
     #[serde(default)]
     pub min_scryer_version: Option<String>,
     pub rule_pack_digests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_pack_bytes: Option<u64>,
     pub artifacts: Vec<CatalogV3DistributionArtifact>,
 }
 
@@ -505,38 +513,110 @@ pub async fn verify_signed_blob(
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
-pub async fn decompress_zstd(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+fn read_bounded_decompressed<R: Read>(
+    mut reader: R,
+    max_output_bytes: u64,
+    label: String,
+) -> AppResult<Vec<u8>> {
+    let max_output_len = usize::try_from(max_output_bytes).map_err(|_| {
+        AppError::Validation(format!(
+            "{label} decompressed size limit {max_output_bytes} exceeds this platform's maximum buffer size"
+        ))
+    })?;
+    let mut output = Vec::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let remaining = max_output_len.saturating_sub(output.len());
+        let read_len = if remaining == 0 {
+            1
+        } else {
+            remaining.min(buffer.len())
+        };
+        let bytes_read = reader.read(&mut buffer[..read_len]).map_err(|e| {
+            AppError::Repository(format!("failed to decompress {label} payload: {e}"))
+        })?;
+        if bytes_read == 0 {
+            return Ok(output);
+        }
+        if bytes_read > remaining {
+            return Err(AppError::Validation(format!(
+                "{label} decompressed payload exceeds maximum size of {max_output_bytes} bytes"
+            )));
+        }
+        output.extend_from_slice(&buffer[..bytes_read]);
+    }
+}
+
+pub fn bound_uncompressed_bytes(
+    bytes: Vec<u8>,
+    max_output_bytes: u64,
+    label: &str,
+) -> AppResult<Vec<u8>> {
+    let actual_bytes = u64::try_from(bytes.len()).map_err(|_| {
+        AppError::Validation(format!(
+            "{label} payload is too large to validate decompressed size"
+        ))
+    })?;
+    if actual_bytes > max_output_bytes {
+        return Err(AppError::Validation(format!(
+            "{label} payload exceeds maximum size of {max_output_bytes} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
+pub async fn decompress_zstd(
+    compressed: Vec<u8>,
+    max_output_bytes: u64,
+    label: impl Into<String>,
+) -> AppResult<Vec<u8>> {
+    let label = label.into();
     tokio::task::spawn_blocking(move || {
-        zstd::decode_all(compressed.as_slice())
-            .map_err(|e| AppError::Repository(format!("failed to decompress zstd payload: {e}")))
+        let decoder = zstd::Decoder::new(compressed.as_slice()).map_err(|e| {
+            AppError::Repository(format!(
+                "failed to initialize zstd decoder for {label}: {e}"
+            ))
+        })?;
+        read_bounded_decompressed(decoder, max_output_bytes, label)
     })
     .await
     .map_err(|e| AppError::Repository(format!("zstd decompression panicked: {e}")))?
 }
 
 #[cfg(not(feature = "runtime-plugin-trust"))]
-pub async fn decompress_zstd(_compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+pub async fn decompress_zstd(
+    _compressed: Vec<u8>,
+    _max_output_bytes: u64,
+    _label: impl Into<String>,
+) -> AppResult<Vec<u8>> {
     Err(AppError::Validation(
         "plugin zstd decompression is not compiled into this target".to_string(),
     ))
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
-pub async fn decompress_brotli(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+pub async fn decompress_brotli(
+    compressed: Vec<u8>,
+    max_output_bytes: u64,
+    label: impl Into<String>,
+) -> AppResult<Vec<u8>> {
+    let label = label.into();
     tokio::task::spawn_blocking(move || {
-        let mut output = Vec::new();
-        let mut decoder = brotli::Decompressor::new(compressed.as_slice(), 4096);
-        std::io::Read::read_to_end(&mut decoder, &mut output).map_err(|e| {
-            AppError::Repository(format!("failed to decompress brotli payload: {e}"))
-        })?;
-        Ok(output)
+        let decoder = brotli::Decompressor::new(compressed.as_slice(), 4096);
+        read_bounded_decompressed(decoder, max_output_bytes, label)
     })
     .await
     .map_err(|e| AppError::Repository(format!("brotli decompression panicked: {e}")))?
 }
 
 #[cfg(not(feature = "runtime-plugin-trust"))]
-pub async fn decompress_brotli(_compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+pub async fn decompress_brotli(
+    _compressed: Vec<u8>,
+    _max_output_bytes: u64,
+    _label: impl Into<String>,
+) -> AppResult<Vec<u8>> {
     Err(AppError::Validation(
         "plugin brotli decompression is not compiled into this target".to_string(),
     ))

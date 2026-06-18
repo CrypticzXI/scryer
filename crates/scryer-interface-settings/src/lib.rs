@@ -139,6 +139,7 @@ fn from_auto_backup_settings(
         enabled: settings.enabled,
         daily_time_local: settings.daily_time_local,
         auto_backup_key_present: settings.auto_backup_key_present,
+        auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
         next_run_at: settings.next_run_at,
     }
 }

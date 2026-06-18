@@ -362,7 +362,7 @@ impl TrackedDownloadService {
     // ── Title Resolution ─────────────────────────────────────────────────
 
     async fn resolve_title(app: &AppUseCase, td: &mut TrackedDownload) {
-        let existing_submission = app
+        let mut existing_submission = app
             .services
             .workflow
             .download_submissions
@@ -374,6 +374,9 @@ impl TrackedDownloadService {
             .await
             .ok()
             .flatten();
+        if existing_submission.is_none() {
+            existing_submission = download_id_submission_for_tracked_download(app, td).await;
+        }
 
         // 1. download_submissions lookup (highest confidence).
         if let Some(sub) = existing_submission.as_ref()
@@ -1038,9 +1041,15 @@ mod tests {
 
         async fn find_by_client_item_id(
             &self,
-            _: &DownloadSourceIdentity,
+            identity: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
-            Ok(self.submission.clone())
+            Ok(self
+                .submission
+                .as_ref()
+                .filter(|submission| {
+                    DownloadSourceIdentity::from_submission(submission) == *identity
+                })
+                .cloned())
         }
 
         async fn list_by_download_id(
@@ -2074,6 +2083,52 @@ mod tests {
 
         tracker.update_trackable(&HashSet::from([durable_id.clone()]));
         assert!(tracker.find(&durable_id).is_some_and(|td| td.is_trackable));
+    }
+
+    #[tokio::test]
+    async fn resolves_submission_by_download_id_when_client_item_id_differs() {
+        let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            submission: Some(crate::DownloadSubmission {
+                title_id: "title-1".to_string(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "movie".to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: download_id.to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Paperman.2012.720p.WEB-DL".to_string()),
+                request_signature: None,
+                scope: crate::SubmissionScope::Title,
+            }),
+            submission_identity: Some(crate::DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            }),
+            ..Default::default()
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app(download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "nzbget".to_string();
+        item.download_client_item_id = "2".to_string();
+        item.download_id = Some(download_id.to_string());
+        item.title_name = "Paperman.2012.720p.WEB-DL".to_string();
+        item.facet = None;
+
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.facet.as_deref(), Some("movie"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert_eq!(
+            tracked.source_title.as_deref(),
+            Some("Paperman.2012.720p.WEB-DL")
+        );
     }
 
     fn build_completed_download(

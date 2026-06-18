@@ -29,7 +29,7 @@ type SettingsSecuritySectionProps = {
   onConfirmDisable: () => Promise<void> | void;
   onCancelDisable: () => void;
   onPasswordMinLengthDraftChange: (value: string) => void;
-  onPasswordMinLengthSubmit: () => Promise<void> | void;
+  onPasswordMinLengthSubmit: (value?: string) => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
   onMfaConfigStepUpChange: (enabled: boolean) => void;
   onMfaPasswordLoginChange: (enabled: boolean) => void;
@@ -103,12 +103,14 @@ export function SettingsSecuritySection({
                 step={1}
                 value={passwordMinLengthDraft}
                 disabled={busy}
-                onBlur={() => void onPasswordMinLengthSubmit()}
+                onBlur={(event) =>
+                  void onPasswordMinLengthSubmit(event.currentTarget.value)
+                }
                 onChange={(event) => onPasswordMinLengthDraftChange(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
-                    void onPasswordMinLengthSubmit();
+                    void onPasswordMinLengthSubmit(event.currentTarget.value);
                   }
                 }}
               />

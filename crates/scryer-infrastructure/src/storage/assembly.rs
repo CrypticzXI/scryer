@@ -601,6 +601,13 @@ pub struct DatastoreAssembly {
     stores: DatastoreStores,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DatastoreEncryptionBootstrapReport {
+    pub migrated_indexer_configs: u64,
+    pub encrypted_release_attempt_source_passwords: u64,
+    pub encrypted_pending_release_source_passwords: u64,
+}
+
 #[derive(Clone)]
 enum DatastoreStores {
     Sqlite {
@@ -733,12 +740,18 @@ impl DatastoreAssembly {
             Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
         let media_file_store = Arc::new(MediaFileStore::new(datastore.clone()));
         let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
-        let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+        let pending_release_store = Arc::new(PendingReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let blocklist_store = Arc::new(BlocklistStore::new(datastore.clone()));
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
-        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -843,12 +856,18 @@ impl DatastoreAssembly {
             Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
         let media_file_store = Arc::new(MediaFileStore::new(datastore.clone()));
         let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
-        let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+        let pending_release_store = Arc::new(PendingReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let blocklist_store = Arc::new(BlocklistStore::new(datastore.clone()));
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
-        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -969,11 +988,13 @@ impl DatastoreAssembly {
         }
     }
 
-    pub async fn bootstrap_encryption(&self) -> Result<u64, String> {
+    pub async fn bootstrap_encryption(&self) -> Result<DatastoreEncryptionBootstrapReport, String> {
         match &self.stores {
             DatastoreStores::Sqlite {
                 db,
                 indexer_config_store,
+                pending_release_store,
+                release_store,
                 ..
             } => {
                 let encryption_key = crate::encryption::ensure_encryption_key(
@@ -984,12 +1005,30 @@ impl DatastoreAssembly {
                 db.set_encryption_key(encryption_key)
                     .await
                     .map_err(|error| error.to_string())?;
-                indexer_config_store
+                let migrated_indexer_configs = indexer_config_store
                     .migrate_legacy_indexer_config_sources()
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                let encrypted_release_attempt_source_passwords = release_store
+                    .backfill_source_passwords()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let encrypted_pending_release_source_passwords = pending_release_store
+                    .backfill_source_passwords()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(DatastoreEncryptionBootstrapReport {
+                    migrated_indexer_configs,
+                    encrypted_release_attempt_source_passwords,
+                    encrypted_pending_release_source_passwords,
+                })
             }
-            DatastoreStores::Postgres { db, .. } => {
+            DatastoreStores::Postgres {
+                db,
+                pending_release_store,
+                release_store,
+                ..
+            } => {
                 let encryption_key = crate::encryption::ensure_encryption_key_without_legacy(Some(
                     self.config.data_dir.clone(),
                 ))
@@ -997,7 +1036,19 @@ impl DatastoreAssembly {
                 db.set_encryption_key(encryption_key)
                     .await
                     .map_err(|error| error.to_string())?;
-                Ok(0)
+                let encrypted_release_attempt_source_passwords = release_store
+                    .backfill_source_passwords()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let encrypted_pending_release_source_passwords = pending_release_store
+                    .backfill_source_passwords()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(DatastoreEncryptionBootstrapReport {
+                    migrated_indexer_configs: 0,
+                    encrypted_release_attempt_source_passwords,
+                    encrypted_pending_release_source_passwords,
+                })
             }
         }
     }
@@ -1950,7 +2001,7 @@ mod tests {
         ) -> AppResult<scryer_application::BackupExportOutcome> {
             let request = BackupBundleExportRequest {
                 output_path: output_path.to_path_buf(),
-                passphrase: Some(passphrase.to_string()),
+                passphrase: passphrase.to_string(),
                 source_migration_key: self.current_migration_key().await?,
                 source_scryer_version: "backup-matrix-test".to_string(),
                 source_engine: self.engine_name().to_string(),

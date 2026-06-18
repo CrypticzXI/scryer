@@ -144,10 +144,13 @@ async fn seed_pending_release(
         published_at: None,
         info_hash: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .insert_pending_release(&pr)
-        .await
-        .expect("seed pending release");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&pr)
+    .await
+    .expect("seed pending release");
     pr
 }
 
@@ -339,10 +342,13 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     )
     .await;
 
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .delete_standby_pending_releases_for_wanted_item(&wi.id)
-        .await
-        .expect("delete standby");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .delete_standby_pending_releases_for_wanted_item(&wi.id)
+    .await
+    .expect("delete standby");
 
     assert!(
         ctx.library_state

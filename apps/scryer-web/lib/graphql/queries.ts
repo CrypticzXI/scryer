@@ -1919,6 +1919,7 @@ export const autoBackupSettingsQuery = `query AutoBackupSettings {
     enabled
     dailyTimeLocal
     autoBackupKeyPresent
+    autoBackupDisabledMissingKeyNotice
     nextRunAt
   }
 }`;

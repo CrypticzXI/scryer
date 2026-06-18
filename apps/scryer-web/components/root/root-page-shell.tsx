@@ -53,6 +53,7 @@ import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import { TotpCodeForm } from "@/components/auth/totp-code-form";
+import { toast } from "@/components/ui/sonner";
 import {
   Dialog,
   DialogContent,
@@ -99,13 +100,17 @@ import {
 } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
+  autoBackupSettingsQuery,
   authRuntimeStateQuery,
   navigationBadgeCountsQuery,
   scryerVersionQuery,
   smgScryerUpdateNoticeQuery,
   smgVersionCompatibilityNoticeQuery,
 } from "@/lib/graphql/queries";
-import { mfaVerifyStepUpMutation } from "@/lib/graphql/mutations";
+import {
+  acknowledgeAutoBackupDisabledMissingKeyNoticeMutation,
+  mfaVerifyStepUpMutation,
+} from "@/lib/graphql/mutations";
 import { decodeJwtPayload, jwtDateClaimToMillis } from "@/lib/utils/jwt";
 import type { PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
@@ -119,6 +124,8 @@ const SMG_SCRYER_UPDATE_NOTICE_KEY = "smg.scryer_update_notice";
 const SMG_SCRYER_UPDATE_DISMISSED_KEY = "scryer.smgUpdate.dismissed";
 const SMG_NOTICE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const CONFIG_STEP_UP_EXPIRY_LEEWAY_MS = 1_000;
+const AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID =
+  "auto-backup-disabled-missing-key-notice";
 
 function scheduleAfterFirstPaint(callback: () => void) {
   if (typeof window === "undefined") {
@@ -979,6 +986,10 @@ function AuthenticatedHomePage({
     useState<SmgVersionCompatibilityNotice | null>(null);
   const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
     useState<SmgScryerUpdateNotice | null>(null);
+  const [
+    autoBackupDisabledMissingKeyNotice,
+    setAutoBackupDisabledMissingKeyNotice,
+  ] = useState(false);
   const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
     () => {
       if (typeof window === "undefined") {
@@ -1660,6 +1671,112 @@ function AuthenticatedHomePage({
   const canManageUsers = canManageUserAccounts || canManagePermissions;
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
+  const viewingBackupsSettings =
+    view === "settings" && settingsSection === "backups";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!canManageSystemSettings || serviceRestarting) {
+      setAutoBackupDisabledMissingKeyNotice(false);
+      return;
+    }
+
+    const cancelScheduledQuery = scheduleAfterFirstPaint(() => {
+      void backendClient
+        .query<{
+          autoBackupSettings?: {
+            autoBackupDisabledMissingKeyNotice?: boolean | null;
+          } | null;
+        }>(autoBackupSettingsQuery, {})
+        .toPromise()
+        .then(({ data, error }) => {
+          if (cancelled || error) {
+            return;
+          }
+
+          setAutoBackupDisabledMissingKeyNotice(
+            data?.autoBackupSettings?.autoBackupDisabledMissingKeyNotice ===
+              true,
+          );
+        });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelScheduledQuery();
+    };
+  }, [canManageSystemSettings, serviceRestarting]);
+
+  useEffect(() => {
+    if (
+      !autoBackupDisabledMissingKeyNotice ||
+      !canManageSystemSettings ||
+      viewingBackupsSettings
+    ) {
+      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
+      return;
+    }
+
+    toast.warning(t("settings.autoBackupsDisabledMissingKeyToastTitle"), {
+      id: AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID,
+      description: t("settings.autoBackupsDisabledMissingKeyToastDescription"),
+      duration: Infinity,
+      action: {
+        label: t("settings.autoBackupsDisabledMissingKeyToastAction"),
+        onClick: () => {
+          navigateTo("settings", "backups");
+        },
+      },
+    });
+
+    return () => {
+      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
+    };
+  }, [
+    autoBackupDisabledMissingKeyNotice,
+    canManageSystemSettings,
+    navigateTo,
+    t,
+    viewingBackupsSettings,
+  ]);
+
+  useEffect(() => {
+    if (
+      !autoBackupDisabledMissingKeyNotice ||
+      !canManageSystemSettings ||
+      !viewingBackupsSettings
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    void backendClient
+      .mutation<{
+        acknowledgeAutoBackupDisabledMissingKeyNotice?: {
+          autoBackupDisabledMissingKeyNotice?: boolean | null;
+        } | null;
+      }>(acknowledgeAutoBackupDisabledMissingKeyNoticeMutation, {})
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled || error) {
+          return;
+        }
+
+        setAutoBackupDisabledMissingKeyNotice(
+          data?.acknowledgeAutoBackupDisabledMissingKeyNotice
+            ?.autoBackupDisabledMissingKeyNotice === true,
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    autoBackupDisabledMissingKeyNotice,
+    canManageSystemSettings,
+    viewingBackupsSettings,
+  ]);
 
   useMediaRequestsSubscription(
     () => {

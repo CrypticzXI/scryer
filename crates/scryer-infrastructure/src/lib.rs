@@ -303,9 +303,10 @@ pub use settings::settings_store::SettingsStore;
 pub use settings::subtitle_provider_config_store::SubtitleProviderConfigStore;
 pub use storage::assembly::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
-    DatastoreEngine, datastore_file_path, resolve_datastore_config_from_env,
-    restore_backup_bundle_to_datastore, restore_backup_bundle_to_datastore_path,
-    restore_prepared_backup_directory_to_datastore, validate_datastore,
+    DatastoreEncryptionBootstrapReport, DatastoreEngine, datastore_file_path,
+    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore,
+    restore_backup_bundle_to_datastore_path, restore_prepared_backup_directory_to_datastore,
+    validate_datastore,
 };
 pub use storage::migrations::{list_embedded_migration_keys, list_embedded_migrations};
 pub use storage::postgres::{PostgresLogicalBackupExporter, PostgresServices};

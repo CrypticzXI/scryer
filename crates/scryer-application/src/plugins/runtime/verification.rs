@@ -119,9 +119,27 @@ pub async fn decode_persisted_plugin_wasm_payload(
     payload: &PersistedPluginWasmPayload,
 ) -> AppResult<Vec<u8>> {
     let wasm_bytes = match payload.encoding {
-        PluginWasmEncoding::Identity => payload.bytes.clone(),
-        PluginWasmEncoding::Brotli => decompress_brotli(payload.bytes.clone()).await?,
-        PluginWasmEncoding::Zstd => decompress_zstd(payload.bytes.clone()).await?,
+        PluginWasmEncoding::Identity => bound_uncompressed_bytes(
+            payload.bytes.clone(),
+            MANUAL_PLUGIN_WASM_OUTPUT_LIMIT,
+            "persisted plugin WASM",
+        )?,
+        PluginWasmEncoding::Brotli => {
+            decompress_brotli(
+                payload.bytes.clone(),
+                MANUAL_PLUGIN_WASM_OUTPUT_LIMIT,
+                "persisted plugin WASM",
+            )
+            .await?
+        }
+        PluginWasmEncoding::Zstd => {
+            decompress_zstd(
+                payload.bytes.clone(),
+                MANUAL_PLUGIN_WASM_OUTPUT_LIMIT,
+                "persisted plugin WASM",
+            )
+            .await?
+        }
     };
     let algorithm = installation.wasm_digest_algo.as_deref().ok_or_else(|| {
         AppError::Validation(format!(

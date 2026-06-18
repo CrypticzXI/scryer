@@ -49,6 +49,46 @@ impl PluginInstallProgressReporter {
             .await;
     }
 }
+
+async fn decode_catalog_wasm_artifact(
+    compressed_artifact: Vec<u8>,
+    wasm_encoding: PluginWasmEncoding,
+    expected_bytes: u64,
+    plugin_id: &str,
+) -> AppResult<Vec<u8>> {
+    if expected_bytes > MANUAL_PLUGIN_WASM_OUTPUT_LIMIT {
+        return Err(AppError::Validation(format!(
+            "plugin '{plugin_id}' WASM artifact declared size {expected_bytes} exceeds maximum size of {MANUAL_PLUGIN_WASM_OUTPUT_LIMIT} bytes"
+        )));
+    }
+
+    match wasm_encoding {
+        PluginWasmEncoding::Brotli => {
+            decompress_brotli(
+                compressed_artifact,
+                expected_bytes,
+                format!("plugin '{plugin_id}' WASM artifact"),
+            )
+            .await
+        }
+        PluginWasmEncoding::Zstd => {
+            decompress_zstd(
+                compressed_artifact,
+                expected_bytes,
+                format!("plugin '{plugin_id}' WASM artifact"),
+            )
+            .await
+        }
+        PluginWasmEncoding::Identity => {
+            bound_uncompressed_bytes(
+                compressed_artifact,
+                expected_bytes,
+                &format!("plugin '{plugin_id}' WASM artifact"),
+            )
+        }
+    }
+}
+
 impl AppUseCase {
     async fn fetch_catalog_release_wasm(
         &self,
@@ -99,11 +139,13 @@ impl AppUseCase {
                 )));
             }
         };
-        let wasm = match wasm_encoding {
-            PluginWasmEncoding::Brotli => decompress_brotli(compressed_artifact.clone()).await?,
-            PluginWasmEncoding::Zstd => decompress_zstd(compressed_artifact.clone()).await?,
-            PluginWasmEncoding::Identity => compressed_artifact.clone(),
-        };
+        let wasm = decode_catalog_wasm_artifact(
+            compressed_artifact.clone(),
+            wasm_encoding,
+            resolved.artifact.bytes,
+            &resolved.catalog_entry.id,
+        )
+        .await?;
         verify_digest_set(
             "decompressed plugin WASM",
             &resolved.artifact.wasm_digests,

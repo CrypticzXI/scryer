@@ -140,7 +140,10 @@ export function SettingsSecurityContainer() {
     } as SecuritySettings;
   }, [client, t]);
 
-  const submitPasswordMinLength = React.useCallback(async (showSuccessToast: boolean) => {
+  const submitPasswordMinLength = React.useCallback(async (
+    showSuccessToast: boolean,
+    draftOverride?: string,
+  ) => {
     if (showSuccessToast) {
       passwordMinLengthSaveToastRequestedRef.current = true;
     }
@@ -153,7 +156,10 @@ export function SettingsSecurityContainer() {
       return null;
     }
 
-    if (draftPasswordMinLength == null) {
+    const submittedDraft = draftOverride ?? passwordMinLengthDraft;
+    const submittedPasswordMinLength = parsePasswordMinLengthDraft(submittedDraft);
+
+    if (submittedPasswordMinLength == null) {
       setPasswordMinLengthDraft(String(settings.passwordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
       toast.error(
@@ -164,8 +170,8 @@ export function SettingsSecurityContainer() {
       return null;
     }
 
-    if (draftPasswordMinLength === settings.passwordMinLength) {
-      setPasswordMinLengthDraft(String(draftPasswordMinLength));
+    if (submittedPasswordMinLength === settings.passwordMinLength) {
+      setPasswordMinLengthDraft(String(submittedPasswordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
       return null;
     }
@@ -175,7 +181,7 @@ export function SettingsSecurityContainer() {
       try {
         const nextSettings = await applySecuritySettings(
           settings.formLoginEnabled,
-          draftPasswordMinLength,
+          submittedPasswordMinLength,
           settings.skipLoginForLocalIps,
           settings.mfaRequireConfigStepUp,
           settings.mfaRequirePasswordLogin,
@@ -202,8 +208,8 @@ export function SettingsSecurityContainer() {
   }, [
     applySecuritySettings,
     confirmBusy,
-    draftPasswordMinLength,
     loading,
+    passwordMinLengthDraft,
     saveBusy,
     settings.formLoginEnabled,
     settings.passwordMinLength,
@@ -536,9 +542,12 @@ export function SettingsSecurityContainer() {
     t,
   ]);
 
-  const handlePasswordMinLengthSubmit = React.useCallback(async () => {
-    await submitPasswordMinLength(true);
-  }, [submitPasswordMinLength]);
+  const handlePasswordMinLengthSubmit = React.useCallback(
+    async (value?: string) => {
+      await submitPasswordMinLength(true, value);
+    },
+    [submitPasswordMinLength],
+  );
 
   return (
     <SettingsSecuritySection

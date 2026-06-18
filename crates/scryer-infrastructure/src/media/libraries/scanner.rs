@@ -889,7 +889,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let level1 = dir.path().join("Season 1");
         let level2 = level1.join("Disc 1");
-        let level3 = level2.join("Extras");
+        let level3 = level2.join("Nested");
         let level4 = level3.join("TooDeep");
         tokio::fs::create_dir_all(&level4).await.expect("level4");
         tokio::fs::write(level3.join("Episode.S01E01.mkv"), b"video")

@@ -1260,7 +1260,7 @@ mod tests {
     fn upgrade_recycle_and_purge_project_in_audit_order() {
         let now = Utc::now();
         let snapshot = title_snapshot("Example", MediaFacet::Movie);
-        let events = vec![
+        let events = [
             event(
                 1,
                 now,

@@ -67,23 +67,6 @@ impl From<&User> for DomainEventActor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anonymous_backend_user_projects_anonymous_actor() {
-        let mut actor = User::new_admin("Anonymous");
-        actor.id = "local-authless-user".to_string();
-
-        let event_actor = DomainEventActor::from(&actor);
-
-        assert_eq!(event_actor.kind, DomainEventActorKind::Anonymous);
-        assert_eq!(event_actor.user_id.as_deref(), Some("local-authless-user"));
-        assert_eq!(event_actor.display_name, "Anonymous");
-    }
-}
-
 pub(crate) fn title_context_snapshot(title: &Title) -> TitleContextSnapshot {
     let mut external_ids = DomainExternalIds::default();
     for external_id in &title.external_ids {
@@ -251,5 +234,22 @@ fn assign_external_id(out: &mut DomainExternalIds, external_id: &ExternalId) {
         "tvdb" => out.tvdb_id = Some(external_id.value.clone()),
         "anidb" => out.anidb_id = Some(external_id.value.clone()),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_backend_user_projects_anonymous_actor() {
+        let mut actor = User::new_admin("Anonymous");
+        actor.id = "local-authless-user".to_string();
+
+        let event_actor = DomainEventActor::from(&actor);
+
+        assert_eq!(event_actor.kind, DomainEventActorKind::Anonymous);
+        assert_eq!(event_actor.user_id.as_deref(), Some("local-authless-user"));
+        assert_eq!(event_actor.display_name, "Anonymous");
     }
 }

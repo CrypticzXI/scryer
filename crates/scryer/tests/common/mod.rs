@@ -609,7 +609,10 @@ impl TestContext {
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
         let datastore = db.datastore();
-        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -678,7 +681,8 @@ impl TestContext {
 
         let library_probe_store = LibraryProbeStore::new(datastore.clone());
         let wanted_store = WantedStore::new(datastore.clone());
-        let pending_release_store = PendingReleaseStore::new(datastore.clone());
+        let pending_release_store =
+            PendingReleaseStore::new(datastore.clone(), db.encryption_key_state());
         let blocklist_store = scryer_infrastructure::BlocklistStore::new(datastore.clone());
         let housekeeping_store = HousekeepingStore::new(datastore.clone());
         let subtitle_download_store = SubtitleDownloadStore::new(datastore.clone());

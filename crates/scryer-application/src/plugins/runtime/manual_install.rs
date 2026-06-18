@@ -48,6 +48,40 @@ fn uploaded_plugin_file_is_zstd(file_name: &str) -> AppResult<bool> {
         "manual plugin upload must be a .wasm or .wasm.zst file".to_string(),
     ))
 }
+
+async fn decode_uploaded_plugin_wasm_with_limit(
+    uploaded_bytes: Vec<u8>,
+    uploaded_is_zstd: bool,
+    max_output_bytes: u64,
+) -> AppResult<Vec<u8>> {
+    if uploaded_is_zstd {
+        decompress_zstd(
+            uploaded_bytes,
+            max_output_bytes,
+            "manual plugin WASM upload",
+        )
+        .await
+    } else {
+        bound_uncompressed_bytes(
+            uploaded_bytes,
+            max_output_bytes,
+            "manual plugin WASM upload",
+        )
+    }
+}
+
+async fn decode_uploaded_plugin_wasm(
+    uploaded_bytes: Vec<u8>,
+    uploaded_is_zstd: bool,
+) -> AppResult<Vec<u8>> {
+    decode_uploaded_plugin_wasm_with_limit(
+        uploaded_bytes,
+        uploaded_is_zstd,
+        MANUAL_PLUGIN_WASM_OUTPUT_LIMIT,
+    )
+    .await
+}
+
 impl AppUseCase {
     async fn upsert_manual_plugin_catalog_source(
         &self,
@@ -98,13 +132,15 @@ impl AppUseCase {
         };
         let data_urls = vec![catalog_url.to_string()];
         let signature_urls = vec![signed_catalog_json_bundle_url(catalog_url)];
-        let (catalog_raw, _) = self
+        let (catalog_raw, actual_url) = self
             .fetch_verified_blob_from_locations(
                 &data_urls,
                 &signature_urls,
                 &signer,
                 "manual plugin catalog",
             )
+            .await?;
+        let catalog_raw = decode_catalog_json(catalog_raw, &actual_url, "manual plugin catalog")
             .await?;
         let catalog = parse_and_validate_catalog_v3(&catalog_raw)?;
         let plugin = single_manual_catalog_plugin(&catalog, &repo)?;
@@ -219,11 +255,7 @@ impl AppUseCase {
                     "manual plugin upload payload is not valid base64: {error}"
                 ))
             })?;
-        let wasm_bytes = if uploaded_is_zstd {
-            decompress_zstd(uploaded_bytes).await?
-        } else {
-            uploaded_bytes
-        };
+        let wasm_bytes = decode_uploaded_plugin_wasm(uploaded_bytes, uploaded_is_zstd).await?;
         let descriptor = self
             .services
             .customization

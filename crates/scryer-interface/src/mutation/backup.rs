@@ -67,13 +67,13 @@ impl BackupMutations {
     async fn create_backup(
         &self,
         ctx: &Context<'_>,
-        password: Option<String>,
+        password: String,
     ) -> GqlResult<BackupInfoPayload> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         let actor = require_config_step_up(ctx).await?;
         let info = app
-            .create_backup(&actor, password.as_deref())
+            .create_backup(&actor, &password)
             .await
             .map_err(to_gql_error)?;
         Ok(from_backup_info(info))

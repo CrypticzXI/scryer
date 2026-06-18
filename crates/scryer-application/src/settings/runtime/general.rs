@@ -19,12 +19,26 @@ fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
     Ok(format!("{hour:02}:{minute:02}"))
 }
 fn validate_auto_backup_key_update(
+    enabled: bool,
+    existing_auto_backup_key_present: bool,
     set_auto_backup_key: Option<&str>,
     clear_auto_backup_key: bool,
 ) -> AppResult<()> {
-    if clear_auto_backup_key && set_auto_backup_key.is_some_and(|value| !value.is_empty()) {
+    let replacement_key_present = set_auto_backup_key.is_some_and(|value| !value.trim().is_empty());
+    if clear_auto_backup_key && replacement_key_present {
         return Err(AppError::Validation(
             "automatic backup key cannot be replaced and cleared in the same request".to_string(),
+        ));
+    }
+    if enabled && clear_auto_backup_key {
+        return Err(AppError::Validation(
+            "automatic backup key cannot be cleared while automatic backups are enabled"
+                .to_string(),
+        ));
+    }
+    if enabled && !existing_auto_backup_key_present && !replacement_key_present {
+        return Err(AppError::Validation(
+            "automatic backups require a backup key".to_string(),
         ));
     }
 
@@ -139,6 +153,7 @@ pub struct AutoBackupSettings {
     pub enabled: bool,
     pub daily_time_local: String,
     pub auto_backup_key_present: bool,
+    pub auto_backup_disabled_missing_key_notice: bool,
     pub next_run_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +210,13 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    async fn auto_backup_key_present(&self) -> AppResult<bool> {
+        Ok(self
+            .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
+            .await?
+            .is_some_and(|value| !value.trim().is_empty()))
+    }
+
     pub(crate) async fn load_auto_backup_settings(&self) -> AppResult<AutoBackupSettings> {
         let enabled = self
             .read_setting_bool_value(AUTO_BACKUP_ENABLED_KEY, None)
@@ -206,10 +228,11 @@ impl AppUseCase {
                 .await?
                 .unwrap_or_else(|| DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL.to_string()),
         )?;
-        let auto_backup_key_present = self
-            .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
+        let auto_backup_key_present = self.auto_backup_key_present().await?;
+        let auto_backup_disabled_missing_key_notice = self
+            .read_setting_bool_value(AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY, None)
             .await?
-            .is_some_and(|value| !value.is_empty());
+            .unwrap_or(false);
         let next_run_at = if enabled {
             Some(
                 crate::security::backup::compute_next_auto_backup_run_at(
@@ -226,6 +249,7 @@ impl AppUseCase {
             enabled,
             daily_time_local,
             auto_backup_key_present,
+            auto_backup_disabled_missing_key_notice,
             next_run_at,
         })
     }
@@ -327,7 +351,10 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
+        let current_auto_backup_key_present = self.auto_backup_key_present().await?;
         validate_auto_backup_key_update(
+            input.enabled,
+            current_auto_backup_key_present,
             input.set_auto_backup_key.as_deref(),
             input.clear_auto_backup_key,
         )?;
@@ -355,7 +382,7 @@ impl AppUseCase {
             self.delete_system_setting(AUTO_BACKUP_KEY_KEY).await?;
             changed_keys.push(AUTO_BACKUP_KEY_KEY.to_string());
         } else if let Some(set_auto_backup_key) = input.set_auto_backup_key
-            && !set_auto_backup_key.is_empty()
+            && !set_auto_backup_key.trim().is_empty()
         {
             self.upsert_system_setting_json(
                 AUTO_BACKUP_KEY_KEY,
@@ -369,6 +396,28 @@ impl AppUseCase {
         self.emit_settings_saved(actor, "auto_backup_settings", None, changed_keys)
             .await;
 
+        self.load_auto_backup_settings().await
+    }
+
+    pub async fn acknowledge_auto_backup_disabled_missing_key_notice(
+        &self,
+        actor: &User,
+    ) -> AppResult<AutoBackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.upsert_system_setting_json(
+            AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY,
+            &false,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.emit_settings_saved(
+            actor,
+            "auto_backup_settings",
+            None,
+            vec![AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY.to_string()],
+        )
+        .await;
         self.load_auto_backup_settings().await
     }
 }
@@ -414,7 +463,7 @@ mod tests {
 
     #[test]
     fn validate_auto_backup_key_update_rejects_replace_and_clear_together() {
-        let error = validate_auto_backup_key_update(Some("secret"), true)
+        let error = validate_auto_backup_key_update(false, true, Some("secret"), true)
             .expect_err("set and clear should be rejected");
 
         assert!(
@@ -422,6 +471,36 @@ mod tests {
                 .to_string()
                 .contains("automatic backup key cannot be replaced and cleared"),
         );
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_rejects_enabled_without_effective_key() {
+        let error = validate_auto_backup_key_update(true, false, None, false)
+            .expect_err("enabled without key should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("automatic backups require a backup key"),
+        );
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_rejects_clearing_key_while_enabled() {
+        let error = validate_auto_backup_key_update(true, true, None, true)
+            .expect_err("enabled clear should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be cleared while automatic backups are enabled"),
+        );
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_accepts_enabled_with_replacement_key() {
+        validate_auto_backup_key_update(true, false, Some("secret"), false)
+            .expect("replacement key should allow enabling");
     }
 
     #[test]

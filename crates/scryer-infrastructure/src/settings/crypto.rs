@@ -18,17 +18,40 @@ pub(crate) fn maybe_encrypt_optional(
     key: Option<&EncryptionKey>,
     value: Option<&String>,
 ) -> AppResult<Option<String>> {
-    value
-        .map(|value| maybe_encrypt_value(key, value))
-        .transpose()
+    encrypt_optional_value(key, value, "config_json", false)
 }
 
 pub(crate) fn maybe_encrypt_value(key: Option<&EncryptionKey>, value: &str) -> AppResult<String> {
+    encrypt_value(key, value, "config_json", false)
+}
+
+pub(crate) fn encrypt_optional_value(
+    key: Option<&EncryptionKey>,
+    value: Option<&String>,
+    label: &str,
+    require_key: bool,
+) -> AppResult<Option<String>> {
+    value
+        .map(|value| encrypt_value(key, value, label, require_key))
+        .transpose()
+}
+
+pub(crate) fn encrypt_value(
+    key: Option<&EncryptionKey>,
+    value: &str,
+    label: &str,
+    require_key: bool,
+) -> AppResult<String> {
     let Some(key) = key else {
+        if require_key {
+            return Err(AppError::Repository(format!(
+                "{label} encryption requires encryption key"
+            )));
+        }
         return Ok(value.to_string());
     };
     crate::encryption::encrypt_value(key, value)
-        .map_err(|error| AppError::Repository(format!("failed to encrypt config_json: {error}")))
+        .map_err(|error| AppError::Repository(format!("failed to encrypt {label}: {error}")))
 }
 
 pub(crate) fn decrypt_optional_value(

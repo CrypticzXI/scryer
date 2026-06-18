@@ -1941,6 +1941,7 @@ pub struct AutoBackupSettingsPayload {
     pub enabled: bool,
     pub daily_time_local: String,
     pub auto_backup_key_present: bool,
+    pub auto_backup_disabled_missing_key_notice: bool,
     pub next_run_at: Option<String>,
 }
 

@@ -1218,10 +1218,11 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::WantedStatus::Wanted
     );
 
-    let failures = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore())
-        .list_failed_release_signatures_for_title(&title.id, 10)
-        .await
-        .expect("failed signatures");
+    let failures =
+        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state())
+            .list_failed_release_signatures_for_title(&title.id, 10)
+            .await
+            .expect("failed signatures");
     assert!(failures.iter().any(|failure| {
         failure.source_title.as_deref() == Some("test.download.dl-rule-blocked")
             && failure

@@ -567,7 +567,7 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
-            actor_kind: ctx.actor.kind.clone(),
+            actor_kind: ctx.actor.kind,
             actor_user_id: ctx.actor.user_id.clone(),
             actor_display_name: ctx.actor.display_name.clone(),
             title_id: Some(ctx.title_id.clone()),

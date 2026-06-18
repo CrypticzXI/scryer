@@ -17,12 +17,12 @@ test("normalizeGraphQlErrorMessage strips GraphQL validation prefixes", () => {
   );
 });
 
-test("normalizeGraphQlErrorMessage strips nested GraphQL repository validation prefixes", () => {
+test("normalizeGraphQlErrorMessage masks legacy GraphQL repository prefixes", () => {
   assert.equal(
     normalizeGraphQlErrorMessage(
       "[GraphQL] repository: validation: passkeys require a password-backed account",
     ),
-    "passkeys require a password-backed account",
+    "Internal server error",
   );
 });
 
@@ -95,13 +95,14 @@ test("queue validation failure normalizes into global status text that toasts as
   assert.equal(classifyStatusToastLevel(message), "error");
 });
 
-test("SMG HTML embedded in GraphQL errors remains ordinary error status text", () => {
+test("GraphQL internal errors mask repository details and include the reference id", () => {
   const message = userFacingGraphQlErrorMessage(
     {
       graphQLErrors: [
         {
           message:
             "[GraphQL] repository: metadata gateway request failed (502 Bad Gateway): <!DOCTYPE html><html><body>Bad gateway</body></html>",
+          extensions: { code: "INTERNAL_ERROR", errorId: "err-123" },
         },
       ],
     },
@@ -110,7 +111,7 @@ test("SMG HTML embedded in GraphQL errors remains ordinary error status text", (
 
   assert.equal(
     message,
-    "metadata gateway request failed (502 Bad Gateway): <!DOCTYPE html><html><body>Bad gateway</body></html>",
+    "Internal server error. Reference ID: err-123",
   );
   assert.equal(classifyStatusToastLevel(message), "error");
 });

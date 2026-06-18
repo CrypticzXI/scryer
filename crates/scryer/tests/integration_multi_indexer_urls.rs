@@ -67,7 +67,10 @@ async fn setup() -> (
         datastore.clone(),
         encryption_key_state.clone(),
     ));
-    let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+    let release_store = Arc::new(ReleaseStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
     let settings_store = Arc::new(SettingsStore::new(
         datastore.clone(),
         encryption_key_state.clone(),
@@ -224,7 +227,10 @@ async fn setup() -> (
 
     let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
     let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
-    let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+    let pending_release_store = Arc::new(PendingReleaseStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
     let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
         datastore.clone(),
     ));

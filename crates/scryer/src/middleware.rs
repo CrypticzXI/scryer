@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope};
-use scryer_domain::AppPermission;
+use scryer_domain::{AppPermission, Id};
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -26,6 +26,11 @@ const GRAPHQL_POST_EXECUTION_TIMEOUT_CODE: &str = "GRAPHQL_EXECUTION_TIMEOUT";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
 const MFA_STEP_UP_REQUIRED_STATUS_CODE: u16 = 460;
+const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";
+const CORS_ALLOWED_ORIGINS_ENV: &str = "SCRYER_CORS_ALLOWED_ORIGINS";
+const WS_ALLOWED_ORIGINS_ENV: &str = "SCRYER_WS_ALLOWED_ORIGINS";
+const PRODUCTION_CORS_OPT_IN_ENV: &str = "SCRYER_ENABLE_PRODUCTION_CORS";
+const WEB_UI_URL_ENV: &str = "SCRYER_WEB_UI_URL";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthlessAccessPolicy {
@@ -47,22 +52,29 @@ pub(crate) struct CorsConfig {
 
 impl CorsConfig {
     pub(crate) fn from_env() -> Self {
-        let raw = std::env::var("SCRYER_CORS_ALLOWED_ORIGINS")
-            .unwrap_or_else(|_| default_cors_allowed_origins().join(","));
+        Self::from_env_for_mode(cfg!(debug_assertions))
+    }
 
-        let origins = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-
-        let allow_all = origins
-            .iter()
-            .any(|origin| matches!(origin.as_str(), "*" | "https://*" | "http://*"));
+    fn from_env_for_mode(debug_assertions: bool) -> Self {
+        let configured_origins = std::env::var(CORS_ALLOWED_ORIGINS_ENV).ok();
+        let production_cors_enabled = production_cors_opted_in();
+        let origins = match configured_origins {
+            Some(raw) if debug_assertions || production_cors_enabled => {
+                parse_cors_allowed_origins(&raw)
+            }
+            Some(_) => {
+                tracing::warn!(
+                    env = CORS_ALLOWED_ORIGINS_ENV,
+                    opt_in = PRODUCTION_CORS_OPT_IN_ENV,
+                    "ignoring CORS origins because production CORS is disabled by default"
+                );
+                Vec::new()
+            }
+            None => default_cors_allowed_origins_for_mode(debug_assertions),
+        };
 
         Self {
-            allow_all,
+            allow_all: false,
             allowed_origins: origins,
         }
     }
@@ -75,6 +87,30 @@ impl CorsConfig {
     }
 }
 
+fn production_cors_opted_in() -> bool {
+    std::env::var(PRODUCTION_CORS_OPT_IN_ENV).is_ok_and(|value| value.trim() == "1")
+}
+
+fn parse_cors_allowed_origins(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(cors_allowed_origin)
+        .collect()
+}
+
+fn cors_allowed_origin(origin: &str) -> Option<String> {
+    if matches!(origin.trim(), "*" | "http://*" | "https://*") {
+        tracing::warn!(
+            origin,
+            "ignoring wildcard CORS Origin; configure exact origins instead"
+        );
+        return None;
+    }
+
+    canonical_origin(origin)
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct WebSocketOriginPolicy {
     allowed_origins: Vec<String>,
@@ -82,8 +118,23 @@ pub(crate) struct WebSocketOriginPolicy {
 
 impl WebSocketOriginPolicy {
     pub(crate) fn from_env(cors: &CorsConfig) -> Self {
-        let origins = match std::env::var("SCRYER_WS_ALLOWED_ORIGINS") {
-            Ok(raw) => parse_websocket_allowed_origins(&raw),
+        Self::from_env_for_mode(cors, cfg!(debug_assertions))
+    }
+
+    fn from_env_for_mode(cors: &CorsConfig, debug_assertions: bool) -> Self {
+        let production_cors_enabled = production_cors_opted_in();
+        let origins = match std::env::var(WS_ALLOWED_ORIGINS_ENV) {
+            Ok(raw) if debug_assertions || production_cors_enabled => {
+                parse_websocket_allowed_origins(&raw)
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    env = WS_ALLOWED_ORIGINS_ENV,
+                    opt_in = PRODUCTION_CORS_OPT_IN_ENV,
+                    "ignoring WebSocket origins because production CORS is disabled by default"
+                );
+                Vec::new()
+            }
             Err(_) => cors
                 .allowed_origins
                 .iter()
@@ -188,8 +239,8 @@ fn origin_scheme_matches_forwarded_proto(origin_scheme: &str, forwarded_proto: &
     )
 }
 
-fn default_cors_allowed_origins() -> Vec<String> {
-    let mut origins = if cfg!(debug_assertions) {
+fn default_cors_allowed_origins_for_mode(debug_assertions: bool) -> Vec<String> {
+    let mut origins = if debug_assertions {
         vec![
             "http://localhost:3000".to_string(),
             "http://127.0.0.1:3000".to_string(),
@@ -201,8 +252,8 @@ fn default_cors_allowed_origins() -> Vec<String> {
         Vec::new()
     };
 
-    if cfg!(debug_assertions)
-        && let Ok(web_ui_url) = std::env::var("SCRYER_WEB_UI_URL")
+    if debug_assertions
+        && let Ok(web_ui_url) = std::env::var(WEB_UI_URL_ENV)
         && let Some(web_ui_origin) = canonical_origin(&web_ui_url)
     {
         push_origin_if_missing(&mut origins, web_ui_origin.clone());
@@ -224,7 +275,7 @@ fn canonical_origin(value: &str) -> Option<String> {
         return None;
     }
     if matches!(trimmed, "*" | "http://*" | "https://*") {
-        return Some(trimmed.to_string());
+        return None;
     }
 
     let uri = trimmed.parse::<Uri>().ok()?;
@@ -573,10 +624,10 @@ pub(crate) async fn enforce_authless_access_guard(
             );
             (
                 StatusCode::FORBIDDEN,
-                Json(ErrorResponse {
-                    error: "Scryer authentication is disabled; public unauthenticated access is blocked"
+                Json(ErrorResponse::new(
+                    "Scryer authentication is disabled; public unauthenticated access is blocked"
                         .to_string(),
-                }),
+                )),
             )
                 .into_response()
         }
@@ -1162,9 +1213,7 @@ pub(crate) async fn rate_limit_http_api(
         Err(decision) => {
             let mut response = (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: decision.message,
-                }),
+                Json(ErrorResponse::new(decision.message)),
             )
                 .into_response();
             if let Some(retry_after) = decision.retry_after
@@ -1187,53 +1236,53 @@ fn is_rate_limited_http_api_path(path: &str) -> bool {
 
 pub(crate) fn map_app_error(error: AppError) -> Response {
     match error {
-        AppError::Unauthorized(message) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
-        AppError::Validation(message) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
-        AppError::PluginInstallInProgress(message) => {
-            (StatusCode::CONFLICT, Json(ErrorResponse { error: message })).into_response()
+        AppError::Unauthorized(message) => {
+            (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
         }
-        AppError::NotFound(message) => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
+        AppError::Validation(message) => {
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::PluginInstallInProgress(message) => {
+            (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::NotFound(message) => {
+            (StatusCode::NOT_FOUND, Json(ErrorResponse::new(message))).into_response()
+        }
         AppError::DownloadFeedbackTimeout(message) => (
             StatusCode::GATEWAY_TIMEOUT,
-            Json(ErrorResponse { error: message }),
+            Json(ErrorResponse::new(message)),
         )
             .into_response(),
-        AppError::DownloadSubmitAmbiguous(message) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
-        AppError::DownloadSubmitUnavailable(message) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
+        AppError::DownloadSubmitAmbiguous(message) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::DownloadSubmitUnavailable(message) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
+        }
         AppError::MfaStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
         | AppError::MfaEnrollmentRequired(message)
         | AppError::TotpInvalidCode(message)
-        | AppError::TotpRecoveryCodeUsed(message) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
-        AppError::Repository(message) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: message }),
-        )
-            .into_response(),
+        | AppError::TotpRecoveryCodeUsed(message) => {
+            (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::Repository(message) => {
+            let error_id = Id::new().0;
+            tracing::error!(
+                error_id = %error_id,
+                error_kind = "Repository",
+                error = %message,
+                "masked internal repository error"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::with_error_id(
+                    INTERNAL_SERVER_ERROR_MESSAGE.to_string(),
+                    error_id,
+                )),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1241,23 +1290,34 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
 mod tests {
     use super::*;
     use axum::Router;
+    use axum::body::to_bytes;
     use axum::http::HeaderValue;
     use axum::routing::get;
+    use serde_json::Value;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::{LazyLock, Mutex};
     use tower::ServiceExt;
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    fn clear_cors_env() {
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::remove_var(CORS_ALLOWED_ORIGINS_ENV);
+            std::env::remove_var(WS_ALLOWED_ORIGINS_ENV);
+            std::env::remove_var(PRODUCTION_CORS_OPT_IN_ENV);
+            std::env::remove_var(WEB_UI_URL_ENV);
+        }
+    }
+
     #[test]
     fn default_cors_origins_match_runtime_mode() {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        // SAFETY: tests serialize access to process env via ENV_LOCK.
-        unsafe {
-            std::env::remove_var("SCRYER_WEB_UI_URL");
-        }
+        clear_cors_env();
 
-        let origins = default_cors_allowed_origins();
+        let origins = default_cors_allowed_origins_for_mode(cfg!(debug_assertions));
+        let dev_origins = default_cors_allowed_origins_for_mode(true);
+        let release_origins = default_cors_allowed_origins_for_mode(false);
 
         if cfg!(debug_assertions) {
             assert!(
@@ -1268,17 +1328,26 @@ mod tests {
         } else {
             assert!(origins.is_empty());
         }
+        assert!(
+            dev_origins
+                .iter()
+                .any(|origin| origin == "http://localhost:3000")
+        );
+        assert!(release_origins.is_empty());
     }
 
     #[test]
     fn web_ui_origin_only_extends_dev_mode_defaults() {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
         // SAFETY: tests serialize access to process env via ENV_LOCK.
         unsafe {
-            std::env::set_var("SCRYER_WEB_UI_URL", "http://127.0.0.1:4545/app");
+            std::env::set_var(WEB_UI_URL_ENV, "http://127.0.0.1:4545/app");
         }
 
-        let origins = default_cors_allowed_origins();
+        let origins = default_cors_allowed_origins_for_mode(cfg!(debug_assertions));
+        let dev_origins = default_cors_allowed_origins_for_mode(true);
+        let release_origins = default_cors_allowed_origins_for_mode(false);
 
         if cfg!(debug_assertions) {
             assert!(
@@ -1300,10 +1369,132 @@ mod tests {
             assert!(origins.is_empty());
         }
 
+        assert!(
+            dev_origins
+                .iter()
+                .any(|origin| origin == "http://127.0.0.1:4545")
+        );
+        assert!(
+            dev_origins
+                .iter()
+                .any(|origin| origin == "http://localhost:4545")
+        );
+        assert!(
+            dev_origins
+                .iter()
+                .any(|origin| origin == "http://host.docker.internal:4545")
+        );
+        assert!(release_origins.is_empty());
+        clear_cors_env();
+    }
+
+    #[test]
+    fn cors_env_rejects_wildcard_origins() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
         // SAFETY: tests serialize access to process env via ENV_LOCK.
         unsafe {
-            std::env::remove_var("SCRYER_WEB_UI_URL");
+            std::env::set_var(
+                CORS_ALLOWED_ORIGINS_ENV,
+                "*, http://*, https://*, http://localhost:3000",
+            );
         }
+
+        let config = CorsConfig::from_env_for_mode(true);
+
+        assert!(!config.allow_all);
+        assert!(config.is_allowed("http://localhost:3000"));
+        assert!(!config.is_allowed("http://evil.example"));
+        assert!(
+            !config
+                .allowed_origins
+                .iter()
+                .any(|origin| matches!(origin.as_str(), "*" | "http://*" | "https://*"))
+        );
+        clear_cors_env();
+    }
+
+    #[test]
+    fn release_mode_ignores_cors_env_without_opt_in() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::set_var(CORS_ALLOWED_ORIGINS_ENV, "http://localhost:3000");
+        }
+
+        let config = CorsConfig::from_env_for_mode(false);
+
+        assert!(!config.allow_all);
+        assert!(config.allowed_origins.is_empty());
+        assert!(!config.is_allowed("http://localhost:3000"));
+        clear_cors_env();
+    }
+
+    #[test]
+    fn release_mode_allows_exact_cors_env_with_opt_in() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::set_var(CORS_ALLOWED_ORIGINS_ENV, "http://localhost:3000/app");
+            std::env::set_var(PRODUCTION_CORS_OPT_IN_ENV, "1");
+        }
+
+        let config = CorsConfig::from_env_for_mode(false);
+
+        assert!(!config.allow_all);
+        assert_eq!(config.allowed_origins, vec!["http://localhost:3000"]);
+        assert!(config.is_allowed("http://localhost:3000"));
+        assert!(!config.is_allowed("http://127.0.0.1:3000"));
+        clear_cors_env();
+    }
+
+    #[test]
+    fn websocket_origin_parser_rejects_wildcards() {
+        let origins =
+            parse_websocket_allowed_origins("*, http://*, https://*, http://localhost:3000/app");
+
+        assert_eq!(origins, vec!["http://localhost:3000"]);
+    }
+
+    #[test]
+    fn release_mode_ignores_websocket_env_without_opt_in() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::set_var(WS_ALLOWED_ORIGINS_ENV, "http://localhost:3000");
+        }
+
+        let cors = CorsConfig {
+            allow_all: false,
+            allowed_origins: Vec::new(),
+        };
+        let policy = WebSocketOriginPolicy::from_env_for_mode(&cors, false);
+
+        assert!(policy.allowed_origins.is_empty());
+        clear_cors_env();
+    }
+
+    #[test]
+    fn release_mode_allows_exact_websocket_env_with_opt_in() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_cors_env();
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::set_var(WS_ALLOWED_ORIGINS_ENV, "http://localhost:3000/app");
+            std::env::set_var(PRODUCTION_CORS_OPT_IN_ENV, "1");
+        }
+
+        let cors = CorsConfig {
+            allow_all: false,
+            allowed_origins: Vec::new(),
+        };
+        let policy = WebSocketOriginPolicy::from_env_for_mode(&cors, false);
+
+        assert_eq!(policy.allowed_origins, vec!["http://localhost:3000"]);
+        clear_cors_env();
     }
 
     fn graphql_error_response_with_code(code: &str) -> async_graphql::BatchResponse {
@@ -1389,6 +1580,45 @@ mod tests {
             GRAPHQL_POST_EXECUTION_TIMEOUT_CODE
         );
         assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 60);
+    }
+
+    #[tokio::test]
+    async fn repository_error_response_masks_details_and_includes_error_id() {
+        let response = map_app_error(AppError::Repository(
+            "database password leaked in upstream detail".into(),
+        ));
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body_text = String::from_utf8(body.to_vec()).expect("response body is utf8");
+        let body: Value = serde_json::from_str(&body_text).expect("response body is json");
+
+        assert_eq!(body["error"], INTERNAL_SERVER_ERROR_MESSAGE);
+        assert!(
+            body["error_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(!body_text.contains("database password"));
+        assert!(!body_text.contains("upstream detail"));
+    }
+
+    #[tokio::test]
+    async fn validation_error_response_omits_error_id() {
+        let response = map_app_error(AppError::Validation("bad request".into()));
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: Value = serde_json::from_slice(&body).expect("response body is json");
+
+        assert_eq!(body["error"], "bad request");
+        assert!(body.get("error_id").is_none());
     }
 
     #[test]

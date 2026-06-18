@@ -847,7 +847,7 @@ pub struct BackupExportSecrets {
 #[derive(Clone, Debug)]
 pub struct BackupBundleExportRequest {
     pub output_path: PathBuf,
-    pub passphrase: Option<String>,
+    pub passphrase: String,
     pub source_migration_key: Option<String>,
     pub source_scryer_version: String,
     pub source_engine: String,
@@ -958,6 +958,12 @@ impl BackupBundleStaging {
     }
 
     pub fn finish(mut self, request: BackupBundleExportRequest) -> AppResult<BackupExportOutcome> {
+        if request.passphrase.trim().is_empty() {
+            return Err(AppError::Validation(
+                "backup export requires a non-empty password".into(),
+            ));
+        }
+
         let instance_secrets = BackupInstanceSecrets::from_export_secrets(request.secrets);
         let instance_secrets_path = self.staging.path().join(INSTANCE_SECRETS_FILENAME);
         write_json_file(&instance_secrets_path, &instance_secrets)?;
@@ -972,25 +978,17 @@ impl BackupBundleStaging {
             source_scryer_version: request.source_scryer_version,
             source_engine: request.source_engine,
             source_migration_key: request.source_migration_key,
-            encrypted: request.passphrase.is_some(),
+            encrypted: true,
             row_counts: self.row_counts,
             part_checksums: self.part_checksums,
         };
         let manifest_path = self.staging.path().join(MANIFEST_FILENAME);
         write_json_file(&manifest_path, &manifest)?;
 
-        if let Some(passphrase) = request.passphrase.as_deref() {
-            let writer = AtomicOutputWriter::new(&request.output_path)?;
-            let writer = AeadChunkWriter::new(writer, passphrase)?;
-            let writer = write_bundle_payload(self.staging.path(), writer)?.finish()?;
-            writer.finish()?;
-        } else {
-            let writer = write_bundle_payload(
-                self.staging.path(),
-                AtomicOutputWriter::new(&request.output_path)?,
-            )?;
-            writer.finish()?;
-        }
+        let writer = AtomicOutputWriter::new(&request.output_path)?;
+        let writer = AeadChunkWriter::new(writer, &request.passphrase)?;
+        let writer = write_bundle_payload(self.staging.path(), writer)?.finish()?;
+        writer.finish()?;
 
         Ok(BackupExportOutcome {
             summary: manifest.summary(),
@@ -1717,7 +1715,7 @@ mod tests {
     fn prepared_backup_directory_round_trip_preserves_restore_inputs() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("roundtrip.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("backup-passphrase")).expect("write bundle");
+        write_test_bundle(&bundle_path, "backup-passphrase").expect("write bundle");
 
         let prepared = prepare_backup_restore_payload(&bundle_path, Some("backup-passphrase"))
             .expect("prepare restore payload");
@@ -1743,7 +1741,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("roundtrip.scryer-backup.enc");
         let passphrase = "backup-passphrase";
-        write_test_bundle(&bundle_path, Some(passphrase)).expect("write bundle");
+        write_test_bundle(&bundle_path, passphrase).expect("write bundle");
 
         let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
         assert!(summary.encrypted);
@@ -1763,7 +1761,7 @@ mod tests {
     fn encrypted_backup_rejects_wrong_passphrase() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("wrong-pass.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let error = inspect_backup_bundle(&bundle_path, Some("wrong"))
             .expect_err("wrong password should fail");
@@ -1778,7 +1776,7 @@ mod tests {
     fn encrypted_backup_rejects_unknown_version() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("unknown-version.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -1803,7 +1801,7 @@ mod tests {
     fn encrypted_backup_rejects_truncated_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("truncated-metadata.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let mut bytes = std::fs::read(&bundle_path).expect("read bundle");
         bytes.truncate(ENCRYPTED_BUNDLE_MAGIC.len() + 1 + 4 + 3);
@@ -1820,7 +1818,7 @@ mod tests {
         let bundle_path = temp
             .path()
             .join("invalid-metadata-length.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -1841,7 +1839,7 @@ mod tests {
     fn encrypted_backup_rejects_truncated_chunk() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("truncated-chunk.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let mut bytes = std::fs::read(&bundle_path).expect("read bundle");
         bytes.pop();
@@ -1860,7 +1858,7 @@ mod tests {
     fn plaintext_backup_extracts_plain_ndjson_parts() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("plain.scryer-backup.tar.zst");
-        write_test_bundle(&bundle_path, None).expect("write bundle");
+        write_legacy_plaintext_test_bundle(&bundle_path).expect("write bundle");
 
         let summary = inspect_backup_bundle(&bundle_path, None).expect("inspect");
         assert!(!summary.encrypted);
@@ -1956,7 +1954,7 @@ mod tests {
     fn inspect_rejects_legacy_bundle_format_version() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("legacy-format.scryer-backup.tar.zst");
-        write_test_bundle(&bundle_path, None).expect("write bundle");
+        write_legacy_plaintext_test_bundle(&bundle_path).expect("write bundle");
 
         let extracted = extract_bundle_to_tempdir(&bundle_path, None).expect("extract");
         let mut manifest = load_manifest(extracted.path()).expect("manifest");
@@ -1983,7 +1981,7 @@ mod tests {
     fn encrypted_backup_rejects_oversized_chunk_length() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bundle_path = temp.path().join("oversized-chunk.scryer-backup.enc");
-        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+        write_test_bundle(&bundle_path, "correct").expect("write bundle");
 
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -2003,15 +2001,51 @@ mod tests {
         assert!(error.to_string().contains("payload length is invalid"));
     }
 
-    fn write_test_bundle(output_path: &Path, passphrase: Option<&str>) -> AppResult<()> {
+    fn write_test_bundle(output_path: &Path, passphrase: &str) -> AppResult<()> {
         write_test_bundle_with_payload_size(output_path, passphrase, 64)
     }
 
     fn write_test_bundle_with_payload_size(
         output_path: &Path,
-        passphrase: Option<&str>,
+        passphrase: &str,
         payload_size: usize,
     ) -> AppResult<()> {
+        let staging = test_bundle_staging(payload_size)?;
+        staging.finish(test_export_request(output_path, passphrase))?;
+        Ok(())
+    }
+
+    fn write_legacy_plaintext_test_bundle(output_path: &Path) -> AppResult<()> {
+        let mut staging = test_bundle_staging(64)?;
+        let instance_secrets = BackupInstanceSecrets::from_export_secrets(test_export_secrets());
+        let instance_secrets_path = staging.staging.path().join(INSTANCE_SECRETS_FILENAME);
+        write_json_file(&instance_secrets_path, &instance_secrets)?;
+        staging.part_checksums.insert(
+            INSTANCE_SECRETS_FILENAME.to_string(),
+            checksum_hex(&instance_secrets_path)?,
+        );
+
+        let manifest = BackupBundleManifest {
+            format_version: BACKUP_FORMAT_VERSION.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            source_migration_key: Some("0112".to_string()),
+            source_scryer_version: "test".to_string(),
+            source_engine: "sqlite".to_string(),
+            encrypted: false,
+            row_counts: staging.row_counts,
+            part_checksums: staging.part_checksums,
+        };
+        write_json_file(&staging.staging.path().join(MANIFEST_FILENAME), &manifest)?;
+
+        let writer = write_bundle_payload(
+            staging.staging.path(),
+            AtomicOutputWriter::new(output_path)?,
+        )?;
+        writer.finish()?;
+        Ok(())
+    }
+
+    fn test_bundle_staging(payload_size: usize) -> AppResult<BackupBundleStaging> {
         let mut staging = BackupBundleStaging::new()?;
         let table_path = staging
             .tables_dir()
@@ -2019,20 +2053,28 @@ mod tests {
         write_test_payload(&table_path, payload_size)?;
         let checksum = checksum_hex(&table_path)?;
         staging.record_table_part("titles", 1, checksum)?;
-        staging.finish(BackupBundleExportRequest {
+
+        Ok(staging)
+    }
+
+    fn test_export_request(output_path: &Path, passphrase: &str) -> BackupBundleExportRequest {
+        BackupBundleExportRequest {
             output_path: output_path.to_path_buf(),
-            passphrase: passphrase.map(str::to_string),
+            passphrase: passphrase.to_string(),
             source_migration_key: Some("0112".to_string()),
             source_scryer_version: "test".to_string(),
             source_engine: "sqlite".to_string(),
-            secrets: BackupExportSecrets {
-                encryption_master_key: "master-key".to_string(),
-                jwt_signing_secret: "jwt-secret".to_string(),
-                smg_registration_secret: Some("smg-secret".to_string()),
-                smg_gateway_url: None,
-            },
-        })?;
-        Ok(())
+            secrets: test_export_secrets(),
+        }
+    }
+
+    fn test_export_secrets() -> BackupExportSecrets {
+        BackupExportSecrets {
+            encryption_master_key: "master-key".to_string(),
+            jwt_signing_secret: "jwt-secret".to_string(),
+            smg_registration_secret: Some("smg-secret".to_string()),
+            smg_gateway_url: None,
+        }
     }
 
     fn write_test_payload(path: &Path, payload_size: usize) -> AppResult<()> {

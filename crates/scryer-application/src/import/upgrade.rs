@@ -117,10 +117,12 @@ pub(crate) async fn execute_upgrade(
         audit_actor.clone(),
         title,
         existing_file,
-        &replacement.new_file_id,
-        &replacement.final_path_string,
-        old_score,
-        final_score,
+        UpgradeEventDetails {
+            new_file_id: &replacement.new_file_id,
+            dest_path_string: &replacement.final_path_string,
+            old_score,
+            final_score,
+        },
     )
     .await?;
 
@@ -721,22 +723,26 @@ async fn remove_upgrade_import_source_after_verified_commit(
         .await
 }
 
+struct UpgradeEventDetails<'a> {
+    new_file_id: &'a str,
+    dest_path_string: &'a str,
+    old_score: i32,
+    final_score: i32,
+}
+
 async fn append_upgrade_event(
     app: &AppUseCase,
     actor: DomainEventActor,
     title: &Title,
     existing_file: &TitleMediaFile,
-    new_file_id: &str,
-    dest_path_string: &str,
-    old_score: i32,
-    final_score: i32,
+    details: UpgradeEventDetails<'_>,
 ) -> AppResult<()> {
-    let media_updates = if existing_file.file_path == dest_path_string {
-        vec![modified_media_update(dest_path_string.to_string())]
+    let media_updates = if existing_file.file_path == details.dest_path_string {
+        vec![modified_media_update(details.dest_path_string.to_string())]
     } else {
         vec![
             deleted_media_update(existing_file.file_path.clone()),
-            created_media_update(dest_path_string.to_string()),
+            created_media_update(details.dest_path_string.to_string()),
         ]
     };
     app.append_domain_event(new_title_domain_event(
@@ -746,9 +752,9 @@ async fn append_upgrade_event(
             title: title_context_snapshot(title),
             media_updates,
             previous_file_id: Some(existing_file.id.clone()),
-            current_file_id: Some(new_file_id.to_string()),
-            old_score: Some(old_score),
-            new_score: Some(final_score),
+            current_file_id: Some(details.new_file_id.to_string()),
+            old_score: Some(details.old_score),
+            new_score: Some(details.final_score),
         }),
     ))
     .await

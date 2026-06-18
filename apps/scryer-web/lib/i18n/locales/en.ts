@@ -2722,6 +2722,11 @@ const en: LocaleDictionary = {
   "settings.autoBackupsTitle": "Automatic backups",
   "settings.autoBackupsDescription":
     "Opt in to one system backup per day at a server-local time. Automatic backups time out after 30 minutes, and Scryer keeps the last 5 successful automatic backups.",
+  "settings.autoBackupsDisabledMissingKeyToastTitle":
+    "Automatic backups were disabled",
+  "settings.autoBackupsDisabledMissingKeyToastDescription":
+    "Automatic backups now require a saved backup key. Open Backups to set a key and re-enable them.",
+  "settings.autoBackupsDisabledMissingKeyToastAction": "Open Backups",
   "settings.autoBackupsEnabledHelp":
     "This scheduler is system-wide and runs once per day at the saved time.",
   "settings.autoBackupsTime": "Daily backup time",
@@ -2739,13 +2744,15 @@ const en: LocaleDictionary = {
   "settings.autoBackupsKeyPresent":
     "A saved automatic backup key is currently configured.",
   "settings.autoBackupsKeyAbsent":
-    "No automatic backup key is saved. Automatic backups will be plaintext.",
+    "No automatic backup key is saved. Automatic backups require a key before they can run.",
   "settings.autoBackupsClearKey": "Clear saved automatic backup key",
   "settings.autoBackupsClearKeyHelp":
-    "Removes the stored key after you save. Future automatic backups will be plaintext unless you set a new key.",
-  "settings.autoBackupsKeySummary": "Optional automatic backup encryption",
+    "Removes the stored key after you save. Disable automatic backups before clearing the key.",
+  "settings.autoBackupsKeySummary": "Required automatic backup encryption",
   "settings.autoBackupsKeyHelp":
-    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. If no key is stored, automatic backups are created as plaintext.",
+    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. Automatic backups require a saved key.",
+  "settings.autoBackupsKeyRequired":
+    "Automatic backups require a saved backup key.",
   "settings.autoBackupsShowKey": "Show automatic backup key",
   "settings.autoBackupsHideKey": "Hide automatic backup key",
   "settings.autoBackupsSaved": "Automatic backup settings saved.",
@@ -2755,12 +2762,12 @@ const en: LocaleDictionary = {
   "settings.backupsCreate": "Create backup",
   "settings.backupsCreateTitle": "Create backup bundle",
   "settings.backupsCreateDescription":
-    "Optionally protect this backup with a password. Password-protected bundles require the same password during restore.",
-  "settings.backupsOptionalPassword": "Optional password protection",
+    "Protect this backup with a password. The same password is required during restore.",
+  "settings.backupsRequiredPassword": "Required password protection",
   "settings.backupsConfirmPassword": "Confirm password",
   "settings.backupsPasswordMismatch": "Passwords do not match",
   "settings.backupsPasswordHelp":
-    "Leave this blank to create a plaintext bundle. Automatic backups use the saved automatic backup key when one is configured.",
+    "Full backup bundles include instance secrets and must be encrypted.",
   "settings.backupsQueued": "Backup creation started in the background.",
   "settings.backupsDeleted": "Backup deleted.",
   "settings.backupsCreating": "Creating",

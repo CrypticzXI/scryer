@@ -88,6 +88,15 @@ const MATROSKA_TRACK_ENCODING_TYPE_COMPRESSION: u64 = 0;
 const MATROSKA_TRACK_ENCODING_COMP_HEADERSTRIP: u64 = 3;
 const MKV_KEEP_ELEMENT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MKV_METADATA_AGGREGATE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const MKV_DEEP_PROBE_MAX_DEPTH: usize = 10;
+
+fn next_mkv_segment_probe_depth(depth: usize) -> Option<usize> {
+    (depth < MKV_DEEP_PROBE_MAX_DEPTH).then(|| depth.saturating_add(1))
+}
+
+fn next_mkv_deep_probe_depth(depth: usize) -> Option<usize> {
+    (depth <= MKV_DEEP_PROBE_MAX_DEPTH).then(|| depth.saturating_add(1))
+}
 
 fn normalize_mkv_track_language(
     kind: TrackKind,
@@ -106,7 +115,7 @@ pub(crate) fn parse_mkv(
     profile: AnalysisProfile,
 ) -> Result<RawContainer, MediaInfoError> {
     let file = open_buffered_file(path)?;
-    let mut scanner = MkvRawScanner::new_with_file_len(file, u64::MAX)?;
+    let mut scanner = MkvRawScanner::new(file)?;
     let header = parse_mkv_header(&mut scanner)?;
     let format_name = header.format_name;
     let duration_seconds = header.duration_seconds;
@@ -1321,7 +1330,6 @@ struct MkvRawScanner<R> {
 }
 
 impl<R: Read + Seek> MkvRawScanner<R> {
-    #[cfg(test)]
     fn new(mut reader: R) -> Result<Self, MediaInfoError> {
         let file_len = reader
             .seek(SeekFrom::End(0))
@@ -1361,7 +1369,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         }
         let end = plan.max_scan_end(self.file_len);
         self.seek_to(0)?;
-        self.scan_root_for_deep_probe(end, plan)
+        self.scan_root_for_deep_probe(end, plan, 0)
     }
 
     fn scan_prefix_for_chapter_count(
@@ -1422,6 +1430,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         &mut self,
         end: u64,
         plan: &mut MkvDeepProbePlan,
+        depth: usize,
     ) -> Result<(), MediaInfoError> {
         const ROOT_IDS: &[u32] = &[EBML_ID_SEGMENT, EBML_ID_CLUSTER];
         while !plan.done() && self.position()? < end {
@@ -1430,8 +1439,16 @@ impl<R: Read + Seek> MkvRawScanner<R> {
             };
             let child_end = header.end(end, self.file_len);
             match header.id {
-                EBML_ID_SEGMENT => self.scan_root_for_deep_probe(child_end, plan)?,
-                EBML_ID_CLUSTER => self.scan_cluster_for_deep_probe(child_end, plan)?,
+                EBML_ID_SEGMENT => {
+                    if let Some(child_depth) = next_mkv_segment_probe_depth(depth) {
+                        self.scan_root_for_deep_probe(child_end, plan, child_depth)?;
+                    }
+                }
+                EBML_ID_CLUSTER => {
+                    if let Some(child_depth) = next_mkv_deep_probe_depth(depth) {
+                        self.scan_cluster_for_deep_probe(child_end, plan, child_depth)?;
+                    }
+                }
                 _ => {}
             }
             self.seek_to(child_end)?;
@@ -1443,6 +1460,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         &mut self,
         end: u64,
         plan: &mut MkvDeepProbePlan,
+        depth: usize,
     ) -> Result<(), MediaInfoError> {
         const CLUSTER_IDS: &[u32] = &[EBML_ID_TIMESTAMP, EBML_ID_SIMPLE_BLOCK, EBML_ID_BLOCK_GROUP];
         let mut cluster_timestamp = 0_u64;
@@ -1468,7 +1486,14 @@ impl<R: Read + Seek> MkvRawScanner<R> {
                     }
                 }
                 EBML_ID_BLOCK_GROUP => {
-                    self.scan_block_group_for_deep_probe(child_end, cluster_timestamp, plan)?;
+                    if let Some(child_depth) = next_mkv_deep_probe_depth(depth) {
+                        self.scan_block_group_for_deep_probe(
+                            child_end,
+                            cluster_timestamp,
+                            plan,
+                            child_depth,
+                        )?;
+                    }
                 }
                 _ => {}
             }
@@ -1482,6 +1507,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         end: u64,
         cluster_timestamp: u64,
         plan: &mut MkvDeepProbePlan,
+        depth: usize,
     ) -> Result<(), MediaInfoError> {
         const BLOCK_GROUP_IDS: &[u32] = &[EBML_ID_BLOCK, EBML_ID_BLOCK_ADDITIONS];
         let mut hdr10plus_target_block_in_group = false;
@@ -1506,10 +1532,15 @@ impl<R: Read + Seek> MkvRawScanner<R> {
                     }
                 }
                 EBML_ID_BLOCK_ADDITIONS if hdr10plus_target_block_in_group => {
-                    if let Some(target) = plan.hdr10plus.as_mut()
+                    if let Some(child_depth) = next_mkv_deep_probe_depth(depth)
+                        && let Some(target) = plan.hdr10plus.as_mut()
                         && target.state.prefer_block_additional
                     {
-                        self.scan_block_additions_for_hdr10plus(child_end, &mut target.state)?;
+                        self.scan_block_additions_for_hdr10plus(
+                            child_end,
+                            &mut target.state,
+                            child_depth,
+                        )?;
                     }
                 }
                 _ => {}
@@ -1566,6 +1597,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         &mut self,
         end: u64,
         state: &mut Hdr10PlusProbeState,
+        depth: usize,
     ) -> Result<(), MediaInfoError> {
         const BLOCK_ADDITION_IDS: &[u32] = &[EBML_ID_BLOCK_MORE];
         while !state.done() && self.position()? < end {
@@ -1574,8 +1606,10 @@ impl<R: Read + Seek> MkvRawScanner<R> {
                 break;
             };
             let child_end = header.end(end, self.file_len);
-            if header.id == EBML_ID_BLOCK_MORE {
-                self.scan_block_more_for_hdr10plus(child_end, state)?;
+            if header.id == EBML_ID_BLOCK_MORE
+                && let Some(child_depth) = next_mkv_deep_probe_depth(depth)
+            {
+                self.scan_block_more_for_hdr10plus(child_end, state, child_depth)?;
             }
             self.seek_to(child_end)?;
         }
@@ -1586,6 +1620,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         &mut self,
         end: u64,
         state: &mut Hdr10PlusProbeState,
+        _depth: usize,
     ) -> Result<(), MediaInfoError> {
         const BLOCK_MORE_IDS: &[u32] = &[EBML_ID_BLOCK_ADDITIONAL];
         while !state.done() && self.position()? < end {
@@ -2453,12 +2488,39 @@ mod tests {
     use crate::MediaInfoError;
     use std::io::Cursor;
 
+    fn make_ebml_size(size: u64) -> Vec<u8> {
+        for len in 1..=8 {
+            let value_bits = len * 7;
+            let unknown_size = 1_u64 << value_bits;
+            if size < unknown_size - 1 {
+                let mut bytes = vec![0_u8; len];
+                let mut value = size;
+                for byte in bytes.iter_mut().rev() {
+                    *byte = (value & 0xFF) as u8;
+                    value >>= 8;
+                }
+                bytes[0] |= 1 << (8 - len);
+                return bytes;
+            }
+        }
+
+        panic!("EBML test size is too large");
+    }
+
     fn make_ebml_element(id: &[u8], payload: &[u8]) -> Vec<u8> {
-        assert!(payload.len() < 0x7F);
-        let mut element = Vec::with_capacity(id.len() + 1 + payload.len());
+        make_ebml_element_with_declared_size(id, payload.len() as u64, payload)
+    }
+
+    fn make_ebml_element_with_declared_size(
+        id: &[u8],
+        declared_size: u64,
+        payload_prefix: &[u8],
+    ) -> Vec<u8> {
+        let size = make_ebml_size(declared_size);
+        let mut element = Vec::with_capacity(id.len() + size.len() + payload_prefix.len());
         element.extend_from_slice(id);
-        element.push(0x80 | payload.len() as u8);
-        element.extend_from_slice(payload);
+        element.extend_from_slice(&size);
+        element.extend_from_slice(payload_prefix);
         element
     }
 
@@ -2516,6 +2578,51 @@ mod tests {
             dovi_config: None,
             has_hdr10plus: false,
         }
+    }
+
+    fn make_frame_rate_probe_cluster() -> Vec<u8> {
+        make_ebml_element(
+            &[0x1F, 0x43, 0xB6, 0x75],
+            &[
+                make_uint_element(&[0xE7], 0),
+                make_simple_block(1, 0, 0, &[0x00]),
+                make_simple_block(1, 40, 0, &[0x01]),
+                make_simple_block(1, 80, 0, &[0x02]),
+                make_simple_block(1, 120, 0, &[0x03]),
+                make_simple_block(1, 160, 0, &[0x04]),
+            ]
+            .concat(),
+        )
+    }
+
+    fn wrap_in_segments(mut payload: Vec<u8>, count: usize) -> Vec<u8> {
+        for _ in 0..count {
+            payload = make_ebml_element(&[0x18, 0x53, 0x80, 0x67], &payload);
+        }
+        payload
+    }
+
+    fn make_mkv_with_declared_info_size(declared_size: u64) -> Vec<u8> {
+        let info =
+            make_ebml_element_with_declared_size(&[0x15, 0x49, 0xA9, 0x66], declared_size, &[]);
+        let segment_declared_size = declared_size + info.len() as u64;
+        [
+            make_ebml_element(&[0x1A, 0x45, 0xDF, 0xA3], &[]),
+            make_ebml_element_with_declared_size(
+                &[0x18, 0x53, 0x80, 0x67],
+                segment_declared_size,
+                &info,
+            ),
+        ]
+        .concat()
+    }
+
+    fn unique_temp_mkv_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("scryer-{name}-{}-{nanos}.mkv", std::process::id()))
     }
 
     #[test]
@@ -2886,18 +2993,7 @@ mod tests {
 
     #[test]
     fn raw_block_timestamp_probe_derives_frame_rate_without_payload_scan() {
-        let cluster = make_ebml_element(
-            &[0x1F, 0x43, 0xB6, 0x75],
-            &[
-                make_uint_element(&[0xE7], 0),
-                make_simple_block(1, 0, 0, &[0x00]),
-                make_simple_block(1, 40, 0, &[0x01]),
-                make_simple_block(1, 80, 0, &[0x02]),
-                make_simple_block(1, 120, 0, &[0x03]),
-                make_simple_block(1, 160, 0, &[0x04]),
-            ]
-            .concat(),
-        );
+        let cluster = make_frame_rate_probe_cluster();
         let segment = make_ebml_element(&[0x18, 0x53, 0x80, 0x67], &cluster);
         let mut scanner = MkvRawScanner::new(Cursor::new(segment)).expect("scanner");
 
@@ -2905,6 +3001,62 @@ mod tests {
             .probe_frame_rate(1, 1_000_000.0)
             .expect("probe should succeed");
         assert_eq!(fps, Some(25.0));
+    }
+
+    #[test]
+    fn raw_block_timestamp_probe_respects_deep_probe_depth_cap() {
+        let within_cap =
+            wrap_in_segments(make_frame_rate_probe_cluster(), MKV_DEEP_PROBE_MAX_DEPTH);
+        let mut scanner = MkvRawScanner::new(Cursor::new(within_cap)).expect("scanner");
+        let fps = scanner
+            .probe_frame_rate(1, 1_000_000.0)
+            .expect("probe should complete within depth cap");
+        assert_eq!(fps, Some(25.0));
+
+        let beyond_cap = wrap_in_segments(
+            make_frame_rate_probe_cluster(),
+            MKV_DEEP_PROBE_MAX_DEPTH + 1,
+        );
+        let mut scanner = MkvRawScanner::new(Cursor::new(beyond_cap)).expect("scanner");
+        let fps = scanner
+            .probe_frame_rate(1, 1_000_000.0)
+            .expect("probe should complete beyond depth cap");
+        assert_eq!(fps, None);
+    }
+
+    #[test]
+    fn sized_payload_rejects_declared_end_beyond_file_len_before_read() {
+        let mut scanner =
+            MkvRawScanner::new_with_file_len(Cursor::new(Vec::<u8>::new()), 16).expect("scanner");
+        let header = EbmlElementHeader {
+            id: EBML_ID_INFO,
+            data_offset: 8,
+            size: Some(MKV_KEEP_ELEMENT_MAX_BYTES),
+        };
+
+        let error = scanner
+            .read_sized_payload(header, u64::MAX)
+            .expect_err("oversized declared payload should fail before read");
+        assert!(matches!(
+            error,
+            MediaInfoError::Parse(message) if message.contains("beyond remaining input")
+        ));
+    }
+
+    #[test]
+    fn parse_mkv_uses_real_file_length_for_declared_payload_limit() {
+        let path = unique_temp_mkv_path("declared-payload");
+        let data = make_mkv_with_declared_info_size(MKV_KEEP_ELEMENT_MAX_BYTES);
+        assert!(data.len() < 1024, "test file should stay tiny");
+        std::fs::write(&path, data).expect("write tiny mkv");
+
+        let error = parse_mkv(&path, AnalysisProfile::DefaultRich)
+            .expect_err("declared payload beyond file length should fail");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            error,
+            MediaInfoError::Parse(message) if message.contains("beyond remaining input")
+        ));
     }
 
     #[test]

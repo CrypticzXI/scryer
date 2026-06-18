@@ -789,13 +789,8 @@ impl AppUseCase {
             JobKey::AutoBackup => match self.run_auto_backup_job().await? {
                 crate::security::backup::AutoBackupRunOutcome::Created { info, pruned_count } => {
                     let summary_text = Some(format!(
-                        "Created {} ({}) and pruned {} older automatic backup{}",
+                        "Created {} (encrypted) and pruned {} older automatic backup{}",
                         info.filename,
-                        if info.encrypted {
-                            "encrypted"
-                        } else {
-                            "plaintext"
-                        },
                         pruned_count,
                         if pruned_count == 1 { "" } else { "s" },
                     ));

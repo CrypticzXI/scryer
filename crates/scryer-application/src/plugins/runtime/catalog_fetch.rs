@@ -461,9 +461,56 @@ async fn fetch_plugin_bytes_from_locations_with_redirect_policy(
 
 async fn decode_signature_bundle(bundle: Vec<u8>, actual_url: &str) -> AppResult<Vec<u8>> {
     match artifact_encoding_from_url(actual_url) {
-        Some("zst") => decompress_zstd(bundle).await,
-        Some("br") => decompress_brotli(bundle).await,
-        _ => Ok(bundle),
+        Some("zst") => {
+            decompress_zstd(
+                bundle,
+                PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+                "plugin signature bundle",
+            )
+            .await
+        }
+        Some("br") => {
+            decompress_brotli(
+                bundle,
+                PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+                "plugin signature bundle",
+            )
+            .await
+        }
+        _ => bound_uncompressed_bytes(
+            bundle,
+            PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+            "plugin signature bundle",
+        ),
+    }
+}
+async fn decode_catalog_json(raw: Vec<u8>, actual_url: &str, label: &str) -> AppResult<Vec<u8>> {
+    match artifact_encoding_from_url(actual_url) {
+        Some("zst") => decompress_zstd(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label).await,
+        Some("br") => decompress_brotli(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label).await,
+        _ => bound_uncompressed_bytes(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label),
+    }
+}
+async fn decode_rule_pack_manifest_bytes(
+    compressed_manifest: Vec<u8>,
+    actual_url: &str,
+    pack_id: &str,
+    release: &CatalogV3RulePackRelease,
+) -> AppResult<Vec<u8>> {
+    let rule_pack_manifest_limit = release
+        .rule_pack_bytes
+        .unwrap_or(RULE_PACK_MANIFEST_FALLBACK_OUTPUT_LIMIT);
+    let manifest_label = format!("rule pack '{pack_id}' manifest");
+    match artifact_encoding_from_url(actual_url) {
+        Some("br") => {
+            decompress_brotli(compressed_manifest, rule_pack_manifest_limit, manifest_label).await
+        }
+        Some("zst") => {
+            decompress_zstd(compressed_manifest, rule_pack_manifest_limit, manifest_label).await
+        }
+        _ => Err(AppError::Validation(format!(
+            "rule pack '{pack_id}' selected artifact '{actual_url}' has unsupported encoding"
+        ))),
     }
 }
 async fn fetch_signed_blob_from_locations(
@@ -535,7 +582,12 @@ async fn fetch_verified_catalog_redirect_candidate(
         central_catalog_required_signer(),
     )
     .await?;
-    let redirect = parse_and_validate_catalog_v3_redirect(&fetched.raw)?;
+    let redirect_raw = bound_uncompressed_bytes(
+        fetched.raw,
+        PLUGIN_CATALOG_REDIRECT_OUTPUT_LIMIT,
+        "plugin catalog redirect",
+    )?;
+    let redirect = parse_and_validate_catalog_v3_redirect(&redirect_raw)?;
     Ok((redirect, fetched.actual_url))
 }
 fn validate_community_catalog_v3_delegate(
@@ -945,11 +997,7 @@ impl AppUseCase {
                 "plugin catalog",
             )
             .await?;
-        let decoded = match artifact_encoding_from_url(&actual_url) {
-            Some("zst") => decompress_zstd(raw).await?,
-            Some("br") => decompress_brotli(raw).await?,
-            _ => raw,
-        };
+        let decoded = decode_catalog_json(raw, &actual_url, "plugin catalog").await?;
         let catalog = parse_and_validate_catalog_v3(&decoded)?;
         Ok((catalog, redirect_url, redirect.catalog_version))
     }
@@ -974,11 +1022,7 @@ impl AppUseCase {
                 "community plugin catalog",
             )
             .await?;
-        let decoded = match artifact_encoding_from_url(&actual_url) {
-            Some("zst") => decompress_zstd(raw).await?,
-            Some("br") => decompress_brotli(raw).await?,
-            _ => raw,
-        };
+        let decoded = decode_catalog_json(raw, &actual_url, "community plugin catalog").await?;
         let catalog = parse_and_validate_catalog_v3(&decoded)?;
         validate_community_catalog_v3_delegate(source, &repo, &catalog)?;
         Ok((catalog, actual_url))
@@ -1246,16 +1290,9 @@ impl AppUseCase {
             &artifact.digests,
             &compressed_manifest,
         )?;
-        let manifest_bytes = match artifact_encoding_from_url(&actual_url) {
-            Some("br") => decompress_brotli(compressed_manifest).await?,
-            Some("zst") => decompress_zstd(compressed_manifest).await?,
-            _ => {
-                return Err(AppError::Validation(format!(
-                    "rule pack '{}' selected artifact '{}' has unsupported encoding",
-                    pack_id, actual_url
-                )));
-            }
-        };
+        let manifest_bytes =
+            decode_rule_pack_manifest_bytes(compressed_manifest, &actual_url, pack_id, &release)
+                .await?;
         verify_digest_set(
             "rule pack manifest",
             &release.rule_pack_digests,

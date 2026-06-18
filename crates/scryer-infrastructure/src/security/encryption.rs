@@ -119,6 +119,7 @@ use std::path::PathBuf;
 
 const ENCRYPTION_KEY_SETTING: &str = "encryption.master_key";
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
+const ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV: &str = "SCRYER_ALLOW_EPHEMERAL_ENCRYPTION_KEY";
 
 /// Ensure an encryption master key is available.
 ///
@@ -169,23 +170,7 @@ pub async fn ensure_encryption_key(
     // 4. Auto-generate, store in best available keystore, warn user
     let key = EncryptionKey::generate();
     let stored_in = try_store_new_key(&stores, &key);
-    match stored_in {
-        Some(name) => {
-            tracing::warn!(
-                "generated new encryption master key and stored in {name} — \
-                 all sensitive settings (passwords, API keys) are encrypted with this key"
-            );
-        }
-        None => {
-            tracing::warn!(
-                "generated new encryption master key (in memory only) — \
-                 set SCRYER_ENCRYPTION_KEY to persist it across restarts\n\n  \
-                 SCRYER_ENCRYPTION_KEY={}\n",
-                key.to_base64()
-            );
-        }
-    }
-    Ok(key)
+    finish_generated_key_bootstrap(key, stored_in)
 }
 
 /// Ensure an encryption key for engines that do not support the legacy
@@ -219,23 +204,7 @@ pub async fn ensure_encryption_key_without_legacy(
 
     let key = EncryptionKey::generate();
     let stored_in = try_store_new_key(&stores, &key);
-    match stored_in {
-        Some(name) => {
-            tracing::warn!(
-                "generated new encryption master key and stored in {name} — \
-                 all sensitive settings (passwords, API keys) are encrypted with this key"
-            );
-        }
-        None => {
-            tracing::warn!(
-                "generated new encryption master key (in memory only) — \
-                 set SCRYER_ENCRYPTION_KEY to persist it across restarts\n\n  \
-                 SCRYER_ENCRYPTION_KEY={}\n",
-                key.to_base64()
-            );
-        }
-    }
-    Ok(key)
+    finish_generated_key_bootstrap(key, stored_in)
 }
 
 /// Load an already configured encryption key without generating or storing one.
@@ -303,6 +272,42 @@ fn from_env_var() -> Result<Option<EncryptionKey>, String> {
     let key = EncryptionKey::from_base64(&trimmed)
         .map_err(|e| format!("invalid SCRYER_ENCRYPTION_KEY: {e}"))?;
     Ok(Some(key))
+}
+
+fn ephemeral_encryption_key_allowed() -> bool {
+    std::env::var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV)
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+fn finish_generated_key_bootstrap(
+    key: EncryptionKey,
+    stored_in: Option<&'static str>,
+) -> Result<EncryptionKey, String> {
+    match stored_in {
+        Some(name) => {
+            tracing::warn!(
+                "generated new encryption master key and stored in {name} — \
+                 all sensitive settings (passwords, API keys) are encrypted with this key"
+            );
+            Ok(key)
+        }
+        None if ephemeral_encryption_key_allowed() => {
+            tracing::warn!(
+                "generated new ephemeral encryption master key in memory because no persistent \
+                 keystore accepted it; encrypted settings may be unrecoverable after restart. \
+                 This should only be used for throwaway or development instances"
+            );
+            Ok(key)
+        }
+        None => Err(format!(
+            "generated a new encryption master key but no persistent keystore accepted it. \
+             Startup is stopping before using an unpersisted key. Run `scryer init`, mount a \
+             Docker secret, set SCRYER_ENCRYPTION_KEY, or make the Scryer data directory \
+             writable. For throwaway or development instances only, set \
+             {ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV}=true to use an in-memory key for this process."
+        )),
+    }
 }
 
 /// Try to store the key in the first writable keystore. Returns the store name on success.
@@ -380,17 +385,19 @@ async fn try_migrate_from_db(
         );
     } else {
         // No writable keystore — keep the key in the DB rather than risk losing it.
-        // Log the key so the user can capture it, but do NOT clear the DB entry.
-        tracing::warn!(
-            "encryption key is in the database (legacy storage) — \
-             no secure keystore available to migrate it to. Set \
-             SCRYER_ENCRYPTION_KEY as an environment variable or Docker \
-             secret to complete the migration:\n\n  \
-             SCRYER_ENCRYPTION_KEY={}\n",
-            key.to_base64()
-        );
+        // Warn with setup guidance, but do NOT clear the DB entry or print the key.
+        warn_legacy_db_key_kept_without_store(&key);
     }
     Ok(Some(key))
+}
+
+fn warn_legacy_db_key_kept_without_store(_key: &EncryptionKey) {
+    tracing::warn!(
+        "encryption key is still stored in the database (legacy storage) — \
+         no secure keystore is writable, so the database key was left in place. Run `scryer init`, \
+         provide a Docker secret, set SCRYER_ENCRYPTION_KEY, or make the Scryer data directory \
+         writable to complete the migration"
+    );
 }
 
 #[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
@@ -493,6 +500,262 @@ fn parse_string_json(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SettingDefinitionSeed, SettingsStore, SqliteServices};
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct SharedLogWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    struct SharedLogGuard {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for SharedLogWriter {
+        type Writer = SharedLogGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogGuard {
+                buffer: self.buffer.clone(),
+            }
+        }
+    }
+
+    impl Write for SharedLogGuard {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer
+                .lock()
+                .expect("lock log buffer")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedLogWriter {
+                buffer: buffer.clone(),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let logs = String::from_utf8(buffer.lock().expect("lock log buffer").clone())
+            .expect("logs should be UTF-8");
+        (result, logs)
+    }
+
+    fn restore_ephemeral_env(original: Option<String>) {
+        match original {
+            Some(value) => unsafe { std::env::set_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV, value) },
+            None => unsafe { std::env::remove_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV) },
+        }
+    }
+
+    fn known_test_key() -> EncryptionKey {
+        EncryptionKey::from_bytes([7u8; 32])
+    }
+
+    fn assert_logs_do_not_contain_key_material(logs: &str, key: &EncryptionKey) {
+        assert!(!logs.contains(&key.to_base64()));
+        assert!(!logs.contains("SCRYER_ENCRYPTION_KEY="));
+    }
+
+    fn encryption_key_setting_definition() -> SettingDefinitionSeed {
+        SettingDefinitionSeed {
+            category: "service".into(),
+            scope: SETTINGS_SCOPE_SYSTEM.into(),
+            key_name: ENCRYPTION_KEY_SETTING.into(),
+            data_type: "string".into(),
+            default_value_json: "null".into(),
+            is_sensitive: true,
+            validation_json: None,
+        }
+    }
+
+    struct FailingTestKeystore {
+        error: &'static str,
+    }
+
+    impl KeyStore for FailingTestKeystore {
+        fn get_key(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn set_key(&self, _key_base64: &str) -> Result<(), String> {
+            Err(self.error.to_string())
+        }
+
+        fn delete_key(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn name(&self) -> &'static str {
+            "failing test keystore"
+        }
+    }
+
+    #[test]
+    fn generated_key_without_writable_store_fails_closed_without_logging_key_material() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV).ok();
+        unsafe { std::env::remove_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV) };
+
+        let key = known_test_key();
+        let key_b64 = key.to_base64();
+        let (result, logs) = capture_logs(|| finish_generated_key_bootstrap(key.clone(), None));
+        restore_ephemeral_env(original);
+
+        let error = result.expect_err("startup should fail without persistent key storage");
+        assert!(error.contains("scryer init"));
+        assert!(error.contains(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV));
+        assert!(!error.contains(&key_b64));
+        assert_logs_do_not_contain_key_material(&logs, &key);
+    }
+
+    #[test]
+    fn generated_key_store_failure_warning_does_not_log_key_material() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV).ok();
+        unsafe { std::env::remove_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV) };
+
+        let key = known_test_key();
+        let key_b64 = key.to_base64();
+        let stores: Vec<Box<dyn KeyStore>> = vec![Box::new(FailingTestKeystore {
+            error: "permission denied",
+        })];
+        let ((stored_in, result), logs) = capture_logs(|| {
+            let stored_in = try_store_new_key(&stores, &key);
+            let result = finish_generated_key_bootstrap(key.clone(), stored_in);
+            (stored_in, result)
+        });
+        restore_ephemeral_env(original);
+
+        assert!(stored_in.is_none());
+        let error = result.expect_err("startup should fail without persistent key storage");
+        assert!(logs.contains("could not store encryption key in failing test keystore"));
+        assert!(logs.contains("permission denied"));
+        assert!(!error.contains(&key_b64));
+        assert_logs_do_not_contain_key_material(&logs, &key);
+    }
+
+    #[test]
+    fn generated_key_with_ephemeral_opt_in_warns_without_logging_key_material() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV).ok();
+        unsafe { std::env::set_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV, " TrUe ") };
+
+        let key = known_test_key();
+        let (result, logs) = capture_logs(|| finish_generated_key_bootstrap(key.clone(), None));
+        restore_ephemeral_env(original);
+
+        let loaded = result.expect("ephemeral opt-in should allow startup");
+        assert_eq!(loaded.key_bytes, key.key_bytes);
+        assert!(logs.contains("ephemeral encryption master key"));
+        assert_logs_do_not_contain_key_material(&logs, &key);
+    }
+
+    #[test]
+    fn ephemeral_opt_in_requires_true_token() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original = std::env::var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV).ok();
+
+        unsafe { std::env::set_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV, "1") };
+        assert!(!ephemeral_encryption_key_allowed());
+
+        unsafe { std::env::set_var(ALLOW_EPHEMERAL_ENCRYPTION_KEY_ENV, "true") };
+        assert!(ephemeral_encryption_key_allowed());
+
+        restore_ephemeral_env(original);
+    }
+
+    #[test]
+    fn legacy_db_key_warning_does_not_log_key_material() {
+        let key = known_test_key();
+        let (_, logs) = capture_logs(|| warn_legacy_db_key_kept_without_store(&key));
+
+        assert!(logs.contains("legacy storage"));
+        assert_logs_do_not_contain_key_material(&logs, &key);
+    }
+
+    #[test]
+    fn legacy_db_key_without_writable_store_stays_in_db_and_logs_no_material() {
+        let _guard = env_lock().lock().expect("lock env guard");
+        let original_key = std::env::var("SCRYER_ENCRYPTION_KEY").ok();
+        unsafe { std::env::remove_var("SCRYER_ENCRYPTION_KEY") };
+
+        let key = known_test_key();
+        let key_b64 = key.to_base64();
+        let legacy_value_json = serde_json::to_string(&key_b64).expect("serialize legacy key");
+
+        let ((loaded, stored_value_json), logs) = capture_logs(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime");
+            runtime.block_on(async {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let db_path = temp.path().join("scryer.db");
+                let db_url = format!("sqlite://{}", db_path.display());
+                let services = SqliteServices::new(db_url).await.expect("sqlite services");
+                let settings =
+                    SettingsStore::new(services.datastore(), services.encryption_key_state());
+
+                settings
+                    .batch_ensure_setting_definitions(vec![encryption_key_setting_definition()])
+                    .await
+                    .expect("seed encryption key definition");
+                settings
+                    .upsert_setting_value(
+                        SETTINGS_SCOPE_SYSTEM,
+                        ENCRYPTION_KEY_SETTING,
+                        None,
+                        legacy_value_json.clone(),
+                        "test",
+                        None,
+                    )
+                    .await
+                    .expect("seed legacy encryption key");
+
+                let loaded = ensure_encryption_key(&services, None)
+                    .await
+                    .expect("legacy key should be retained");
+                let stored_value_json = settings
+                    .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, ENCRYPTION_KEY_SETTING, None)
+                    .await
+                    .expect("read legacy setting")
+                    .expect("legacy setting should exist")
+                    .value_json
+                    .expect("legacy value should be stored");
+
+                (loaded, stored_value_json)
+            })
+        });
+
+        match original_key {
+            Some(value) => unsafe { std::env::set_var("SCRYER_ENCRYPTION_KEY", value) },
+            None => unsafe { std::env::remove_var("SCRYER_ENCRYPTION_KEY") },
+        }
+
+        assert_eq!(loaded.key_bytes, key.key_bytes);
+        assert_eq!(stored_value_json, legacy_value_json);
+        assert!(logs.contains("legacy storage"));
+        assert_logs_do_not_contain_key_material(&logs, &key);
+    }
 
     #[test]
     fn encrypt_decrypt_round_trip() {

@@ -107,6 +107,23 @@ pub(crate) async fn check_with_lookup(
 
     let Some(completed) = find_completed_download(app, td, completed_lookup).await else {
         if !crate::download_submission_identity_is_empty(&queue_identity) {
+            if missing_completed_history_is_retryable(td, &queue_identity) {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    download_id = ?queue_identity.download_id,
+                    match_type = ?td.match_type,
+                    is_scryer_origin = td.client_item.is_scryer_origin,
+                    "check: completed download not found in client history, will retry"
+                );
+                td.state = TrackedDownloadState::ImportPending;
+                td.status = TrackedDownloadStatus::Warning;
+                td.status_messages = vec![
+                    "Completed download is waiting for client history to expose a matching DownloadId; retrying."
+                        .to_string(),
+                ];
+                return;
+            }
             block_tracked_download_identity_for_manual_review(
                 app,
                 td,
@@ -215,6 +232,33 @@ pub(crate) async fn check_with_lookup(
     td.state = TrackedDownloadState::ImportPending;
     td.status = TrackedDownloadStatus::Ok;
     td.status_messages.clear();
+}
+
+fn missing_completed_history_is_retryable(
+    td: &TrackedDownload,
+    identity: &crate::DownloadSubmissionIdentity,
+) -> bool {
+    durable_global_download_id(identity)
+        && (td.client_item.is_scryer_origin
+            || matches!(
+                td.match_type,
+                TitleMatchType::Submission | TitleMatchType::ClientParameter
+            ))
+}
+
+fn durable_global_download_id(identity: &crate::DownloadSubmissionIdentity) -> bool {
+    let Some(download_id) = identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    download_id.starts_with("scryer-download:")
+        || (matches!(download_id.len(), 40 | 64)
+            && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 async fn completed_download_allows_automatic_import(
@@ -3532,6 +3576,49 @@ mod tests {
         assert!(td.status_messages.is_empty());
 
         std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_retries_scryer_origin_when_completed_history_is_missing() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo.clone(),
+        );
+        let lookup = index_completed_downloads(vec![]);
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:client-1:qbittorrent:{download_id}");
+        td.client_type = "qbittorrent".to_string();
+        td.client_item.client_type = "qbittorrent".to_string();
+        td.client_item.client_name = "qBittorrent".to_string();
+        td.client_item.download_client_item_id = "2".to_string();
+        td.client_item.download_id = Some(download_id.to_string());
+        td.client_item.is_scryer_origin = true;
+        td.match_type = TitleMatchType::Submission;
+
+        check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(
+            td.status_messages
+                .iter()
+                .any(|message| message.contains("waiting for client history"))
+        );
+        assert!(
+            submission_repo
+                .identity_tracked_states
+                .lock()
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]

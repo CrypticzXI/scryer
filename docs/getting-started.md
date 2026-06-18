@@ -207,6 +207,10 @@ The encryption key protects passwords and API keys at rest in the database.
 
 **Linux (bare metal):** The key is stored at `<data_dir>/encryption.key` on first startup.
 
+If scryer cannot write to a persistent keystore or key file on first startup, startup stops with setup guidance instead of using an unpersisted key. Run `scryer init`, mount the Docker secret, make the data directory writable, or set `SCRYER_ENCRYPTION_KEY` explicitly.
+
+`SCRYER_ALLOW_EPHEMERAL_ENCRYPTION_KEY=true` allows a temporary in-memory key for throwaway development instances only. Do not use it for deployments you expect to keep, because encrypted settings may be unrecoverable after restart.
+
 The `SCRYER_ENCRYPTION_KEY` environment variable is supported as an explicit override on any platform.
 
 ## Resource Requirements

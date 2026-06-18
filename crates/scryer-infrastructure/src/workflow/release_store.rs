@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
@@ -6,6 +8,8 @@ use scryer_application::{
 };
 use scryer_domain::Id;
 
+use crate::config_store::{current_encryption_key, decrypt_optional_value, encrypt_optional_value};
+use crate::encryption::{EncryptionKey, is_encrypted};
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
 const FAILED_SIGNATURE_LIMIT_MAX: i64 = 20_000;
@@ -64,14 +68,79 @@ const GET_LATEST_SOURCE_PASSWORD_SQL: &str = "SELECT source_password
     ORDER BY attempted_at DESC
     LIMIT 1";
 
+const LIST_STORED_SOURCE_PASSWORDS_SQL: &str = "SELECT id, source_password
+    FROM release_download_attempts
+    WHERE source_password IS NOT NULL";
+
 #[derive(Clone)]
 pub struct ReleaseStore {
     datastore: StoreDatastore,
+    encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
 
 impl ReleaseStore {
-    pub fn new(datastore: StoreDatastore) -> Self {
-        Self { datastore }
+    pub fn new(
+        datastore: StoreDatastore,
+        encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
+    ) -> Self {
+        Self {
+            datastore,
+            encryption_key,
+        }
+    }
+
+    pub async fn backfill_source_passwords(&self) -> AppResult<u64> {
+        let encryption_key = self.encryption_key()?;
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            LIST_STORED_SOURCE_PASSWORDS_SQL,
+            &[],
+        )
+        .await?;
+
+        let mut updates = Vec::new();
+        for row in rows {
+            let stored = row.text("source_password")?;
+            if is_encrypted(&stored) {
+                continue;
+            }
+
+            let encrypted =
+                encrypt_release_source_password(encryption_key.as_ref(), Some(&stored))?
+                    .expect("non-null source_password should encrypt to non-null value");
+            updates.push((row.text("id")?, encrypted));
+        }
+
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let update_count = updates.len() as u64;
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "backfill_release_attempt_source_passwords",
+            move |tx| {
+                let updates = updates.clone();
+                Box::pin(async move {
+                    for (id, encrypted) in updates {
+                        SqlRuntime::execute(
+                            SqlExec::Tx(tx),
+                            "UPDATE release_download_attempts
+                             SET source_password = {}
+                             WHERE id = {}",
+                            &[SqlArg::Text(encrypted), SqlArg::Text(id)],
+                        )
+                        .await?;
+                    }
+                    Ok(update_count)
+                })
+            },
+        )
+        .await
+    }
+
+    fn encryption_key(&self) -> AppResult<Option<EncryptionKey>> {
+        current_encryption_key(&self.encryption_key)
     }
 }
 
@@ -86,6 +155,9 @@ impl ReleaseAttemptRepository for ReleaseStore {
         error_message: Option<String>,
         source_password: Option<String>,
     ) -> AppResult<()> {
+        let encryption_key = self.encryption_key()?;
+        let stored_source_password =
+            encrypt_release_source_password(encryption_key.as_ref(), source_password.as_ref())?;
         let now = Utc::now();
         let args = vec![
             SqlArg::Text(Id::new().0),
@@ -94,7 +166,7 @@ impl ReleaseAttemptRepository for ReleaseStore {
             SqlArg::OptText(source_title),
             SqlArg::Text(outcome.as_str().to_string()),
             SqlArg::OptText(error_message),
-            SqlArg::OptText(source_password),
+            SqlArg::OptText(stored_source_password),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
@@ -153,6 +225,7 @@ impl ReleaseAttemptRepository for ReleaseStore {
         let title_id = title_id.map(str::to_string);
         let source_hint = source_hint.map(str::to_string);
         let source_title = source_title.map(str::to_string);
+        let encryption_key = self.encryption_key()?;
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             GET_LATEST_SOURCE_PASSWORD_SQL,
@@ -168,10 +241,27 @@ impl ReleaseAttemptRepository for ReleaseStore {
         .await?;
 
         match row {
-            Some(row) => row.opt_text("source_password"),
+            Some(row) => decrypt_release_source_password(
+                encryption_key.as_ref(),
+                row.opt_text("source_password")?,
+            ),
             None => Ok(None),
         }
     }
+}
+
+fn encrypt_release_source_password(
+    key: Option<&EncryptionKey>,
+    value: Option<&String>,
+) -> AppResult<Option<String>> {
+    encrypt_optional_value(key, value, "release source_password", true)
+}
+
+fn decrypt_release_source_password(
+    key: Option<&EncryptionKey>,
+    value: Option<String>,
+) -> AppResult<Option<String>> {
+    decrypt_optional_value(key, value, "release source_password", true)
 }
 
 fn clamp_limit(limit: usize, max: i64) -> i64 {

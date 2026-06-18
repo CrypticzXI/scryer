@@ -26521,6 +26521,110 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
 }
 
 #[tokio::test]
+async fn external_import_monitor_snapshot_applies_series_child_monitoring() {
+    let (app, user) = bootstrap();
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Child Monitor Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "5252".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    app.create_episode(
+        &user,
+        title.id.clone(),
+        Some(collection.id),
+        "standard".into(),
+        Some("1".into()),
+        Some("1".into()),
+        Some("Pilot".into()),
+        Some("Pilot".into()),
+        None,
+        Some(1_200),
+        false,
+        false,
+    )
+    .await
+    .expect("create episode");
+
+    append_series_monitor_snapshot_chunk(
+        &app,
+        &user,
+        MediaFacet::Series,
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("5252".to_string()),
+            path: None,
+            monitored: true,
+            seasons: vec![],
+            episodes: vec![],
+        }],
+    )
+    .await;
+
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let stored_title = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load title")
+        .expect("title exists");
+    let collections = app
+        .services
+        .catalog
+        .shows
+        .list_collections_for_title(&title.id)
+        .await
+        .expect("list collections");
+    let episodes = app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await
+        .expect("list episodes");
+
+    assert!(stored_title.monitored);
+    assert!(collections.iter().any(|collection| collection.monitored));
+    assert!(episodes.iter().any(|episode| episode.monitored));
+}
+
+#[tokio::test]
 async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
