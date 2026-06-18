@@ -1677,6 +1677,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
+                        recent_completed_strategy = recent_completed_strategy_label(&config.client_type),
                         count = items.len(),
                         "recent completed downloads from client"
                     );
@@ -1800,6 +1801,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             apply_remote_path_mappings_to_status(&mut status, mappings);
         }
         Ok(status)
+    }
+}
+
+fn recent_completed_strategy_label(client_type: &str) -> &'static str {
+    match client_type {
+        "sabnzbd" | "weaver" => "bounded",
+        _ => "full_fallback_or_client_default",
     }
 }
 

@@ -5,6 +5,8 @@ mod contracts;
 mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
+
+pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
 pub use download_identity::{
     AcceptedDownloadIdentityInput, DOWNLOAD_ID_PARAMETER, ObservedDownloadIdentityInput,
     accepted_download_submission_identity, download_id_from_info_hash,
@@ -212,7 +214,7 @@ pub use import_workflow::{
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
     execute_queued_manual_import, import_completed_download, preview_manual_import,
     preview_manual_import_path, retry_failed_import, start_background_manual_import_poller,
-    try_import_completed_downloads,
+    try_import_completed_downloads, try_import_recent_completed_downloads,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub(crate) use integration::integration::ManualImportSourceResolution;

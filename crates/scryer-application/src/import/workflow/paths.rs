@@ -500,6 +500,12 @@ async fn block_download_queue_item_identity_for_manual_review(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CompletedDownloadFetchPolicy {
+    Full,
+    Recent { limit: usize },
+}
+
 /// Attempts to import completed items from the current queue/history snapshot.
 /// Returns the set of `download_client_item_id`s that were conclusively processed
 /// (imported, failed permanently, or intentionally ignored). Temporary defer
@@ -509,6 +515,32 @@ pub async fn try_import_completed_downloads(
     app: &AppUseCase,
     actor: &User,
     items: &[DownloadQueueItem],
+) -> HashSet<String> {
+    try_import_completed_downloads_with_policy(app, actor, items, CompletedDownloadFetchPolicy::Full)
+        .await
+}
+
+pub async fn try_import_recent_completed_downloads(
+    app: &AppUseCase,
+    actor: &User,
+    items: &[DownloadQueueItem],
+) -> HashSet<String> {
+    try_import_completed_downloads_with_policy(
+        app,
+        actor,
+        items,
+        CompletedDownloadFetchPolicy::Recent {
+            limit: crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+        },
+    )
+    .await
+}
+
+async fn try_import_completed_downloads_with_policy(
+    app: &AppUseCase,
+    actor: &User,
+    items: &[DownloadQueueItem],
+    fetch_policy: CompletedDownloadFetchPolicy,
 ) -> HashSet<String> {
     // TODO: increase to 600 (10 minutes) for production — large NAS copies can take a while
     match app
@@ -552,17 +584,12 @@ pub async fn try_import_completed_downloads(
         "import: found completed items to evaluate"
     );
 
-    let completed_downloads = match app
-        .services
-        .integrations
-        .download_client
-        .list_completed_downloads()
-        .await
-    {
+    let completed_downloads = match completed_downloads_for_import(app, fetch_policy).await {
         Ok(downloads) => {
             tracing::debug!(
                 count = downloads.len(),
                 ids = %downloads.iter().map(|d| d.download_client_item_id.as_str()).collect::<Vec<_>>().join(", "),
+                fetch_policy = ?fetch_policy,
                 "import: fetched completed downloads from client"
             );
             downloads
@@ -583,11 +610,14 @@ pub async fn try_import_completed_downloads(
                 tracing::debug!(
                     source_ref = %source_ref,
                     title = %item.title_name,
-                    "import: no matching CompletedDownload from client history (item may still be processing or status != Completed)"
+                    fetch_policy = ?fetch_policy,
+                    "import: no matching CompletedDownload from client history (item may still be processing, outside recent window, or status != Completed)"
                 );
-                if !download_submission_identity_is_empty(&download_queue_item_observed_identity(
-                    item,
-                )) {
+                if matches!(fetch_policy, CompletedDownloadFetchPolicy::Full)
+                    && !download_submission_identity_is_empty(&download_queue_item_observed_identity(
+                        item,
+                    ))
+                {
                     block_download_queue_item_identity_for_manual_review(
                         app,
                         item,
@@ -869,6 +899,28 @@ pub async fn try_import_completed_downloads(
     }
 
     processed_ids
+}
+
+async fn completed_downloads_for_import(
+    app: &AppUseCase,
+    fetch_policy: CompletedDownloadFetchPolicy,
+) -> AppResult<Vec<CompletedDownload>> {
+    match fetch_policy {
+        CompletedDownloadFetchPolicy::Full => {
+            app.services
+                .integrations
+                .download_client
+                .list_completed_downloads()
+                .await
+        }
+        CompletedDownloadFetchPolicy::Recent { limit } => {
+            app.services
+                .integrations
+                .download_client
+                .list_recent_completed_downloads(limit)
+                .await
+        }
+    }
 }
 // ---------------------------------------------------------------------------
 // Shared helpers

@@ -40,7 +40,7 @@ const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct CompletedDownloadLookup {
     by_source: HashMap<(String, String, String), CompletedDownload>,
     by_download_id: HashMap<(String, String, String), Vec<CompletedDownload>>,
@@ -341,58 +341,38 @@ pub(crate) fn mark_importing(td: &mut TrackedDownload) {
 }
 
 pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) -> bool {
+    import_inner(app, actor, td, None).await
+}
+
+pub(crate) async fn import_with_lookup(
+    app: &AppUseCase,
+    actor: &User,
+    td: &mut TrackedDownload,
+    completed_lookup: &CompletedDownloadLookup,
+) -> bool {
+    import_inner(app, actor, td, Some(completed_lookup)).await
+}
+
+async fn import_inner(
+    app: &AppUseCase,
+    actor: &User,
+    td: &mut TrackedDownload,
+    completed_lookup: Option<&CompletedDownloadLookup>,
+) -> bool {
     if td.state != TrackedDownloadState::ImportPending
         && td.state != TrackedDownloadState::Importing
     {
         return false;
     }
 
-    match app
-        .resolve_manual_import_source(
-            Some(td.client_id.as_str()),
-            Some(td.client_type.as_str()),
-            &td.client_item.download_client_item_id,
-        )
-        .await
-    {
-        Ok(crate::ManualImportSourceResolution::Eligible { .. }) => {}
-        Ok(crate::ManualImportSourceResolution::SourceFailed { message })
-        | Ok(crate::ManualImportSourceResolution::NotEligible { message }) => {
-            tracing::warn!(
-                id = %td.id,
-                item_id = %td.client_item.download_client_item_id,
-                reason = %message,
-                "import: source is no longer eligible; routing to failure handling"
-            );
-            td.state = TrackedDownloadState::FailedPending;
-            td.status = TrackedDownloadStatus::Error;
-            td.client_item.attention_reason = Some(message.clone());
-            td.status_messages = vec![message];
-            return false;
-        }
-        Err(error) => {
-            tracing::warn!(
-                id = %td.id,
-                error = %error,
-                "import: could not revalidate source before import"
-            );
-            td.state = TrackedDownloadState::ImportPending;
-            return false;
-        }
-    }
+    let Some(completed) = resolve_completed_download_for_import(app, td, completed_lookup).await
+    else {
+        return false;
+    };
 
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
-    let Some(completed) = find_completed_download(app, td, None).await else {
-        tracing::debug!(
-            id = %td.id,
-            item_id = %td.client_item.download_client_item_id,
-            "import: completed download not found in client history, will retry"
-        );
-        td.state = TrackedDownloadState::ImportPending;
-        return false;
-    };
     let completed = match resolve_completed_download_origin_for_import(
         app,
         &completed,
@@ -448,7 +428,14 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
                 files_imported_this_pass,
                 "import: pipeline returned result"
             );
-            apply_import_result(app, td, result, files_imported_this_pass).await
+            apply_import_result_with_completed(
+                app,
+                td,
+                result,
+                files_imported_this_pass,
+                Some(&completed),
+            )
+            .await
         }
         Err(error) => {
             tracing::warn!(
@@ -465,6 +452,84 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
     }
 }
 
+async fn resolve_completed_download_for_import(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    completed_lookup: Option<&CompletedDownloadLookup>,
+) -> Option<CompletedDownload> {
+    if let Some(lookup) = completed_lookup {
+        let completed = find_completed_download(app, td, Some(lookup)).await;
+        if completed.is_none() {
+            tracing::debug!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                "import: completed download not found in recent snapshot, will retry"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+        }
+        return completed;
+    }
+
+    let manual_completed = match app
+        .resolve_manual_import_source(
+            Some(td.client_id.as_str()),
+            Some(td.client_type.as_str()),
+            &td.client_item.download_client_item_id,
+        )
+        .await
+    {
+        Ok(crate::ManualImportSourceResolution::Eligible { completed }) => completed,
+        Ok(crate::ManualImportSourceResolution::SourceFailed { message })
+        | Ok(crate::ManualImportSourceResolution::NotEligible { message }) => {
+            tracing::warn!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                reason = %message,
+                "import: source is no longer eligible; routing to failure handling"
+            );
+            td.state = TrackedDownloadState::FailedPending;
+            td.status = TrackedDownloadStatus::Error;
+            td.client_item.attention_reason = Some(message.clone());
+            td.status_messages = vec![message];
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                id = %td.id,
+                error = %error,
+                "import: could not revalidate source before import"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+            return None;
+        }
+    };
+
+    if let Some(completed) = manual_completed {
+        return Some(prepare_completed_download_for_tracked_import(app, td, completed).await);
+    }
+
+    let completed = find_completed_download(app, td, None).await;
+    if completed.is_none() {
+        tracing::debug!(
+            id = %td.id,
+            item_id = %td.client_item.download_client_item_id,
+            "import: completed download not found in client history, will retry"
+        );
+        td.state = TrackedDownloadState::ImportPending;
+    }
+    completed
+}
+
+async fn prepare_completed_download_for_tracked_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: CompletedDownload,
+) -> CompletedDownload {
+    let mut completed = with_tracked_metadata(td, completed);
+    remap_completed_download_for_client(app, &mut completed).await;
+    completed
+}
+
 /// Verify whether a download's import is complete by checking cumulative
 /// artifact history across all passes.
 ///
@@ -473,6 +538,15 @@ pub async fn verify_import(
     app: &AppUseCase,
     td: &TrackedDownload,
     files_imported_this_pass: usize,
+) -> bool {
+    verify_import_inner(app, td, files_imported_this_pass, None).await
+}
+
+async fn verify_import_inner(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
 ) -> bool {
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),
@@ -495,7 +569,7 @@ pub async fn verify_import(
         return false;
     }
 
-    let current_visible_files = current_visible_video_file_count(app, td).await;
+    let current_visible_files = current_visible_video_file_count(app, td, completed).await;
     let mut successful_units = HashSet::new();
     let mut rejected_units = HashSet::new();
 
@@ -591,6 +665,22 @@ pub(crate) async fn load_recent_completed_download_lookup(
     Ok(index_completed_downloads(completed_downloads))
 }
 
+pub(crate) async fn load_recent_completed_download_lookup_or_default(
+    app: &AppUseCase,
+    limit: usize,
+) -> CompletedDownloadLookup {
+    match load_recent_completed_download_lookup(app, limit).await {
+        Ok(lookup) => lookup,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "download queue poller: failed to load completed download snapshot for this cycle"
+            );
+            CompletedDownloadLookup::default()
+        }
+    }
+}
+
 pub(crate) async fn load_completed_download_lookup_for_items(
     app: &AppUseCase,
     items: &[DownloadQueueItem],
@@ -603,18 +693,7 @@ pub(crate) async fn load_completed_download_lookup_for_items(
         return None;
     }
 
-    Some(
-        match load_recent_completed_download_lookup(app, limit).await {
-            Ok(lookup) => lookup,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "download queue poller: failed to load completed download snapshot for this cycle"
-                );
-                CompletedDownloadLookup::default()
-            }
-        },
-    )
+    Some(load_recent_completed_download_lookup_or_default(app, limit).await)
 }
 
 fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDownloadLookup {
@@ -1150,16 +1229,27 @@ fn update_no_video_signature_mtime(
     }
 }
 
+#[cfg(test)]
 async fn apply_import_result(
     app: &AppUseCase,
     td: &mut TrackedDownload,
     result: ImportResult,
     files_imported_this_pass: usize,
 ) -> bool {
+    apply_import_result_with_completed(app, td, result, files_imported_this_pass, None).await
+}
+
+async fn apply_import_result_with_completed(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    result: ImportResult,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+) -> bool {
     let already_imported = result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
         td.clear_no_video_import_retry();
-        if verify_import(app, td, files_imported_this_pass).await {
+        if verify_import_inner(app, td, files_imported_this_pass, completed).await {
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
@@ -1490,9 +1580,21 @@ async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u
     imported + already_present
 }
 
-async fn current_visible_video_file_count(app: &AppUseCase, td: &TrackedDownload) -> usize {
-    let Some(completed) = find_completed_download(app, td, None).await else {
-        return 0;
+async fn current_visible_video_file_count(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> usize {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let Some(found) = find_completed_download(app, td, None).await else {
+                return 0;
+            };
+            completed_lookup = found;
+            &completed_lookup
+        }
     };
 
     let path = std::path::Path::new(&completed.dest_dir);
@@ -3915,6 +4017,105 @@ mod tests {
         assert_eq!(
             download_client
                 .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn import_resolution_uses_snapshot_without_fetching_client_history() {
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed.clone());
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        td.state = TrackedDownloadState::ImportPending;
+        let lookup = index_completed_downloads(vec![completed]);
+
+        let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
+
+        assert!(resolved.is_some());
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn import_resolution_missing_snapshot_entry_stays_retryable_without_full_history() {
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed);
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        td.state = TrackedDownloadState::ImportPending;
+        let lookup = CompletedDownloadLookup::default();
+
+        let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
+
+        assert!(resolved.is_none());
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn visible_file_count_reuses_resolved_completed_download() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("Paper.Lantern.2012.1080p.mkv"),
+            b"video",
+        )
+        .expect("write video");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed.clone());
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+
+        let count = current_visible_video_file_count(&app, &td, Some(&completed)).await;
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
                 .load(Ordering::SeqCst),
             0
         );

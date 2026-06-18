@@ -5265,6 +5265,7 @@ struct StubDownloadClient {
     queue_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
+    recent_completed_downloads: Arc<Mutex<Option<Vec<CompletedDownload>>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     deleted_requests: DeletedDownloadRequests,
     delete_error: Arc<Mutex<Option<String>>>,
@@ -5277,6 +5278,8 @@ struct StubDownloadClient {
     history_calls: Arc<Mutex<usize>>,
     recent_activity_calls: Arc<Mutex<Vec<usize>>>,
     recent_activity_for_title_calls: Arc<Mutex<Vec<(String, usize)>>>,
+    completed_download_calls: Arc<Mutex<usize>>,
+    recent_completed_download_calls: Arc<Mutex<Vec<usize>>>,
 }
 
 impl StubDownloadClient {
@@ -5405,7 +5408,23 @@ impl DownloadClient for StubDownloadClient {
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
+        *self.completed_download_calls.lock().await += 1;
         Ok(self.completed_downloads.lock().await.clone())
+    }
+
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        self.recent_completed_download_calls
+            .lock()
+            .await
+            .push(limit);
+        let items = match self.recent_completed_downloads.lock().await.clone() {
+            Some(items) => items,
+            None => self.completed_downloads.lock().await.clone(),
+        };
+        Ok(items.into_iter().take(limit).collect())
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
@@ -18747,6 +18766,155 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
 
     assert!(!processed.contains(item_id));
     assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn try_import_recent_completed_downloads_uses_recent_lookup_and_preserves_processed_ids() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    let item_id = "recent-completed-processed";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = "weaver-client".to_string();
+    item.client_type = "weaver".to_string();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Recent.Completed.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = item.client_id.clone();
+    completed.client_type = item.client_type.clone();
+    completed.parameters.clear();
+    *download_client.recent_completed_downloads.lock().await = Some(vec![completed]);
+
+    let processed =
+        crate::import::import::try_import_recent_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(processed.contains(item_id));
+    assert_eq!(*download_client.completed_download_calls.lock().await, 0);
+    assert_eq!(
+        download_client
+            .recent_completed_download_calls
+            .lock()
+            .await
+            .clone(),
+        vec![crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT]
+    );
+}
+
+#[tokio::test]
+async fn try_import_recent_completed_downloads_defers_missing_recent_history_without_blocking() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let item_id = "recent-missing-completed";
+    let download_id = "scryer-download:recent-missing";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = "weaver-client".to_string();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+    let mut full_history_completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Recent.Missing.2026.1080p.WEB-DL",
+        "/tmp/would-have-been-found-by-full-history",
+    );
+    full_history_completed.client_id = item.client_id.clone();
+    full_history_completed.client_type = item.client_type.clone();
+    *download_client.completed_downloads.lock().await = vec![full_history_completed];
+    *download_client.recent_completed_downloads.lock().await = Some(Vec::new());
+
+    let processed =
+        crate::import::import::try_import_recent_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert_eq!(*download_client.completed_download_calls.lock().await, 0);
+    assert_eq!(
+        download_client
+            .recent_completed_download_calls
+            .lock()
+            .await
+            .clone(),
+        vec![crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT]
+    );
+    let state = download_submissions
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            },
+            Some(&DownloadSourceIdentity::new(
+                Some("weaver-client"),
+                "weaver",
+                item_id,
+            )),
+        )
+        .await
+        .expect("identity state lookup");
+    assert!(state.is_none());
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_still_blocks_missing_full_history_identity() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let item_id = "full-missing-completed";
+    let download_id = "scryer-download:full-missing";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = "weaver-client".to_string();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(!processed.contains(item_id));
+    assert_eq!(*download_client.completed_download_calls.lock().await, 1);
+    assert!(
+        download_client
+            .recent_completed_download_calls
+            .lock()
+            .await
+            .is_empty()
+    );
+    let state = download_submissions
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            },
+            Some(&DownloadSourceIdentity::new(
+                Some("weaver-client"),
+                "weaver",
+                item_id,
+            )),
+        )
+        .await
+        .expect("identity state lookup");
+    assert_eq!(
+        state.as_deref(),
+        Some(TrackedDownloadState::ImportBlocked.as_str())
+    );
 }
 
 #[tokio::test]

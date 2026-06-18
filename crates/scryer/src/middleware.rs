@@ -92,13 +92,17 @@ impl AuthlessWebClientProofState {
             .fill(&mut nonce_bytes)
             .map_err(|_| AppError::Repository("failed to create web client proof".into()))?;
         let nonce = hex_encode(&nonce_bytes);
+        Ok(self.issue_for_nonce(nonce))
+    }
+
+    fn issue_for_nonce(&self, nonce: String) -> (String, String, u64) {
         let expires_at = unix_now() + AUTHLESS_WEB_CLIENT_TTL_SECONDS;
         let signature = self.sign(&nonce, expires_at);
-        Ok((
+        (
             nonce.clone(),
             format!("{nonce}.{expires_at}.{signature}"),
             expires_at,
-        ))
+        )
     }
 
     fn validate_headers(&self, headers: &HeaderMap, proof_override: Option<&str>) -> bool {
@@ -170,7 +174,11 @@ pub(crate) async fn authless_web_client_proof_handler(
         return response;
     }
 
-    match state.proof.issue() {
+    let proof_result = authless_cookie_nonce(&headers)
+        .map(|nonce| Ok(state.proof.issue_for_nonce(nonce)))
+        .unwrap_or_else(|| state.proof.issue());
+
+    match proof_result {
         Ok((nonce, proof, expires_at)) => {
             let mut response =
                 Json(AuthlessWebClientProofResponse { proof, expires_at }).into_response();
@@ -277,8 +285,14 @@ fn authless_cookie_nonce(headers: &HeaderMap) -> Option<String> {
         .split(';')
         .filter_map(|part| part.trim().split_once('='))
         .find_map(|(name, value)| {
-            (name == AUTHLESS_WEB_CLIENT_COOKIE && !value.is_empty()).then(|| value.to_string())
+            let value = value.trim();
+            (name == AUTHLESS_WEB_CLIENT_COOKIE && is_authless_cookie_nonce(value))
+                .then(|| value.to_string())
         })
+}
+
+fn is_authless_cookie_nonce(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn unix_now() -> u64 {
@@ -2842,6 +2856,59 @@ mod tests {
                 .is_some_and(|proof| proof.matches('.').count() == 2)
         );
         assert!(body["expiresAt"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_reuses_existing_cookie_nonce() {
+        let app =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy());
+        let peer = SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000));
+        let first_response = app
+            .clone()
+            .oneshot(request_with_peer("/authless-client", peer))
+            .await
+            .expect("first response");
+
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_cookie = first_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("first set-cookie")
+            .to_string();
+        let first_nonce = first_cookie
+            .split_once('=')
+            .and_then(|(_, rest)| rest.split_once(';').map(|(nonce, _)| nonce))
+            .expect("first nonce")
+            .to_string();
+        let first_body = read_json_response(first_response).await;
+        assert!(
+            first_body["proof"]
+                .as_str()
+                .is_some_and(|proof| proof.starts_with(&format!("{first_nonce}.")))
+        );
+
+        let mut second_request = request_with_peer("/authless-client", peer);
+        second_request.headers_mut().insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{AUTHLESS_WEB_CLIENT_COOKIE}={first_nonce}"))
+                .expect("cookie header"),
+        );
+        let second_response = app.oneshot(second_request).await.expect("second response");
+
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second_cookie = second_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("second set-cookie");
+        assert!(second_cookie.starts_with(&format!("{AUTHLESS_WEB_CLIENT_COOKIE}={first_nonce};")));
+        let second_body = read_json_response(second_response).await;
+        assert!(
+            second_body["proof"]
+                .as_str()
+                .is_some_and(|proof| proof.starts_with(&format!("{first_nonce}.")))
+        );
     }
 
     #[tokio::test]

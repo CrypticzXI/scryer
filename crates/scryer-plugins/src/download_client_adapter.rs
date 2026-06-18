@@ -18,11 +18,12 @@ use tracing::debug;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
-    EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
-    EXPORT_DOWNLOAD_STATUS, PluginCompletedDownload, PluginDescriptor,
-    PluginDownloadClientAddRequest, PluginDownloadClientAddResponse,
-    PluginDownloadClientControlRequest, PluginDownloadClientMarkImportedRequest,
-    PluginDownloadClientStatus, PluginDownloadIsolation, PluginDownloadItem, PluginDownloadRelease,
+    EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE,
+    EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
+    PluginCompletedDownload, PluginDescriptor, PluginDownloadClientAddRequest,
+    PluginDownloadClientAddResponse, PluginDownloadClientControlRequest,
+    PluginDownloadClientMarkImportedRequest, PluginDownloadClientStatus, PluginDownloadIsolation,
+    PluginDownloadItem, PluginDownloadListRecentCompletedRequest, PluginDownloadRelease,
     PluginDownloadRouting, PluginDownloadSource, PluginDownloadTitle, PluginTorrentOptions,
     PluginTorrentQueuePlacement, decode_plugin_result,
 };
@@ -777,6 +778,67 @@ impl DownloadClient for WasmDownloadClient {
 
         let items: Vec<PluginCompletedDownload> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_COMPLETED)?;
+
+        Ok(items
+            .into_iter()
+            .map(|item| {
+                map_completed_download(item, &self.client_id, self.descriptor.provider_type())
+            })
+            .collect())
+    }
+
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let input = serde_json::to_string(&PluginDownloadListRecentCompletedRequest { limit })
+            .map_err(|e| {
+                AppError::Repository(format!("failed to serialize plugin request: {e}"))
+            })?;
+        let plugin = Arc::clone(&self.plugin);
+        let (output, export_name) = tokio::task::spawn_blocking(move || {
+            let mut guard = plugin
+                .lock()
+                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+            if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
+                let output = guard
+                    .call::<&str, String>(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"), e)
+                    })?;
+                Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
+            } else {
+                let output = guard
+                    .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
+                    })?;
+                Ok((output, EXPORT_DOWNLOAD_LIST_COMPLETED))
+            }
+        })
+        .await
+        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+
+        let mut items: Vec<PluginCompletedDownload> = decode_plugin_result(&output, export_name)?;
+        if export_name == EXPORT_DOWNLOAD_LIST_COMPLETED {
+            debug!(
+                provider = %self.descriptor.id,
+                limit,
+                "plugin client used full completed-download fallback for recent completed downloads"
+            );
+            items.sort_by_key(|item| std::cmp::Reverse(item.completed_at.clone()));
+        } else {
+            debug!(
+                provider = %self.descriptor.id,
+                limit,
+                "plugin client used bounded recent completed-download export"
+            );
+        }
+        items.truncate(limit);
 
         Ok(items
             .into_iter()

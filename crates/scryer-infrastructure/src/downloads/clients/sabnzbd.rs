@@ -360,6 +360,15 @@ impl SabnzbdDownloadClient {
             .unwrap_or_default())
     }
 
+    async fn completed_downloads_page(&self, limit: usize) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let slots = self.history_slots_page(0, limit).await?;
+        Ok(completed_downloads_from_sab_slots(&slots))
+    }
+
     async fn get_config(&self) -> AppResult<SabnzbdConfig> {
         let json = self.api_get(&[("mode", "get_config")]).await?;
         serde_json::from_value::<SabnzbdConfigEnvelope>(json)
@@ -1054,66 +1063,14 @@ impl DownloadClient for SabnzbdDownloadClient {
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
-        let slots = self.history_slots_page(0, 50).await?;
-        let cutoff_ts = Utc::now().timestamp() - (7 * 24 * 60 * 60);
+        self.completed_downloads_page(50).await
+    }
 
-        Ok(slots
-            .iter()
-            .filter_map(|slot| {
-                let slot = slot.as_object()?;
-
-                let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                if !status.eq_ignore_ascii_case("Completed") {
-                    return None;
-                }
-
-                let nzo_id = slot.get("nzo_id").and_then(Value::as_str)?.to_string();
-
-                let completed_ts = extract_i64_value(slot.get("completed"));
-                if let Some(ts) = completed_ts
-                    && ts < cutoff_ts
-                {
-                    return None;
-                }
-
-                let dest_dir = slot
-                    .get("storage")
-                    .or_else(|| slot.get("path"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-
-                if dest_dir.is_empty() {
-                    return None;
-                }
-
-                let name = slot
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Unnamed download")
-                    .to_string();
-
-                let category = extract_sabnzbd_category(slot);
-
-                let size_bytes = extract_i64_value(slot.get("bytes"));
-
-                let completed_at =
-                    completed_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
-
-                Some(CompletedDownload {
-                    client_type: "sabnzbd".to_string(),
-                    client_id: String::new(),
-                    download_client_item_id: nzo_id.clone(),
-                    download_id: Some(nzo_id),
-                    name,
-                    dest_dir,
-                    category,
-                    size_bytes,
-                    completed_at,
-                    parameters: Vec::new(),
-                })
-            })
-            .collect())
+    async fn list_recent_completed_downloads(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        self.completed_downloads_page(limit).await
     }
 
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
@@ -1568,6 +1525,66 @@ fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<Str
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "*")
         .map(str::to_string)
+}
+
+fn completed_downloads_from_sab_slots(slots: &[Value]) -> Vec<CompletedDownload> {
+    let cutoff_ts = Utc::now().timestamp() - (7 * 24 * 60 * 60);
+
+    slots
+        .iter()
+        .filter_map(|slot| {
+            let slot = slot.as_object()?;
+
+            let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
+            if !status.eq_ignore_ascii_case("Completed") {
+                return None;
+            }
+
+            let nzo_id = slot.get("nzo_id").and_then(Value::as_str)?.to_string();
+
+            let completed_ts = extract_i64_value(slot.get("completed"));
+            if let Some(ts) = completed_ts
+                && ts < cutoff_ts
+            {
+                return None;
+            }
+
+            let dest_dir = slot
+                .get("storage")
+                .or_else(|| slot.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+
+            if dest_dir.is_empty() {
+                return None;
+            }
+
+            let name = slot
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Unnamed download")
+                .to_string();
+
+            let category = extract_sabnzbd_category(slot);
+            let size_bytes = extract_i64_value(slot.get("bytes"));
+            let completed_at =
+                completed_ts.map(|ts| DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
+
+            Some(CompletedDownload {
+                client_type: "sabnzbd".to_string(),
+                client_id: String::new(),
+                download_client_item_id: nzo_id.clone(),
+                download_id: Some(nzo_id),
+                name,
+                dest_dir,
+                category,
+                size_bytes,
+                completed_at,
+                parameters: Vec::new(),
+            })
+        })
+        .collect()
 }
 
 fn deserialize_sab_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>

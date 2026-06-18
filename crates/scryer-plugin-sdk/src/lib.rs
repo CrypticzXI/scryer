@@ -292,6 +292,7 @@ pub const EXPORT_DOWNLOAD_ADD: &str = "scryer_download_add";
 pub const EXPORT_DOWNLOAD_LIST_QUEUE: &str = "scryer_download_list_queue";
 pub const EXPORT_DOWNLOAD_LIST_HISTORY: &str = "scryer_download_list_history";
 pub const EXPORT_DOWNLOAD_LIST_COMPLETED: &str = "scryer_download_list_completed";
+pub const EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED: &str = "scryer_download_list_recent_completed";
 pub const EXPORT_DOWNLOAD_CONTROL: &str = "scryer_download_control";
 pub const EXPORT_DOWNLOAD_MARK_IMPORTED: &str = "scryer_download_mark_imported";
 pub const EXPORT_DOWNLOAD_STATUS: &str = "scryer_download_status";
@@ -1532,6 +1533,11 @@ pub struct PluginDownloadClientAddRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadListRecentCompletedRequest {
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadSource {
     pub kind: DownloadInputKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2331,6 +2337,7 @@ struct PluginSdkSchemaDocument {
     download_queue_result: PluginResult<Vec<PluginDownloadItem>>,
     download_history_result: PluginResult<Vec<PluginCompletedDownload>>,
     download_completed_result: PluginResult<Vec<PluginCompletedDownload>>,
+    download_recent_completed_request: PluginDownloadListRecentCompletedRequest,
     download_control_request: PluginDownloadClientControlRequest,
     download_control_result: PluginResult<()>,
     download_mark_imported_request: PluginDownloadClientMarkImportedRequest,
