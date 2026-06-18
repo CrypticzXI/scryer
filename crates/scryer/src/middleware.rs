@@ -1105,6 +1105,7 @@ async fn resolve_ws_connection_init_actor(
     } = request;
 
     if let Some(raw) = auth_value {
+        let authless_fallback_allowed = !auth_enabled || local_bypass_active;
         return match parse_bearer_token(raw) {
             Some(token) => match app.authenticate_token_with_claims(token).await {
                 Ok((user, token_claims)) => attach_resolved_actor(
@@ -1119,29 +1120,25 @@ async fn resolve_ws_connection_init_actor(
                     Some(actor)
                 })
                 .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
-                Err(_) if local_bypass_active && authless_proof_required => {
-                    if !proof_state.validate_headers(headers, proof_value) {
-                        return Err(async_graphql::Error::new(
-                            "Scryer web client proof is required for unauthenticated websocket access",
-                        ));
-                    }
-                    Ok(initial_actor)
-                }
-                Err(_) if local_bypass_active => Ok(initial_actor),
-                Err(e) => Err(async_graphql::Error::new(format!(
-                    "authentication failed: {e}"
-                ))),
+                Err(e) => resolve_ws_failed_auth_fallback(
+                    authless_fallback_allowed,
+                    initial_actor,
+                    authless_proof_required,
+                    proof_state,
+                    headers,
+                    proof_value,
+                    async_graphql::Error::new(format!("authentication failed: {e}")),
+                ),
             },
-            None if local_bypass_active && authless_proof_required => {
-                if !proof_state.validate_headers(headers, proof_value) {
-                    return Err(async_graphql::Error::new(
-                        "Scryer web client proof is required for unauthenticated websocket access",
-                    ));
-                }
-                Ok(initial_actor)
-            }
-            None if local_bypass_active => Ok(initial_actor),
-            None => Err(async_graphql::Error::new("invalid authorization header")),
+            None => resolve_ws_failed_auth_fallback(
+                authless_fallback_allowed,
+                initial_actor,
+                authless_proof_required,
+                proof_state,
+                headers,
+                proof_value,
+                async_graphql::Error::new("invalid authorization header"),
+            ),
         };
     }
 
@@ -1164,6 +1161,41 @@ async fn resolve_ws_connection_init_actor(
     }
 
     Ok(None)
+}
+
+fn resolve_ws_failed_auth_fallback(
+    authless_fallback_allowed: bool,
+    initial_actor: Option<ResolvedActor>,
+    authless_proof_required: bool,
+    proof_state: &AuthlessWebClientProofState,
+    headers: &HeaderMap,
+    proof_value: Option<&str>,
+    auth_error: async_graphql::Error,
+) -> Result<Option<ResolvedActor>, async_graphql::Error> {
+    if !authless_fallback_allowed {
+        return Err(auth_error);
+    }
+    require_ws_authless_proof_if_needed(
+        authless_proof_required,
+        proof_state,
+        headers,
+        proof_value,
+    )?;
+    Ok(initial_actor)
+}
+
+fn require_ws_authless_proof_if_needed(
+    authless_proof_required: bool,
+    proof_state: &AuthlessWebClientProofState,
+    headers: &HeaderMap,
+    proof_value: Option<&str>,
+) -> Result<(), async_graphql::Error> {
+    if authless_proof_required && !proof_state.validate_headers(headers, proof_value) {
+        return Err(async_graphql::Error::new(
+            "Scryer web client proof is required for unauthenticated websocket access",
+        ));
+    }
+    Ok(())
 }
 
 async fn resolve_actor(
@@ -2485,6 +2517,31 @@ mod tests {
         request
     }
 
+    fn authless_ws_test_actor() -> ResolvedActor {
+        ResolvedActor {
+            user: scryer_domain::User {
+                id: "authless-ws-user".to_string(),
+                username: "Anonymous".to_string(),
+                password_hash: None,
+                account_kind: Default::default(),
+                authorization: Default::default(),
+            },
+            token_claims: AuthenticatedTokenClaims::default(),
+            source: ResolvedActorSource::AuthlessDefault,
+        }
+    }
+
+    fn authless_ws_proof_headers(proof_state: &AuthlessWebClientProofState) -> (HeaderMap, String) {
+        let (nonce, proof, _) = proof_state.issue().expect("issue proof");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{AUTHLESS_WEB_CLIENT_COOKIE}={nonce}"))
+                .expect("cookie header"),
+        );
+        (headers, proof)
+    }
+
     async fn read_json_response(response: Response) -> Value {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -2927,6 +2984,74 @@ mod tests {
             HeaderValue::from_static("scryer_authless_client=other"),
         );
         assert!(!proof_state.validate_headers(&headers, None));
+    }
+
+    #[test]
+    fn ws_failed_auth_fallback_requires_authless_proof_before_installing_actor() {
+        let proof_state = AuthlessWebClientProofState::new();
+        let headers = HeaderMap::new();
+        let result = resolve_ws_failed_auth_fallback(
+            true,
+            Some(authless_ws_test_actor()),
+            true,
+            &proof_state,
+            &headers,
+            None,
+            async_graphql::Error::new("authentication failed"),
+        );
+
+        let error = match result {
+            Ok(_) => panic!("missing proof should reject authless WS fallback"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .message
+                .contains("web client proof is required for unauthenticated websocket access"),
+            "unexpected WS proof error: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn ws_failed_auth_fallback_accepts_valid_authless_proof() {
+        let proof_state = AuthlessWebClientProofState::new();
+        let (headers, proof) = authless_ws_proof_headers(&proof_state);
+        let result = resolve_ws_failed_auth_fallback(
+            true,
+            Some(authless_ws_test_actor()),
+            true,
+            &proof_state,
+            &headers,
+            Some(&proof),
+            async_graphql::Error::new("authentication failed"),
+        )
+        .expect("valid proof should allow authless WS fallback");
+
+        let actor = result.expect("authless actor");
+        assert_eq!(actor.source, ResolvedActorSource::AuthlessDefault);
+        assert_eq!(actor.user.username, "Anonymous");
+    }
+
+    #[test]
+    fn ws_failed_auth_fallback_rejects_when_authentication_is_required() {
+        let proof_state = AuthlessWebClientProofState::new();
+        let (headers, proof) = authless_ws_proof_headers(&proof_state);
+        let result = resolve_ws_failed_auth_fallback(
+            false,
+            Some(authless_ws_test_actor()),
+            true,
+            &proof_state,
+            &headers,
+            Some(&proof),
+            async_graphql::Error::new("invalid authorization header"),
+        );
+
+        let error = match result {
+            Ok(_) => panic!("auth-enabled WS should reject invalid auth header"),
+            Err(error) => error,
+        };
+        assert_eq!(error.message, "invalid authorization header");
     }
 
     #[test]

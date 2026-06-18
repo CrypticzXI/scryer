@@ -138,7 +138,7 @@ fn first_graphql_error_message_and_code(body: &Value) -> (String, String) {
         .to_string();
     let code = first["extensions"]["code"]
         .as_str()
-        .expect("graphql error code")
+        .unwrap_or_else(|| panic!("graphql error code missing: {body}"))
         .to_string();
     (message, code)
 }
@@ -148,6 +148,18 @@ fn assert_mfa_step_up_required(body: &Value) {
     assert_eq!(
         code, "MFA_STEP_UP_REQUIRED",
         "expected MFA_STEP_UP_REQUIRED GraphQL error: {body}"
+    );
+}
+
+fn assert_graphql_field_denied(body: &Value, field_key: &str) {
+    let errors = body["errors"].as_array().expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected GraphQL field {field_key} to be denied: {body}"
+    );
+    assert!(
+        body["data"].is_null() || body["data"][field_key].is_null(),
+        "denied GraphQL field {field_key} should not return data: {body}"
     );
 }
 
@@ -10435,6 +10447,181 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 }
 
 #[tokio::test]
+async fn graphql_oauth_admin_token_cannot_use_app_permission_surfaces() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_permission_target".to_string(),
+            "target-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create permission target");
+    let oauth_admin = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_app_admin".to_string(),
+            "oauth-pass1".to_string(),
+            AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageUsers,
+                scryer_domain::AppPermission::ManagePermissions,
+                scryer_domain::AppPermission::ManageSystemSettings,
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            vec![],
+        )
+        .await
+        .expect("create OAuth admin");
+    let token = ctx
+        .app
+        .issue_oauth_access_token(&oauth_admin, "generic-native", "graphql-oauth-admin-deny")
+        .await
+        .expect("issue OAuth token");
+
+    let cases = vec![
+        (
+            "ManageSystemSettings",
+            "createBackup",
+            r#"mutation { createBackup(password: "oauth-denied-backup-pass") { filename } }"#,
+            json!({}),
+        ),
+        (
+            "ManageCatalogSettings",
+            "createRuleSet",
+            r#"mutation($input: CreateRuleSetInput!) { createRuleSet(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "name": "OAuth denied rule",
+                    "description": "oauth should not manage catalog settings",
+                    "regoSource": "package scryer\nallow := true",
+                    "appliedFacets": ["movie"]
+                }
+            }),
+        ),
+        (
+            "ManageUsers",
+            "createUser",
+            r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "username": "oauth_blocked_new_user",
+                    "password": "blocked-pass1",
+                    "appPermissions": [],
+                    "libraryPermissions": []
+                }
+            }),
+        ),
+        (
+            "ManagePermissions",
+            "setUserAppPermissions",
+            r#"mutation($input: SetUserAppPermissionsInput!) { setUserAppPermissions(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "userId": target.id,
+                    "permissions": []
+                }
+            }),
+        ),
+    ];
+
+    for (permission, field_key, query, variables) in cases {
+        let body = gql_with_token(&ctx, query, variables, &token).await;
+        assert_graphql_field_denied(&body, field_key);
+        assert!(
+            body["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("permission")),
+            "OAuth admin token should fail {permission} through permission checks: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_oauth_token_cannot_use_own_account_surfaces() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let user = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_own_account_user".to_string(),
+            "oauth-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create OAuth user");
+    let oauth_token = ctx
+        .app
+        .issue_oauth_access_token(&user, "generic-native", "graphql-oauth-own-account-deny")
+        .await
+        .expect("issue OAuth token");
+    let session_token = ctx
+        .app
+        .issue_access_token(&user)
+        .await
+        .expect("issue full session token");
+
+    let denied_cases = vec![
+        (
+            "myOauthApps",
+            r#"query { myOauthApps { grantId clientName lastUsedAt } }"#,
+            json!({}),
+        ),
+        (
+            "revokeMyOauthApp",
+            r#"mutation { revokeMyOauthApp(grantId: "missing-grant") }"#,
+            json!({}),
+        ),
+        (
+            "myPasskeys",
+            r#"query { myPasskeys { id friendlyName } }"#,
+            json!({}),
+        ),
+        (
+            "webauthnRegisterStart",
+            r#"mutation { webauthnRegisterStart { challengeId } }"#,
+            json!({}),
+        ),
+        (
+            "myTotp",
+            r#"query { myTotp { enabled recoveryCodesRemaining } }"#,
+            json!({}),
+        ),
+        (
+            "totpEnrollmentStart",
+            r#"mutation { totpEnrollmentStart { challengeId otpauthUrl } }"#,
+            json!({}),
+        ),
+    ];
+
+    for (field_key, query, variables) in denied_cases {
+        let body = gql_with_token(&ctx, query, variables, &oauth_token).await;
+        assert_graphql_field_denied(&body, field_key);
+    }
+
+    let full_session = gql_with_token(
+        &ctx,
+        r#"query {
+          myOauthApps { grantId }
+          myTotp { enabled }
+        }"#,
+        json!({}),
+        &session_token,
+    )
+    .await;
+    assert_no_errors(&full_session);
+    assert!(full_session["data"]["myOauthApps"].is_array());
+    assert!(full_session["data"]["myTotp"]["enabled"].is_boolean());
+}
+
+#[tokio::test]
 async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -10535,6 +10722,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
     let cases = vec![
         (
             "createRuleSet",
+            "createRuleSet",
             r#"mutation($input: CreateRuleSetInput!) { createRuleSet(input: $input) { id } }"#,
             json!({
                 "input": {
@@ -10547,10 +10735,12 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "validateRuleSet",
+            "validateRuleSet",
             r#"mutation($input: ValidateRuleSetInput!) { validateRuleSet(input: $input) { valid } }"#,
             json!({ "input": { "regoSource": "package scryer\nallow := true" } }),
         ),
         (
+            "createIndexerConfig",
             "createIndexerConfig",
             r#"mutation($input: CreateIndexerConfigInput!) { createIndexerConfig(input: $input) { id } }"#,
             json!({
@@ -10562,6 +10752,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
             }),
         ),
         (
+            "createUser",
             "createUser",
             r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id } }"#,
             json!({
@@ -10575,6 +10766,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "setUserPassword for another user",
+            "setUserPassword",
             r#"mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) { id } }"#,
             json!({
                 "input": {
@@ -10585,15 +10777,30 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "createBackup",
+            "createBackup",
             r#"mutation { createBackup(password: "step-up-backup-pass") { filename } }"#,
             json!({}),
         ),
         (
+            "acknowledgeAutoBackupDisabledMissingKeyNotice",
+            "acknowledgeAutoBackupDisabledMissingKeyNotice",
+            r#"mutation { acknowledgeAutoBackupDisabledMissingKeyNotice { enabled autoBackupDisabledMissingKeyNotice } }"#,
+            json!({}),
+        ),
+        (
+            "completeSetup",
+            "completeSetup",
+            r#"mutation { completeSetup }"#,
+            json!({}),
+        ),
+        (
+            "beginInstallPlugin",
             "beginInstallPlugin",
             r#"mutation($input: InstallPluginInput!) { beginInstallPlugin(input: $input) { pluginId } }"#,
             json!({ "input": { "pluginId": "missing-plugin" } }),
         ),
         (
+            "createNotificationChannel",
             "createNotificationChannel",
             r#"mutation($input: CreateNotificationChannelInput!) { createNotificationChannel(input: $input) { id } }"#,
             json!({
@@ -10605,11 +10812,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
             }),
         ),
         (
-            "restoreRecycledItem",
-            r#"mutation($id: String!) { restoreRecycledItem(id: $id) }"#,
-            json!({ "id": "missing-recycled-item" }),
-        ),
-        (
+            "executeExternalImport",
             "executeExternalImport",
             r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved } }"#,
             json!({
@@ -10630,6 +10833,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "createLibrary",
+            "createLibrary",
             r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
             json!({
                 "input": {
@@ -10641,11 +10845,15 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
     ];
 
-    for (name, query, variables) in cases {
+    for (name, field_key, query, variables) in cases {
         let body = gql_with_token(&ctx, query, variables, &token).await;
+        assert!(
+            body.get("errors").is_some(),
+            "expected {name} to require MFA step-up: {body}"
+        );
         assert_mfa_step_up_required(&body);
         assert!(
-            body["data"].is_null() || body["data"][name].is_null(),
+            body["data"].is_null() || body["data"][field_key].is_null(),
             "blocked mutation should not return data for {name}: {body}"
         );
     }

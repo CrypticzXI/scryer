@@ -79,11 +79,13 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
 ];
 const RELEASE_DRY_RUN_CACHE_FILE: &str = "tmp/xtask-release-dry-run.json";
 const RELEASE_DRY_RUN_BUILTINS_DIR: &str = "tmp/xtask-release-dry-run-builtins";
-const OFFICIAL_PLUGIN_CATALOG_URL: &str =
-    "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv2/catalog-v2.json";
+const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL: &str =
+    "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.json";
+const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_BUNDLE_URL: &str =
+    "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.bundle.json";
 const BUILTIN_ASSET_DIR: &str = "crates/scryer-plugins/builtins";
 const OFFICIAL_PLUGIN_REPO: &str = "scryer-media/scryer-plugins";
-const OFFICIAL_RELEASE_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
+const OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW: &str = ".github/workflows/release-plugin-v3.yml";
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
@@ -153,46 +155,53 @@ impl Drop for SignalForwarder {
 struct SignalForwarder;
 
 #[derive(Clone, Debug, Deserialize)]
-struct CatalogV2 {
-    plugins: Vec<CatalogV2Entry>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct CatalogV2Entry {
-    id: String,
-    child_catalog_url: String,
-    required_signer: RequiredSignerV2,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct RequiredSignerV2 {
+struct RequiredSigner {
     github_repository: String,
     #[serde(default)]
     github_workflow: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ChildCatalogV2 {
+struct CatalogV3Redirect {
+    artifacts: Vec<CatalogV3CatalogArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogV3CatalogArtifact {
+    url: String,
+    signature_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogV3 {
+    plugins: Vec<CatalogV3PluginEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogV3PluginEntry {
     id: String,
     description: String,
-    releases: Vec<ChildCatalogReleaseV2>,
+    required_signer: RequiredSigner,
+    releases: Vec<CatalogV3Release>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ChildCatalogReleaseV2 {
+struct CatalogV3Release {
     version: String,
-    artifact_manifest_url: String,
+    artifacts: Vec<CatalogV3PluginArtifact>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct PluginManifestV2 {
-    id: String,
-    version: String,
-    artifact: String,
-    compression: String,
-    wasm_digest: String,
-    artifact_digest: String,
-    signature: String,
+struct CatalogV3PluginArtifact {
+    runtime: String,
+    #[serde(default)]
+    required_features: Vec<String>,
+    url: String,
+    signature_url: String,
+    #[serde(default)]
+    digests: Vec<String>,
+    #[serde(default)]
+    wasm_digests: Vec<String>,
 }
 
 const BUILTIN_PLUGINS: &[BuiltinPluginSpec] = &[
@@ -1538,10 +1547,6 @@ fn builtin_plugin_paths(ctx: &TaskContext) -> Vec<PathBuf> {
         .collect()
 }
 
-fn bundle_url_for(url: &str) -> String {
-    format!("{url}.bundle")
-}
-
 fn fetch_url_bytes(url: &str) -> Result<Vec<u8>> {
     let response = reqwest::blocking::get(url)
         .with_context(|| format!("failed to fetch {url}"))?
@@ -1564,7 +1569,7 @@ fn decode_possibly_zstd_bytes(url: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
 fn verify_signed_blob(
     raw: &[u8],
     bundle_raw: &[u8],
-    required_signer: &RequiredSignerV2,
+    required_signer: &RequiredSigner,
 ) -> Result<()> {
     let bundle_text = std::str::from_utf8(bundle_raw).context("invalid Sigstore bundle UTF-8")?;
     let bundle_text = normalize_sigstore_bundle(bundle_text)?;
@@ -1853,7 +1858,7 @@ fn cert_subject_uri(cert: &Certificate) -> Result<Option<String>> {
     }))
 }
 
-fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSignerV2) -> Result<()> {
+fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSigner) -> Result<()> {
     let cert = Certificate::from_pem(cert_pem.as_bytes())
         .map_err(|error| anyhow!("failed to parse Sigstore certificate: {error}"))?;
     let repository = cert_extension_utf8(&cert, SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID)?;
@@ -1889,12 +1894,13 @@ fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSignerV2) ->
 
 fn fetch_verified_bytes(
     _ctx: &TaskContext,
-    required_signer: &RequiredSignerV2,
+    required_signer: &RequiredSigner,
     url: &str,
     bundle_url: &str,
 ) -> Result<Vec<u8>> {
     let blob_bytes = fetch_url_bytes(url)?;
     let bundle_bytes = fetch_url_bytes(bundle_url)?;
+    let bundle_bytes = decode_possibly_zstd_bytes(bundle_url, bundle_bytes)?;
     verify_signed_blob(&blob_bytes, &bundle_bytes, required_signer)?;
     Ok(blob_bytes)
 }
@@ -1911,36 +1917,87 @@ fn require_blake3_bytes(label: &str, expected: &str, bytes: &[u8]) -> Result<()>
     Ok(())
 }
 
-fn latest_catalog_release<'a>(
+fn required_blake3_digest<'a>(label: &str, digests: &'a [String]) -> Result<&'a str> {
+    digests
+        .iter()
+        .find(|digest| digest.starts_with("blake3:"))
+        .map(String::as_str)
+        .ok_or_else(|| anyhow!("{label} is missing a blake3 digest"))
+}
+
+fn official_plugin_v3_signer() -> RequiredSigner {
+    RequiredSigner {
+        github_repository: OFFICIAL_PLUGIN_REPO.to_string(),
+        github_workflow: Some(OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW.to_string()),
+    }
+}
+
+fn require_official_plugin_v3_signer(plugin_id: &str, signer: &RequiredSigner) -> Result<()> {
+    if signer.github_repository != OFFICIAL_PLUGIN_REPO
+        || signer.github_workflow.as_deref() != Some(OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW)
+    {
+        bail!(
+            "{plugin_id}: catalog-v3 entry requires unexpected signer {} workflow {:?}",
+            signer.github_repository,
+            signer.github_workflow
+        );
+    }
+    Ok(())
+}
+
+fn latest_catalog_v3_release<'a>(
     plugin_id: &str,
-    releases: &'a [ChildCatalogReleaseV2],
-) -> Result<&'a ChildCatalogReleaseV2> {
+    releases: &'a [CatalogV3Release],
+) -> Result<&'a CatalogV3Release> {
     releases
         .iter()
         .max_by_key(|release| Version::parse(release.version.trim_start_matches('v')).ok())
-        .ok_or_else(|| anyhow!("{plugin_id}: child catalog has no releases"))
+        .ok_or_else(|| anyhow!("{plugin_id}: catalog-v3 entry has no releases"))
 }
 
-fn manifest_asset_url(manifest_url: &str, asset: &str) -> Result<String> {
-    let (base, _) = manifest_url
-        .rsplit_once('/')
-        .ok_or_else(|| anyhow!("invalid manifest url {manifest_url}"))?;
-    Ok(format!("{base}/{asset}"))
+fn baseline_catalog_v3_zstd_artifact<'a>(
+    plugin_id: &str,
+    release: &'a CatalogV3Release,
+) -> Result<&'a CatalogV3PluginArtifact> {
+    release
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.runtime == "wasm32-wasip1"
+                && artifact.required_features.is_empty()
+                && artifact.url.ends_with(".wasm.zst")
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "{plugin_id} {} has no baseline wasm32-wasip1 .wasm.zst artifact",
+                release.version
+            )
+        })
 }
 
 fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
-    let catalog_signer = RequiredSignerV2 {
-        github_repository: OFFICIAL_PLUGIN_REPO.to_string(),
-        github_workflow: Some(OFFICIAL_RELEASE_WORKFLOW.to_string()),
-    };
-    let catalog_bytes = fetch_verified_bytes(
+    let catalog_signer = official_plugin_v3_signer();
+    let redirect_bytes = fetch_verified_bytes(
         ctx,
         &catalog_signer,
-        OFFICIAL_PLUGIN_CATALOG_URL,
-        &bundle_url_for(OFFICIAL_PLUGIN_CATALOG_URL),
+        OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL,
+        OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_BUNDLE_URL,
     )?;
-    let catalog: CatalogV2 = serde_json::from_slice(&catalog_bytes)
-        .context("failed to parse official plugin catalog")?;
+    let redirect: CatalogV3Redirect = serde_json::from_slice(&redirect_bytes)
+        .context("failed to parse official plugin catalog-v3 redirect")?;
+    let catalog_artifact = redirect
+        .artifacts
+        .first()
+        .ok_or_else(|| anyhow!("official plugin catalog-v3 redirect has no artifacts"))?;
+    let catalog_artifact_bytes = fetch_verified_bytes(
+        ctx,
+        &catalog_signer,
+        &catalog_artifact.url,
+        &catalog_artifact.signature_url,
+    )?;
+    let catalog_bytes = decode_possibly_zstd_bytes(&catalog_artifact.url, catalog_artifact_bytes)?;
+    let catalog: CatalogV3 = serde_json::from_slice(&catalog_bytes)
+        .context("failed to parse official plugin catalog-v3")?;
     let entry = catalog
         .plugins
         .iter()
@@ -1951,66 +2008,28 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<St
                 spec.plugin_id
             )
         })?;
-    let child_bytes = fetch_verified_bytes(
-        ctx,
-        &entry.required_signer,
-        &entry.child_catalog_url,
-        &bundle_url_for(&entry.child_catalog_url),
-    )?;
-    let child_bytes = decode_possibly_zstd_bytes(&entry.child_catalog_url, child_bytes)?;
-    let child: ChildCatalogV2 = serde_json::from_slice(&child_bytes)
-        .with_context(|| format!("failed to parse child catalog for {}", spec.plugin_id))?;
-    if child.id != spec.plugin_id {
-        bail!(
-            "child catalog id mismatch for {}: got {}",
-            spec.plugin_id,
-            child.id
-        );
-    }
-    let release = latest_catalog_release(spec.plugin_id, &child.releases)?;
-    let manifest_bytes = fetch_verified_bytes(
-        ctx,
-        &entry.required_signer,
-        &release.artifact_manifest_url,
-        &bundle_url_for(&release.artifact_manifest_url),
-    )?;
-    let manifest: PluginManifestV2 = serde_json::from_slice(&manifest_bytes)
-        .with_context(|| format!("failed to parse manifest for {}", spec.plugin_id))?;
-    if manifest.id != spec.plugin_id {
-        bail!(
-            "manifest id mismatch for {}: got {}",
-            spec.plugin_id,
-            manifest.id
-        );
-    }
-    let artifact_url = manifest_asset_url(&release.artifact_manifest_url, &manifest.artifact)?;
-    let artifact_bundle_url =
-        manifest_asset_url(&release.artifact_manifest_url, &manifest.signature)?;
+    require_official_plugin_v3_signer(spec.plugin_id, &entry.required_signer)?;
+    let release = latest_catalog_v3_release(spec.plugin_id, &entry.releases)?;
+    let artifact = baseline_catalog_v3_zstd_artifact(spec.plugin_id, release)?;
     let compressed_wasm = fetch_verified_bytes(
         ctx,
         &entry.required_signer,
-        &artifact_url,
-        &artifact_bundle_url,
+        &artifact.url,
+        &artifact.signature_url,
     )?;
     require_blake3_bytes(
         "compressed builtin artifact",
-        &manifest.artifact_digest,
+        required_blake3_digest("compressed builtin artifact", &artifact.digests)?,
         &compressed_wasm,
     )?;
-    if manifest.compression != "zstd" {
-        bail!(
-            "unsupported builtin artifact compression for {}: {}",
-            spec.plugin_id,
-            manifest.compression
-        );
-    }
     let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice()).with_context(|| {
         format!(
             "failed to decompress builtin artifact for {}",
             spec.plugin_id
         )
     })?;
-    require_blake3_bytes("builtin wasm", &manifest.wasm_digest, &wasm_bytes)?;
+    let wasm_digest = required_blake3_digest("builtin wasm", &artifact.wasm_digests)?;
+    require_blake3_bytes("builtin wasm", wasm_digest, &wasm_bytes)?;
     let mut descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
@@ -2020,12 +2039,12 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<St
             descriptor.id
         );
     }
-    if descriptor.version != manifest.version {
+    if descriptor.version != release.version {
         bail!(
             "descriptor version mismatch for {}: got {}, expected {}",
             spec.plugin_id,
             descriptor.version,
-            manifest.version
+            release.version
         );
     }
     descriptor.sdk_version = scryer_plugin_sdk::SDK_VERSION.to_string();
@@ -2043,15 +2062,15 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<St
         .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
     fs::write(
         &paths.description,
-        format!("{}\n", child.description.trim()),
+        format!("{}\n", entry.description.trim()),
     )
     .with_context(|| format!("failed to write {}", paths.description.display()))?;
 
     ok(format!(
-        "synced builtin {} {} from official catalog",
-        spec.plugin_id, manifest.version
+        "synced builtin {} {} from official catalog-v3",
+        spec.plugin_id, release.version
     ));
-    Ok(manifest.wasm_digest)
+    Ok(wasm_digest.to_string())
 }
 
 fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
@@ -2222,7 +2241,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     let release_args = release_args_signature(explicit.as_ref(), bump);
     let next_version = explicit.unwrap_or_else(|| next_version(&current_version, bump));
     let tag_name = format!("scryer-v{next_version}");
-    let catalog_url = OFFICIAL_PLUGIN_CATALOG_URL.to_string();
+    let catalog_url = OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL.to_string();
 
     println!(
         "   Latest tag : {}",
@@ -3266,6 +3285,71 @@ fn profile_hotpaths(ctx: &TaskContext, args: ProfileHotpathsArgs) -> Result<()> 
 mod tests {
     use super::*;
 
+    fn catalog_v3_plugin_artifact(
+        url: &str,
+        runtime: &str,
+        required_features: Vec<&str>,
+    ) -> CatalogV3PluginArtifact {
+        CatalogV3PluginArtifact {
+            runtime: runtime.to_string(),
+            required_features: required_features.into_iter().map(str::to_string).collect(),
+            url: url.to_string(),
+            signature_url: format!("{url}.bundle.zst"),
+            digests: vec!["blake3:compressed".to_string()],
+            wasm_digests: vec!["sha256:ignored".to_string(), "blake3:wasm".to_string()],
+        }
+    }
+
+    #[test]
+    fn catalog_v3_signer_uses_release_plugin_v3_workflow() {
+        let signer = official_plugin_v3_signer();
+
+        assert_eq!(signer.github_repository, OFFICIAL_PLUGIN_REPO);
+        assert_eq!(
+            signer.github_workflow.as_deref(),
+            Some(OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW)
+        );
+    }
+
+    #[test]
+    fn baseline_catalog_v3_zstd_artifact_selects_unfeatured_wasip1_zstd() {
+        let release = CatalogV3Release {
+            version: "0.2.15".to_string(),
+            artifacts: vec![
+                catalog_v3_plugin_artifact(
+                    "https://cdn.example/newznab.wasm.br",
+                    "wasm32-wasip1",
+                    vec![],
+                ),
+                catalog_v3_plugin_artifact(
+                    "https://cdn.example/newznab-simd.wasm.zst",
+                    "wasm32-wasip1",
+                    vec!["simd128"],
+                ),
+                catalog_v3_plugin_artifact(
+                    "https://cdn.example/newznab.wasm.zst",
+                    "wasm32-wasip1",
+                    vec![],
+                ),
+            ],
+        };
+
+        let artifact = baseline_catalog_v3_zstd_artifact("newznab", &release).unwrap();
+
+        assert_eq!(artifact.url, "https://cdn.example/newznab.wasm.zst");
+    }
+
+    #[test]
+    fn required_blake3_digest_ignores_other_digest_algorithms() {
+        let digests = vec!["sha256:ignored".to_string(), "blake3:expected".to_string()];
+
+        assert_eq!(
+            required_blake3_digest("test artifact", &digests).unwrap(),
+            "blake3:expected"
+        );
+        assert!(required_blake3_digest("test artifact", &[]).is_err());
+    }
+
     fn sample_release_dry_run_cache() -> ReleaseDryRunCache {
         ReleaseDryRunCache {
             success: true,
@@ -3277,7 +3361,7 @@ mod tests {
             latest_tag_seen: Some("scryer-v0.13.1".to_string()),
             next_version: "0.13.2".to_string(),
             tag_name: "scryer-v0.13.2".to_string(),
-            catalog_url: OFFICIAL_PLUGIN_CATALOG_URL.to_string(),
+            catalog_url: OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL.to_string(),
             validated_steps: REQUIRED_SCRYER_DRY_RUN_STEPS
                 .iter()
                 .map(|step| (*step).to_string())

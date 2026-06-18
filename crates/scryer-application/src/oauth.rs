@@ -91,6 +91,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Validation("unknown OAuth client".into()))?;
         let url = Url::parse(redirect_uri)
             .map_err(|_| AppError::Validation("invalid redirect_uri".into()))?;
+        reject_redirect_uri_fragment(&url)?;
         match client_id {
             OAUTH_GENERIC_NATIVE_CLIENT_ID if is_loopback_redirect(&url) => Ok(client),
             OAUTH_E2E_CLIENT_ID if self.oauth_e2e_client_enabled() && is_e2e_redirect(&url) => {
@@ -168,6 +169,9 @@ impl AppUseCase {
         code_verifier: &str,
     ) -> AppResult<OAuthTokenPair> {
         validate_pkce_code_verifier(code_verifier)?;
+        let redirect_url = Url::parse(redirect_uri)
+            .map_err(|_| AppError::Validation("invalid redirect_uri".into()))?;
+        reject_redirect_uri_fragment(&redirect_url)?;
         let code_id = oauth_token_id(code, CODE_PREFIX)?;
         let Some(record) = self
             .services
@@ -532,6 +536,15 @@ fn is_pkce_verifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
 
+fn reject_redirect_uri_fragment(url: &Url) -> AppResult<()> {
+    if url.fragment().is_some() {
+        return Err(AppError::Validation(
+            "redirect_uri must not contain a fragment".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn pkce_s256_challenge(code_verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest::digest(&digest::SHA256, code_verifier.as_bytes()).as_ref())
 }
@@ -613,5 +626,28 @@ mod tests {
         assert!(!is_e2e_redirect(
             &Url::parse("https://localhost:3000/oauth/e2e/callback").expect("url")
         ));
+    }
+
+    #[test]
+    fn oauth_redirect_uri_fragments_are_rejected() {
+        reject_redirect_uri_fragment(&Url::parse("http://127.0.0.1:49152/callback").expect("url"))
+            .expect("fragment-free loopback redirect");
+        reject_redirect_uri_fragment(
+            &Url::parse("http://localhost:3000/oauth/e2e/callback").expect("url"),
+        )
+        .expect("fragment-free e2e redirect");
+
+        assert!(
+            reject_redirect_uri_fragment(
+                &Url::parse("http://127.0.0.1:49152/callback#token").expect("url")
+            )
+            .is_err()
+        );
+        assert!(
+            reject_redirect_uri_fragment(
+                &Url::parse("http://localhost:3000/oauth/e2e/callback#token").expect("url")
+            )
+            .is_err()
+        );
     }
 }

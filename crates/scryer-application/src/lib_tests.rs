@@ -29870,6 +29870,42 @@ async fn oauth_access_token_omits_app_permissions_and_actor_capabilities() {
 }
 
 #[tokio::test]
+async fn oauth_redirect_validation_and_code_exchange_reject_fragments() {
+    let (app, _) = bootstrap();
+    let redirect_uri = "http://127.0.0.1:49152/callback";
+    let fragment_redirect_uri = "http://127.0.0.1:49152/callback#token";
+    let verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~abcdef";
+
+    app.validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, redirect_uri)
+        .expect("fragment-free redirect should remain valid");
+    match app
+        .validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, fragment_redirect_uri)
+        .expect_err("fragment-bearing redirect should be rejected")
+    {
+        AppError::Validation(message) => {
+            assert_eq!(message, "redirect_uri must not contain a fragment");
+        }
+        other => panic!("expected redirect_uri validation error, got {other}"),
+    }
+
+    match app
+        .exchange_oauth_authorization_code(
+            OAUTH_GENERIC_NATIVE_CLIENT_ID,
+            "scryer_oac_test.invalid",
+            fragment_redirect_uri,
+            verifier,
+        )
+        .await
+        .expect_err("fragment-bearing token redirect should be rejected")
+    {
+        AppError::Validation(message) => {
+            assert_eq!(message, "redirect_uri must not contain a fragment");
+        }
+        other => panic!("expected token redirect_uri validation error, got {other}"),
+    }
+}
+
+#[tokio::test]
 async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
     let (app, _) = bootstrap();
     let user = User {

@@ -720,7 +720,9 @@ impl SettingsMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
         let settings = app
             .acknowledge_auto_backup_disabled_missing_key_notice(&actor)
             .await
@@ -1393,7 +1395,9 @@ impl SettingsMutations {
     /// Mark the setup wizard as complete.
     async fn complete_setup(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
         app.complete_setup(&actor).await.map_err(to_gql_error)
     }
 }
