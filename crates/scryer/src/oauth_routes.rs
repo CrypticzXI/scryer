@@ -10,11 +10,13 @@ use url::Url;
 
 use scryer_application::{AppError, AppUseCase, JwtSessionScope, OAUTH_LIBRARY_SCOPE};
 
+use crate::base_path::BasePath;
 use crate::middleware::parse_bearer_token;
 
 #[derive(Clone)]
 pub(crate) struct OAuthRouteState {
     pub(crate) app: AppUseCase,
+    pub(crate) base_path: BasePath,
 }
 
 pub(crate) fn oauth_router(state: OAuthRouteState) -> Router {
@@ -129,7 +131,7 @@ async fn oauth_authorize_decision_inner(
             )
         })?;
     if claims.session_scope != JwtSessionScope::Full
-        || claims.oauth_client_id.is_some()
+        || claims.is_oauth_access_token()
         || AppUseCase::is_reserved_recovery_username(&user.username)
     {
         return Err(oauth_error(
@@ -313,13 +315,16 @@ async fn oauth_revoke(
     StatusCode::OK.into_response()
 }
 
-async fn oauth_metadata(headers: HeaderMap) -> Json<OAuthMetadataResponse> {
-    let issuer = request_origin(&headers);
+async fn oauth_metadata(State(state): State<OAuthRouteState>, headers: HeaderMap) -> Response {
+    let issuer = match oauth_issuer_origin(&headers) {
+        Ok(origin) => origin,
+        Err(response) => return *response,
+    };
     Json(OAuthMetadataResponse {
         issuer: issuer.clone(),
-        authorization_endpoint: format!("{issuer}/oauth/authorize"),
-        token_endpoint: format!("{issuer}/oauth/token"),
-        revocation_endpoint: format!("{issuer}/oauth/revoke"),
+        authorization_endpoint: absolute_oauth_url(&issuer, &state.base_path, "/oauth/authorize"),
+        token_endpoint: absolute_oauth_url(&issuer, &state.base_path, "/oauth/token"),
+        revocation_endpoint: absolute_oauth_url(&issuer, &state.base_path, "/oauth/revoke"),
         response_types_supported: vec!["code"],
         grant_types_supported: vec!["authorization_code", "refresh_token"],
         scopes_supported: vec![OAUTH_LIBRARY_SCOPE],
@@ -327,6 +332,7 @@ async fn oauth_metadata(headers: HeaderMap) -> Json<OAuthMetadataResponse> {
         revocation_endpoint_auth_methods_supported: vec!["none"],
         code_challenge_methods_supported: vec!["S256"],
     })
+    .into_response()
 }
 
 fn bearer_token_from_headers(headers: &HeaderMap) -> Option<&str> {
@@ -428,16 +434,70 @@ fn oauth_error(
         .into_response()
 }
 
-fn request_origin(headers: &HeaderMap) -> String {
+const SCRYER_PUBLIC_URL_ENV: &str = "SCRYER_PUBLIC_URL";
+
+fn oauth_issuer_origin(headers: &HeaderMap) -> Result<String, Box<Response>> {
+    if let Ok(public_url) = std::env::var(SCRYER_PUBLIC_URL_ENV)
+        && !public_url.trim().is_empty()
+    {
+        return parse_oauth_origin(public_url.trim(), SCRYER_PUBLIC_URL_ENV);
+    }
+
     let proto = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("http");
+        .unwrap_or("http")
+        .trim();
     let host = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
-    format!("{proto}://{host}")
+        .unwrap_or("localhost")
+        .trim();
+    if !safe_forwarded_value(proto) || !safe_forwarded_value(host) {
+        return Err(Box::new(oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid request origin",
+        )));
+    }
+    if !matches!(proto, "http" | "https") {
+        return Err(Box::new(oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid request scheme",
+        )));
+    }
+    parse_oauth_origin(&format!("{proto}://{host}"), "request origin")
+}
+
+fn parse_oauth_origin(value: &str, source: &str) -> Result<String, Box<Response>> {
+    let url = Url::parse(value).map_err(|_| {
+        Box::new(oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid {source}"),
+        ))
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(Box::new(oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid {source}"),
+        )));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn safe_forwarded_value(value: &str) -> bool {
+    !value.is_empty() && !value.contains(',') && !value.chars().any(char::is_control)
+}
+
+fn absolute_oauth_url(issuer: &str, base_path: &BasePath, suffix: &str) -> String {
+    format!("{}{}", issuer.trim_end_matches('/'), base_path.join(suffix))
 }
 
 #[cfg(test)]
@@ -494,6 +554,34 @@ mod tests {
                 .get(header::PRAGMA)
                 .and_then(|value| value.to_str().ok()),
             Some("no-cache")
+        );
+    }
+
+    #[test]
+    fn metadata_endpoint_urls_include_base_path() {
+        let base_path = BasePath::from_raw(Some("/scryer"));
+
+        assert_eq!(
+            absolute_oauth_url("https://scryer.example", &base_path, "/oauth/token"),
+            "https://scryer.example/scryer/oauth/token"
+        );
+    }
+
+    #[test]
+    fn issuer_origin_rejects_unsafe_forwarded_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https,http"));
+        headers.insert(header::HOST, HeaderValue::from_static("scryer.example"));
+
+        assert!(oauth_issuer_origin(&headers).is_err());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert(header::HOST, HeaderValue::from_static("scryer.example"));
+
+        assert_eq!(
+            oauth_issuer_origin(&headers).expect("safe origin"),
+            "https://scryer.example"
         );
     }
 }

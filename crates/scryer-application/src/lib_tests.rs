@@ -1,5 +1,6 @@
 use super::*;
 use async_trait::async_trait;
+use base64::Engine as _;
 use scryer_domain::{
     Collection, CollectionType, DomainEventFilter, DomainEventPayload, DomainEventType, Episode,
     EpisodeType, EventType, ImportSkipReason, ImportType, JobRunCompletedEventData,
@@ -5270,6 +5271,7 @@ struct StubDownloadClient {
     submit_error: Arc<Mutex<Option<StubSubmitError>>>,
     grab_info_hash: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
+    submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
     queue_calls: Arc<Mutex<usize>>,
     queue_for_title_calls: Arc<Mutex<Vec<String>>>,
     history_calls: Arc<Mutex<usize>>,
@@ -5327,6 +5329,10 @@ impl DownloadClient for StubDownloadClient {
                 .clone()
                 .unwrap_or_else(|| request.title.name.clone()),
         );
+        self.submitted_source_passwords
+            .lock()
+            .await
+            .push(request.source_password.clone());
         if let Some(error) = self.submit_error.lock().await.clone() {
             return Err(error.into_app_error());
         }
@@ -6459,6 +6465,7 @@ fn test_admin_user() -> User {
             scryer_domain::LibraryPermission::Request,
             scryer_domain::LibraryPermission::AutoApproveRequests,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
@@ -6619,6 +6626,7 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         default_library: scryer_domain::LibraryPermissionMask::from_permissions([
             scryer_domain::LibraryPermission::Request,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
@@ -6696,6 +6704,7 @@ fn library_permission_user_with_grants(
             })
             .collect(),
         default_library: scryer_domain::LibraryPermissionMask::NONE,
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
     };
     user
@@ -13709,6 +13718,7 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
         source_hint: Some("https://example.invalid/releases/queued-once.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Queued.Once.2026.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     let first = app
@@ -13773,6 +13783,7 @@ async fn add_title_and_queue_download_records_accepted_torrent_hash_fingerprint(
         source_hint: Some("https://example.invalid/releases/queued-torrent.torrent".to_string()),
         source_kind: Some(DownloadSourceKind::TorrentFile),
         source_title: Some("Queued.Torrent.2026.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     app.add_title_and_queue_download_with_outcome(&user, request, queued_release)
@@ -13819,6 +13830,7 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
         source_hint: Some("https://example.invalid/releases/existing-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     let first = app
@@ -13872,6 +13884,131 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
             .await
             .as_slice(),
         &["Existing Queue".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_submits_source_password_hint() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Protected Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let outcome = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                source_hint: Some("https://example.invalid/releases/protected.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Protected.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: Some(" archive-password ".to_string()),
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect("queue should succeed");
+    let QueueDownloadOutcome::Queued(queued) = outcome else {
+        panic!("queue should not conflict");
+    };
+
+    assert_eq!(
+        queued.queued_release.source_password.as_deref(),
+        Some("archive-password")
+    );
+    assert_eq!(
+        download_client
+            .submitted_source_passwords
+            .lock()
+            .await
+            .as_slice(),
+        &[Some("archive-password".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_drops_source_password_flags() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    for (index, marker) in ["1", "true", "protected", "0", "false", "no", "  "]
+        .into_iter()
+        .enumerate()
+    {
+        let title = app
+            .add_title(
+                &user,
+                NewTitle {
+                    name: format!("Flag Queue {index}"),
+                    facet: MediaFacet::Movie,
+                    monitored: true,
+                    tags: vec![],
+                    external_ids: vec![],
+                    min_availability: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create title");
+
+        let outcome = app
+            .queue_existing_title_download(
+                &user,
+                &title.id,
+                QueuedReleaseSelection {
+                    source_hint: Some(format!("https://example.invalid/releases/flag-{index}.nzb")),
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    source_title: Some(format!("Flag.Queue.{index}.2026.1080p-WEB")),
+                    source_password: Some(marker.to_string()),
+                },
+                SubmissionScope::Title,
+                SubmissionConflictPolicy::Abort,
+            )
+            .await
+            .expect("queue should succeed");
+        let QueueDownloadOutcome::Queued(queued) = outcome else {
+            panic!("queue should not conflict");
+        };
+        assert_eq!(
+            queued.queued_release.source_password, None,
+            "marker {marker:?} should not be retained as a password"
+        );
+    }
+
+    assert!(
+        download_client
+            .submitted_source_passwords
+            .lock()
+            .await
+            .iter()
+            .all(Option::is_none)
     );
 }
 
@@ -13939,6 +14076,7 @@ async fn queue_existing_title_download_episode_scope_records_grabbed_history_con
                 source_hint: Some(source_hint.to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(source_title.to_string()),
+                source_password: None,
             },
             SubmissionScope::Episode {
                 episode_id: episode.id.clone(),
@@ -14024,6 +14162,7 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
                 ),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Manual.Deferred.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
@@ -14100,6 +14239,7 @@ async fn queue_existing_title_download_ignores_stale_matching_submission() {
         source_hint: Some("https://example.invalid/releases/stale-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Stale.Queue.2026.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     app.queue_existing_title_download(
@@ -14194,6 +14334,7 @@ async fn queue_existing_title_download_reports_scope_conflict() {
                 source_hint: Some("https://example.invalid/replacement.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Blocked.Queue.Replacement.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
@@ -14271,6 +14412,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
                 source_hint: Some("https://example.invalid/directors-cut.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Queue.Directors.Cut.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
@@ -14378,6 +14520,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
                 source_title: Some(
                     "Additional.Series.Movie.Commentary.2026.1080p.WEB-DL".to_string(),
                 ),
+                source_password: None,
             },
             scope.clone(),
             SubmissionConflictPolicy::Abort,
@@ -14429,6 +14572,7 @@ async fn queue_existing_title_download_additional_file_dedupes_by_scope() {
         source_hint: Some("https://example.invalid/same-release.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Additional.Episode.Dedupe.S01E01.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     for episode_id in ["episode-1", "episode-2"] {
@@ -14520,6 +14664,7 @@ async fn queue_existing_title_download_additional_file_rejects_collection_scope(
                 source_hint: Some("https://example.invalid/season-pack.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Collection.Reject.S01.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Collection {
                 collection_id: "season-1".to_string(),
@@ -14584,6 +14729,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_movie_title_s
                     source_hint: Some("https://example.invalid/title-scope.nzb".to_string()),
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(format!("{}.2026.1080p.WEB-DL", name.replace(' ', "."))),
+                    source_password: None,
                 },
                 SubmissionScope::Title,
                 SubmissionConflictPolicy::Abort,
@@ -14658,6 +14804,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_single_episod
                     source_title: Some(
                         "Additional.Episode.Scope.Reject.S01.1080p.WEB-DL".to_string(),
                     ),
+                    source_password: None,
                 },
                 scope,
                 SubmissionConflictPolicy::Abort,
@@ -14735,6 +14882,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
                 source_hint: Some("https://example.invalid/new.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.Queue.New.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::ReplaceEarly,
@@ -14812,6 +14960,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
                 source_hint: Some("https://example.invalid/new-all.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.All.Queue.New.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::ReplaceEarly,
@@ -15254,6 +15403,7 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         source_hint: Some("https://example.invalid/token-queue.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Token.Queue.2026.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let candidate_token = app
         .issue_release_candidate_token(
@@ -15345,6 +15495,7 @@ async fn queue_existing_title_download_additional_file_uses_signed_candidate_sco
         source_hint: Some("https://example.invalid/signed-episode.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Queue.S01E01.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let signed_scope = SubmissionScope::Episode {
         episode_id: "episode-1".to_string(),
@@ -15431,6 +15582,7 @@ async fn queue_existing_title_download_additional_file_rejects_signed_episode_se
         source_hint: Some("https://example.invalid/signed-episode-set.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Set.Reject.S01.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let candidate_token = app
         .issue_release_candidate_token(
@@ -16751,6 +16903,7 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
             scryer_domain::LibraryPermission::View,
             scryer_domain::LibraryPermission::ManageTitles,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
@@ -18430,6 +18583,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         is_trackable: true,
         import_attempted: true,
         path_missing_since: None,
+        no_video_import_retry: None,
         skip_reacquire_on_failure: false,
     };
 
@@ -20715,6 +20869,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        no_video_import_retry: None,
         skip_reacquire_on_failure: false,
     };
 
@@ -21455,6 +21610,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        no_video_import_retry: None,
         skip_reacquire_on_failure: false,
     };
 
@@ -21588,6 +21744,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        no_video_import_retry: None,
         skip_reacquire_on_failure: true,
     };
 
@@ -21822,6 +21979,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        no_video_import_retry: None,
         skip_reacquire_on_failure: false,
     };
 
@@ -23813,6 +23971,193 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
             && decision.release_url.as_deref() == Some(shared_url)
             && decision.decision_code == "eligible"
     }));
+}
+
+#[tokio::test]
+async fn insert_pending_release_normalizes_source_password_flags() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+        download_client,
+        download_submissions,
+        pending_releases.clone(),
+        wanted_items.clone(),
+        Arc::new(MockIndexerClient),
+    );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Pending Password Movie",
+        2024,
+    )
+    .await;
+    let wanted = wanted_items
+        .get_wanted_item_by_id(&wanted_id)
+        .await
+        .expect("load wanted item")
+        .expect("wanted item exists");
+
+    for (index, (label, raw, expected)) in [
+        ("one", Some("1"), None),
+        ("true", Some("true"), None),
+        ("protected", Some("protected"), None),
+        ("zero", Some("0"), None),
+        ("false", Some("false"), None),
+        ("empty", Some("  "), None),
+        ("real", Some("actual-password"), Some("actual-password")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        app.insert_pending_release(
+            &wanted,
+            &title,
+            &format!("Pending.Password.{label}.2024.1080p-GRP"),
+            Some("https://example.invalid/pending-password.nzb"),
+            Some(DownloadSourceKind::NzbUrl),
+            Some(1_000),
+            1000 + index as i32,
+            None,
+            Some("test-indexer"),
+            Some(label),
+            10,
+            raw,
+            Some("2024-01-01T00:00:00Z"),
+            None,
+        )
+        .await;
+
+        let stored = pending_releases
+            .store
+            .lock()
+            .await
+            .iter()
+            .find(|release| release.release_guid.as_deref() == Some(label))
+            .cloned()
+            .expect("pending release should be stored");
+        assert_eq!(stored.source_password.as_deref(), expected);
+    }
+}
+
+#[tokio::test]
+async fn legacy_pending_release_placeholder_password_is_normalized_on_grab() {
+    let release_title = "Legacy.Placeholder.Password.Movie.2024.1080p-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Legacy Placeholder Password Movie",
+        2024,
+    )
+    .await;
+    let mut pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    pending.source_password = Some("1".to_string());
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release");
+
+    assert!(grabbed);
+    assert_eq!(
+        download_client
+            .submitted_source_passwords
+            .lock()
+            .await
+            .as_slice(),
+        &[None]
+    );
+    assert!(
+        release_attempts
+            .attempts
+            .lock()
+            .await
+            .iter()
+            .all(|attempt| attempt.source_password.is_none())
+    );
+}
+
+#[tokio::test]
+async fn legacy_pending_release_real_password_is_preserved_on_grab() {
+    let release_title = "Legacy.Real.Password.Movie.2024.1080p-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Legacy Real Password Movie",
+        2024,
+    )
+    .await;
+    let mut pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    pending.source_password = Some("actual-password".to_string());
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release");
+
+    assert!(grabbed);
+    let submitted_passwords = download_client.submitted_source_passwords.lock().await;
+    assert_eq!(submitted_passwords.len(), 1);
+    assert!(matches!(
+        submitted_passwords.first().and_then(|password| password.as_deref()),
+        Some(password) if password == "actual-password"
+    ));
+    assert!(
+        release_attempts
+            .attempts
+            .lock()
+            .await
+            .iter()
+            .any(|attempt| attempt.source_password.as_deref() == Some("actual-password"))
+    );
 }
 
 #[tokio::test]
@@ -29292,6 +29637,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
@@ -29480,7 +29826,155 @@ async fn permission_claims_survive_token_round_trip() {
 }
 
 #[tokio::test]
-async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope() {
+async fn oauth_access_token_omits_app_permissions_and_actor_capabilities() {
+    let (app, admin) = bootstrap();
+    let user = create_user_with_permissions(
+        &app,
+        &admin,
+        "oauth_admin_claims",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::UserManagement,
+            TestPermissionPreset::ConfigManagement,
+        ],
+    )
+    .await
+    .expect("create user");
+
+    let token = app
+        .issue_oauth_access_token(&user, "generic-native", "grant-oauth-admin-claims")
+        .await
+        .expect("issue OAuth access token");
+    let decoded =
+        jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(&token).expect("token should decode");
+
+    assert!(decoded.claims.app_permissions.is_empty());
+    assert!(decoded.claims.actor_capabilities.is_empty());
+    assert_eq!(
+        decoded.claims.oauth_client_id.as_deref(),
+        Some("generic-native")
+    );
+    assert_eq!(
+        decoded.claims.oauth_grant_id.as_deref(),
+        Some("grant-oauth-admin-claims")
+    );
+
+    let (_, token_claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("authenticate OAuth token");
+    assert!(token_claims.is_oauth_access_token());
+    assert!(token_claims.actor_capabilities.is_empty());
+}
+
+#[tokio::test]
+async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-oauth-app-permission-claim".to_string(),
+        username: "oauth_app_permission_claim".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create user");
+    app.ensure_jwt_signing_keys_loaded()
+        .await
+        .expect("seed signing key cache");
+
+    let claims = JwtClaims {
+        sub: user.id.clone(),
+        exp: Utc::now().timestamp() + 3600,
+        iat: Utc::now().timestamp(),
+        iss: app.auth.issuer.clone(),
+        username: user.username.clone(),
+        app_permissions: vec!["manageSystemSettings".to_string()],
+        library_permissions: vec![],
+        mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
+        actor_capabilities: vec![],
+        oauth_client_id: Some("generic-native".to_string()),
+        oauth_grant_id: Some("grant-with-app-permission".to_string()),
+        auth_scope: JwtSessionScope::Full,
+    };
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode token");
+
+    let error = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect_err("OAuth token with app permissions should be rejected");
+    match error {
+        AppError::Unauthorized(message) => {
+            assert_eq!(message, "OAuth tokens cannot carry app permissions");
+        }
+        other => panic!("expected OAuth app-permission rejection, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication() {
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-oauth-actor-capability-claim".to_string(),
+        username: "oauth_actor_capability_claim".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create user");
+    app.ensure_jwt_signing_keys_loaded()
+        .await
+        .expect("seed signing key cache");
+
+    let claims = JwtClaims {
+        sub: user.id.clone(),
+        exp: Utc::now().timestamp() + 3600,
+        iat: Utc::now().timestamp(),
+        iss: app.auth.issuer.clone(),
+        username: user.username.clone(),
+        app_permissions: vec![],
+        library_permissions: vec![],
+        mfa_verified_until: None,
+        mfa_step_up_verified_until: None,
+        actor_capabilities: vec!["manageOwnAccount".to_string()],
+        oauth_client_id: Some("generic-native".to_string()),
+        oauth_grant_id: Some("grant-with-actor-capability".to_string()),
+        auth_scope: JwtSessionScope::Full,
+    };
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode token");
+
+    let error = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect_err("OAuth token with actor capabilities should be rejected");
+    match error {
+        AppError::Unauthorized(message) => {
+            assert_eq!(message, "OAuth tokens cannot carry actor capabilities");
+        }
+        other => panic!("expected OAuth actor-capability rejection, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn release_candidate_token_resolves_password_without_exposing_it() {
     let (app, admin) = bootstrap();
     let (_created, authenticated_user) = create_authenticated_user(
         &app,
@@ -29497,6 +29991,7 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: Some(" release-password ".to_string()),
     };
 
     let token = app
@@ -29508,6 +30003,21 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
         )
         .await
         .expect("candidate token should issue");
+    let payload = token.split('.').nth(1).expect("jwt payload segment");
+    let payload_json = String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("jwt payload should decode"),
+    )
+    .expect("jwt payload should be utf-8");
+    assert!(
+        !payload_json.contains("release-password"),
+        "candidate token payload must not contain archive password: {payload_json}"
+    );
+    let claims = jsonwebtoken::dangerous::insecure_decode::<ReleaseCandidateTokenClaims>(&token)
+        .expect("candidate token should decode")
+        .claims;
+    assert!(claims.password_ref.is_some());
     let decoded = app
         .verify_release_candidate_token(
             &authenticated_user,
@@ -29521,6 +30031,107 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
     assert_eq!(decoded.source_hint, selection.source_hint);
     assert_eq!(decoded.source_kind, selection.source_kind);
     assert_eq!(decoded.source_title, selection.source_title);
+    assert_eq!(decoded.source_password.as_deref(), Some("release-password"));
+}
+
+#[tokio::test]
+async fn release_candidate_token_rejects_missing_password_ticket() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_missing_ticket_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: Some("release-password".to_string()),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-missing-ticket",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    app.runtime
+        .acquisition
+        .release_candidate_passwords
+        .lock()
+        .expect("ticket store")
+        .clear();
+
+    let error = app
+        .verify_release_candidate_token(
+            &authenticated_user,
+            "title-missing-ticket",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await
+        .expect_err("missing password ticket should reject token");
+    assert!(
+        error
+            .to_string()
+            .contains("release candidate expired; search again"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn release_candidate_token_drops_placeholder_password_flags() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_placeholder_password_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        source_hint: Some("https://example.invalid/download.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: Some("protected".to_string()),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-placeholder-password",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let claims = jsonwebtoken::dangerous::insecure_decode::<ReleaseCandidateTokenClaims>(&token)
+        .expect("candidate token should decode")
+        .claims;
+    assert_eq!(claims.password_ref, None);
+    let decoded = app
+        .verify_release_candidate_token(
+            &authenticated_user,
+            "title-placeholder-password",
+            &SubmissionScope::Title,
+            &token,
+        )
+        .await
+        .expect("candidate token should verify");
+    assert_eq!(decoded.source_password, None);
 }
 
 #[tokio::test]
@@ -29541,6 +30152,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         source_hint: Some("https://example.invalid/range-pack.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let scope = SubmissionScope::EpisodeSet {
         episode_ids: vec![
@@ -29578,6 +30190,7 @@ async fn release_candidate_token_rejects_tampering() {
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     let token = app
@@ -29627,6 +30240,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
 
     let token = app
@@ -29691,6 +30305,7 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let token = app
         .issue_release_candidate_token(
@@ -29735,6 +30350,7 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         source_hint: Some("https://example.invalid/download.nzb".to_string()),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
     };
     let token = app
         .issue_release_candidate_token(
@@ -29966,6 +30582,7 @@ async fn expired_token_returns_unauthorized() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
@@ -30004,6 +30621,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,
@@ -30264,6 +30882,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         library_permissions: vec![],
         mfa_verified_until: None,
         mfa_step_up_verified_until: None,
+        actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
         auth_scope: JwtSessionScope::Full,

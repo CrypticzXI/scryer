@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use scryer_domain::{
-    AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet, User,
-    UserAuthorization,
+    ActorCapability, ActorCapabilityMask, AppPermission, AppPermissionMask, LibraryPermission,
+    LibraryPermissionMask, MediaFacet, User, UserAuthorization,
 };
 
 use crate::{AppError, AppResult, AppUseCase};
@@ -51,6 +51,7 @@ impl AppUseCase {
             app,
             libraries,
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         })
     }
@@ -77,6 +78,24 @@ impl AppUseCase {
         if authorization
             .app
             .contains(AppPermissionMask::from_permission(permission))
+        {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ))
+        }
+    }
+
+    pub async fn require_actor_capability(
+        &self,
+        actor: &User,
+        capability: ActorCapability,
+    ) -> AppResult<()> {
+        let authorization = self.authorization_for_actor(actor).await?;
+        if authorization
+            .actor_capabilities
+            .contains(ActorCapabilityMask::from_capability(capability))
         {
             Ok(())
         } else {

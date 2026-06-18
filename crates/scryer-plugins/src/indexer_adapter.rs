@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerRoutingPlan,
-    IndexerSearchResponse, IndexerSearchResult, SearchMode,
+    IndexerSearchResponse, IndexerSearchResult, SearchMode, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
@@ -669,6 +669,22 @@ fn explicit_source_kind(
     }
 }
 
+fn plugin_password_hint(
+    result: &scryer_plugin_sdk::PluginSearchResult,
+    extra: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<String> {
+    result
+        .password_hint
+        .as_deref()
+        .and_then(|value| normalize_release_password(Some(value)))
+        .or_else(|| {
+            extra
+                .get("password")
+                .and_then(|value| value.as_str())
+                .and_then(|value| normalize_release_password(Some(value)))
+        })
+}
+
 fn insert_json<T: serde::Serialize>(
     extra: &mut std::collections::HashMap<String, serde_json::Value>,
     key: &str,
@@ -755,6 +771,7 @@ impl IndexerClient for WasmIndexerClient {
             .into_iter()
             .map(|r| {
                 let extra = merge_result_extra(&r);
+                let password_hint = plugin_password_hint(&r, &extra);
                 let source_kind = explicit_source_kind(&r, &extra).or_else(|| {
                     DownloadSourceKind::infer_from_indexer_result(
                         Some(self.descriptor.plugin_type()),
@@ -785,7 +802,7 @@ impl IndexerClient for WasmIndexerClient {
                         Some(r.subtitles)
                     },
                     indexer_grabs: r.grabs,
-                    password_hint: r.password_hint,
+                    password_hint,
                     candidate_token: None,
                     parsed_release_metadata: None,
                     quality_profile_decision: None,
@@ -907,6 +924,61 @@ mod tests {
         assert_eq!(
             extra.get("provider_specific"),
             Some(&serde_json::Value::from("kept"))
+        );
+    }
+
+    #[test]
+    fn plugin_password_hint_rejects_provider_password_flags() {
+        for marker in [
+            "1",
+            "true",
+            "protected",
+            "passworded",
+            "0",
+            "false",
+            "no",
+            "  ",
+        ] {
+            let result = scryer_plugin_sdk::PluginSearchResult {
+                provider_extra: std::collections::HashMap::from([(
+                    "password".to_string(),
+                    serde_json::Value::from(marker),
+                )]),
+                ..scryer_plugin_sdk::PluginSearchResult::default()
+            };
+            let extra = merge_result_extra(&result);
+
+            assert_eq!(
+                plugin_password_hint(&result, &extra),
+                None,
+                "marker {marker:?} must not become a password hint"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_password_hint_preserves_real_passwords() {
+        let result = scryer_plugin_sdk::PluginSearchResult {
+            provider_extra: std::collections::HashMap::from([(
+                "password".to_string(),
+                serde_json::Value::from(" archive-password "),
+            )]),
+            ..scryer_plugin_sdk::PluginSearchResult::default()
+        };
+        let extra = merge_result_extra(&result);
+        assert_eq!(
+            plugin_password_hint(&result, &extra).as_deref(),
+            Some("archive-password")
+        );
+
+        let result = scryer_plugin_sdk::PluginSearchResult {
+            password_hint: Some(" direct-password ".to_string()),
+            ..scryer_plugin_sdk::PluginSearchResult::default()
+        };
+        let extra = merge_result_extra(&result);
+        assert_eq!(
+            plugin_password_hint(&result, &extra).as_deref(),
+            Some("direct-password")
         );
     }
 

@@ -54,8 +54,25 @@ pub struct TrackedDownload {
     pub import_attempted: bool,
     /// When a completed download path first became unavailable.
     pub path_missing_since: Option<DateTime<Utc>>,
+    /// Runtime-only retry state for completed imports that temporarily contain no videos.
+    pub no_video_import_retry: Option<NoVideoImportRetryState>,
     /// Manual failure actions can record the failure without reacquiring.
     pub skip_reacquire_on_failure: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoVideoImportRetryState {
+    pub signature: NoVideoImportSourceSignature,
+    pub attempts: u8,
+    pub next_retry_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoVideoImportSourceSignature {
+    pub source_path: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    pub latest_mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +120,60 @@ impl TrackedDownload {
     pub fn fail(&mut self) {
         self.status = TrackedDownloadStatus::Error;
         self.state = TrackedDownloadState::FailedPending;
+    }
+
+    pub(crate) fn merge_background_work_state_from(&mut self, finished: TrackedDownload) {
+        self.state = finished.state;
+        self.status = finished.status;
+        self.status_messages = finished.status_messages;
+        self.title_id = finished.title_id;
+        self.facet = finished.facet;
+        self.source_title = finished.source_title;
+        self.indexer = finished.indexer;
+        self.added_at = finished.added_at;
+        self.notified_manual_interaction = finished.notified_manual_interaction;
+        self.match_type = finished.match_type;
+        self.import_attempted = finished.import_attempted;
+        self.path_missing_since = finished.path_missing_since;
+        self.no_video_import_retry = finished.no_video_import_retry;
+    }
+
+    pub(crate) fn reset_for_import_retry(&mut self) {
+        self.state = TrackedDownloadState::ImportPending;
+        self.status = TrackedDownloadStatus::Ok;
+        self.status_messages.clear();
+        self.import_attempted = false;
+        self.path_missing_since = None;
+        self.no_video_import_retry = None;
+        self.skip_reacquire_on_failure = false;
+    }
+
+    pub(crate) fn schedule_no_video_import_retry(
+        &mut self,
+        signature: NoVideoImportSourceSignature,
+        attempts: u8,
+        next_retry_at: DateTime<Utc>,
+        message: impl Into<String>,
+    ) {
+        self.no_video_import_retry = Some(NoVideoImportRetryState {
+            signature,
+            attempts,
+            next_retry_at,
+        });
+        self.state = TrackedDownloadState::ImportPending;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message.into()];
+    }
+
+    pub(crate) fn block_no_video_import_after_retries(&mut self, message: impl Into<String>) {
+        self.no_video_import_retry = None;
+        self.state = TrackedDownloadState::ImportBlocked;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message.into()];
+    }
+
+    pub(crate) fn clear_no_video_import_retry(&mut self) {
+        self.no_video_import_retry = None;
     }
 }
 
@@ -181,6 +252,7 @@ impl TrackedDownloadService {
             client_item,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -191,6 +263,13 @@ impl TrackedDownloadService {
 
     pub fn find(&self, id: &str) -> Option<&TrackedDownload> {
         self.cache.get(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_for_tests(&mut self, tracked: TrackedDownload) {
+        let id = tracked.id.clone();
+        self.last_seen_at.insert(id.clone(), Utc::now());
+        self.cache.insert(id, tracked);
     }
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut TrackedDownload> {
@@ -1015,7 +1094,7 @@ mod tests {
         JwtAuthConfig, PendingTitleHydration, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use scryer_domain::{
         CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
         ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, User,
@@ -2014,6 +2093,7 @@ mod tests {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,
                 default_library: permissions,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }
@@ -2086,8 +2166,75 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         }
+    }
+
+    fn no_video_retry_state(
+        attempts: u8,
+        next_retry_at: chrono::DateTime<Utc>,
+    ) -> NoVideoImportRetryState {
+        NoVideoImportRetryState {
+            signature: NoVideoImportSourceSignature {
+                source_path: "/tmp/download".to_string(),
+                file_count: 3,
+                total_bytes: 1234,
+                latest_mtime: Some(Utc::now()),
+            },
+            attempts,
+            next_retry_at,
+        }
+    }
+
+    #[test]
+    fn merge_background_work_state_preserves_no_video_retry_state() {
+        let mut tracked = build_tracked_download("dl-1");
+        let mut finished = build_tracked_download("dl-1");
+        let retry = no_video_retry_state(2, Utc::now() + Duration::seconds(120));
+
+        finished.state = TrackedDownloadState::ImportPending;
+        finished.status = TrackedDownloadStatus::Warning;
+        finished.status_messages = vec!["retry later".to_string()];
+        finished.title_id = Some("title-1".to_string());
+        finished.match_type = TitleMatchType::Submission;
+        finished.import_attempted = true;
+        finished.path_missing_since = Some(Utc::now());
+        finished.no_video_import_retry = Some(retry.clone());
+
+        tracked.merge_background_work_state_from(finished);
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert_eq!(tracked.status_messages, vec!["retry later"]);
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert!(tracked.import_attempted);
+        assert!(tracked.path_missing_since.is_some());
+        assert_eq!(tracked.no_video_import_retry, Some(retry));
+    }
+
+    #[test]
+    fn reset_for_import_retry_clears_stale_no_video_retry_state() {
+        let mut tracked = build_tracked_download("dl-1");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        tracked.status = TrackedDownloadStatus::Warning;
+        tracked.status_messages = vec!["blocked".to_string()];
+        tracked.import_attempted = true;
+        tracked.path_missing_since = Some(Utc::now());
+        tracked.no_video_import_retry =
+            Some(no_video_retry_state(1, Utc::now() + Duration::seconds(30)));
+        tracked.skip_reacquire_on_failure = true;
+
+        tracked.reset_for_import_retry();
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+        assert!(tracked.status_messages.is_empty());
+        assert!(!tracked.import_attempted);
+        assert!(tracked.path_missing_since.is_none());
+        assert!(tracked.no_video_import_retry.is_none());
+        assert!(!tracked.skip_reacquire_on_failure);
     }
 
     #[test]
@@ -2988,6 +3135,7 @@ mod tests {
                     is_trackable: true,
                     import_attempted: false,
                     path_missing_since: None,
+                    no_video_import_retry: None,
                     skip_reacquire_on_failure: false,
                 },
             );
@@ -3091,6 +3239,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -3124,6 +3273,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -3274,6 +3424,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -3475,6 +3626,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 

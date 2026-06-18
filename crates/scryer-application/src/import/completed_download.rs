@@ -21,7 +21,7 @@ use crate::import_workflow::{
     completed_import_result_is_retryable, import_completed_download,
     resolve_completed_download_origin_for_import,
 };
-use crate::tracked_downloads::TrackedDownload;
+use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
 use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
@@ -34,6 +34,9 @@ const PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE: &str = "Completed download path is st
 const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const FOREIGN_CATEGORY_BLOCKED_MESSAGE: &str = "Download wasn't grabbed by Scryer and is not in a Scryer download category. Manual confirmation required before import.";
+const NO_VIDEO_FIRST_RETRY_DELAY_SECS: i64 = 30;
+const NO_VIDEO_SECOND_RETRY_DELAY_SECS: i64 = 120;
+const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
@@ -1041,6 +1044,112 @@ fn has_id_only_conflict(td: &TrackedDownload) -> bool {
         .any(|message| message == ID_ONLY_CONFLICT_MESSAGE)
 }
 
+async fn apply_no_video_import_backoff(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    result: &ImportResult,
+) -> bool {
+    if result.skip_reason != Some(ImportSkipReason::NoVideoFiles) {
+        return false;
+    }
+
+    let signature = no_video_import_source_signature(&result.source_path);
+    let attempts = td
+        .no_video_import_retry
+        .as_ref()
+        .filter(|retry| retry.signature == signature)
+        .map(|retry| retry.attempts.saturating_add(1))
+        .unwrap_or(1);
+
+    if attempts >= NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS {
+        td.block_no_video_import_after_retries(format!(
+            "{} No video files were found after {attempts} unchanged checks. Manual review required.",
+            import_result_message(result, ImportStatus::Skipped)
+        ));
+        return true;
+    }
+
+    let delay = if attempts == 1 {
+        Duration::seconds(NO_VIDEO_FIRST_RETRY_DELAY_SECS)
+    } else {
+        Duration::seconds(NO_VIDEO_SECOND_RETRY_DELAY_SECS)
+    };
+    let next_retry_at = Utc::now() + delay;
+
+    let result_json = serde_json::to_string(result).ok();
+    if let Err(err) = app
+        .update_import_status_and_notify(&result.import_id, ImportStatus::Pending, result_json)
+        .await
+    {
+        tracing::warn!(
+            import_id = result.import_id.as_str(),
+            error = %err,
+            "failed to restore no-video import attempt to pending status"
+        );
+    }
+
+    td.schedule_no_video_import_retry(
+        signature,
+        attempts,
+        next_retry_at,
+        format!(
+            "{} Retrying automatically at {}.",
+            import_result_message(result, ImportStatus::Skipped),
+            next_retry_at.to_rfc3339()
+        ),
+    );
+    true
+}
+
+fn no_video_import_source_signature(source_path: &str) -> NoVideoImportSourceSignature {
+    let path = Path::new(source_path);
+    let mut signature = NoVideoImportSourceSignature {
+        source_path: source_path.to_string(),
+        file_count: 0,
+        total_bytes: 0,
+        latest_mtime: None,
+    };
+    accumulate_no_video_source_signature(path, &mut signature);
+    signature
+}
+
+fn accumulate_no_video_source_signature(path: &Path, signature: &mut NoVideoImportSourceSignature) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    update_no_video_signature_mtime(signature, metadata.modified().ok());
+
+    if metadata.is_file() {
+        signature.file_count = signature.file_count.saturating_add(1);
+        signature.total_bytes = signature.total_bytes.saturating_add(metadata.len());
+        return;
+    }
+
+    if metadata.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            accumulate_no_video_source_signature(&entry.path(), signature);
+        }
+    }
+}
+
+fn update_no_video_signature_mtime(
+    signature: &mut NoVideoImportSourceSignature,
+    modified: Option<std::time::SystemTime>,
+) {
+    let Some(modified) = modified else {
+        return;
+    };
+    let modified = DateTime::<Utc>::from(modified);
+    if signature
+        .latest_mtime
+        .is_none_or(|latest| modified > latest)
+    {
+        signature.latest_mtime = Some(modified);
+    }
+}
+
 async fn apply_import_result(
     app: &AppUseCase,
     td: &mut TrackedDownload,
@@ -1049,6 +1158,7 @@ async fn apply_import_result(
 ) -> bool {
     let already_imported = result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
+        td.clear_no_video_import_retry();
         if verify_import(app, td, files_imported_this_pass).await {
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
@@ -1070,6 +1180,12 @@ async fn apply_import_result(
         ];
         return false;
     }
+
+    if apply_no_video_import_backoff(app, td, &result).await {
+        return false;
+    }
+
+    td.clear_no_video_import_retry();
 
     if completed_import_result_is_retryable(&result) {
         let result_json = serde_json::to_string(&result).ok();
@@ -2898,6 +3014,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         }
     }
@@ -4235,7 +4352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_result_keeps_retryable_no_video_import_pending() {
+    async fn apply_result_backs_off_no_video_import_before_blocking() {
         let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -4258,10 +4375,55 @@ mod tests {
             completed_at: Utc::now(),
         };
 
-        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
         assert_eq!(td.state, TrackedDownloadState::ImportPending);
         assert_eq!(td.status, TrackedDownloadStatus::Warning);
         assert!(td.status_messages[0].contains("Retrying automatically"));
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
+
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 2);
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(td.no_video_import_retry.is_none());
+        assert!(td.status_messages[0].contains("Manual review required"));
+    }
+
+    #[tokio::test]
+    async fn apply_result_resets_no_video_retry_when_source_signature_changes() {
+        let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason: Some(ImportSkipReason::NoVideoFiles),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("dl-1".to_string()),
+            source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+            source_path: temp_dir.path().to_string_lossy().into_owned(),
+            dest_path: None,
+            quality: None,
+            episode_ids: vec![],
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some("no eligible video files found".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
+        std::fs::write(temp_dir.path().join("sample.txt"), b"not video").expect("write sample");
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
     }
 
     #[tokio::test]
@@ -4291,6 +4453,7 @@ mod tests {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         };
@@ -4348,6 +4511,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 

@@ -6,7 +6,7 @@ use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
 };
-use scryer_domain::{AppPermission, Id, LibraryPermission, User};
+use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
 const AUTHENTICATION_REQUIRED_MESSAGE: &str = "authentication required";
@@ -376,16 +376,6 @@ pub fn oauth_actor_session_from_ctx(ctx: &Context<'_>) -> Option<OAuthActorSessi
     ctx.data_opt::<OAuthActorSession>().cloned()
 }
 
-pub fn require_interactive_actor(ctx: &Context<'_>) -> GqlResult<User> {
-    let actor = actor_from_ctx(ctx)?;
-    if oauth_actor_session_from_ctx(ctx).is_some() {
-        return Err(to_gql_error(AppError::Unauthorized(
-            "OAuth access tokens cannot manage Scryer profile or settings".into(),
-        )));
-    }
-    Ok(actor)
-}
-
 pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::MfaEnrollment {
         return Err(to_gql_error(AppError::MfaEnrollmentRequired(
@@ -413,20 +403,31 @@ pub async fn require_app_permission(
     Ok(actor)
 }
 
-pub async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<User> {
+pub async fn require_config_app_permission(
+    ctx: &Context<'_>,
+    permission: AppPermission,
+) -> GqlResult<User> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.require_app_permission(&actor, permission)
+        .await
+        .map_err(to_gql_error)?;
     if !auth_runtime_from_ctx(ctx)
         .snapshot()
         .effective_form_login_enabled
     {
-        return require_interactive_actor(ctx);
+        return Ok(actor);
     }
-
-    let app = app_from_ctx(ctx)?;
-    let actor = require_interactive_actor(ctx)?;
-    let mfa = mfa_verification_from_ctx(ctx);
-    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
-        .await
-        .map_err(to_gql_error)?;
+    if actor
+        .authorization
+        .actor_capabilities
+        .contains(ActorCapabilityMask::MANAGE_OWN_ACCOUNT)
+    {
+        let mfa = mfa_verification_from_ctx(ctx);
+        app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+            .await
+            .map_err(to_gql_error)?;
+    }
     Ok(actor)
 }
 

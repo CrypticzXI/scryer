@@ -9,6 +9,9 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit && eslint 'src/**/*.{ts,tsx}' 'components/**/*.{ts,tsx}' 'lib/**/*.{ts,tsx}'"
   },
+  "allowScripts": {
+    "fsevents@2.3.3": true
+  },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-javascript": "^6.2.5",

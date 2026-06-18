@@ -69,7 +69,7 @@ impl AppUseCase {
             delay_until: delay_until.to_rfc3339(),
             status: PendingReleaseStatus::Waiting,
             grabbed_at: None,
-            source_password: source_password.map(str::to_string),
+            source_password: crate::normalize_release_password(source_password),
             published_at: published_at.map(str::to_string),
             info_hash: info_hash.map(str::to_string),
         };
@@ -554,6 +554,7 @@ impl AppUseCase {
             source_title.as_deref(),
             source_kind,
         );
+        let source_password = crate::normalize_release_password(pr.source_password.as_deref());
 
         let _ = self
             .services
@@ -565,7 +566,7 @@ impl AppUseCase {
                 source_title.clone(),
                 ReleaseDownloadAttemptOutcome::Pending,
                 None,
-                pr.source_password.clone(),
+                source_password.clone(),
             )
             .await;
 
@@ -603,7 +604,7 @@ impl AppUseCase {
                 staged_nzb: None,
                 source_kind,
                 source_title: source_title.clone(),
-                source_password: pr.source_password.clone(),
+                source_password: source_password.clone(),
                 category: Some(download_cat),
                 queue_priority: None,
                 download_directory: None,
@@ -655,7 +656,7 @@ impl AppUseCase {
                         source_title.clone(),
                         ReleaseDownloadAttemptOutcome::Success,
                         None,
-                        pr.source_password.clone(),
+                        source_password.clone(),
                     )
                     .await;
 
@@ -792,7 +793,7 @@ impl AppUseCase {
                             ReleaseDownloadAttemptOutcome::Failed
                         },
                         Some(err.to_string()),
-                        pr.source_password.clone(),
+                        source_password.clone(),
                     )
                     .await;
 

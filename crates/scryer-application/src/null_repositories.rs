@@ -35,7 +35,7 @@ use crate::{
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
     NotificationChannelRepository, NotificationSubscriptionRepository,
     OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
-    OAuthRefreshRotation, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
+    OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
     PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
@@ -1824,8 +1824,8 @@ impl OAuthRepository for NullOAuthRepository {
         _: &str,
         _: chrono::DateTime<chrono::Utc>,
         _: OAuthRefreshTokenRecord,
-    ) -> AppResult<Option<OAuthRefreshRotation>> {
-        Ok(None)
+    ) -> AppResult<OAuthRefreshRotationOutcome> {
+        Ok(OAuthRefreshRotationOutcome::Unavailable)
     }
 
     async fn revoke_refresh_grant(

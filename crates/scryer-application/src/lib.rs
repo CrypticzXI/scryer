@@ -276,10 +276,11 @@ pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
     await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
-    normalize_release_password, normalize_release_selection_signature, normalize_show_text_opt,
-    normalize_tags, parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
+    normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
+    parsed_episode_lookup_season, release_password_protection_hint, sanitize_ids, sha256_hex,
+    to_hex,
 };
-pub use helpers::{accepted_inputs_for_client, nice_thread};
+pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -406,6 +407,8 @@ pub use settings::keys::{
     TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
+#[cfg(test)]
+pub(crate) use types::ReleaseCandidateTokenClaims;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
@@ -418,20 +421,21 @@ pub use types::{
     JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass, MediaRequestCounts,
     OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
-    OAuthRefreshRotation, OAuthRefreshTokenRecord, PasskeySummary, PendingImportBindingFilePreview,
-    PendingImportBindingPreview, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingImportStatus, PendingRelease, PendingReleaseStatus,
-    PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, RecycleBinSettings,
-    RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-    ResolvePendingImportResult, ScopedExternalId, SortDirection, SystemHealth,
-    TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
-    TitleReleaseBlocklistEntry, TotpCredentialRecord, TotpEnrollmentChallengeRecord,
-    TotpEnrollmentComplete, TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord,
-    TotpStatus, UpdateRecycleBinSettings, UserAuthFactorStatus, WantedCompleteTransition,
-    WantedGrabTransition, WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus,
-    WantedStatusCount, WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
+    OAuthRefreshRotation, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
+    PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
+    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
+    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
+    PrimaryCollectionSummary, RecycleBinSettings, RecycledItem, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageSourceResult,
+    TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile,
+    TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
+    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
+    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
+    UpdateRecycleBinSettings, UserAuthFactorStatus, WantedCompleteTransition, WantedGrabTransition,
+    WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
+    WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
     WebauthnCredentialRecord,
 };
 pub use types::{

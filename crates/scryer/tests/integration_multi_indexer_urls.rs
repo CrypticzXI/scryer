@@ -315,6 +315,7 @@ async fn setup() -> (
             scryer_domain::LibraryPermission::View,
             scryer_domain::LibraryPermission::ManageTitles,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };

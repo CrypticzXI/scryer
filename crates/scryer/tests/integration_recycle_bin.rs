@@ -47,6 +47,7 @@ fn actor(
     user.authorization = UserAuthorization {
         app: AppPermissionMask::from_permissions(app_permissions),
         libraries: library_permissions.into_iter().collect::<HashMap<_, _>>(),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };

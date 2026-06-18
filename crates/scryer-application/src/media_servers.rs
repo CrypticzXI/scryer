@@ -1602,6 +1602,7 @@ mod tests {
                 app,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }

@@ -25,6 +25,7 @@ fn admin() -> User {
             scryer_domain::LibraryPermission::ResolveImports,
             scryer_domain::LibraryPermission::ManageLibrary,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };

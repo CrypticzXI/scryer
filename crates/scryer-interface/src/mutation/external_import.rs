@@ -22,7 +22,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::{
-    actor_from_ctx, app_from_ctx, require_app_permission, require_config_step_up,
+    actor_from_ctx, app_from_ctx, require_app_permission, require_config_app_permission,
 };
 use crate::mappers::from_external_import_monitor_warmup_progress;
 use crate::types::*;
@@ -601,8 +601,7 @@ impl ExternalImportMutations {
         ctx: &Context<'_>,
         input: ExecuteExternalImportInput,
     ) -> GqlResult<ExternalImportResultPayload> {
-        let actor = require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
 
         let selected_dc_keys: HashSet<String> = input

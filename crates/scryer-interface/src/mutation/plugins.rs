@@ -1,6 +1,7 @@
 use async_graphql::{Context, Object, Result as GqlResult};
+use scryer_domain::AppPermission;
 
-use crate::context::{app_from_ctx, require_config_step_up, to_gql_error};
+use crate::context::{app_from_ctx, require_config_app_permission, to_gql_error};
 use crate::mappers::{
     from_manual_plugin_preview, from_plugin_install_progress, from_plugin_installation,
     from_registry_plugin,
@@ -17,7 +18,7 @@ impl PluginMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<RegistryPluginPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let plugins = app
             .refresh_plugin_catalog(&actor)
             .await
@@ -30,7 +31,7 @@ impl PluginMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<RegistryPluginPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let plugins = app
             .refresh_plugin_catalog(&actor)
             .await
@@ -44,7 +45,7 @@ impl PluginMutations {
         input: InstallPluginInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
             .install_plugin(&actor, &input.plugin_id)
             .await
@@ -58,7 +59,7 @@ impl PluginMutations {
         input: InstallPluginInput,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let snapshot = app
             .begin_install_plugin(&actor, &input.plugin_id)
             .await
@@ -72,7 +73,7 @@ impl PluginMutations {
         input: UninstallPluginInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         app.uninstall_plugin(&actor, &input.plugin_id)
             .await
             .map_err(to_gql_error)?;
@@ -85,7 +86,7 @@ impl PluginMutations {
         input: TogglePluginInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
             .toggle_plugin(&actor, &input.plugin_id, input.enabled)
             .await
@@ -99,7 +100,7 @@ impl PluginMutations {
         input: UpgradePluginInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
             .upgrade_plugin(&actor, &input.plugin_id)
             .await
@@ -113,7 +114,7 @@ impl PluginMutations {
         input: UpgradePluginInput,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let snapshot = app
             .begin_upgrade_plugin(&actor, &input.plugin_id)
             .await
@@ -127,7 +128,7 @@ impl PluginMutations {
         input: ManualPluginRepoInput,
     ) -> GqlResult<ManualPluginPreviewPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let preview = app
             .inspect_manual_plugin_repo(&actor, &input.github_repo_url)
             .await
@@ -141,7 +142,7 @@ impl PluginMutations {
         input: ManualPluginRepoInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
             .install_manual_plugin(&actor, &input.github_repo_url)
             .await
@@ -155,7 +156,7 @@ impl PluginMutations {
         input: ManualPluginUploadInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
             .install_uploaded_plugin(
                 &actor,

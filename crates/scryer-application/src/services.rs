@@ -811,10 +811,23 @@ pub struct AppRuntimeAcquisitionState {
     pub acquisition_wake: Arc<tokio::sync::Notify>,
     pub download_submission_guards: DownloadSubmissionGuardTable,
     pub download_failure_guards: DownloadFailureGuardTable,
+    pub(crate) release_candidate_passwords:
+        Arc<std::sync::Mutex<HashMap<String, ReleaseCandidatePasswordTicket>>>,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
+}
+
+pub(crate) struct ReleaseCandidatePasswordTicket {
+    pub actor_id: String,
+    pub title_id: String,
+    pub scope_kind: String,
+    pub scope_id: Option<String>,
+    pub source_hint: String,
+    pub source_title: String,
+    pub password: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -1006,6 +1019,7 @@ impl AppRuntimeState {
                 acquisition_wake: Arc::new(tokio::sync::Notify::new()),
                 download_submission_guards: DownloadSubmissionGuardTable::default(),
                 download_failure_guards: DownloadFailureGuardTable::default(),
+                release_candidate_passwords: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),

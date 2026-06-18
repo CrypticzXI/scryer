@@ -1039,6 +1039,7 @@ mod tests {
                 scryer_domain::AppPermission::ManageSystemSettings,
                 scryer_domain::AppPermission::ManageCatalogSettings,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         };

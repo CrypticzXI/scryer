@@ -161,6 +161,7 @@ fn admin() -> User {
             LibraryPermission::View,
             LibraryPermission::ManageTitles,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };

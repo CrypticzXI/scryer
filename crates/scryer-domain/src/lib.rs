@@ -195,6 +195,27 @@ impl AppPermission {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+pub enum ActorCapability {
+    ManageOwnAccount,
+}
+
+impl ActorCapability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManageOwnAccount => "manage_own_account",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "manage_own_account" => Some(Self::ManageOwnAccount),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum LibraryPermission {
     View,
     ManageTitles,
@@ -295,6 +316,57 @@ impl AppPermissionMask {
 
     pub fn insert(&mut self, permission: Self) {
         self.0 |= permission.0;
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct ActorCapabilityMask(u64);
+
+impl ActorCapabilityMask {
+    pub const NONE: Self = Self(0);
+    pub const MANAGE_OWN_ACCOUNT: Self = Self(1 << 0);
+
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub fn from_bits_retain(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub fn from_capability(capability: ActorCapability) -> Self {
+        match capability {
+            ActorCapability::ManageOwnAccount => Self::MANAGE_OWN_ACCOUNT,
+        }
+    }
+
+    pub fn from_capabilities(capabilities: impl IntoIterator<Item = ActorCapability>) -> Self {
+        capabilities
+            .into_iter()
+            .fold(Self::NONE, |mut mask, capability| {
+                mask.insert(Self::from_capability(capability));
+                mask
+            })
+    }
+
+    pub fn to_capabilities(self) -> Vec<ActorCapability> {
+        [(Self::MANAGE_OWN_ACCOUNT, ActorCapability::ManageOwnAccount)]
+            .into_iter()
+            .filter_map(|(mask, capability)| self.contains(mask).then_some(capability))
+            .collect()
+    }
+
+    pub fn contains(self, required: Self) -> bool {
+        (self.0 & required.0) == required.0
+    }
+
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
     }
 
     pub fn is_empty(self) -> bool {
@@ -421,6 +493,8 @@ pub struct UserAuthorization {
     pub app: AppPermissionMask,
     pub libraries: std::collections::HashMap<String, LibraryPermissionMask>,
     pub default_library: LibraryPermissionMask,
+    #[serde(default)]
+    pub actor_capabilities: ActorCapabilityMask,
     pub loaded: bool,
 }
 
@@ -430,6 +504,7 @@ impl Default for UserAuthorization {
             app: AppPermissionMask::NONE,
             libraries: std::collections::HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: ActorCapabilityMask::NONE,
             loaded: false,
         }
     }
@@ -453,6 +528,7 @@ impl UserAuthorization {
                 LibraryPermission::Request,
                 LibraryPermission::AutoApproveRequests,
             ]),
+            actor_capabilities: ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         }
     }
@@ -1148,11 +1224,27 @@ pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "sub", "vtt", "i
 
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "avif"];
 
+pub fn canonical_video_extension(path: &std::path::Path) -> Option<&'static str> {
+    let normalized = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.trim()
+                .trim_end_matches(|ch: char| {
+                    ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '`' | '_' | '.')
+                })
+                .to_ascii_lowercase()
+        })?;
+
+    VIDEO_EXTENSIONS.iter().copied().find(|known| {
+        normalized
+            .strip_suffix(*known)
+            .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1)
+    })
+}
+
 pub fn is_video_file(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| VIDEO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+    canonical_video_extension(path).is_some()
 }
 
 pub fn is_subtitle_file(path: &std::path::Path) -> bool {

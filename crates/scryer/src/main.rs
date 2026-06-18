@@ -70,10 +70,10 @@ use backup_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofState,
-    CorsConfig, WebSocketOriginPolicy, authless_web_client_proof_handler, cors_handler,
-    enforce_authless_access_guard, graphql_handler, graphql_ws_handler, health_handler,
-    rate_limit_http_api,
+    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofRouteState,
+    AuthlessWebClientProofState, CorsConfig, WebSocketOriginPolicy,
+    authless_web_client_proof_handler, cors_handler, enforce_authless_access_guard,
+    graphql_handler, graphql_ws_handler, health_handler, rate_limit_http_api,
 };
 use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
@@ -546,6 +546,7 @@ async fn main() {
     let addr: SocketAddr = bind.parse().expect("invalid bind address");
     let shutdown_token = CancellationToken::new();
     let startup_base_path = base_path.clone();
+    let bootstrap_base_path = base_path.clone();
 
     // Spawn the full application bootstrap in the background.
     let bootstrap_shutdown = shutdown_token.clone();
@@ -567,6 +568,7 @@ async fn main() {
                     log_ring_buffer,
                     metrics_handle,
                     data_dir,
+                    bootstrap_base_path,
                 )
                 .await
                 {
@@ -657,6 +659,7 @@ async fn bootstrap_application(
     log_ring_buffer: log_buffer::LogRingBuffer,
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     data_dir: PathBuf,
+    base_path: BasePath,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
@@ -1316,6 +1319,11 @@ async fn bootstrap_application(
         auth_runtime: auth_runtime.clone(),
         policy: authless_access_policy,
     };
+    let authless_web_client_proof_route_state = AuthlessWebClientProofRouteState {
+        auth_runtime: auth_runtime.clone(),
+        policy: authless_access_policy,
+        proof: authless_web_client_proof.clone(),
+    };
 
     let cors_for_layer = cors.clone();
     let backup_route_state = BackupRouteState {
@@ -1323,6 +1331,7 @@ async fn bootstrap_application(
     };
     let oauth_route_state = OAuthRouteState {
         app: app_use_case.clone(),
+        base_path: base_path.clone(),
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1338,7 +1347,8 @@ async fn bootstrap_application(
         .route("/health", get(health_handler))
         .route(
             "/authless-client",
-            get(authless_web_client_proof_handler).with_state(authless_web_client_proof.clone()),
+            get(authless_web_client_proof_handler)
+                .with_state(authless_web_client_proof_route_state),
         )
         .merge(oauth_router(oauth_route_state))
         .route("/oauth/authorize", get(ui_fallback))

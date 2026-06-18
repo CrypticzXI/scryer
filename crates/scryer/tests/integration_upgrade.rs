@@ -413,6 +413,7 @@ fn test_actor() -> User {
         password_hash: None,
         account_kind: Default::default(),
         authorization: UserAuthorization {
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,

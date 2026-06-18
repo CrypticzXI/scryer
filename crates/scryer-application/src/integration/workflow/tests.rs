@@ -6,10 +6,10 @@ mod tests {
         classify_download_queue_item, collect_download_client_filter_options,
         dedupe_download_queue_items, derive_download_queue_display_state,
         download_queue_client_filter_key, synthetic_terminal_download_queue_item,
-        tracked_download_queue_snapshot,
+        prepare_tracked_download_background_work_dispatch, tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use scryer_domain::{
         DownloadClientConfig, DownloadClientStatus, DownloadQueueItem, DownloadQueueState,
         ImportRecord, ImportStatus, ImportTransferPhase, ImportType, TitleMatchType,
@@ -54,6 +54,78 @@ mod tests {
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
         }
+    }
+
+    fn tracked_for_dispatch(id: &str) -> crate::tracked_downloads::TrackedDownload {
+        let client_item = item("job-1", DownloadQueueState::Completed);
+        crate::tracked_downloads::TrackedDownload {
+            id: id.to_string(),
+            client_id: client_item.client_id.clone(),
+            client_type: client_item.client_type.clone(),
+            client_item,
+            state: TrackedDownloadState::ImportPending,
+            status: TrackedDownloadStatus::Warning,
+            status_messages: vec!["retry later".to_string()],
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: Some("Example.Release".to_string()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: true,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            skip_reacquire_on_failure: false,
+        }
+    }
+
+    fn no_video_retry_state(
+        next_retry_at: chrono::DateTime<Utc>,
+    ) -> crate::tracked_downloads::NoVideoImportRetryState {
+        crate::tracked_downloads::NoVideoImportRetryState {
+            signature: crate::tracked_downloads::NoVideoImportSourceSignature {
+                source_path: "/tmp/download".to_string(),
+                file_count: 1,
+                total_bytes: 5,
+                latest_mtime: None,
+            },
+            attempts: 1,
+            next_retry_at,
+        }
+    }
+
+    #[test]
+    fn import_dispatch_respects_no_video_retry_gate() {
+        let id = "nzbget:job-1";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let mut tracked = tracked_for_dispatch(id);
+        tracked.no_video_import_retry = Some(no_video_retry_state(
+            Utc::now() + Duration::seconds(30),
+        ));
+        tracker.insert_for_tests(tracked);
+
+        assert!(prepare_tracked_download_background_work_dispatch(&mut tracker, id).is_none());
+        assert_eq!(
+            tracker.find(id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportPending)
+        );
+
+        tracker
+            .find_mut(id)
+            .expect("tracked download should remain cached")
+            .no_video_import_retry = Some(no_video_retry_state(
+            Utc::now() - Duration::seconds(1),
+        ));
+
+        let dispatched = prepare_tracked_download_background_work_dispatch(&mut tracker, id);
+
+        assert!(dispatched.is_some());
+        assert_eq!(
+            tracker.find(id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::Importing)
+        );
     }
 
     #[test]
@@ -226,6 +298,7 @@ mod tests {
             is_trackable: false,
             import_attempted: true,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -263,6 +336,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -323,6 +397,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);

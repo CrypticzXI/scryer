@@ -417,6 +417,7 @@ pub struct QueuedReleaseSelection {
     pub source_hint: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+    pub source_password: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

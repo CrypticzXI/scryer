@@ -85,9 +85,7 @@ async fn execute_resolved_episode_import(
             });
         }
 
-        let ext = source_video
-            .extension()
-            .and_then(|extension| extension.to_str())
+        let ext = scryer_domain::canonical_video_extension(source_video)
             .unwrap_or("mkv")
             .to_string();
         let effective_quality_label = quality_override
@@ -238,9 +236,7 @@ async fn execute_resolved_episode_import(
             )
         }
     };
-    let precheck_ext = source_video
-        .extension()
-        .and_then(|extension| extension.to_str())
+    let precheck_ext = scryer_domain::canonical_video_extension(source_video)
         .unwrap_or("mkv")
         .to_string();
     let precheck_quality_label = quality_override

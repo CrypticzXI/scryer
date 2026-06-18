@@ -40,6 +40,37 @@ fn video_file_case_insensitive() {
 }
 
 #[test]
+fn video_file_trailing_quote_extension() {
+    let path = Path::new("Fixture.Payload.mkv\"");
+    assert!(is_video_file(path));
+    assert_eq!(canonical_video_extension(path), Some("mkv"));
+}
+
+#[test]
+fn video_file_trailing_sanitized_underscore_extension() {
+    let path = Path::new("Fixture.Payload.mkv_");
+    assert!(is_video_file(path));
+    assert_eq!(canonical_video_extension(path), Some("mkv"));
+}
+
+#[test]
+fn video_file_trailing_dot_extension() {
+    let path = Path::new("Fixture.Payload.mkv.");
+    assert!(is_video_file(path));
+    assert_eq!(canonical_video_extension(path), Some("mkv"));
+}
+
+#[test]
+fn video_file_double_extension_is_not_video() {
+    assert!(!is_video_file(Path::new("Fixture.Payload.mkv.exe")));
+}
+
+#[test]
+fn video_file_sanitized_artifact_before_executable_extension_is_not_video() {
+    assert!(!is_video_file(Path::new("Fixture.Payload.mkv_.exe")));
+}
+
+#[test]
 fn not_video_file_subtitle() {
     assert!(!is_video_file(Path::new("movie.srt")));
 }
@@ -275,6 +306,7 @@ fn user_with_limited_permission_masks() {
                 LibraryPermission::View,
                 LibraryPermission::ManageTitles,
             ]),
+            actor_capabilities: ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         },

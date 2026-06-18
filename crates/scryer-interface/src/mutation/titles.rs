@@ -78,6 +78,7 @@ impl TitleMutations {
             source_hint,
             source_kind,
             source_title: source_title.clone(),
+            source_password: None,
         };
         let result = if let Some(library_id) = library_id {
             app.add_title_and_queue_download_with_outcome_in_library(

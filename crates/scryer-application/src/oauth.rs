@@ -9,12 +9,13 @@ use url::Url;
 
 use crate::{
     AppError, AppResult, AppUseCase, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
-    OAuthRefreshGrantRecord, OAuthRefreshTokenRecord,
+    OAuthRefreshGrantRecord, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord,
 };
 
 pub const OAUTH_GENERIC_NATIVE_CLIENT_ID: &str = "generic-native";
 pub const OAUTH_E2E_CLIENT_ID: &str = "e2e";
 pub const OAUTH_E2E_CLIENT_ENV: &str = "SCRYER_ENABLE_E2E_OAUTH_CLIENT";
+pub const OAUTH_E2E_RELEASE_GATE_ENV: &str = "SCRYER_E2E_RELEASE_GATE";
 pub const OAUTH_LIBRARY_SCOPE: &str = "library";
 
 const AUTHORIZATION_CODE_TTL_SECONDS: i64 = 5 * 60;
@@ -283,19 +284,25 @@ impl AppUseCase {
         }
         let (next_token, next_record) =
             self.new_refresh_token_record(&grant.id, &grant.family_id)?;
-        let Some(rotation) = self
+        let rotation = match self
             .services
             .identity
             .oauth
             .rotate_refresh_token(&token.id, Utc::now(), next_record)
             .await?
-        else {
-            self.services
-                .identity
-                .oauth
-                .revoke_refresh_family(&grant.family_id, Utc::now(), "refresh_reuse")
-                .await?;
-            return Err(AppError::Unauthorized("refresh token was reused".into()));
+        {
+            OAuthRefreshRotationOutcome::Rotated(rotation) => *rotation,
+            OAuthRefreshRotationOutcome::Reused => {
+                self.services
+                    .identity
+                    .oauth
+                    .revoke_refresh_family(&grant.family_id, Utc::now(), "refresh_reuse")
+                    .await?;
+                return Err(AppError::Unauthorized("refresh token was reused".into()));
+            }
+            OAuthRefreshRotationOutcome::Unavailable => {
+                return Err(AppError::Unauthorized("refresh token is invalid".into()));
+            }
         };
         let access_token = self
             .issue_oauth_access_token(&user, &rotation.grant.client_id, &rotation.grant.id)
@@ -342,25 +349,29 @@ impl AppUseCase {
 
     pub async fn revoke_oauth_connected_app(
         &self,
-        user_id: &str,
+        actor: &User,
         grant_id: &str,
     ) -> AppResult<bool> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.services
             .identity
             .oauth
-            .revoke_refresh_grant(grant_id, user_id, Utc::now(), "user_revoked")
+            .revoke_refresh_grant(grant_id, &actor.id, Utc::now(), "user_revoked")
             .await
     }
 
     pub async fn list_oauth_connected_apps(
         &self,
-        user_id: &str,
+        actor: &User,
     ) -> AppResult<Vec<OAuthConnectedAppSummary>> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let records = self
             .services
             .identity
             .oauth
-            .list_connected_apps(user_id)
+            .list_connected_apps(&actor.id)
             .await?;
         Ok(records
             .into_iter()
@@ -381,9 +392,7 @@ impl AppUseCase {
     }
 
     fn oauth_e2e_client_enabled(&self) -> bool {
-        std::env::var(OAUTH_E2E_CLIENT_ENV)
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false)
+        env_flag_enabled(OAUTH_E2E_CLIENT_ENV) && env_flag_enabled(OAUTH_E2E_RELEASE_GATE_ENV)
     }
 
     fn oauth_token_hash(&self, context: &str, token: &str) -> String {
@@ -538,6 +547,12 @@ fn is_e2e_redirect(url: &Url) -> bool {
             Some("127.0.0.1" | "::1" | "[::1]" | "localhost")
         )
         && url.path().starts_with("/oauth/e2e/")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

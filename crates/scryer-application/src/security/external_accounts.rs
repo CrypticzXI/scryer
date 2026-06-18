@@ -175,6 +175,9 @@ impl AppUseCase {
         if target_user_id != actor.id {
             self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
                 .await?;
+        } else {
+            self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+                .await?;
         }
         self.services
             .identity
@@ -445,6 +448,8 @@ impl AppUseCase {
         connection_id: String,
         plex_auth_token: String,
     ) -> AppResult<scryer_domain::UserExternalAccount> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let provider = scryer_domain::ExternalAccountProvider::Plex;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
@@ -471,6 +476,8 @@ impl AppUseCase {
         username: String,
         password: String,
     ) -> AppResult<scryer_domain::UserExternalAccount> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let provider = scryer_domain::ExternalAccountProvider::Jellyfin;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
@@ -777,6 +784,9 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("external account {linked_account_id}")))?;
         if account.user_id != actor.id {
             self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+                .await?;
+        } else {
+            self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
                 .await?;
         }
         if matches!(account.status, scryer_domain::ExternalAccountStatus::Active) {
@@ -1449,6 +1459,7 @@ mod tests {
                 ]),
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }
@@ -1464,6 +1475,7 @@ mod tests {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }
@@ -2259,6 +2271,7 @@ mod tests {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         };
@@ -2337,6 +2350,7 @@ mod tests {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         };

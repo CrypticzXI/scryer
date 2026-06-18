@@ -1759,7 +1759,7 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
     downloadClients {
       sources name implementation scryerClientType
       host port useSsl urlBase username apiKey
-      dedupKey supported
+      dedupKey supported requiresPasswordOverride
     }
     indexers {
       sources name implementation scryerProviderType

@@ -844,6 +844,7 @@ fn admin() -> User {
             scryer_domain::LibraryPermission::Request,
             scryer_domain::LibraryPermission::AutoApproveRequests,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
@@ -860,6 +861,7 @@ fn viewer() -> User {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         },
@@ -877,6 +879,7 @@ fn config_admin() -> User {
                 scryer_domain::AppPermission::ManageSystemSettings,
                 scryer_domain::AppPermission::ManageCatalogSettings,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         },

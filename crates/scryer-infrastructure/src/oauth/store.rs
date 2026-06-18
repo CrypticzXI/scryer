@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
-    OAuthRefreshGrantRecord, OAuthRefreshRotation, OAuthRefreshTokenRecord, OAuthRepository,
+    OAuthRefreshGrantRecord, OAuthRefreshRotation, OAuthRefreshRotationOutcome,
+    OAuthRefreshTokenRecord, OAuthRepository,
 };
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
@@ -100,7 +101,7 @@ impl OAuthRepository for OAuthStore {
         token_id: &str,
         consumed_at: chrono::DateTime<chrono::Utc>,
         next_token: OAuthRefreshTokenRecord,
-    ) -> AppResult<Option<OAuthRefreshRotation>> {
+    ) -> AppResult<OAuthRefreshRotationOutcome> {
         let token_id = token_id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "rotate_oauth_refresh_token", move |tx| {
             let token_id = token_id.clone();
@@ -109,13 +110,13 @@ impl OAuthRepository for OAuthStore {
                 let Some((previous_token, grant)) =
                     load_refresh_token_with_grant(SqlExec::Tx(tx), &token_id).await?
                 else {
-                    return Ok(None);
+                    return Ok(OAuthRefreshRotationOutcome::Unavailable);
                 };
-                if previous_token.consumed_at.is_some()
-                    || previous_token.revoked_at.is_some()
-                    || grant.revoked_at.is_some()
-                {
-                    return Ok(None);
+                if previous_token.consumed_at.is_some() {
+                    return Ok(OAuthRefreshRotationOutcome::Reused);
+                }
+                if previous_token.revoked_at.is_some() || grant.revoked_at.is_some() {
+                    return Ok(OAuthRefreshRotationOutcome::Unavailable);
                 }
                 let rows = tx
                     .execute(
@@ -131,28 +132,35 @@ impl OAuthRepository for OAuthStore {
                     )
                     .await?;
                 if rows == 0 {
-                    return Ok(None);
+                    return Ok(OAuthRefreshRotationOutcome::Reused);
                 }
-                insert_refresh_token_tx(tx, &next_token).await?;
-                tx.execute(
-                    "UPDATE oauth_refresh_grants
+                let grant_rows = tx
+                    .execute(
+                        "UPDATE oauth_refresh_grants
                         SET updated_at = {},
                             last_used_at = {}
-                      WHERE id = {}",
-                    &[
-                        SqlArg::Timestamp(consumed_at),
-                        SqlArg::Timestamp(consumed_at),
-                        SqlArg::Text(grant.id.clone()),
-                    ],
-                )
-                .await?;
+                      WHERE id = {}
+                        AND revoked_at IS NULL",
+                        &[
+                            SqlArg::Timestamp(consumed_at),
+                            SqlArg::Timestamp(consumed_at),
+                            SqlArg::Text(grant.id.clone()),
+                        ],
+                    )
+                    .await?;
+                if grant_rows == 0 {
+                    return Ok(OAuthRefreshRotationOutcome::Unavailable);
+                }
+                insert_refresh_token_tx(tx, &next_token).await?;
                 let grant = load_refresh_grant_by_id_tx(tx, &grant.id)
                     .await?
                     .ok_or_else(|| AppError::NotFound(format!("OAuth grant {}", grant.id)))?;
-                Ok(Some(OAuthRefreshRotation {
-                    grant,
-                    previous_token,
-                }))
+                Ok(OAuthRefreshRotationOutcome::Rotated(Box::new(
+                    OAuthRefreshRotation {
+                        grant,
+                        previous_token,
+                    },
+                )))
             })
         })
         .await

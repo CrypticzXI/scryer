@@ -151,6 +151,10 @@ export default defineConfig(({ command, mode }) => ({
         changeOrigin: true,
         ws: true,
       },
+      "/authless-client": {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+      },
       "/.well-known/oauth-authorization-server": {
         target: DEV_PROXY_TARGET,
         changeOrigin: false,

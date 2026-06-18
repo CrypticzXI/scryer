@@ -514,7 +514,7 @@ pub trait OAuthRepository: Send + Sync {
         token_id: &str,
         consumed_at: chrono::DateTime<chrono::Utc>,
         next_token: OAuthRefreshTokenRecord,
-    ) -> AppResult<Option<OAuthRefreshRotation>>;
+    ) -> AppResult<OAuthRefreshRotationOutcome>;
     async fn revoke_refresh_grant(
         &self,
         grant_id: &str,

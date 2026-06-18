@@ -573,6 +573,8 @@ impl AppUseCase {
         password: String,
         current_password: String,
     ) -> AppResult<User> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
@@ -610,6 +612,8 @@ impl AppUseCase {
         actor: &User,
         password: String,
     ) -> AppResult<User> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let existing = self
             .services
             .identity

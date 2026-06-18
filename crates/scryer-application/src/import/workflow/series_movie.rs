@@ -342,9 +342,7 @@ async fn import_additional_movie_download(
     let canonical_dest_path = if let Some(canonical_dest_path) = canonical_dest_path {
         canonical_dest_path.to_path_buf()
     } else {
-        let ext = source_video
-            .extension()
-            .and_then(|e| e.to_str())
+        let ext = scryer_domain::canonical_video_extension(source_video)
             .unwrap_or("mkv")
             .to_string();
         let tokens = build_rename_tokens(title, parsed, &ext);
@@ -714,9 +712,7 @@ async fn import_movie_download(
         }
     };
 
-    let ext = source_video
-        .extension()
-        .and_then(|e| e.to_str())
+    let ext = scryer_domain::canonical_video_extension(&source_video)
         .unwrap_or("mkv")
         .to_string();
     let tokens = build_rename_tokens(title, &prepared.parsed, &ext);
@@ -1230,9 +1226,7 @@ async fn import_series_movie_download(
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
 
-    let ext = source_video
-        .extension()
-        .and_then(|e| e.to_str())
+    let ext = scryer_domain::canonical_video_extension(&source_video)
         .unwrap_or("mkv")
         .to_string();
 

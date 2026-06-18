@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{AppError, AppResult, AppUseCase, AuthenticatedTokenClaims};
-use scryer_domain::{AppPermissionMask, Id};
+use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
 };
@@ -18,6 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use crate::base_path::BasePath;
 use crate::http_error::ErrorResponse;
@@ -57,6 +58,13 @@ pub(crate) struct AuthlessAccessGuardState {
 #[derive(Clone)]
 pub(crate) struct AuthlessWebClientProofState {
     secret: Arc<Vec<u8>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthlessWebClientProofRouteState {
+    pub(crate) auth_runtime: AuthRuntimeStateHandle,
+    pub(crate) policy: AuthlessAccessPolicy,
+    pub(crate) proof: AuthlessWebClientProofState,
 }
 
 #[derive(serde::Serialize)]
@@ -136,22 +144,129 @@ impl AuthlessWebClientProofState {
 }
 
 pub(crate) async fn authless_web_client_proof_handler(
-    State(state): State<AuthlessWebClientProofState>,
+    State(state): State<AuthlessWebClientProofRouteState>,
+    request: Request<Body>,
 ) -> Response {
-    match state.issue() {
+    let (parts, _) = request.into_parts();
+    let remote_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
+    let headers = parts.headers;
+    let snapshot = state.auth_runtime.snapshot();
+
+    if let AuthlessAccessDecision::Reject(reason) =
+        authless_web_client_proof_decision(&snapshot, state.policy, &headers, remote_addr)
+    {
+        warn!("Rejecting authless web client proof request: {reason}");
+        let mut response = (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                "Scryer web client proof is not available for this request".to_string(),
+            )),
+        )
+            .into_response();
+        apply_authless_web_client_response_headers(&mut response);
+        return response;
+    }
+
+    match state.proof.issue() {
         Ok((nonce, proof, expires_at)) => {
             let mut response =
                 Json(AuthlessWebClientProofResponse { proof, expires_at }).into_response();
-            let cookie = format!(
-                "{AUTHLESS_WEB_CLIENT_COOKIE}={nonce}; Path=/; Max-Age={AUTHLESS_WEB_CLIENT_TTL_SECONDS}; SameSite=Lax"
-            );
+            apply_authless_web_client_response_headers(&mut response);
+            let cookie = authless_web_client_cookie(&nonce, &headers);
             if let Ok(value) = http::HeaderValue::from_str(&cookie) {
                 response.headers_mut().append(header::SET_COOKIE, value);
             }
             response
         }
-        Err(err) => map_app_error(err),
+        Err(err) => {
+            let mut response = map_app_error(err);
+            apply_authless_web_client_response_headers(&mut response);
+            response
+        }
     }
+}
+
+fn authless_web_client_proof_decision(
+    snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
+    policy: AuthlessAccessPolicy,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> AuthlessAccessDecision {
+    if request_is_cross_site(headers) {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::CrossSiteRequest);
+    }
+
+    if local_ip_bypass_active(snapshot, headers, remote_addr) {
+        return AuthlessAccessDecision::Allow;
+    }
+
+    if snapshot.effective_form_login_enabled {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::AuthRequired);
+    }
+
+    authless_access_decision(snapshot, policy, headers, remote_addr)
+}
+
+fn request_is_cross_site(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("cross-site"))
+}
+
+fn authless_web_client_cookie(nonce: &str, headers: &HeaderMap) -> String {
+    let mut cookie = format!(
+        "{AUTHLESS_WEB_CLIENT_COOKIE}={nonce}; Path=/; Max-Age={AUTHLESS_WEB_CLIENT_TTL_SECONDS}; HttpOnly; SameSite=Strict"
+    );
+    if request_is_secure(headers) {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn apply_authless_web_client_response_headers(response: &mut Response) {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store, max-age=0"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, http::HeaderValue::from_static("no-cache"));
+    response
+        .headers_mut()
+        .insert(header::EXPIRES, http::HeaderValue::from_static("0"));
+}
+
+fn request_is_secure(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .any(|proto| proto.trim().eq_ignore_ascii_case("https"))
+        })
+        .unwrap_or(false)
+        || headers
+            .get("forwarded")
+            .and_then(|value| value.to_str().ok())
+            .map(forwarded_header_has_https_proto)
+            .unwrap_or(false)
+}
+
+fn forwarded_header_has_https_proto(value: &str) -> bool {
+    value.split(',').any(|entry| {
+        entry.split(';').any(|part| {
+            let Some((name, value)) = part.split_once('=') else {
+                return false;
+            };
+            name.trim().eq_ignore_ascii_case("proto")
+                && value.trim_matches('"').trim().eq_ignore_ascii_case("https")
+        })
+    })
 }
 
 fn authless_cookie_nonce(headers: &HeaderMap) -> Option<String> {
@@ -900,6 +1015,9 @@ impl ResolvedActor {
     }
 
     fn oauth_session(&self) -> Option<OAuthActorSession> {
+        if !self.token_claims.is_oauth_access_token() {
+            return None;
+        }
         Some(OAuthActorSession {
             client_id: self.token_claims.oauth_client_id.clone()?,
             grant_id: self.token_claims.oauth_grant_id.clone()?,
@@ -1114,8 +1232,13 @@ async fn attach_resolved_actor(
     source: ResolvedActorSource,
 ) -> AppResult<ResolvedActor> {
     let mut user = app.attach_user_authorization(user).await?;
-    if token_claims.oauth_client_id.is_some() {
+    user.authorization.actor_capabilities = match source {
+        ResolvedActorSource::AuthenticatedToken => token_claims.actor_capabilities,
+        ResolvedActorSource::AuthlessDefault => ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+    };
+    if token_claims.is_oauth_access_token() {
         user.authorization.app = AppPermissionMask::NONE;
+        user.authorization.actor_capabilities = ActorCapabilityMask::NONE;
     }
     Ok(ResolvedActor {
         user,
@@ -1282,6 +1405,8 @@ enum AuthlessAccessDecision {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum AuthlessAccessRejectReason {
+    AuthRequired,
+    CrossSiteRequest,
     MissingRemoteAddress,
     PublicPeer(IpAddr),
     PublicForwardedClient(IpAddr),
@@ -1291,6 +1416,10 @@ enum AuthlessAccessRejectReason {
 impl std::fmt::Display for AuthlessAccessRejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AuthRequired => f.write_str("authentication is required"),
+            Self::CrossSiteRequest => {
+                f.write_str("request fetch metadata identifies a cross-site request")
+            }
             Self::MissingRemoteAddress => f.write_str("missing remote address"),
             Self::PublicPeer(ip) => write!(f, "peer address {ip} is not private/local"),
             Self::PublicForwardedClient(ip) => {
@@ -1526,6 +1655,7 @@ fn is_rate_limited_http_api_path(path: &str) -> bool {
     path.starts_with("/backups/")
         || path == "/api"
         || path.starts_with("/api/")
+        || path == "/authless-client"
         || path == "/oauth/token"
         || path == "/oauth/authorize/decision"
 }
@@ -2312,6 +2442,21 @@ mod tests {
             ))
     }
 
+    fn authless_web_client_test_app(
+        snapshot: scryer_interface::context::AuthRuntimeStateSnapshot,
+        policy: AuthlessAccessPolicy,
+    ) -> Router {
+        let state = AuthlessWebClientProofRouteState {
+            auth_runtime: AuthRuntimeStateHandle::new(snapshot),
+            policy,
+            proof: AuthlessWebClientProofState::new(),
+        };
+        Router::new().route(
+            "/authless-client",
+            get(authless_web_client_proof_handler).with_state(state),
+        )
+    }
+
     fn request_with_peer(uri: &str, peer: SocketAddr) -> Request<Body> {
         let mut request = Request::builder()
             .uri(uri)
@@ -2338,6 +2483,13 @@ mod tests {
             .expect("request");
         request.extensions_mut().insert(ConnectInfo(peer));
         request
+    }
+
+    async fn read_json_response(response: Response) -> Value {
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        serde_json::from_slice(&body).expect("json response")
     }
 
     #[tokio::test]
@@ -2583,6 +2735,174 @@ mod tests {
             "/oauth/authorize/decision"
         ));
         assert!(skip_http_rate_limit(&Method::GET, "/oauth/authorize"));
+    }
+
+    #[test]
+    fn authless_web_client_route_consumes_http_api_quota() {
+        assert!(!skip_http_rate_limit(&Method::GET, "/authless-client"));
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_sets_hardened_cookie_and_cache_headers() {
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store, max-age=0"))
+        );
+        assert_eq!(
+            response.headers().get(header::PRAGMA),
+            Some(&HeaderValue::from_static("no-cache"))
+        );
+        assert_eq!(
+            response.headers().get(header::EXPIRES),
+            Some(&HeaderValue::from_static("0"))
+        );
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("set-cookie");
+        assert!(cookie.starts_with(&format!("{AUTHLESS_WEB_CLIENT_COOKIE}=")));
+        assert!(cookie.contains("Path=/"));
+        assert!(cookie.contains("Max-Age=300"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(!cookie.contains("Secure"));
+
+        let body = read_json_response(response).await;
+        assert!(
+            body["proof"]
+                .as_str()
+                .is_some_and(|proof| proof.matches('.').count() == 2)
+        );
+        assert!(body["expiresAt"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_sets_secure_cookie_for_https_forwarded_request() {
+        let mut request = request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000)),
+        );
+        request
+            .headers_mut()
+            .insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+        request.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.2"),
+        );
+
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy())
+                .oneshot(request)
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("set-cookie");
+        assert!(cookie.contains("Secure"));
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_rejects_public_clients_when_protected() {
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store, max-age=0"))
+        );
+        let body = read_json_response(response).await;
+        assert_eq!(
+            body["error"],
+            "Scryer web client proof is not available for this request"
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_rejects_cross_site_browser_requests() {
+        let mut request = request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+        );
+        request
+            .headers_mut()
+            .insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy())
+                .oneshot(request)
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_allows_explicit_public_authless_access() {
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), public_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::SET_COOKIE).is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_allows_local_ip_bypass_clients() {
+        let response =
+            authless_web_client_test_app(local_bypass_snapshot(), protected_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::SET_COOKIE).is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_rejects_regular_login_mode() {
+        let response =
+            authless_web_client_test_app(auth_enabled_snapshot(), protected_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
     }
 
     #[test]

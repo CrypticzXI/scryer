@@ -1,5 +1,6 @@
 const TRACKED_DOWNLOAD_SNAPSHOT_READ_BUDGET: Duration = Duration::from_millis(25);
 const TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT: usize = 1;
+const DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 fn apply_tracked_download_queue_metadata(
     item: &mut DownloadQueueItem,
     tracked: &TrackedDownloadQueueMetadata,
@@ -209,6 +210,7 @@ pub async fn start_download_queue_poller(
     let (tracked_work_result_tx, mut tracked_work_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<TrackedDownloadBackgroundWorkResult>();
     let mut tracked_work_in_flight = HashSet::new();
+    let mut last_recent_history_poll: Option<Instant> = None;
 
     tracing::info!("download queue poller started (2s interval, tracked downloads enabled)");
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -250,7 +252,16 @@ pub async fn start_download_queue_poller(
             }
             _ = interval.tick() => {
                 let cycle_started_at = Instant::now();
-                match app.collect_download_snapshot_items(true, true, false).await {
+                let include_recent_history = last_recent_history_poll
+                    .map(|last| last.elapsed() >= DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL)
+                    .unwrap_or(true);
+                if include_recent_history {
+                    last_recent_history_poll = Some(Instant::now());
+                }
+                match app
+                    .collect_download_snapshot_items(true, include_recent_history, false)
+                    .await
+                {
                     Ok(mut items) => {
                         let mut seen_ids = HashSet::new();
                         let completed_download_lookup =
@@ -555,12 +566,7 @@ async fn handle_tracked_download_command(
                 return;
             }
             let result = if let Some(td) = tracker.find_mut(&id) {
-                td.state = TrackedDownloadState::ImportPending;
-                td.status = TrackedDownloadStatus::Ok;
-                td.status_messages.clear();
-                td.import_attempted = false;
-                td.path_missing_since = None;
-                td.skip_reacquire_on_failure = false;
+                td.reset_for_import_retry();
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!(
@@ -631,6 +637,13 @@ fn prepare_tracked_download_background_work_dispatch(
     let td = tracker.find_mut(id)?;
     match td.state {
         TrackedDownloadState::ImportPending => {
+            if td
+                .no_video_import_retry
+                .as_ref()
+                .is_some_and(|retry| retry.next_retry_at > chrono::Utc::now())
+            {
+                return None;
+            }
             crate::completed_download_handler::mark_importing(td);
             Some((TrackedDownloadBackgroundWorkKind::Import, td.clone()))
         }

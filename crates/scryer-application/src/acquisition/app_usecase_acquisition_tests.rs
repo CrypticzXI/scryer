@@ -566,7 +566,19 @@ fn effective_auto_decision_code_marks_failed_source_kind_unavailable() {
         "eligible",
     );
 
-    let decision = effective_auto_decision_code(&candidate, &[DownloadSourceKind::NzbUrl]);
+    let empty_db_blocklist = std::collections::HashSet::new();
+    let decision =
+        effective_auto_decision_code(&candidate, &[DownloadSourceKind::NzbUrl], &empty_db_blocklist);
 
     assert_eq!(decision, ReleaseAutoDecisionCode::DownloadClientUnavailable);
+}
+
+#[test]
+fn effective_auto_decision_code_marks_db_blocklisted_release() {
+    let candidate = test_search_result_with_decision("Blocked.Release", None, "eligible");
+    let db_blocklist = std::collections::HashSet::from(["blocked.release".to_string()]);
+
+    let decision = effective_auto_decision_code(&candidate, &[], &db_blocklist);
+
+    assert_eq!(decision, ReleaseAutoDecisionCode::DbBlocklisted);
 }

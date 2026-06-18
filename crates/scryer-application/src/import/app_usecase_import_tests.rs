@@ -699,6 +699,30 @@ fn find_video_files_finds_mkv_in_dir() {
 }
 
 #[test]
+fn find_video_files_includes_trailing_sanitized_video_extension() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sanitized_path = dir.path().join("Fixture.Payload.mkv_");
+    let quoted_path = dir.path().join("Fixture.Payload.mkv\"");
+    let executable_path = dir.path().join("Fixture.Payload.mkv.exe");
+    std::fs::write(&sanitized_path, b"data").expect("write sanitized");
+    std::fs::write(&quoted_path, b"data").expect("write quoted");
+    std::fs::write(&executable_path, b"data").expect("write executable");
+
+    let mut files = find_video_files(dir.path(), false).expect("find");
+    files.sort();
+
+    assert_eq!(files, vec![quoted_path, sanitized_path]);
+}
+
+#[test]
+fn preserved_import_filename_sanitizes_trailing_bad_chars() {
+    assert_eq!(
+        preserved_import_filename(std::path::Path::new("Fixture.Payload.mkv\"")),
+        "Fixture.Payload.mkv"
+    );
+}
+
+#[test]
 fn find_video_files_filters_samples_when_flag_set() {
     use std::io::{Seek, SeekFrom, Write};
     let dir = tempfile::tempdir().expect("tempdir");

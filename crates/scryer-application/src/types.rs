@@ -1375,6 +1375,17 @@ pub struct AuthenticatedTokenClaims {
     pub session_scope: JwtSessionScope,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
+    pub actor_capabilities: scryer_domain::ActorCapabilityMask,
+}
+
+impl AuthenticatedTokenClaims {
+    pub fn is_oauth_access_token(&self) -> bool {
+        self.oauth_client_id.is_some() && self.oauth_grant_id.is_some()
+    }
+
+    pub fn has_partial_oauth_marker(&self) -> bool {
+        self.oauth_client_id.is_some() ^ self.oauth_grant_id.is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1425,6 +1436,13 @@ pub struct OAuthRefreshRotation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OAuthRefreshRotationOutcome {
+    Rotated(Box<OAuthRefreshRotation>),
+    Unavailable,
+    Reused,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthConnectedAppRecord {
     pub grant_id: String,
     pub client_id: String,
@@ -1454,6 +1472,8 @@ pub(crate) struct JwtClaims {
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]
     pub oauth_grant_id: Option<String>,
+    #[serde(default, rename = "actorCapabilities")]
+    pub actor_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1476,6 +1496,8 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_hint: String,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

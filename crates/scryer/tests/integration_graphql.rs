@@ -161,6 +161,7 @@ fn manage_users_actor(username: &str) -> User {
             app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     }
@@ -4165,6 +4166,7 @@ async fn graphql_auth_runtime_state_exposes_config_step_up_without_manage_users(
             ]),
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };
@@ -11001,6 +11003,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }),
@@ -11019,6 +11022,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
         app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
         libraries: HashMap::new(),
         default_library: LibraryPermissionMask::NONE,
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
     };
     let self_reset = schema_exec(&ctx, &mutation, Some(self_actor)).await;
@@ -11150,6 +11154,7 @@ async fn graphql_external_account_invites_expose_last_login() {
             app: AppPermissionMask::NONE,
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };
@@ -11197,6 +11202,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Broken.NZB.Movie.2024".to_string()),
+                source_password: None,
             },
         )
         .await
@@ -11291,6 +11297,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
+                source_password: None,
             },
         )
         .await
@@ -13940,6 +13947,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 LibraryPermissionMask::from_permission(LibraryPermission::ManageTitles),
             )]),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };

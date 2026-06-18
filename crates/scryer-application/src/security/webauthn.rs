@@ -149,6 +149,8 @@ impl AppUseCase {
         actor: &User,
         form_login_enabled: bool,
     ) -> AppResult<WebauthnChallengeStart> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
@@ -222,6 +224,8 @@ impl AppUseCase {
         friendly_name: Option<String>,
         form_login_enabled: bool,
     ) -> AppResult<PasskeySummary> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
@@ -587,6 +591,8 @@ impl AppUseCase {
         actor: &User,
         form_login_enabled: bool,
     ) -> AppResult<Vec<PasskeySummary>> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         let records = self
             .services
@@ -603,6 +609,8 @@ impl AppUseCase {
         credential_record_id: &str,
         form_login_enabled: bool,
     ) -> AppResult<()> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.services
             .identity

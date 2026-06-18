@@ -912,7 +912,7 @@ async fn process_single_wanted_item(
 
     // Load DB-level blocklist (covers post-import failures like fake/non-video files,
     // in addition to the download-client snapshot checked below).
-    let _db_blocklist: std::collections::HashSet<String> = app
+    let db_blocklist: std::collections::HashSet<String> = app
         .services
         .workflow
         .release_attempts
@@ -982,7 +982,7 @@ async fn process_single_wanted_item(
             .map(|d| d.allowed)
             .unwrap_or(false);
         let decision_code = if is_allowed {
-            effective_auto_decision_code(candidate, &failed_source_kinds)
+            effective_auto_decision_code(candidate, &failed_source_kinds, &db_blocklist)
         } else {
             ReleaseAutoDecisionCode::QualityBlocked
         };
@@ -1318,6 +1318,7 @@ async fn process_single_wanted_item(
                     candidate_index + 1,
                     now,
                     &failed_source_kinds,
+                    &db_blocklist,
                 )
                 .await;
 
