@@ -41,6 +41,16 @@ impl DomainEventActor {
             user_id: Some(actor_user_id),
         }
     }
+
+    pub(crate) fn into_download_submission_actor_snapshot(
+        self,
+    ) -> crate::DownloadSubmissionActorSnapshot {
+        crate::DownloadSubmissionActorSnapshot {
+            kind: self.kind,
+            user_id: self.user_id,
+            display_name: self.display_name,
+        }
+    }
 }
 
 fn normalized_actor_display_name(username: &str, fallback_id: &str) -> String {

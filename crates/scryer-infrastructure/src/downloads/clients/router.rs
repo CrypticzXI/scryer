@@ -181,6 +181,39 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.list_recent_completed_downloads(limit).await
     }
 
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_queue_excluding_client_types(excluded_client_types),
+        )
+        .await
+    }
+
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_excluding_client_types(limit, excluded_client_types),
+        )
+        .await
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.inner
+            .list_recent_completed_downloads_excluding_client_types(limit, excluded_client_types)
+            .await
+    }
+
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         self.inner.pause_queue_item(id).await
     }
@@ -445,6 +478,19 @@ impl PrioritizedDownloadClientRouter {
             .filter(|config| config.is_enabled)
             .collect::<Vec<_>>();
         clients.sort_by_key(|config| config.client_priority);
+        Ok(clients)
+    }
+
+    async fn list_enabled_clients_by_priority_excluding(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadClientConfig>> {
+        let mut clients = self.list_enabled_clients_by_priority().await?;
+        clients.retain(|config| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| config.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
         Ok(clients)
     }
 
@@ -1195,9 +1241,22 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let clients = self.list_enabled_clients_by_priority().await?;
+        self.list_queue_excluding_client_types(&[]).await
+    }
+
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self.fallback_client.list_queue().await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client.list_queue().await
+            } else {
+                Ok(Vec::new())
+            };
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -1359,13 +1418,28 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     }
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_recent_activity_excluding_client_types(limit, &[])
+            .await
+    }
+
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let clients = self.list_enabled_clients_by_priority().await?;
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self.fallback_client.list_recent_activity(limit).await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client.list_recent_activity(limit).await
+            } else {
+                Ok(Vec::new())
+            };
         }
 
         let mut all_items = Vec::new();
@@ -1641,16 +1715,30 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         &self,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.list_recent_completed_downloads_excluding_client_types(limit, &[])
+            .await
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let clients = self.list_enabled_clients_by_priority().await?;
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self
-                .fallback_client
-                .list_recent_completed_downloads(limit)
-                .await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client
+                    .list_recent_completed_downloads(limit)
+                    .await
+            } else {
+                Ok(Vec::new())
+            };
         }
 
         let mut all_items = Vec::new();
@@ -3326,6 +3414,86 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_queue_excluding_weaver_keeps_non_weaver_clients() {
+        let qbit_client = Arc::new(MockDownloadClient::default());
+        qbit_client
+            .queue_items
+            .lock()
+            .unwrap()
+            .push(test_queue_item("qbit-1"));
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("qbit-client".to_string(), qbit_client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("weaver-client", "Weaver", "weaver", 0),
+                    test_config("qbit-client", "qBittorrent", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_queue_excluding_client_types(&["weaver"])
+            .await
+            .expect("queue listing should succeed");
+
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["qbit-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_excluding_only_weaver_does_not_use_fallback_client() {
+        let fallback = Arc::new(MockDownloadClient::default());
+        fallback
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "fallback".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "fallback-1".to_string(),
+                download_id: None,
+                name: "Fallback".to_string(),
+                dest_dir: "/downloads/fallback".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("weaver-client", "Weaver", "weaver", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            fallback,
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            None,
+        );
+
+        let items = router
+            .list_recent_completed_downloads_excluding_client_types(10, &["weaver"])
+            .await
+            .expect("recent completed listing should succeed");
+
+        assert!(items.is_empty());
     }
 
     #[tokio::test]

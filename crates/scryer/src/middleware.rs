@@ -23,8 +23,8 @@ use tracing::warn;
 use crate::base_path::BasePath;
 use crate::http_error::ErrorResponse;
 use crate::rate_limit::{
-    RateLimitKey, ScryerRateLimiter, classify_graphql, rate_limited_graphql_response,
-    should_precheck_graphql_login,
+    HttpRateLimitClass, RateLimitKey, ScryerRateLimiter, classify_graphql,
+    rate_limited_graphql_response, should_precheck_graphql_login,
 };
 
 const X_FORWARDED_PROTO: &str = "x-forwarded-proto";
@@ -1664,9 +1664,10 @@ pub(crate) async fn rate_limit_http_api(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    if skip_http_rate_limit(request.method(), request.uri().path()) {
+    let Some(rate_limit_class) = classify_http_rate_limit(request.method(), request.uri().path())
+    else {
         return next.run(request).await;
-    }
+    };
 
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
@@ -1675,7 +1676,7 @@ pub(crate) async fn rate_limit_http_api(
         client_ip,
         actor.as_ref().map(|actor| actor.user.id.as_str()),
     );
-    match auth_state.rate_limiter.check_http_api(&key) {
+    match auth_state.rate_limiter.check_http(rate_limit_class, &key) {
         Ok(()) => next.run(request).await,
         Err(decision) => {
             let mut response = (
@@ -1693,17 +1694,22 @@ pub(crate) async fn rate_limit_http_api(
     }
 }
 
+#[cfg(test)]
 fn skip_http_rate_limit(_method: &Method, path: &str) -> bool {
-    !is_rate_limited_http_api_path(path)
+    classify_http_rate_limit(_method, path).is_none()
 }
 
-fn is_rate_limited_http_api_path(path: &str) -> bool {
-    path.starts_with("/backups/")
-        || path == "/api"
-        || path.starts_with("/api/")
-        || path == "/authless-client"
-        || path == "/oauth/token"
-        || path == "/oauth/authorize/decision"
+fn classify_http_rate_limit(_method: &Method, path: &str) -> Option<HttpRateLimitClass> {
+    if path == "/authless-client" {
+        return Some(HttpRateLimitClass::AuthlessClient);
+    }
+    if path == "/oauth/token" || path == "/oauth/authorize/decision" {
+        return Some(HttpRateLimitClass::OAuth);
+    }
+    if path.starts_with("/backups/") || path == "/api" || path.starts_with("/api/") {
+        return Some(HttpRateLimitClass::Api);
+    }
+    None
 }
 
 pub(crate) fn map_app_error(error: AppError) -> Response {
@@ -2799,18 +2805,30 @@ mod tests {
     }
 
     #[test]
-    fn oauth_token_and_decision_routes_consume_http_api_quota() {
+    fn oauth_token_and_decision_routes_use_oauth_quota() {
         assert!(!skip_http_rate_limit(&Method::POST, "/oauth/token"));
         assert!(!skip_http_rate_limit(
             &Method::POST,
             "/oauth/authorize/decision"
         ));
+        assert_eq!(
+            classify_http_rate_limit(&Method::POST, "/oauth/token"),
+            Some(HttpRateLimitClass::OAuth)
+        );
+        assert_eq!(
+            classify_http_rate_limit(&Method::POST, "/oauth/authorize/decision"),
+            Some(HttpRateLimitClass::OAuth)
+        );
         assert!(skip_http_rate_limit(&Method::GET, "/oauth/authorize"));
     }
 
     #[test]
-    fn authless_web_client_route_consumes_http_api_quota() {
+    fn authless_web_client_route_uses_authless_client_quota() {
         assert!(!skip_http_rate_limit(&Method::GET, "/authless-client"));
+        assert_eq!(
+            classify_http_rate_limit(&Method::GET, "/authless-client"),
+            Some(HttpRateLimitClass::AuthlessClient)
+        );
     }
 
     #[tokio::test]

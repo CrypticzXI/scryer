@@ -500,10 +500,29 @@ async fn block_download_queue_item_identity_for_manual_review(
     }
 }
 
-#[derive(Clone, Copy, Debug)]
 enum CompletedDownloadFetchPolicy {
     Full,
     Recent { limit: usize },
+    Provided {
+        downloads: Vec<CompletedDownload>,
+    },
+}
+
+impl CompletedDownloadFetchPolicy {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Recent { .. } => "recent",
+            Self::Provided { .. } => "provided",
+        }
+    }
+
+    fn recent_limit(&self) -> Option<usize> {
+        match self {
+            Self::Recent { limit } => Some(*limit),
+            _ => None,
+        }
+    }
 }
 
 /// Attempts to import completed items from the current queue/history snapshot.
@@ -531,6 +550,23 @@ pub async fn try_import_recent_completed_downloads(
         items,
         CompletedDownloadFetchPolicy::Recent {
             limit: crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+        },
+    )
+    .await
+}
+
+pub async fn try_import_provided_completed_downloads(
+    app: &AppUseCase,
+    actor: &User,
+    items: &[DownloadQueueItem],
+    completed_downloads: Vec<CompletedDownload>,
+) -> HashSet<String> {
+    try_import_completed_downloads_with_policy(
+        app,
+        actor,
+        items,
+        CompletedDownloadFetchPolicy::Provided {
+            downloads: completed_downloads,
         },
     )
     .await
@@ -584,14 +620,15 @@ async fn try_import_completed_downloads_with_policy(
         "import: found completed items to evaluate"
     );
 
-    let completed_downloads = match completed_downloads_for_import(app, fetch_policy).await {
+    let completed_downloads = match completed_downloads_for_import(app, &fetch_policy).await {
         Ok(downloads) => {
-            tracing::debug!(
-                count = downloads.len(),
-                ids = %downloads.iter().map(|d| d.download_client_item_id.as_str()).collect::<Vec<_>>().join(", "),
-                fetch_policy = ?fetch_policy,
-                "import: fetched completed downloads from client"
-            );
+                tracing::debug!(
+                    count = downloads.len(),
+                    ids = %downloads.iter().map(|d| d.download_client_item_id.as_str()).collect::<Vec<_>>().join(", "),
+                    fetch_policy = fetch_policy.label(),
+                    fetch_policy_recent_limit = ?fetch_policy.recent_limit(),
+                    "import: fetched completed downloads from client"
+                );
             downloads
         }
         Err(error) => {
@@ -610,10 +647,11 @@ async fn try_import_completed_downloads_with_policy(
                 tracing::debug!(
                     source_ref = %source_ref,
                     title = %item.title_name,
-                    fetch_policy = ?fetch_policy,
+                    fetch_policy = fetch_policy.label(),
+                    fetch_policy_recent_limit = ?fetch_policy.recent_limit(),
                     "import: no matching CompletedDownload from client history (item may still be processing, outside recent window, or status != Completed)"
                 );
-                if matches!(fetch_policy, CompletedDownloadFetchPolicy::Full)
+                if matches!(&fetch_policy, CompletedDownloadFetchPolicy::Full)
                     && !download_submission_identity_is_empty(&download_queue_item_observed_identity(
                         item,
                     ))
@@ -903,7 +941,7 @@ async fn try_import_completed_downloads_with_policy(
 
 async fn completed_downloads_for_import(
     app: &AppUseCase,
-    fetch_policy: CompletedDownloadFetchPolicy,
+    fetch_policy: &CompletedDownloadFetchPolicy,
 ) -> AppResult<Vec<CompletedDownload>> {
     match fetch_policy {
         CompletedDownloadFetchPolicy::Full => {
@@ -917,9 +955,10 @@ async fn completed_downloads_for_import(
             app.services
                 .integrations
                 .download_client
-                .list_recent_completed_downloads(limit)
+                .list_recent_completed_downloads(*limit)
                 .await
         }
+        CompletedDownloadFetchPolicy::Provided { downloads } => Ok(downloads.clone()),
     }
 }
 // ---------------------------------------------------------------------------

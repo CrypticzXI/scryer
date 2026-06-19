@@ -38,7 +38,8 @@ pub(crate) mod download_clients {
     pub use crate::downloads::clients::{
         BuiltinDownloadClientConnectionTester, NzbgetDownloadClient,
         PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
-        resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+        WeaverSubscriptionBridgeClient, resolve_base_url_from_config_json,
+        start_weaver_subscription_bridge,
     };
     pub use crate::indexers::search_client::MultiIndexerSearchClient;
 }
@@ -272,8 +273,8 @@ pub use customization::post_processing_script_store::PostProcessingScriptStore;
 pub use customization::rule_set_store::RuleSetStore;
 pub use downloads::clients::{
     BuiltinDownloadClientConnectionTester, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
-    start_weaver_subscription_bridge,
+    SabnzbdDownloadClient, WeaverDownloadClient, WeaverSubscriptionBridgeClient,
+    resolve_base_url_from_config_json, start_weaver_subscription_bridge,
 };
 pub use downloads::config_store::DownloadClientConfigStore;
 pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;

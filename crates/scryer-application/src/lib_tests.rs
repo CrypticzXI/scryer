@@ -19025,6 +19025,51 @@ async fn try_import_recent_completed_downloads_uses_recent_lookup_and_preserves_
 }
 
 #[tokio::test]
+async fn try_import_provided_completed_downloads_uses_provided_rows_and_preserves_processed_ids() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    let item_id = "targeted-completed-processed";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = "weaver-client".to_string();
+    item.client_type = "weaver".to_string();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Targeted.Completed.2026.1080p.WEB-DL",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = item.client_id.clone();
+    completed.client_type = item.client_type.clone();
+    completed.parameters.clear();
+    let processed = crate::import::import::try_import_provided_completed_downloads(
+        &app,
+        &user,
+        &[item],
+        vec![completed],
+    )
+    .await;
+
+    assert!(processed.contains(item_id));
+    assert_eq!(*download_client.completed_download_calls.lock().await, 0);
+    assert!(
+        download_client
+            .recent_completed_download_calls
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn try_import_recent_completed_downloads_defers_missing_recent_history_without_blocking() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -19064,6 +19109,67 @@ async fn try_import_recent_completed_downloads_defers_missing_recent_history_wit
             .await
             .clone(),
         vec![crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT]
+    );
+    let state = download_submissions
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            },
+            Some(&DownloadSourceIdentity::new(
+                Some("weaver-client"),
+                "weaver",
+                item_id,
+            )),
+        )
+        .await
+        .expect("identity state lookup");
+    assert!(state.is_none());
+}
+
+#[tokio::test]
+async fn try_import_provided_completed_downloads_defers_missing_history_without_blocking() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let item_id = "targeted-missing-completed";
+    let download_id = "scryer-download:targeted-missing";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = "weaver-client".to_string();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+
+    let mut full_history_completed = completed_download_fixture_item(
+        item_id,
+        "title-current",
+        "Targeted.Missing.2026.1080p.WEB-DL",
+        "/tmp/would-have-been-found-by-full-history",
+    );
+    full_history_completed.client_id = item.client_id.clone();
+    full_history_completed.client_type = item.client_type.clone();
+    *download_client.completed_downloads.lock().await = vec![full_history_completed];
+
+    let processed = crate::import::import::try_import_provided_completed_downloads(
+        &app,
+        &user,
+        &[item],
+        vec![],
+    )
+    .await;
+
+    assert!(!processed.contains(item_id));
+    assert_eq!(*download_client.completed_download_calls.lock().await, 0);
+    assert!(
+        download_client
+            .recent_completed_download_calls
+            .lock()
+            .await
+            .is_empty()
     );
     let state = download_submissions
         .get_identity_tracked_state(

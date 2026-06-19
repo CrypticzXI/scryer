@@ -736,6 +736,22 @@ impl AppUseCase {
         include_recent_history: bool,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.collect_download_snapshot_items_excluding_client_types(
+            include_queue,
+            include_recent_history,
+            use_tracked_runtime_snapshot,
+            &[],
+        )
+        .await
+    }
+
+    pub(crate) async fn collect_download_snapshot_items_excluding_client_types(
+        &self,
+        include_queue: bool,
+        include_recent_history: bool,
+        use_tracked_runtime_snapshot: bool,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
         let enabled_clients = self.enabled_download_clients_by_priority().await?;
         if enabled_clients.is_empty() {
             return Ok(Vec::new());
@@ -745,7 +761,7 @@ impl AppUseCase {
             self.services
                 .integrations
                 .download_client
-                .list_queue()
+                .list_queue_excluding_client_types(excluded_client_types)
                 .await?
         } else {
             Vec::new()
@@ -758,7 +774,10 @@ impl AppUseCase {
             self.services
                 .integrations
                 .download_client
-                .list_recent_activity(DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT)
+                .list_recent_activity_excluding_client_types(
+                    DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT,
+                    excluded_client_types,
+                )
                 .await?
         } else {
             Vec::new()

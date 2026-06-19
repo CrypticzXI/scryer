@@ -5,10 +5,11 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ImportArtifact, ImportArtifactRepository,
-    ImportRepository, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, PendingReleaseStatus,
-    SubmissionScope, SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo,
+    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionRepository,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord, JobRunStatus,
+    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
     DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventStream, DomainEventType,
@@ -1101,6 +1102,29 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
             .map(scryer_application::DownloadSubmissionPurpose::from_label)
             .unwrap_or_default(),
     })
+}
+
+pub(crate) fn download_submission_actor_snapshot_from_row(
+    row: &SqlRow,
+) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
+    let Some(kind_raw) = row.opt_text("actor_kind")? else {
+        return Ok(None);
+    };
+    let kind = DomainEventActorKind::parse(kind_raw.as_str()).unwrap_or(DomainEventActorKind::User);
+    let display_name = row
+        .opt_text("actor_display_name")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            row.opt_text("actor_user_id")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| kind.as_str().to_string())
+        });
+    Ok(Some(DownloadSubmissionActorSnapshot {
+        kind,
+        user_id: row.opt_text("actor_user_id")?,
+        display_name,
+    }))
 }
 
 pub(crate) fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {

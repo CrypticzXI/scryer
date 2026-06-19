@@ -29,6 +29,7 @@ import {
 import { TimePicker } from "@/components/ui/time-picker";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { selectorId } from "@/lib/utils/dom-ids";
 import {
   createBackupMutation,
   deleteBackupMutation,
@@ -248,14 +249,17 @@ function statusTone(status: BackupInfoRecord["status"]): string {
 }
 
 function BackupStatusBadge({
+  id,
   status,
   label,
 }: {
+  id?: string;
   status: BackupInfoRecord["status"];
   label: string;
 }) {
   return (
     <span
+      id={id}
       className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${statusTone(status)}`}
     >
       {status === "creating" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
@@ -744,6 +748,7 @@ export function SettingsBackupsContainer() {
             <p className="text-muted-foreground">{t("settings.backupsSection")}</p>
           </div>
           <Button
+            id={selectorId("settings-backups-create-open")}
             type="button"
             className="shrink-0"
             onClick={() => setCreateDialogOpen(true)}
@@ -784,7 +789,10 @@ export function SettingsBackupsContainer() {
                       : t("settings.backupsReady");
 
                 return (
-                  <TableRow key={backup.filename}>
+                  <TableRow
+                    key={backup.filename}
+                    id={selectorId("settings-backup-row", "created-at", backup.createdAt)}
+                  >
                     <TableCell className="align-top">
                       <div className="space-y-1">
                         <div className="font-medium">{backup.filename}</div>
@@ -810,7 +818,16 @@ export function SettingsBackupsContainer() {
                       {formatDateTime(backup.createdAt)}
                     </TableCell>
                     <TableCell>
-                      <BackupStatusBadge status={backup.status} label={statusLabel} />
+                      <BackupStatusBadge
+                        id={selectorId(
+                          "settings-backup-status",
+                          backup.status,
+                          "created-at",
+                          backup.createdAt,
+                        )}
+                        status={backup.status}
+                        label={statusLabel}
+                      />
                     </TableCell>
                     <TableCell className="align-middle text-xs text-muted-foreground">
                       {formatBytes(backup.sizeBytes)}
@@ -819,6 +836,7 @@ export function SettingsBackupsContainer() {
                       <div className="flex items-center justify-end gap-1">
                         {backup.status === "ready" ? (
                           <Button
+                            id={selectorId("settings-backup-download", "created-at", backup.createdAt)}
                             type="button"
                             variant="secondary"
                             size="icon-sm"
@@ -839,6 +857,7 @@ export function SettingsBackupsContainer() {
                           </Button>
                         ) : null}
                         <Button
+                          id={selectorId("settings-backup-delete", "created-at", backup.createdAt)}
                           type="button"
                           variant="secondary"
                           size="icon-sm"
@@ -877,7 +896,7 @@ export function SettingsBackupsContainer() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent id={selectorId("settings-backups-create-dialog")} className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t("settings.backupsCreateTitle")}</DialogTitle>
             <DialogDescription>{t("settings.backupsCreateDescription")}</DialogDescription>
@@ -886,6 +905,7 @@ export function SettingsBackupsContainer() {
             <label className="block space-y-2 text-sm">
               <span className="font-medium">{t("settings.password")}</span>
               <Input
+                id={selectorId("settings-backups-create-password")}
                 type="password"
                 value={password}
                 onChange={(event) => {
@@ -903,6 +923,7 @@ export function SettingsBackupsContainer() {
             <label className="block space-y-2 text-sm">
               <span className="font-medium">{t("settings.backupsConfirmPassword")}</span>
               <Input
+                id={selectorId("settings-backups-create-confirm-password")}
                 type="password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -934,6 +955,7 @@ export function SettingsBackupsContainer() {
               {t("label.cancel")}
             </Button>
             <Button
+              id={selectorId("settings-backups-create-submit")}
               type="button"
               onClick={() => void handleCreateBackup()}
               disabled={!canCreateBackup}

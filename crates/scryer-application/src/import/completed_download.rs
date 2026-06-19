@@ -22,7 +22,7 @@ use crate::import_workflow::{
     resolve_completed_download_origin_for_import,
 };
 use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
+use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };
@@ -445,7 +445,8 @@ async fn import_inner(
     let success_before = total_successful_artifacts(app, td).await;
     td.import_attempted = true;
 
-    match import_completed_download(app, actor, &completed).await {
+    let import_actor = actor_for_tracked_download_import(app, actor, td).await;
+    match import_completed_download(app, &import_actor, &completed).await {
         Ok(result) => {
             let success_after = total_successful_artifacts(app, td).await;
             let files_imported_this_pass = success_after.saturating_sub(success_before) as usize;
@@ -479,6 +480,58 @@ async fn import_inner(
             false
         }
     }
+}
+
+async fn actor_for_tracked_download_import(
+    app: &AppUseCase,
+    fallback_actor: &User,
+    td: &TrackedDownload,
+) -> User {
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
+    match app
+        .services
+        .workflow
+        .download_submissions
+        .get_submission_actor_snapshot(&source_identity)
+        .await
+    {
+        Ok(Some(snapshot)) => actor_with_submission_snapshot(fallback_actor, &snapshot),
+        Ok(None) => fallback_actor.clone(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                client_id = td.client_id.as_str(),
+                client_type = td.client_type.as_str(),
+                download_client_item_id = td.client_item.download_client_item_id.as_str(),
+                "failed to load download submission actor snapshot"
+            );
+            fallback_actor.clone()
+        }
+    }
+}
+
+fn actor_with_submission_snapshot(
+    fallback_actor: &User,
+    snapshot: &DownloadSubmissionActorSnapshot,
+) -> User {
+    let mut actor = fallback_actor.clone();
+    if let Some(user_id) = snapshot
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        actor.id = user_id.to_string();
+    }
+    let display_name = snapshot.display_name.trim();
+    if !display_name.is_empty() {
+        actor.username = display_name.to_string();
+    }
+    actor
 }
 
 async fn resolve_completed_download_for_import(
@@ -684,15 +737,16 @@ pub(crate) async fn load_completed_download_lookup(
     ))
 }
 
-pub(crate) async fn load_recent_completed_download_lookup(
+pub(crate) async fn load_recent_completed_download_lookup_excluding_client_types(
     app: &AppUseCase,
     limit: usize,
+    excluded_client_types: &[&str],
 ) -> AppResult<CompletedDownloadLookup> {
     let completed_downloads = app
         .services
         .integrations
         .download_client
-        .list_recent_completed_downloads(limit)
+        .list_recent_completed_downloads_excluding_client_types(limit, excluded_client_types)
         .await?;
     Ok(index_completed_downloads(
         completed_downloads,
@@ -700,11 +754,18 @@ pub(crate) async fn load_recent_completed_download_lookup(
     ))
 }
 
-pub(crate) async fn load_recent_completed_download_lookup_or_default(
+pub(crate) async fn load_recent_completed_download_lookup_or_default_excluding_client_types(
     app: &AppUseCase,
     limit: usize,
+    excluded_client_types: &[&str],
 ) -> CompletedDownloadLookup {
-    match load_recent_completed_download_lookup(app, limit).await {
+    match load_recent_completed_download_lookup_excluding_client_types(
+        app,
+        limit,
+        excluded_client_types,
+    )
+    .await
+    {
         Ok(lookup) => lookup,
         Err(error) => {
             tracing::warn!(
@@ -716,10 +777,20 @@ pub(crate) async fn load_recent_completed_download_lookup_or_default(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn load_completed_download_lookup_for_items(
     app: &AppUseCase,
     items: &[DownloadQueueItem],
     limit: usize,
+) -> Option<CompletedDownloadLookup> {
+    load_completed_download_lookup_for_items_excluding_client_types(app, items, limit, &[]).await
+}
+
+pub(crate) async fn load_completed_download_lookup_for_items_excluding_client_types(
+    app: &AppUseCase,
+    items: &[DownloadQueueItem],
+    limit: usize,
+    excluded_client_types: &[&str],
 ) -> Option<CompletedDownloadLookup> {
     if !items
         .iter()
@@ -728,7 +799,14 @@ pub(crate) async fn load_completed_download_lookup_for_items(
         return None;
     }
 
-    Some(load_recent_completed_download_lookup_or_default(app, limit).await)
+    Some(
+        load_recent_completed_download_lookup_or_default_excluding_client_types(
+            app,
+            limit,
+            excluded_client_types,
+        )
+        .await,
+    )
 }
 
 fn index_completed_downloads(

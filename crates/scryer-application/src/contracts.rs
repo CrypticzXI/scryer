@@ -166,6 +166,13 @@ pub struct DownloadSubmission {
     pub scope: SubmissionScope,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadSubmissionActorSnapshot {
+    pub kind: scryer_domain::DomainEventActorKind,
+    pub user_id: Option<String>,
+    pub display_name: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DownloadSubmissionIdentity {
     pub download_id: Option<String>,

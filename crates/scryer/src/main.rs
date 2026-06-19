@@ -32,24 +32,24 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
-    MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
-    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
-    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AppUseCase, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
+    IndexerPluginProvider, MovieFacetHandler, NotificationPluginProvider,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
+    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
+    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_background_title_image_loop, start_download_queue_poller, start_notification_dispatcher,
-    tracked_downloads::TrackedDownloadHandle,
+    start_background_title_image_loop, start_download_queue_poller_with_options,
+    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter, SettingsStore,
-    SmgEnrollmentConfig, WeaverDownloadClient, resolve_datastore_config_from_env,
+    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -1240,27 +1240,35 @@ async fn bootstrap_application(
             );
         }
     }
-    // Always run the download queue poller — it queries ALL enabled download
-    // clients (NZBGet, SABnzbd, Weaver, plugins) and triggers imports for
-    // completed downloads from any of them.
-    tokio::spawn(start_download_queue_poller(
+    let weaver_bridge_client = resolve_weaver_subscription_bridge_client(&app_use_case).await;
+    let poller_options = DownloadQueuePollerOptions {
+        excluded_client_types: weaver_bridge_client
+            .as_ref()
+            .map(|_| vec!["weaver".to_string()])
+            .unwrap_or_default(),
+        ..DownloadQueuePollerOptions::default()
+    };
+
+    // Run the generic download queue poller for polling-based clients. Weaver
+    // is excluded when its self-contained subscription bridge is active.
+    tokio::spawn(start_download_queue_poller_with_options(
         app_use_case.clone(),
         shutdown_token.child_token(),
         tracked_download_rx,
+        poller_options,
     ));
-    // Additionally start the Weaver WebSocket subscription bridge for
-    // real-time UI updates (progress, state changes) when Weaver is
-    // configured. The poller still handles import detection for all clients.
-    if let Some((ws_url, api_key)) = resolve_weaver_ws_url(&app_use_case).await {
+    // Start the Weaver WebSocket subscription bridge when Weaver is primary.
+    // The bridge owns both subscription updates and its Weaver-only fallback
+    // polling when the socket is unavailable.
+    if let Some(bridge_client) = weaver_bridge_client {
         tracing::info!(
-            url = ws_url.as_str(),
+            client_type = "weaver",
             "using weaver subscription bridge for real-time download queue updates"
         );
         tokio::spawn(start_weaver_subscription_bridge(
             app_use_case.clone(),
             shutdown_token.child_token(),
-            ws_url,
-            api_key,
+            bridge_client,
         ));
     }
     tokio::spawn(start_background_acquisition_poller(
@@ -1901,16 +1909,17 @@ pub(crate) fn normalize_env_option_with_legacy<'a>(
     None
 }
 
-/// Check if the primary download client is weaver and return its WebSocket URL and API key.
-async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<String>)> {
+/// Check if the primary download client is Weaver and build its bridge client.
+async fn resolve_weaver_subscription_bridge_client(
+    app: &AppUseCase,
+) -> Option<WeaverSubscriptionBridgeClient> {
     let primary = app.primary_enabled_download_client_config().await.ok()??;
 
     if primary.client_type != "weaver" {
         return None;
     }
 
-    let client = WeaverDownloadClient::from_config(&primary).ok()?;
-    Some((client.ws_url(), client.api_key().map(str::to_string)))
+    WeaverSubscriptionBridgeClient::from_config(&primary).ok()
 }
 
 fn runtime_normalized_constraint(raw: Option<&str>) -> Option<String> {

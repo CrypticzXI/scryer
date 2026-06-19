@@ -24,7 +24,7 @@ pub use nzbget::NzbgetDownloadClient;
 pub use router::PrioritizedDownloadClientRouter;
 pub use sabnzbd::SabnzbdDownloadClient;
 pub use weaver::WeaverDownloadClient;
-pub use weaver_subscription::start_weaver_subscription_bridge;
+pub use weaver_subscription::{WeaverSubscriptionBridgeClient, start_weaver_subscription_bridge};
 
 const MAX_NZB_BYTES: u64 = 32 * 1024 * 1024;
 const STAGED_NZB_ZSTD_LEVEL: i32 = 3;

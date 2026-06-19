@@ -1,0 +1,22 @@
+query HistoryItem($id: Int!) {
+  historyItem(id: $id) {
+    id
+    name
+    state
+    error
+    progressPercent
+    totalBytes
+    category
+    outputDir
+    createdAt
+    completedAt
+    clientRequestId
+    attributes {
+      key
+      value
+    }
+    attention {
+      message
+    }
+  }
+}

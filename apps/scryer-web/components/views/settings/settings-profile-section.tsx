@@ -419,20 +419,29 @@ export function SettingsProfileSection({
             <span>{t("label.loading")}</span>
           </div>
         ) : oauthApps.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No connected apps.</p>
+          <p id="settings-profile-oauth-apps-empty" className="text-sm text-muted-foreground">
+            No connected apps.
+          </p>
         ) : (
           <div className="space-y-3">
             {oauthApps.map((app) => (
               <div
+                id={selectorId("settings-profile-oauth-app-row", app.clientId)}
                 key={app.grantId}
                 className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
               >
                 <div className="space-y-1">
                   <div className="font-medium text-foreground">{app.clientName}</div>
-                  <div className="text-sm text-muted-foreground">
+                  <div
+                    id={selectorId("settings-profile-oauth-app-authorized-at", app.clientId)}
+                    className="text-sm text-muted-foreground"
+                  >
                     Authorized: {formatTimestamp(app.authorizedAt)}
                   </div>
-                  <div className="text-sm text-muted-foreground">
+                  <div
+                    id={selectorId("settings-profile-oauth-app-last-used", app.clientId)}
+                    className="text-sm text-muted-foreground"
+                  >
                     Last used: {formatTimestamp(app.lastUsedAt)}
                   </div>
                 </div>

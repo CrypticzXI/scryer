@@ -1,6 +1,7 @@
 pub(crate) const TEST_CONNECTION_QUERY: &str = include_str!("weaver/test_connection.graphql");
 pub(crate) const VERSION_COMPAT_QUERY: &str = include_str!("weaver/version_compat.graphql");
 pub(crate) const QUEUE_ITEMS_QUERY: &str = include_str!("weaver/queue_items.graphql");
+pub(crate) const HISTORY_ITEM_QUERY: &str = include_str!("weaver/history_item.graphql");
 pub(crate) const HISTORY_ITEMS_QUERY: &str = include_str!("weaver/history_items.graphql");
 pub(crate) const JOBS_COMPAT_QUERY: &str = include_str!("weaver/jobs_compat.graphql");
 pub(crate) const SUBMIT_NZB_MUTATION: &str = include_str!("weaver/submit_nzb.graphql");

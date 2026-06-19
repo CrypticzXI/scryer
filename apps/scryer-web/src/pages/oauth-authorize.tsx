@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { getAuthToken } from "@/lib/hooks/use-auth";
 import { getRuntimeBackendUrl, getRuntimeBasePath } from "@/lib/runtime-config";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 const CLIENT_NAMES: Record<string, string> = {
   "generic-native": "Generic native integration",
@@ -77,9 +78,16 @@ export default function OAuthAuthorizePage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
         <div className="grid w-full max-w-lg gap-4 rounded-md border border-border bg-card p-6 shadow-sm">
-          <h1 className="text-xl font-semibold">Authorize {clientName || "integration"}</h1>
+          <h1 id={selectorId("oauth-authorize-heading")} className="text-xl font-semibold">
+            Authorize {clientName || "integration"}
+          </h1>
           <p className="text-sm text-muted-foreground">Sign in to continue OAuth authorization.</p>
-          <Button onClick={() => window.location.assign(loginUrl())}>Sign in</Button>
+          <Button
+            id={selectorId("oauth-authorize-sign-in")}
+            onClick={() => window.location.assign(loginUrl())}
+          >
+            Sign in
+          </Button>
         </div>
       </main>
     );
@@ -89,7 +97,9 @@ export default function OAuthAuthorizePage() {
     <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
       <div className="grid w-full max-w-xl gap-5 rounded-md border border-border bg-card p-6 shadow-sm">
         <div className="space-y-1">
-          <h1 className="text-xl font-semibold">Authorize {clientName}</h1>
+          <h1 id={selectorId("oauth-authorize-heading")} className="text-xl font-semibold">
+            Authorize {clientName}
+          </h1>
           <p className="break-all text-sm text-muted-foreground">{redirectUri}</p>
         </div>
         <div className="grid gap-2 text-sm">
@@ -98,10 +108,19 @@ export default function OAuthAuthorizePage() {
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         <div className="flex flex-wrap gap-2">
-          <Button disabled={busy} onClick={() => decide(true)}>
+          <Button
+            id={selectorId("oauth-authorize-approve")}
+            disabled={busy}
+            onClick={() => decide(true)}
+          >
             Authorize
           </Button>
-          <Button variant="outline" disabled={busy} onClick={() => decide(false)}>
+          <Button
+            id={selectorId("oauth-authorize-deny")}
+            variant="outline"
+            disabled={busy}
+            onClick={() => decide(false)}
+          >
             Deny
           </Button>
         </div>

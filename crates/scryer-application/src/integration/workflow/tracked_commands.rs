@@ -1,6 +1,23 @@
 const TRACKED_DOWNLOAD_SNAPSHOT_READ_BUDGET: Duration = Duration::from_millis(25);
 const TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT: usize = 1;
+const DOWNLOAD_QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug)]
+pub struct DownloadQueuePollerOptions {
+    pub interval: Duration,
+    pub excluded_client_types: Vec<String>,
+}
+
+impl Default for DownloadQueuePollerOptions {
+    fn default() -> Self {
+        Self {
+            interval: DOWNLOAD_QUEUE_POLL_INTERVAL,
+            excluded_client_types: Vec::new(),
+        }
+    }
+}
+
 fn apply_tracked_download_queue_metadata(
     item: &mut DownloadQueueItem,
     tracked: &TrackedDownloadQueueMetadata,
@@ -168,6 +185,25 @@ impl AppUseCase {
                 scope,
             })
             .await?;
+        let source_identity =
+            DownloadSourceIdentity::new(client_id, client_type, download_client_item_id);
+        let actor_snapshot = crate::domain_events::DomainEventActor::from(actor)
+            .into_download_submission_actor_snapshot();
+        if let Err(error) = self
+            .services
+            .workflow
+            .download_submissions
+            .record_submission_actor_snapshot(&source_identity, actor_snapshot)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                client_id = ?client_id,
+                client_type,
+                download_client_item_id,
+                "download_submission_actor_snapshot_persistence_failed"
+            );
+        }
         let handle = self
             .runtime
             .acquisition
@@ -190,7 +226,22 @@ impl AppUseCase {
 pub async fn start_download_queue_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
+    command_rx: tokio::sync::mpsc::Receiver<crate::tracked_downloads::TrackedDownloadCommand>,
+) {
+    start_download_queue_poller_with_options(
+        app,
+        token,
+        command_rx,
+        DownloadQueuePollerOptions::default(),
+    )
+    .await;
+}
+
+pub async fn start_download_queue_poller_with_options(
+    app: AppUseCase,
+    token: tokio_util::sync::CancellationToken,
     mut command_rx: tokio::sync::mpsc::Receiver<crate::tracked_downloads::TrackedDownloadCommand>,
+    options: DownloadQueuePollerOptions,
 ) {
     use crate::tracked_downloads::{
         TrackedDownloadService, publish_runtime_tracked_download_snapshot_cache,
@@ -212,8 +263,17 @@ pub async fn start_download_queue_poller(
     let mut tracked_work_in_flight = HashSet::new();
     let mut last_recent_history_poll: Option<Instant> = None;
 
-    tracing::info!("download queue poller started (2s interval, tracked downloads enabled)");
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    let excluded_client_type_refs = options
+        .excluded_client_types
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    tracing::info!(
+        interval_secs = options.interval.as_secs(),
+        excluded_client_types = ?options.excluded_client_types,
+        "download queue poller started (tracked downloads enabled)"
+    );
+    let mut interval = tokio::time::interval(options.interval);
     let mut commands_open = true;
     loop {
         tokio::select! {
@@ -259,16 +319,22 @@ pub async fn start_download_queue_poller(
                     last_recent_history_poll = Some(Instant::now());
                 }
                 match app
-                    .collect_download_snapshot_items(true, include_recent_history, false)
+                    .collect_download_snapshot_items_excluding_client_types(
+                        true,
+                        include_recent_history,
+                        false,
+                        &excluded_client_type_refs,
+                    )
                     .await
                 {
                     Ok(mut items) => {
                         let mut seen_ids = HashSet::new();
                         let completed_download_lookup =
-                            crate::completed_download_handler::load_completed_download_lookup_for_items(
+                            crate::completed_download_handler::load_completed_download_lookup_for_items_excluding_client_types(
                                 &app,
                                 &items,
                                 DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+                                &excluded_client_type_refs,
                             )
                             .await;
 
@@ -352,9 +418,10 @@ pub async fn start_download_queue_poller(
                             match completed_download_lookup {
                                 Some(lookup) => lookup,
                                 None => {
-                                    crate::completed_download_handler::load_recent_completed_download_lookup_or_default(
+                                    crate::completed_download_handler::load_recent_completed_download_lookup_or_default_excluding_client_types(
                                         &app,
                                         DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+                                        &excluded_client_type_refs,
                                     )
                                     .await
                                 }

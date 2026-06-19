@@ -572,6 +572,28 @@ impl AppUseCase {
                         .await;
                     return Err(error);
                 }
+                let submission_identity = DownloadSourceIdentity::new(
+                    grab.client_id.as_deref(),
+                    &grab.client_type,
+                    &grab.job_id,
+                );
+                let submission_actor = crate::domain_events::DomainEventActor::from(actor)
+                    .into_download_submission_actor_snapshot();
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .download_submissions
+                    .record_submission_actor_snapshot(&submission_identity, submission_actor)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        client_id = ?grab.client_id,
+                        client_type = %grab.client_type,
+                        download_client_item_id = %grab.job_id,
+                        "download_submission_actor_snapshot_persistence_failed"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow

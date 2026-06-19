@@ -1073,6 +1073,21 @@ pub trait DownloadSubmissionRepository: Send + Sync {
             .await
     }
 
+    async fn record_submission_actor_snapshot(
+        &self,
+        _identity: &DownloadSourceIdentity,
+        _actor: DownloadSubmissionActorSnapshot,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_submission_actor_snapshot(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
+        Ok(None)
+    }
+
     async fn find_by_client_item_id(
         &self,
         identity: &DownloadSourceIdentity,
@@ -2661,6 +2676,25 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if !excluded_client_types.is_empty() {
+            return Err(AppError::Repository(
+                "download client type exclusion requires a router-backed download client"
+                    .to_string(),
+            ));
+        }
+        let mut items = self.list_queue().await?;
+        items.retain(|item| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
+    }
+
     async fn list_queue_for_title(&self, _title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         self.list_queue().await
     }
@@ -2688,6 +2722,26 @@ pub trait DownloadClient: Send + Sync {
         self.list_history_page(0, limit).await
     }
 
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if !excluded_client_types.is_empty() {
+            return Err(AppError::Repository(
+                "download client type exclusion requires a router-backed download client"
+                    .to_string(),
+            ));
+        }
+        let mut items = self.list_recent_activity(limit).await?;
+        items.retain(|item| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
+    }
+
     async fn list_recent_activity_for_title(
         &self,
         _title_id: &str,
@@ -2713,6 +2767,26 @@ pub trait DownloadClient: Send + Sync {
         let mut items = self.list_completed_downloads().await?;
         items.sort_by_key(|item| std::cmp::Reverse(item.completed_at));
         items.truncate(limit);
+        Ok(items)
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if !excluded_client_types.is_empty() {
+            return Err(AppError::Repository(
+                "download client type exclusion requires a router-backed download client"
+                    .to_string(),
+            ));
+        }
+        let mut items = self.list_recent_completed_downloads(limit).await?;
+        items.retain(|item| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
         Ok(items)
     }
 

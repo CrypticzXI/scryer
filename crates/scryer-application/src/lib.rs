@@ -158,7 +158,10 @@ pub use app_usecase_integration::derive_download_queue_display_state;
 pub use app_usecase_integration::enrich_download_queue_items_from_submissions;
 pub use app_usecase_integration::matches_download_activity_filter;
 pub use app_usecase_integration::matches_download_queue_filter;
-pub use app_usecase_integration::start_download_queue_poller;
+pub use app_usecase_integration::{
+    DownloadQueuePollerOptions, start_download_queue_poller,
+    start_download_queue_poller_with_options,
+};
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
 #[cfg(any(test, feature = "runtime-media-analysis"))]
@@ -179,10 +182,10 @@ pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, Delete
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult,
-    IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan,
-    IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
+    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan,
+    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
     ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
     NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueueDownloadOutcome,
     QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef,
@@ -214,7 +217,8 @@ pub use import_workflow::{
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
     execute_queued_manual_import, import_completed_download, preview_manual_import,
     preview_manual_import_path, retry_failed_import, start_background_manual_import_poller,
-    try_import_completed_downloads, try_import_recent_completed_downloads,
+    try_import_completed_downloads, try_import_provided_completed_downloads,
+    try_import_recent_completed_downloads,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub(crate) use integration::integration::ManualImportSourceResolution;

@@ -26,7 +26,27 @@ type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequ
 let currentToken: string | null = null;
 
 export function getAuthToken(): string | null {
-  return currentToken;
+  if (currentToken && userFromToken(currentToken)) {
+    return currentToken;
+  }
+
+  currentToken = null;
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  if (!userFromToken(stored)) {
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    return null;
+  }
+
+  currentToken = stored;
+  return stored;
 }
 
 export function clearClientAuthSession() {

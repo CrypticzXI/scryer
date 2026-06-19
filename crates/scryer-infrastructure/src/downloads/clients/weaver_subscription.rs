@@ -12,14 +12,20 @@
 use std::collections::{HashMap, HashSet};
 
 use futures_util::{SinkExt, StreamExt};
-use scryer_application::{AppUseCase, publish_download_queue_snapshot_events};
-use scryer_domain::DownloadQueueState;
+use scryer_application::{
+    AppResult, AppUseCase, DownloadClient, DownloadClientRemotePathMapping,
+    apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
+    publish_download_queue_snapshot_events,
+};
+use scryer_domain::{
+    CompletedDownload, DownloadClientConfig, DownloadQueueItem, DownloadQueueState,
+};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::{ClientRequestBuilder, Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::weaver::{WeaverQueueItem, weaver_item_to_queue_item};
+use super::weaver::{WeaverDownloadClient, WeaverQueueItem, weaver_item_to_queue_item};
 
 const QUEUE_SNAPSHOTS_QUERY: &str = r#"
     subscription {
@@ -104,6 +110,66 @@ const POLL_FALLBACK_THRESHOLD: u32 = 3;
 
 /// Interval between HTTP polls when in fallback mode (seconds).
 const POLL_FALLBACK_INTERVAL_SECS: u64 = 2;
+const POLL_FALLBACK_RECENT_ACTIVITY_LIMIT: usize = 100;
+
+#[derive(Clone)]
+pub struct WeaverSubscriptionBridgeClient {
+    client_id: String,
+    client_name: String,
+    client_type: String,
+    ws_url: String,
+    api_key: Option<String>,
+    download_client: WeaverDownloadClient,
+    remote_path_mappings: Option<Vec<DownloadClientRemotePathMapping>>,
+}
+
+impl WeaverSubscriptionBridgeClient {
+    pub fn from_config(config: &DownloadClientConfig) -> AppResult<Self> {
+        let download_client = WeaverDownloadClient::from_config(config)?;
+        let remote_path_mappings =
+            match parse_download_client_remote_path_mappings(&config.config_json) {
+                Ok(mappings) => Some(mappings),
+                Err(error) => {
+                    warn!(
+                        client_id = %config.id,
+                        client = %config.name,
+                        error = %error,
+                        "failed to parse remote path mappings for weaver subscription bridge"
+                    );
+                    None
+                }
+            };
+        Ok(Self {
+            client_id: config.id.clone(),
+            client_name: config.name.clone(),
+            client_type: config.client_type.clone(),
+            ws_url: download_client.ws_url(),
+            api_key: download_client.api_key().map(str::to_string),
+            download_client,
+            remote_path_mappings,
+        })
+    }
+
+    fn stamp_queue_item(&self, item: &mut DownloadQueueItem) {
+        item.client_id.clone_from(&self.client_id);
+        item.client_name.clone_from(&self.client_name);
+        item.client_type.clone_from(&self.client_type);
+    }
+
+    fn map_queue_item(&self, job: &WeaverQueueItem) -> DownloadQueueItem {
+        let mut item = weaver_item_to_queue_item(job);
+        self.stamp_queue_item(&mut item);
+        item
+    }
+
+    fn stamp_completed_download(&self, item: &mut CompletedDownload) {
+        item.client_id.clone_from(&self.client_id);
+        item.client_type.clone_from(&self.client_type);
+        if let Some(mappings) = self.remote_path_mappings.as_deref() {
+            apply_remote_path_mappings_to_completed_download(item, mappings);
+        }
+    }
+}
 
 /// Start a WebSocket subscription bridge to Weaver.
 ///
@@ -122,8 +188,7 @@ const POLL_FALLBACK_INTERVAL_SECS: u64 = 2;
 pub async fn start_weaver_subscription_bridge(
     app: AppUseCase,
     token: CancellationToken,
-    ws_url: String,
-    api_key: Option<String>,
+    bridge_client: WeaverSubscriptionBridgeClient,
 ) {
     let actor = match app.find_or_create_default_user().await {
         Ok(actor) => actor,
@@ -146,18 +211,13 @@ pub async fn start_weaver_subscription_bridge(
             return;
         }
 
-        info!(url = ws_url.as_str(), "connecting to weaver WebSocket");
+        info!(
+            url = bridge_client.ws_url.as_str(),
+            client_id = bridge_client.client_id.as_str(),
+            "connecting to weaver WebSocket"
+        );
 
-        match run_subscription(
-            &app,
-            &actor,
-            &ws_url,
-            api_key.as_deref(),
-            &token,
-            &mut last_cursor,
-        )
-        .await
-        {
+        match run_subscription(&app, &actor, &bridge_client, &token, &mut last_cursor).await {
             SubscriptionOutcome::Shutdown => {
                 stop_fallback_poller(&mut poll_cancel);
                 info!("weaver subscription bridge stopped cleanly");
@@ -177,7 +237,12 @@ pub async fn start_weaver_subscription_bridge(
                     info!("weaver WebSocket unreliable — starting GraphQL HTTP polling fallback");
                     let poll_token = token.child_token();
                     poll_cancel = Some(poll_token.clone());
-                    tokio::spawn(run_fallback_poller(app.clone(), actor.clone(), poll_token));
+                    tokio::spawn(run_fallback_poller(
+                        app.clone(),
+                        actor.clone(),
+                        bridge_client.clone(),
+                        poll_token,
+                    ));
                 }
             }
             SubscriptionOutcome::Disconnected(error) => {
@@ -215,16 +280,18 @@ fn stop_fallback_poller(poll_cancel: &mut Option<CancellationToken>) {
 
 /// HTTP polling loop used as fallback when the WebSocket is down.
 ///
-/// Polls `list_download_queue` every [`POLL_FALLBACK_INTERVAL_SECS`] seconds,
-/// broadcasting results through the same channel the subscription uses.
+/// Polls Weaver directly every [`POLL_FALLBACK_INTERVAL_SECS`] seconds and
+/// broadcasts results through the same channel the subscription uses.
 async fn run_fallback_poller(
     app: AppUseCase,
     actor: scryer_domain::User,
+    bridge_client: WeaverSubscriptionBridgeClient,
     token: CancellationToken,
 ) {
     let mut interval =
         tokio::time::interval(std::time::Duration::from_secs(POLL_FALLBACK_INTERVAL_SECS));
     let mut previous_items = HashMap::new();
+    let mut imported_job_ids = HashSet::new();
 
     loop {
         tokio::select! {
@@ -233,22 +300,16 @@ async fn run_fallback_poller(
                 return;
             }
             _ = interval.tick() => {
-                match app.list_download_queue_snapshot(&actor).await {
-                    Ok(items) => {
-                        scryer_application::try_import_recent_completed_downloads(
-                            &app, &actor, &items,
-                        )
-                        .await;
-
-                        emit_queue_metrics(&items);
-
-                        publish_download_queue_snapshot_events(
+                match collect_weaver_fallback_items(&bridge_client).await {
+                    Ok(mut items) => {
+                        process_download_queue_items(
+                            &mut items,
                             &app,
-                            Some(actor.id.clone()),
+                            &actor,
+                            &mut imported_job_ids,
                             &mut previous_items,
-                            &items,
-                        )
-                        .await;
+                            &bridge_client,
+                        ).await;
                     }
                     Err(error) => {
                         warn!(error = %error, "weaver fallback poll failed");
@@ -257,6 +318,21 @@ async fn run_fallback_poller(
             }
         }
     }
+}
+
+async fn collect_weaver_fallback_items(
+    bridge_client: &WeaverSubscriptionBridgeClient,
+) -> AppResult<Vec<DownloadQueueItem>> {
+    let mut items = bridge_client.download_client.list_queue().await?;
+    let mut recent_items = bridge_client
+        .download_client
+        .list_recent_activity(POLL_FALLBACK_RECENT_ACTIVITY_LIMIT)
+        .await?;
+    items.append(&mut recent_items);
+    for item in &mut items {
+        bridge_client.stamp_queue_item(item);
+    }
+    Ok(items)
 }
 
 /// Outcome of a single `run_subscription` attempt. Tells the caller whether
@@ -273,20 +349,25 @@ enum SubscriptionOutcome {
     Disconnected(String),
 }
 
+struct WsMessageState<'a> {
+    imported_job_ids: &'a mut HashSet<String>,
+    previous_items: &'a mut HashMap<String, DownloadQueueItem>,
+    last_cursor: &'a mut Option<String>,
+}
+
 async fn run_subscription(
     app: &AppUseCase,
     actor: &scryer_domain::User,
-    ws_url: &str,
-    api_key: Option<&str>,
+    bridge_client: &WeaverSubscriptionBridgeClient,
     token: &CancellationToken,
     last_cursor: &mut Option<String>,
 ) -> SubscriptionOutcome {
-    let uri: tokio_tungstenite::tungstenite::http::Uri = match ws_url.parse() {
+    let uri: tokio_tungstenite::tungstenite::http::Uri = match bridge_client.ws_url.parse() {
         Ok(uri) => uri,
         Err(e) => return SubscriptionOutcome::ConnectError(format!("invalid WebSocket URL: {e}")),
     };
     let mut request = ClientRequestBuilder::new(uri).with_sub_protocol("graphql-transport-ws");
-    if let Some(api_key) = api_key {
+    if let Some(api_key) = bridge_client.api_key.as_deref() {
         request = request.with_header("Authorization", format!("Bearer {api_key}"));
     }
 
@@ -302,7 +383,7 @@ async fn run_subscription(
     // --- graphql-ws handshake: connection_init ---
     if let Err(e) = write
         .send(Message::Text(
-            match api_key {
+            match bridge_client.api_key.as_deref() {
                 Some(api_key) => json!({
                     "type": "connection_init",
                     "payload": {
@@ -418,14 +499,18 @@ async fn run_subscription(
 
         match msg {
             Message::Text(text) => {
+                let mut message_state = WsMessageState {
+                    imported_job_ids: &mut imported_job_ids,
+                    previous_items: &mut previous_items,
+                    last_cursor: &mut *last_cursor,
+                };
                 if let Err(e) = handle_ws_message(
                     text.as_ref(),
                     app,
                     actor,
                     &mut write,
-                    &mut imported_job_ids,
-                    &mut previous_items,
-                    last_cursor,
+                    bridge_client,
+                    &mut message_state,
                 )
                 .await
                 {
@@ -448,9 +533,8 @@ async fn handle_ws_message<S>(
     app: &AppUseCase,
     actor: &scryer_domain::User,
     write: &mut futures_util::stream::SplitSink<S, Message>,
-    imported_job_ids: &mut HashSet<String>,
-    previous_items: &mut HashMap<String, scryer_domain::DownloadQueueItem>,
-    last_cursor: &mut Option<String>,
+    bridge_client: &WeaverSubscriptionBridgeClient,
+    state: &mut WsMessageState<'_>,
 ) -> Result<(), String>
 where
     S: futures_util::Sink<Message> + Unpin,
@@ -474,21 +558,28 @@ where
                             &parsed.queue_snapshots.items,
                             app,
                             actor,
-                            imported_job_ids,
-                            previous_items,
+                            &mut *state.imported_job_ids,
+                            &mut *state.previous_items,
+                            bridge_client,
                         )
                         .await;
                     }
                     "events" => {
                         let parsed: QueueEventsPayload = serde_json::from_value(payload)
                             .map_err(|e| format!("invalid queueEvents payload: {e}"))?;
-                        *last_cursor = Some(parsed.queue_events.cursor.clone());
+                        *state.last_cursor = Some(parsed.queue_events.cursor.clone());
                         if parsed.queue_events.kind == "ITEM_COMPLETED"
                             && let Some(item) = parsed.queue_events.item.as_ref()
                         {
-                            let items = vec![weaver_item_to_queue_item(item)];
-                            maybe_import_completed_items(&items, app, actor, imported_job_ids)
-                                .await;
+                            let items = vec![bridge_client.map_queue_item(item)];
+                            maybe_import_completed_items(
+                                &items,
+                                app,
+                                actor,
+                                &mut *state.imported_job_ids,
+                                bridge_client,
+                            )
+                            .await;
                         }
                     }
                     _ => {
@@ -555,18 +646,40 @@ async fn process_job_snapshot(
     actor: &scryer_domain::User,
     imported_job_ids: &mut HashSet<String>,
     previous_items: &mut HashMap<String, scryer_domain::DownloadQueueItem>,
+    bridge_client: &WeaverSubscriptionBridgeClient,
 ) {
-    let mut items: Vec<scryer_domain::DownloadQueueItem> =
-        jobs.iter().map(weaver_item_to_queue_item).collect();
+    let mut items: Vec<scryer_domain::DownloadQueueItem> = jobs
+        .iter()
+        .map(|job| bridge_client.map_queue_item(job))
+        .collect();
 
-    scryer_application::enrich_download_queue_items_from_submissions(app, &mut items).await;
+    process_download_queue_items(
+        &mut items,
+        app,
+        actor,
+        imported_job_ids,
+        previous_items,
+        bridge_client,
+    )
+    .await;
+}
 
-    emit_queue_metrics(&items);
+async fn process_download_queue_items(
+    items: &mut [scryer_domain::DownloadQueueItem],
+    app: &AppUseCase,
+    actor: &scryer_domain::User,
+    imported_job_ids: &mut HashSet<String>,
+    previous_items: &mut HashMap<String, scryer_domain::DownloadQueueItem>,
+    bridge_client: &WeaverSubscriptionBridgeClient,
+) {
+    scryer_application::enrich_download_queue_items_from_submissions(app, items).await;
 
-    publish_download_queue_snapshot_events(app, Some(actor.id.clone()), previous_items, &items)
+    emit_queue_metrics(items);
+
+    publish_download_queue_snapshot_events(app, Some(actor.id.clone()), previous_items, items)
         .await;
 
-    maybe_import_completed_items(&items, app, actor, imported_job_ids).await;
+    maybe_import_completed_items(items, app, actor, imported_job_ids, bridge_client).await;
 }
 
 async fn maybe_import_completed_items(
@@ -574,6 +687,7 @@ async fn maybe_import_completed_items(
     app: &AppUseCase,
     actor: &scryer_domain::User,
     imported_job_ids: &mut HashSet<String>,
+    bridge_client: &WeaverSubscriptionBridgeClient,
 ) {
     // Trigger import for newly completed downloads.
     let newly_completed: Vec<&scryer_domain::DownloadQueueItem> = items
@@ -591,8 +705,15 @@ async fn maybe_import_completed_items(
             "weaver: newly completed downloads detected via WS subscription"
         );
 
-        let processed =
-            scryer_application::try_import_recent_completed_downloads(app, actor, items).await;
+        let completed_downloads =
+            load_completed_downloads_for_import(bridge_client, &newly_completed).await;
+        let processed = scryer_application::try_import_provided_completed_downloads(
+            app,
+            actor,
+            items,
+            completed_downloads,
+        )
+        .await;
 
         tracing::debug!(
             processed_count = processed.len(),
@@ -613,4 +734,45 @@ async fn maybe_import_completed_items(
             imported_job_ids.insert(id);
         }
     }
+}
+
+async fn load_completed_downloads_for_import(
+    bridge_client: &WeaverSubscriptionBridgeClient,
+    completed_items: &[&scryer_domain::DownloadQueueItem],
+) -> Vec<CompletedDownload> {
+    let mut seen = HashSet::new();
+    let mut downloads = Vec::new();
+
+    for item in completed_items {
+        let source_ref = item.download_client_item_id.trim();
+        if source_ref.is_empty() || !seen.insert(source_ref.to_string()) {
+            continue;
+        }
+
+        match bridge_client
+            .download_client
+            .get_completed_download(source_ref)
+            .await
+        {
+            Ok(Some(mut completed)) => {
+                bridge_client.stamp_completed_download(&mut completed);
+                downloads.push(completed);
+            }
+            Ok(None) => {
+                debug!(
+                    source_ref,
+                    "weaver: completed history item not available yet; import will retry"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    source_ref,
+                    error = %error,
+                    "weaver: failed direct completed history lookup; import will retry"
+                );
+            }
+        }
+    }
+
+    downloads
 }
