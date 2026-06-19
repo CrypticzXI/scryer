@@ -2137,6 +2137,8 @@ mod tests {
     };
     use tokio::sync::Mutex;
 
+    type ScopedRecentCompletedCalls = Vec<(Vec<String>, Vec<String>)>;
+
     #[derive(Default)]
     struct TestTitleRepo {
         titles: Arc<Mutex<Vec<Title>>>,
@@ -3007,7 +3009,7 @@ mod tests {
         completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
         completed_download_calls: Arc<AtomicUsize>,
         recent_completed_download_calls: Arc<AtomicUsize>,
-        scoped_recent_completed_calls: Arc<Mutex<Vec<(Vec<String>, Vec<String>)>>>,
+        scoped_recent_completed_calls: Arc<Mutex<ScopedRecentCompletedCalls>>,
     }
 
     #[async_trait]

@@ -1115,7 +1115,7 @@ fn reconcile_duplicate_terminal_source_states(
         if !tracked.state.is_terminal() {
             continue;
         }
-        let Some(source_identity) = tracked_download_source_identity(&tracked) else {
+        let Some(source_identity) = tracked_download_source_identity(tracked) else {
             continue;
         };
         let should_replace = terminal_source_states
@@ -1137,7 +1137,7 @@ fn reconcile_duplicate_terminal_source_states(
         .into_iter()
         .filter(|tracked| !tracked.state.is_terminal())
         .filter_map(|tracked| {
-            let source_identity = tracked_download_source_identity(&tracked)?;
+            let source_identity = tracked_download_source_identity(tracked)?;
             terminal_source_states
                 .get(&source_identity)
                 .copied()
