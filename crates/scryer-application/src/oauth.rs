@@ -619,9 +619,11 @@ mod tests {
         assert!(is_e2e_redirect(
             &Url::parse("http://localhost:3000/oauth/e2e/callback").expect("url")
         ));
-
         assert!(!is_e2e_redirect(
             &Url::parse("http://127.0.0.1:3000/other").expect("url")
+        ));
+        assert!(!is_e2e_redirect(
+            &Url::parse("http://scryer:9090/oauth/e2e/client/callback").expect("url")
         ));
         assert!(!is_e2e_redirect(
             &Url::parse("https://localhost:3000/oauth/e2e/callback").expect("url")

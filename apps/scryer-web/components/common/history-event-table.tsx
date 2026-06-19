@@ -18,6 +18,7 @@ import {
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { HistoryEventIcon } from "./history-event-icon";
 import {
   HistoryEventDetailContent,
@@ -194,7 +195,7 @@ export function HistoryEventTable({
 
             return (
               <React.Fragment key={event.id}>
-                <TableRow>
+                <TableRow id={selectorId("history-event-row", event.eventType, event.id)}>
                   <TableCell>
                     {hasExpandableContent ? (
                       <button
@@ -253,7 +254,10 @@ export function HistoryEventTable({
                     </TableCell>
                   ) : null}
                   {showActor ? (
-                    <TableCell className="align-top text-sm text-muted-foreground">
+                    <TableCell
+                      id={selectorId("history-event-actor", event.eventType, event.id)}
+                      className="align-top text-sm text-muted-foreground"
+                    >
                       {actorLabel(event)}
                     </TableCell>
                   ) : null}
