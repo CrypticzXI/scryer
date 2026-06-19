@@ -135,8 +135,11 @@ pub(crate) async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
-    record_download_submission_tx(tx, &commit.download_submission).await?;
-    if let Some(submission_identity) = commit.download_submission_identity.as_ref() {
+    let submission_recorded =
+        record_download_submission_tx(tx, &commit.download_submission).await?;
+    if submission_recorded
+        && let Some(submission_identity) = commit.download_submission_identity.as_ref()
+    {
         let identity = DownloadSourceIdentity::from_submission(&commit.download_submission);
         record_download_submission_identity_tx(tx, &identity, submission_identity).await?;
     }
@@ -220,16 +223,16 @@ pub(crate) async fn commit_successful_grab_tx(
 pub(crate) async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let (episode_id, collection_id, series_movie_link_id) =
         persisted_submission_scope(&submission.scope);
     let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+    let is_orphan = matches!(&submission.scope, SubmissionScope::Orphan)
+        && submission.title_id.trim().is_empty();
+    let conflict_clause = if is_orphan {
+        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO NOTHING"
+    } else {
+        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
          SET title_id = excluded.title_id,
              facet = excluded.facet,
              source_hint = excluded.source_hint,
@@ -239,7 +242,18 @@ pub(crate) async fn record_download_submission_tx(
              purpose = excluded.purpose,
              episode_id = excluded.episode_id,
              collection_id = excluded.collection_id,
-             series_movie_link_id = excluded.series_movie_link_id",
+             series_movie_link_id = excluded.series_movie_link_id"
+    };
+    let sql = [
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        conflict_clause,
+    ]
+    .join(" ");
+    let rows_affected = SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &sql,
         &[
             SqlArg::Text(Id::new().0),
             SqlArg::Text(submission.title_id.clone()),
@@ -248,7 +262,11 @@ pub(crate) async fn record_download_submission_tx(
             SqlArg::Text(submission.download_client_type.clone()),
             SqlArg::Text(submission.download_client_item_id.clone()),
             SqlArg::OptText(submission.source_hint.clone()),
-            SqlArg::OptText(submission.source_kind.map(|value| value.as_str().to_string())),
+            SqlArg::OptText(
+                submission
+                    .source_kind
+                    .map(|value| value.as_str().to_string()),
+            ),
             SqlArg::OptText(submission.source_title.clone()),
             SqlArg::OptText(submission.request_signature.clone()),
             SqlArg::Text(submission.purpose.as_str().to_string()),
@@ -258,6 +276,9 @@ pub(crate) async fn record_download_submission_tx(
         ],
     )
     .await?;
+    if rows_affected == 0 {
+        return Ok(false);
+    }
     replace_download_submission_episode_links_tx(
         tx,
         &download_client_id,
@@ -265,7 +286,8 @@ pub(crate) async fn record_download_submission_tx(
         &submission.download_client_item_id,
         persisted_episode_set_ids(&submission.scope),
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 pub(crate) async fn record_download_submission_identity_tx(
@@ -309,7 +331,9 @@ pub(crate) async fn record_download_submission_with_identity_tx(
     submission: &DownloadSubmission,
     submission_identity: &DownloadSubmissionIdentity,
 ) -> AppResult<()> {
-    record_download_submission_tx(tx, submission).await?;
+    if !record_download_submission_tx(tx, submission).await? {
+        return Ok(());
+    }
     let identity = DownloadSourceIdentity::from_submission(submission);
     record_download_submission_identity_tx(tx, &identity, submission_identity).await
 }
