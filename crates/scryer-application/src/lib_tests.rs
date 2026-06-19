@@ -18665,10 +18665,14 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
 
     let (_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
     let token = tokio_util::sync::CancellationToken::new();
-    let poller = tokio::spawn(crate::integration::start_download_queue_poller(
+    let poller = tokio::spawn(crate::integration::start_download_queue_poller_with_options(
         app.clone(),
         token.child_token(),
         tracked_download_rx,
+        crate::integration::DownloadQueuePollerOptions {
+            interval: Duration::from_millis(50),
+            ..Default::default()
+        },
     ));
 
     timeout(Duration::from_secs(5), async {
