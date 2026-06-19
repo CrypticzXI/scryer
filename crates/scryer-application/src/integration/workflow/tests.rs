@@ -1,12 +1,15 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadQueueBucket, apply_manual_import_record_to_queue_item,
-        apply_tracked_download_queue_metadata, canonicalize_download_queue_item_clients,
-        classify_download_queue_item, collect_download_client_filter_options,
-        dedupe_download_queue_items, derive_download_queue_display_state,
-        download_queue_client_filter_key, synthetic_tracked_snapshot_queue_item,
-        prepare_tracked_download_background_work_dispatch, tracked_download_queue_snapshot,
+        DownloadQueueBucket, TrackedDownloadBackgroundWorkKind, TrackedDownloadWorkDrain,
+        apply_manual_import_record_to_queue_item, apply_tracked_download_queue_metadata,
+        canonicalize_download_queue_item_clients, classify_download_queue_item,
+        collect_download_client_filter_options, dedupe_download_queue_items,
+        derive_download_queue_display_state, download_queue_client_filter_key,
+        prepare_next_tracked_download_background_work_dispatch,
+        prepare_tracked_download_background_work_dispatch,
+        reconcile_duplicate_terminal_source_states, synthetic_tracked_snapshot_queue_item,
+        tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
     use chrono::{Duration, Utc};
@@ -101,9 +104,8 @@ mod tests {
         let id = "nzbget:job-1";
         let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
         let mut tracked = tracked_for_dispatch(id);
-        tracked.no_video_import_retry = Some(no_video_retry_state(
-            Utc::now() + Duration::seconds(30),
-        ));
+        tracked.no_video_import_retry =
+            Some(no_video_retry_state(Utc::now() + Duration::seconds(30)));
         tracker.insert_for_tests(tracked);
 
         assert!(prepare_tracked_download_background_work_dispatch(&mut tracker, id).is_none());
@@ -115,9 +117,7 @@ mod tests {
         tracker
             .find_mut(id)
             .expect("tracked download should remain cached")
-            .no_video_import_retry = Some(no_video_retry_state(
-            Utc::now() - Duration::seconds(1),
-        ));
+            .no_video_import_retry = Some(no_video_retry_state(Utc::now() - Duration::seconds(1)));
 
         let dispatched = prepare_tracked_download_background_work_dispatch(&mut tracker, id);
 
@@ -125,6 +125,184 @@ mod tests {
         assert_eq!(
             tracker.find(id).map(|tracked| tracked.state),
             Some(TrackedDownloadState::Importing)
+        );
+    }
+
+    #[test]
+    fn tracked_work_drain_skips_retry_delayed_item_and_dispatches_next() {
+        let delayed_id = "nzbget:delayed";
+        let ready_id = "nzbget:ready";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let mut delayed = tracked_for_dispatch(delayed_id);
+        delayed.no_video_import_retry =
+            Some(no_video_retry_state(Utc::now() + Duration::seconds(30)));
+        tracker.insert_for_tests(delayed);
+        tracker.insert_for_tests(tracked_for_dispatch(ready_id));
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![delayed_id.to_string(), ready_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
+        let in_flight = std::collections::HashSet::new();
+
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("ready item should dispatch");
+
+        assert_eq!(id, ready_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(delayed_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportPending)
+        );
+        assert_eq!(
+            tracker.find(ready_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::Importing)
+        );
+    }
+
+    #[test]
+    fn tracked_work_drain_dispatches_next_after_first_remains_pending() {
+        let first_id = "nzbget:first";
+        let second_id = "nzbget:second";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        tracker.insert_for_tests(tracked_for_dispatch(first_id));
+        tracker.insert_for_tests(tracked_for_dispatch(second_id));
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![first_id.to_string(), second_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
+        let in_flight = std::collections::HashSet::new();
+
+        let (id, _, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("first item should dispatch");
+        assert_eq!(id, first_id);
+        tracker
+            .find_mut(first_id)
+            .expect("first tracked download")
+            .state = TrackedDownloadState::ImportPending;
+
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("second item should dispatch in the same drain");
+
+        assert_eq!(id, second_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(second_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::Importing)
+        );
+    }
+
+    #[test]
+    fn tracked_download_poller_drain_dispatches_next_after_worker_result_without_interval_tick() {
+        let first_id = "nzbget:first";
+        let second_id = "nzbget:second";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        tracker.insert_for_tests(tracked_for_dispatch(first_id));
+        tracker.insert_for_tests(tracked_for_dispatch(second_id));
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![first_id.to_string(), second_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
+        let mut in_flight = std::collections::HashSet::new();
+
+        let (id, _, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("first item should dispatch");
+        assert_eq!(id, first_id);
+        in_flight.insert(id);
+
+        assert!(in_flight.remove(first_id));
+        tracker
+            .find_mut(first_id)
+            .expect("first tracked download")
+            .state = TrackedDownloadState::ImportPending;
+
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("second item should dispatch after the worker result");
+
+        assert_eq!(id, second_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(second_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::Importing)
+        );
+    }
+
+    #[test]
+    fn tracked_work_drain_skips_blocked_item_and_dispatches_next() {
+        let blocked_id = "nzbget:blocked";
+        let ready_id = "nzbget:ready";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let mut blocked = tracked_for_dispatch(blocked_id);
+        blocked.state = TrackedDownloadState::ImportBlocked;
+        tracker.insert_for_tests(blocked);
+        tracker.insert_for_tests(tracked_for_dispatch(ready_id));
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![blocked_id.to_string(), ready_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
+        let in_flight = std::collections::HashSet::new();
+
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("ready item should dispatch after blocked item");
+
+        assert_eq!(id, ready_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(blocked_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportBlocked)
+        );
+    }
+
+    #[test]
+    fn duplicate_terminal_source_state_prevents_import_redispatch() {
+        let terminal_id = "download:submission:nzbget:scryer-download-1";
+        let duplicate_id = "download:client-parameter:nzbget:scryer-download-1";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let mut terminal = tracked_for_dispatch(terminal_id);
+        terminal.state = TrackedDownloadState::Imported;
+        terminal.status = TrackedDownloadStatus::Ok;
+        terminal.status_messages.clear();
+        tracker.insert_for_tests(terminal);
+
+        let mut duplicate = tracked_for_dispatch(duplicate_id);
+        duplicate.state = TrackedDownloadState::ImportPending;
+        duplicate.status = TrackedDownloadStatus::Warning;
+        duplicate.status_messages = vec!["waiting for import".to_string()];
+        tracker.insert_for_tests(duplicate);
+
+        reconcile_duplicate_terminal_source_states(&mut tracker);
+
+        let duplicate = tracker
+            .find(duplicate_id)
+            .expect("duplicate tracked download should remain cached");
+        assert_eq!(duplicate.state, TrackedDownloadState::Imported);
+        assert_eq!(duplicate.status, TrackedDownloadStatus::Ok);
+        assert!(duplicate.status_messages.is_empty());
+        assert!(
+            prepare_tracked_download_background_work_dispatch(&mut tracker, duplicate_id).is_none()
         );
     }
 

@@ -49,6 +49,24 @@ export function getAuthToken(): string | null {
   return stored;
 }
 
+export function getMfaEnrollmentToken(): string | null {
+  if (currentToken && isMfaEnrollmentToken(currentToken)) {
+    return currentToken;
+  }
+
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (!stored || !isMfaEnrollmentToken(stored)) {
+    return null;
+  }
+
+  currentToken = stored;
+  return stored;
+}
+
 export function clearClientAuthSession() {
   clearPersistedAuthToken();
 }
@@ -136,7 +154,7 @@ function userFromToken(token: string): AuthUser | null {
 
 function isMfaEnrollmentToken(token: string): boolean {
   const payload = decodeJwtPayload(token);
-  return payload?.authScope === "mfa_enrollment";
+  return Boolean(payload && !isTokenExpired(payload) && payload.authScope === "mfa_enrollment");
 }
 
 export function useAuth(): AuthState {

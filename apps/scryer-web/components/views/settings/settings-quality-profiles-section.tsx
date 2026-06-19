@@ -1310,7 +1310,13 @@ export function SettingsQualityProfilesSection({
               </SelectTrigger>
               <SelectContent>
                 {toProfileOptions(qualityProfiles).map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                  <SelectItem
+                    key={opt.value}
+                    id={selectorId("settings-quality-profile-global-option", opt.value)}
+                    value={opt.value}
+                  >
+                    {opt.label}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -1336,10 +1342,30 @@ export function SettingsQualityProfilesSection({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="Balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
-                <SelectItem value="Audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
-                <SelectItem value="Efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
-                <SelectItem value="Compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
+                <SelectItem
+                  id={selectorId("settings-quality-profile-global-persona-option", "Balanced")}
+                  value="Balanced"
+                >
+                  {t("qualityProfile.personaBalanced")}
+                </SelectItem>
+                <SelectItem
+                  id={selectorId("settings-quality-profile-global-persona-option", "Audiophile")}
+                  value="Audiophile"
+                >
+                  {t("qualityProfile.personaAudiophile")}
+                </SelectItem>
+                <SelectItem
+                  id={selectorId("settings-quality-profile-global-persona-option", "Efficient")}
+                  value="Efficient"
+                >
+                  {t("qualityProfile.personaEfficient")}
+                </SelectItem>
+                <SelectItem
+                  id={selectorId("settings-quality-profile-global-persona-option", "Compatible")}
+                  value="Compatible"
+                >
+                  {t("qualityProfile.personaCompatible")}
+                </SelectItem>
               </SelectContent>
             </Select>
           </label>
@@ -1388,7 +1414,18 @@ export function SettingsQualityProfilesSection({
                           },
                           ...toProfileOptions(qualityProfiles),
                         ].map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                          <SelectItem
+                            key={opt.value}
+                            id={selectorId(
+                              "settings-quality-profile-override",
+                              scopeId,
+                              "option",
+                              opt.value,
+                            )}
+                            value={opt.value}
+                          >
+                            {opt.label}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -1407,11 +1444,61 @@ export function SettingsQualityProfilesSection({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__default__">{t("qualityProfile.facetPersonaUseDefault")}</SelectItem>
-                        <SelectItem value="Balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
-                        <SelectItem value="Audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
-                        <SelectItem value="Efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
-                        <SelectItem value="Compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
+                        <SelectItem
+                          id={selectorId(
+                            "settings-quality-profile-persona",
+                            scopeId,
+                            "option",
+                            "__default__",
+                          )}
+                          value="__default__"
+                        >
+                          {t("qualityProfile.facetPersonaUseDefault")}
+                        </SelectItem>
+                        <SelectItem
+                          id={selectorId(
+                            "settings-quality-profile-persona",
+                            scopeId,
+                            "option",
+                            "Balanced",
+                          )}
+                          value="Balanced"
+                        >
+                          {t("qualityProfile.personaBalanced")}
+                        </SelectItem>
+                        <SelectItem
+                          id={selectorId(
+                            "settings-quality-profile-persona",
+                            scopeId,
+                            "option",
+                            "Audiophile",
+                          )}
+                          value="Audiophile"
+                        >
+                          {t("qualityProfile.personaAudiophile")}
+                        </SelectItem>
+                        <SelectItem
+                          id={selectorId(
+                            "settings-quality-profile-persona",
+                            scopeId,
+                            "option",
+                            "Efficient",
+                          )}
+                          value="Efficient"
+                        >
+                          {t("qualityProfile.personaEfficient")}
+                        </SelectItem>
+                        <SelectItem
+                          id={selectorId(
+                            "settings-quality-profile-persona",
+                            scopeId,
+                            "option",
+                            "Compatible",
+                          )}
+                          value="Compatible"
+                        >
+                          {t("qualityProfile.personaCompatible")}
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

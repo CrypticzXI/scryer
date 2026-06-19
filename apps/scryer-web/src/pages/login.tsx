@@ -9,7 +9,7 @@ import { Input, integerInputProps } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
-import { backendClient } from "@/lib/graphql/urql-client";
+import { backendClient, mfaEnrollmentClient } from "@/lib/graphql/urql-client";
 import { externalAuthRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
   completeLoginMfaEnrollmentMutation,
@@ -250,7 +250,7 @@ export default function LoginPage() {
     setJellyfinMfaRecoveryCodes([]);
     setJellyfinMfaEnrollmentCode("");
     try {
-      const { data, error } = await backendClient
+      const { data, error } = await mfaEnrollmentClient
         .mutation<{ totpEnrollmentStart?: TotpEnrollmentStart }>(
           totpEnrollmentStartMutation,
           {},
@@ -315,7 +315,7 @@ export default function LoginPage() {
     setError(null);
     setJellyfinMfaBusy(true);
     try {
-      const { data, error } = await backendClient
+      const { data, error } = await mfaEnrollmentClient
         .mutation<
           {
             completeLoginMfaEnrollment?: TotpEnrollmentComplete & {

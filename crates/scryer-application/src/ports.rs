@@ -2770,24 +2770,59 @@ pub trait DownloadClient: Send + Sync {
         Ok(items)
     }
 
+    async fn list_recent_completed_downloads_for_client_scope(
+        &self,
+        limit: usize,
+        client_ids: &[String],
+        client_types: &[String],
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut items = self.list_recent_completed_downloads(limit).await?;
+        items.retain(|item| {
+            let item_type = item.client_type.trim();
+            if excluded_client_types
+                .iter()
+                .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()))
+            {
+                return false;
+            }
+
+            let has_scope = !client_ids.is_empty() || !client_types.is_empty();
+            if !has_scope {
+                return true;
+            }
+
+            let item_client_id = item.client_id.trim();
+            let id_matches = !item_client_id.is_empty()
+                && client_ids
+                    .iter()
+                    .any(|client_id| item_client_id == client_id.trim());
+            let type_matches = !item_type.is_empty()
+                && client_types
+                    .iter()
+                    .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()));
+
+            id_matches || type_matches
+        });
+        Ok(items)
+    }
+
     async fn list_recent_completed_downloads_excluding_client_types(
         &self,
         limit: usize,
         excluded_client_types: &[&str],
     ) -> AppResult<Vec<CompletedDownload>> {
-        if !excluded_client_types.is_empty() {
-            return Err(AppError::Repository(
-                "download client type exclusion requires a router-backed download client"
-                    .to_string(),
-            ));
-        }
-        let mut items = self.list_recent_completed_downloads(limit).await?;
-        items.retain(|item| {
-            !excluded_client_types
-                .iter()
-                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
-        });
-        Ok(items)
+        self.list_recent_completed_downloads_for_client_scope(
+            limit,
+            &[],
+            &[],
+            excluded_client_types,
+        )
+        .await
     }
 
     async fn pause_queue_item(&self, _id: &str) -> AppResult<()> {
