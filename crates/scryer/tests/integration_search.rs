@@ -136,7 +136,7 @@ async fn nzbgeek_search_movie_by_category() {
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
     assert_eq!(query.get("t").map(String::as_str), Some("movie"));
-    assert_eq!(query.get("q").map(String::as_str), Some("Test Movie"));
+    assert_eq!(query.get("q").map(String::as_str), None);
     assert_eq!(query.get("imdbid").map(String::as_str), Some("001234567"));
     assert_eq!(query.get("o").map(String::as_str), Some("json"));
     assert_eq!(query.get("extended").map(String::as_str), Some("1"));

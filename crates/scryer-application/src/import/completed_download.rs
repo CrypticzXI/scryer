@@ -40,10 +40,36 @@ const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CompletedDownloadLookupCoverage {
+    Full,
+    #[default]
+    Recent,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct CompletedDownloadLookup {
+    coverage: CompletedDownloadLookupCoverage,
     by_source: HashMap<(String, String, String), CompletedDownload>,
     by_download_id: HashMap<(String, String, String), Vec<CompletedDownload>>,
+}
+
+impl CompletedDownloadLookup {
+    fn empty_recent() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn empty_full() -> Self {
+        Self {
+            coverage: CompletedDownloadLookupCoverage::Full,
+            ..Self::default()
+        }
+    }
+
+    fn is_exhaustive(&self) -> bool {
+        self.coverage == CompletedDownloadLookupCoverage::Full
+    }
 }
 
 enum ExpectedEpisodeResolution {
@@ -110,13 +136,16 @@ pub(crate) async fn check_with_lookup(
 
     let Some(completed) = find_completed_download(app, td, completed_lookup).await else {
         if !crate::download_submission_identity_is_empty(&queue_identity) {
-            if missing_completed_history_is_retryable(td, &queue_identity) {
+            if completed_lookup.is_some_and(|lookup| !lookup.is_exhaustive())
+                || missing_completed_history_is_retryable(td, &queue_identity)
+            {
                 tracing::warn!(
                     id = %td.id,
                     item_id = %td.client_item.download_client_item_id,
                     download_id = ?queue_identity.download_id,
                     match_type = ?td.match_type,
                     is_scryer_origin = td.client_item.is_scryer_origin,
+                    lookup_exhaustive = completed_lookup.is_some_and(CompletedDownloadLookup::is_exhaustive),
                     "check: completed download not found in client history, will retry"
                 );
                 td.state = TrackedDownloadState::ImportPending;
@@ -649,7 +678,10 @@ pub(crate) async fn load_completed_download_lookup(
         .download_client
         .list_completed_downloads()
         .await?;
-    Ok(index_completed_downloads(completed_downloads))
+    Ok(index_completed_downloads(
+        completed_downloads,
+        CompletedDownloadLookupCoverage::Full,
+    ))
 }
 
 pub(crate) async fn load_recent_completed_download_lookup(
@@ -662,7 +694,10 @@ pub(crate) async fn load_recent_completed_download_lookup(
         .download_client
         .list_recent_completed_downloads(limit)
         .await?;
-    Ok(index_completed_downloads(completed_downloads))
+    Ok(index_completed_downloads(
+        completed_downloads,
+        CompletedDownloadLookupCoverage::Recent,
+    ))
 }
 
 pub(crate) async fn load_recent_completed_download_lookup_or_default(
@@ -676,7 +711,7 @@ pub(crate) async fn load_recent_completed_download_lookup_or_default(
                 error = %error,
                 "download queue poller: failed to load completed download snapshot for this cycle"
             );
-            CompletedDownloadLookup::default()
+            CompletedDownloadLookup::empty_recent()
         }
     }
 }
@@ -696,8 +731,14 @@ pub(crate) async fn load_completed_download_lookup_for_items(
     Some(load_recent_completed_download_lookup_or_default(app, limit).await)
 }
 
-fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDownloadLookup {
-    let mut lookup = CompletedDownloadLookup::default();
+fn index_completed_downloads(
+    downloads: Vec<CompletedDownload>,
+    coverage: CompletedDownloadLookupCoverage,
+) -> CompletedDownloadLookup {
+    let mut lookup = CompletedDownloadLookup {
+        coverage,
+        ..CompletedDownloadLookup::default()
+    };
     for completed in downloads {
         let observed_identity = observed_completed_download_identity(&completed);
         if let Some(download_id) = observed_identity
@@ -1141,6 +1182,17 @@ async fn apply_no_video_import_backoff(
         .unwrap_or(1);
 
     if attempts >= NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS {
+        let result_json = serde_json::to_string(result).ok();
+        if let Err(err) = app
+            .update_import_status_and_notify(&result.import_id, ImportStatus::Skipped, result_json)
+            .await
+        {
+            tracing::warn!(
+                import_id = result.import_id.as_str(),
+                error = %err,
+                "failed to mark exhausted no-video import attempt as skipped"
+            );
+        }
         td.block_no_video_import_after_retries(format!(
             "{} No video files were found after {attempts} unchanged checks. Manual review required.",
             import_result_message(result, ImportStatus::Skipped)
@@ -3245,7 +3297,8 @@ mod tests {
             build_completed_download("Paper.Lantern.2012.1080p", "/downloads/b", Some("movie"));
         second.client_id = "client-2".to_string();
 
-        let lookup = index_completed_downloads(vec![first, second]);
+        let lookup =
+            index_completed_downloads(vec![first, second], CompletedDownloadLookupCoverage::Recent);
 
         assert_eq!(lookup.by_source.len(), 2);
         assert!(
@@ -3677,7 +3730,10 @@ mod tests {
             "/downloads/Paper.Lantern.2012.1080p",
             Some("movie"),
         );
-        let lookup = index_completed_downloads(vec![remote_completed]);
+        let lookup = index_completed_downloads(
+            vec![remote_completed],
+            CompletedDownloadLookupCoverage::Recent,
+        );
         let download_client = Arc::new(TestDownloadClient::default());
         let app = build_app_with_download_client_and_configs(
             vec![title.clone()],
@@ -3768,7 +3824,8 @@ mod tests {
         completed.client_id = "client-1".to_string();
         completed.download_client_item_id = info_hash.to_string();
         completed.download_id = Some(info_hash.to_string());
-        let lookup = index_completed_downloads(vec![completed]);
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
 
         let app = build_app_with_download_client_configs_and_submissions(
             vec![title.clone()],
@@ -3811,7 +3868,7 @@ mod tests {
             Arc::new(NullDownloadClientConfigRepository),
             submission_repo.clone(),
         );
-        let lookup = index_completed_downloads(vec![]);
+        let lookup = index_completed_downloads(vec![], CompletedDownloadLookupCoverage::Recent);
         let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
         td.id = format!("download:client-1:qbittorrent:{download_id}");
         td.client_type = "qbittorrent".to_string();
@@ -3838,6 +3895,49 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn check_with_recent_lookup_retries_local_identity_miss_without_manual_block() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "10010";
+        let identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo.clone(),
+        );
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:{download_id}");
+        td.client_item.download_id = Some(download_id.to_string());
+
+        check_with_lookup(
+            &app,
+            &mut td,
+            Some(&CompletedDownloadLookup::empty_recent()),
+        )
+        .await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(
+            td.status_messages
+                .iter()
+                .any(|message| message.contains("waiting for client history"))
+        );
+        let recorded_state = submission_repo
+            .get_identity_tracked_state(&identity, Some(&source_identity))
+            .await
+            .expect("identity state lookup");
+        assert!(recorded_state.is_none());
     }
 
     #[tokio::test]
@@ -3876,7 +3976,12 @@ mod tests {
         td.id = format!("download:{download_id}");
         td.client_item.download_id = Some(download_id.to_string());
 
-        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+        check_with_lookup(
+            &app,
+            &mut td,
+            Some(&CompletedDownloadLookup::empty_recent()),
+        )
+        .await;
 
         assert_eq!(td.state, TrackedDownloadState::Imported);
         assert_eq!(td.status, TrackedDownloadStatus::Ok);
@@ -3917,7 +4022,7 @@ mod tests {
         td.id = format!("download:{download_id}");
         td.client_item.download_id = Some(download_id.to_string());
 
-        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::empty_full())).await;
 
         assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
         let current_client_state = submission_repo
@@ -4010,7 +4115,8 @@ mod tests {
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
         let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
-        let lookup = index_completed_downloads(vec![completed]);
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
 
         check_with_lookup(&app, &mut td, Some(&lookup)).await;
 
@@ -4034,7 +4140,8 @@ mod tests {
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
         let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
         td.state = TrackedDownloadState::ImportPending;
-        let lookup = index_completed_downloads(vec![completed]);
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
 
         let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
 
@@ -4066,7 +4173,7 @@ mod tests {
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
         let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
         td.state = TrackedDownloadState::ImportPending;
-        let lookup = CompletedDownloadLookup::default();
+        let lookup = CompletedDownloadLookup::empty_recent();
 
         let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
 

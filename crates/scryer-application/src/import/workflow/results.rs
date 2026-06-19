@@ -235,7 +235,9 @@ fn completed_import_status_for_result(
     result: &ImportResult,
     fallback_status: ImportStatus,
 ) -> ImportStatus {
-    if completed_import_result_is_retryable(result) {
+    if result.skip_reason == Some(ImportSkipReason::NoVideoFiles)
+        || completed_import_result_is_retryable(result)
+    {
         ImportStatus::Pending
     } else {
         fallback_status

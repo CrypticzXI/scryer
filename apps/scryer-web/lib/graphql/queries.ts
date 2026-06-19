@@ -2348,8 +2348,8 @@ export const recycleBinSettingsQuery = `query RecycleBinSettings {
   }
 }`;
 
-export const recycledItemsQuery = `query RecycledItems($limit: Int, $offset: Int, $libraryIds: [String!]) {
-  recycledItems(limit: $limit, offset: $offset, libraryIds: $libraryIds) {
+export const recycledItemsQuery = `query RecycledItems($libraryIds: [String!]) {
+  recycledItems(libraryIds: $libraryIds) {
     items {
       id
       originalPath

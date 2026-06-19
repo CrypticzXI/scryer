@@ -5,7 +5,7 @@ mod tests {
         apply_tracked_download_queue_metadata, canonicalize_download_queue_item_clients,
         classify_download_queue_item, collect_download_client_filter_options,
         dedupe_download_queue_items, derive_download_queue_display_state,
-        download_queue_client_filter_key, synthetic_terminal_download_queue_item,
+        download_queue_client_filter_key, synthetic_tracked_snapshot_queue_item,
         prepare_tracked_download_background_work_dispatch, tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_terminal_download_queue_item_uses_tracked_client_identity_hint() {
+    fn synthetic_tracked_snapshot_queue_item_uses_tracked_client_identity_hint() {
         let config = client_config("Weaver", "Weaver", "weaver", 1);
         let mut client_item = item("job-1", DownloadQueueState::Completed);
         client_item.client_id.clear();
@@ -304,8 +304,8 @@ mod tests {
         let metadata = tracked_download_queue_snapshot(&tracked);
 
         let mut items = vec![
-            synthetic_terminal_download_queue_item(&metadata, Some(&config))
-                .expect("synthetic terminal item"),
+            synthetic_tracked_snapshot_queue_item(&metadata, Some(&config))
+                .expect("synthetic tracked snapshot item"),
         ];
         canonicalize_download_queue_item_clients(&mut items, &[config]);
 

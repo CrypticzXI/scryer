@@ -17856,6 +17856,41 @@ fn completed_download_fixture_item(
     }
 }
 
+async fn insert_tracked_download_snapshot(
+    app: &AppUseCase,
+    item_id: &str,
+    state: TrackedDownloadState,
+    mut client_item: DownloadQueueItem,
+) {
+    let tracked_id =
+        crate::tracked_downloads::tracked_download_id(Some("primary"), "nzbget", item_id);
+    client_item.download_client_item_id = item_id.to_string();
+    let title_id = client_item.title_id.clone();
+    let facet = client_item.facet.clone();
+    let source_title =
+        Some(client_item.title_name.clone()).filter(|value| !value.trim().is_empty());
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked_id,
+            crate::tracked_downloads::TrackedDownloadQueueMetadata {
+                client_item,
+                client_id: "primary".to_string(),
+                client_type: "nzbget".to_string(),
+                title_id,
+                facet,
+                source_title,
+                state,
+                status: scryer_domain::TrackedDownloadStatus::Warning,
+                status_messages: vec![format!("tracked {}", state.as_str())],
+                match_type: scryer_domain::TitleMatchType::Submission,
+            },
+        );
+}
+
 async fn create_enabled_download_client_config(
     app: &AppUseCase,
     user: &User,
@@ -18040,6 +18075,184 @@ async fn count_download_import_items_matches_selected_filter() {
     assert_eq!(all_count, all_page.total_count as i64);
     assert_eq!(pending_count, 1);
     assert_eq!(pending.download_client_item_id, "pending-1");
+}
+
+#[tokio::test]
+async fn download_import_blocked_includes_snapshot_only_item_when_history_is_empty() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+
+    create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+
+    let blocked =
+        queue_history_fixture_item("blocked-snapshot-1", DownloadQueueState::Completed, 20);
+    insert_tracked_download_snapshot(
+        &app,
+        "blocked-snapshot-1",
+        TrackedDownloadState::ImportBlocked,
+        blocked,
+    )
+    .await;
+
+    let page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
+        .await
+        .expect("blocked import page should include snapshot-only tracked rows");
+    let count = app
+        .count_download_import_items(&user, DownloadImportFilter::Blocked)
+        .await
+        .expect("blocked import count should include snapshot-only tracked rows");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "blocked-snapshot-1");
+    assert_eq!(page.items[0].state, DownloadQueueState::Completed);
+    assert_eq!(page.items[0].import_status, None);
+    assert_eq!(
+        page.items[0].tracked_state,
+        Some(TrackedDownloadState::ImportBlocked)
+    );
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(&page.items[0]),
+        DownloadDisplayState::ImportBlocked
+    );
+}
+
+#[tokio::test]
+async fn download_import_all_includes_snapshot_only_pending_and_importing_items() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+
+    create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+
+    insert_tracked_download_snapshot(
+        &app,
+        "pending-snapshot-1",
+        TrackedDownloadState::ImportPending,
+        queue_history_fixture_item("pending-snapshot-1", DownloadQueueState::Completed, 30),
+    )
+    .await;
+    insert_tracked_download_snapshot(
+        &app,
+        "importing-snapshot-1",
+        TrackedDownloadState::Importing,
+        queue_history_fixture_item("importing-snapshot-1", DownloadQueueState::Completed, 40),
+    )
+    .await;
+
+    let page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::All)
+        .await
+        .expect("all import page should include snapshot-only tracked rows");
+
+    assert_eq!(page.total_count, 2);
+    let pending = page
+        .items
+        .iter()
+        .find(|item| item.download_client_item_id == "pending-snapshot-1")
+        .expect("pending snapshot row");
+    assert_eq!(pending.state, DownloadQueueState::ImportPending);
+    assert_eq!(pending.import_status, None);
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(pending),
+        DownloadDisplayState::ImportPending
+    );
+
+    let importing = page
+        .items
+        .iter()
+        .find(|item| item.download_client_item_id == "importing-snapshot-1")
+        .expect("importing snapshot row");
+    assert_eq!(importing.state, DownloadQueueState::Completed);
+    assert_eq!(importing.import_status, Some(ImportStatus::Running));
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(importing),
+        DownloadDisplayState::Importing
+    );
+}
+
+#[tokio::test]
+async fn synthetic_download_import_rows_are_enriched_from_submissions_before_permission_filtering()
+{
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, admin) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    create_enabled_download_client_config(&app, &admin, "NZBGet", "nzbget").await;
+    let title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Manual Import Visibility".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title for scoped visibility");
+    let scoped_actor = library_permission_user(
+        "resolver",
+        &title.library_id,
+        &[scryer_domain::LibraryPermission::ResolveImports],
+    );
+
+    let mut blocked =
+        queue_history_fixture_item("blocked-submission-1", DownloadQueueState::Completed, 20);
+    blocked.title_id = None;
+    blocked.facet = None;
+    insert_tracked_download_snapshot(
+        &app,
+        "blocked-submission-1",
+        TrackedDownloadState::ImportBlocked,
+        blocked,
+    )
+    .await;
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "blocked-submission-1".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Manual Import Visibility".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record download submission");
+
+    let page = app
+        .list_download_import_page(&scoped_actor, 50, 0, DownloadImportFilter::Blocked)
+        .await
+        .expect("scoped actor should see submission-enriched snapshot row");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.items[0].download_client_item_id,
+        "blocked-submission-1"
+    );
+    assert_eq!(page.items[0].title_id.as_deref(), Some(title.id.as_str()));
+    assert_eq!(page.items[0].facet.as_deref(), Some("movie"));
 }
 
 #[tokio::test]
@@ -26506,8 +26719,9 @@ async fn self_password_change_rejects_password_shorter_than_minimum() {
 #[tokio::test]
 async fn set_initial_own_password_rejects_password_shorter_than_minimum() {
     let (app, _) = bootstrap();
-    let user =
+    let mut user =
         test_user_with_app_permissions("initial-short-password-user", AppPermissionMask::NONE);
+    user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT;
     app.services
         .identity
         .users
@@ -26526,6 +26740,25 @@ async fn set_initial_own_password_rejects_password_shorter_than_minimum() {
         Err(error) => panic!("expected password-length validation error, got {error}"),
         Ok(_) => panic!("expected password-length validation error"),
     }
+}
+
+#[tokio::test]
+async fn set_initial_own_password_requires_own_account_capability() {
+    let (app, _) = bootstrap();
+    let user =
+        test_user_with_app_permissions("initial-password-unauthorized", AppPermissionMask::NONE);
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create passwordless user");
+
+    let result = app
+        .set_initial_own_password(&user, "valid-password".to_string())
+        .await;
+
+    assert!(matches!(result, Err(AppError::Unauthorized(_))));
 }
 
 #[tokio::test]
@@ -30874,7 +31107,8 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 #[tokio::test]
 async fn passkey_registration_requires_password_backed_user() {
     let users = Arc::new(MockUserRepo::default());
-    let user = test_user_with_app_permissions("jellyfin_user", AppPermissionMask::NONE);
+    let mut user = test_user_with_app_permissions("jellyfin_user", AppPermissionMask::NONE);
+    user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT;
     users.create(user.clone()).await.expect("create user");
 
     let (mut app, _) = bootstrap_with_user_repo(users);
@@ -30894,6 +31128,19 @@ async fn passkey_registration_requires_password_backed_user() {
         Err(error) => panic!("expected password-backed validation error, got {error}"),
         Ok(_) => panic!("expected password-backed validation error"),
     }
+}
+
+#[tokio::test]
+async fn passkey_registration_requires_own_account_capability() {
+    let users = Arc::new(MockUserRepo::default());
+    let user = test_user_with_app_permissions("passkey_unauthorized", AppPermissionMask::NONE);
+    users.create(user.clone()).await.expect("create user");
+
+    let (app, _) = bootstrap_with_user_repo(users);
+
+    let result = app.webauthn_register_start(&user, true).await;
+
+    assert!(matches!(result, Err(AppError::Unauthorized(_))));
 }
 
 #[tokio::test]

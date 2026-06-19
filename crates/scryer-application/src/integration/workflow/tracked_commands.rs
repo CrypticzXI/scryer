@@ -689,10 +689,10 @@ fn trackable_import_work_needs_completed_lookup(
         .any(|id| {
             tracker.find(id).is_some_and(|td| {
                 td.state == TrackedDownloadState::ImportPending
-                    && !td
+                    && td
                         .no_video_import_retry
                         .as_ref()
-                        .is_some_and(|retry| retry.next_retry_at > now)
+                        .is_none_or(|retry| retry.next_retry_at <= now)
             })
         })
 }

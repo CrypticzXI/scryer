@@ -569,13 +569,17 @@ fn config_value_to_string(value: &serde_json::Value) -> Option<String> {
     }
     .filter(|value| !value.is_empty())
 }
-fn synthetic_terminal_download_queue_item(
+fn synthetic_tracked_snapshot_queue_item(
     tracked: &TrackedDownloadQueueMetadata,
     primary_client: Option<&DownloadClientConfig>,
 ) -> Option<DownloadQueueItem> {
     let state = match tracked.state {
         TrackedDownloadState::Imported => DownloadQueueState::Completed,
         TrackedDownloadState::Failed => DownloadQueueState::Failed,
+        TrackedDownloadState::ImportPending => DownloadQueueState::ImportPending,
+        TrackedDownloadState::Importing | TrackedDownloadState::ImportBlocked => {
+            DownloadQueueState::Completed
+        }
         _ => return None,
     };
 
@@ -583,15 +587,32 @@ fn synthetic_terminal_download_queue_item(
     item.state = state;
     item.progress_percent = 100;
     item.remaining_seconds = Some(0);
-    item.attention_required = matches!(tracked.state, TrackedDownloadState::Failed);
+    item.attention_required = matches!(
+        tracked.state,
+        TrackedDownloadState::Failed | TrackedDownloadState::ImportBlocked
+    );
 
-    if matches!(tracked.state, TrackedDownloadState::Imported) {
-        item.import_status = Some(ImportStatus::Completed);
-        if item.imported_at.is_none() {
-            item.imported_at = item.last_updated_at.clone();
+    match tracked.state {
+        TrackedDownloadState::Imported => {
+            item.import_status = Some(ImportStatus::Completed);
+            if item.imported_at.is_none() {
+                item.imported_at = item.last_updated_at.clone();
+            }
         }
-    } else if item.import_status.is_none() {
-        item.import_status = Some(ImportStatus::Failed);
+        TrackedDownloadState::Failed if item.import_status.is_none() => {
+            item.import_status = Some(ImportStatus::Failed);
+        }
+        TrackedDownloadState::ImportPending => {}
+        TrackedDownloadState::Importing => {
+            item.import_status = Some(match item.import_status {
+                Some(ImportStatus::Processing) => ImportStatus::Processing,
+                _ => ImportStatus::Running,
+            });
+        }
+        TrackedDownloadState::ImportBlocked => {
+            item.import_status = None;
+        }
+        _ => {}
     }
 
     if item.client_id.trim().is_empty() && !tracked.client_id.trim().is_empty() {
@@ -657,7 +678,7 @@ impl AppUseCase {
                         if existing_ids.contains(tracked_id) {
                             return None;
                         }
-                        synthetic_terminal_download_queue_item(metadata, primary_client).map(
+                        synthetic_tracked_snapshot_queue_item(metadata, primary_client).map(
                             |mut item| {
                                 if item.download_client_item_id.trim().is_empty() {
                                     item.download_client_item_id = tracked_id.to_string();
@@ -679,6 +700,7 @@ impl AppUseCase {
         }
 
         canonicalize_download_queue_item_clients(&mut items, enabled_clients);
+        enrich_download_queue_items_from_submissions(self, &mut items).await;
 
         let mut items = dedupe_download_queue_items(items)
             .into_iter()

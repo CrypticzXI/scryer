@@ -181,6 +181,21 @@ impl WasmIndexerClient {
             .map(|output| decode_plugin_result(&output, EXPORT_INDEXER_ACTION))
             .transpose()
     }
+
+    async fn call_search_request(
+        &self,
+        request: &PluginSearchRequest,
+    ) -> AppResult<PluginSearchResponse> {
+        let input = serde_json::to_string(request).map_err(|e| {
+            AppError::Repository(format!("failed to serialize plugin request: {e}"))
+        })?;
+
+        tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
+
+        let output = self.worker.call_search(input).await?;
+
+        decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)
+    }
 }
 
 fn build_manifest(
@@ -288,6 +303,13 @@ fn normalize_indexer_config_entries(
         extracted_additional_params.as_deref(),
         entries.get("additional_params").map(String::as_str),
     );
+    let normalized_additional_params = if normalize_as_direct_nab {
+        Some(normalize_direct_nab_additional_params(
+            normalized_additional_params.as_deref(),
+        ))
+    } else {
+        normalized_additional_params
+    };
 
     match normalized_additional_params {
         Some(value) => {
@@ -413,6 +435,31 @@ fn merge_additional_params(extracted: Option<&str>, existing: Option<&str>) -> O
     any.then(|| serializer.finish())
 }
 
+fn normalize_direct_nab_additional_params(existing: Option<&str>) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("o", "json");
+    serializer.append_pair("extended", "1");
+
+    if let Some(raw) = existing {
+        let trimmed = raw.trim().trim_start_matches(['?', '&']).trim();
+        if !trimmed.is_empty() {
+            for (key, value) in url::form_urlencoded::parse(trimmed.as_bytes()) {
+                let key = key.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                let normalized_key = key.to_ascii_lowercase();
+                if normalized_key == "o" || normalized_key == "extended" {
+                    continue;
+                }
+                serializer.append_pair(key, value.trim());
+            }
+        }
+    }
+
+    serializer.finish()
+}
+
 fn is_direct_nab_control_query_key(key: &str) -> bool {
     matches!(
         key.trim().to_ascii_lowercase().as_str(),
@@ -526,6 +573,30 @@ fn build_search_context(
         query_kind,
         ..PluginSearchContext::default()
     }
+}
+
+fn should_try_generic_search_fallback(request: &PluginSearchRequest) -> bool {
+    !request.query.trim().is_empty() && !request.ids.is_empty()
+}
+
+fn generic_search_fallback_request(
+    request: &PluginSearchRequest,
+    mode: SearchMode,
+) -> PluginSearchRequest {
+    let mut fallback = request.clone();
+    fallback.ids.clear();
+    fallback.category = None;
+    fallback.facet = None;
+    fallback.context = Some(build_search_context(
+        &fallback.query,
+        &fallback.ids,
+        None,
+        mode,
+        fallback.season,
+        fallback.episode,
+        fallback.absolute_episode,
+    ));
+    fallback
 }
 
 fn merge_result_extra(
@@ -751,15 +822,25 @@ impl IndexerClient for WasmIndexerClient {
             context: Some(context),
         };
 
-        let input = serde_json::to_string(&request).map_err(|e| {
-            AppError::Repository(format!("failed to serialize plugin request: {e}"))
-        })?;
-
-        tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
-
-        let output = self.worker.call_search(input).await?;
-
-        let response: PluginSearchResponse = decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)?;
+        let response = match self.call_search_request(&request).await {
+            Ok(response)
+                if response.results.is_empty() && should_try_generic_search_fallback(&request) =>
+            {
+                let fallback_request = generic_search_fallback_request(&request, mode);
+                self.call_search_request(&fallback_request).await?
+            }
+            Ok(response) => response,
+            Err(primary_error) if should_try_generic_search_fallback(&request) => {
+                tracing::debug!(
+                    plugin = %self.descriptor.name,
+                    error = %primary_error,
+                    "plugin primary search failed; trying generic fallback"
+                );
+                let fallback_request = generic_search_fallback_request(&request, mode);
+                self.call_search_request(&fallback_request).await?
+            }
+            Err(error) => return Err(error),
+        };
 
         let source = format!(
             "{} ({})",
@@ -1040,6 +1121,33 @@ mod tests {
         assert_eq!(
             merge_additional_params(Some("attrs=poster&dl=1"), Some(" ?foo=bar baz&zap=1 "),),
             Some("attrs=poster&dl=1&foo=bar+baz&zap=1".to_string())
+        );
+    }
+
+    #[test]
+    fn direct_nab_config_forces_json_response_params() {
+        let descriptor = descriptor_with_base_url_role("newznab");
+        let config = sample_indexer_config("newznab", None);
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(
+            "base_url".to_string(),
+            "https://api.nzbgeek.info/api?t=search&o=xml&attrs=poster".to_string(),
+        );
+        entries.insert(
+            "additional_params".to_string(),
+            " extended=0&foo=bar ".to_string(),
+        );
+
+        let normalized = normalize_indexer_config_entries(&descriptor, &config, entries);
+
+        assert_eq!(
+            normalized.get("base_url").map(String::as_str),
+            Some("https://api.nzbgeek.info")
+        );
+        assert_eq!(normalized.get("api_path").map(String::as_str), Some("/api"));
+        assert_eq!(
+            normalized.get("additional_params").map(String::as_str),
+            Some("o=json&extended=1&attrs=poster&foo=bar")
         );
     }
 

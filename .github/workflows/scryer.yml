@@ -296,7 +296,7 @@ jobs:
           df -h | tee rust-nextest-disk-start.txt
           du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-nextest-disk-start.txt || true
 
-      - name: Run production binary package tests
+      - name: Run full-feature workspace tests
         shell: bash
         run: |
           set -euo pipefail
@@ -307,19 +307,9 @@ jobs:
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
           export RUST_MIN_STACK="4194304"
           cargo nextest run --target x86_64-unknown-linux-musl --locked \
-            -p scryer \
-            -p scryer-application \
-            -p scryer-domain \
-            -p scryer-infrastructure \
-            -p scryer-interface \
-            -p scryer-interface-core \
-            -p scryer-interface-media \
-            -p scryer-interface-metadata \
-            -p scryer-interface-settings \
-            -p scryer-mediainfo \
-            -p scryer-plugins \
-            -p scryer-release-parser \
-            -p scryer-rules 2>&1 | tee rust-nextest.log
+            --workspace \
+            --all-features \
+            --no-fail-fast 2>&1 | tee rust-nextest.log
 
       - name: Show ending disk usage
         if: always()
