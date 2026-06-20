@@ -394,6 +394,7 @@ mod tests {
                 container_format: None,
             }),
             scan_error: scan_error.map(str::to_string),
+            rule_file_doc: None,
         }
     }
 

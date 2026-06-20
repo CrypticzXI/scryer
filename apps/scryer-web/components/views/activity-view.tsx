@@ -1260,6 +1260,15 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           <div
             key={rowId}
             id={selectorId("activity", activeTab, "row", rowSelectorKey)}
+            data-ui="activity-row"
+            data-activity-tab={activeTab}
+            data-activity-row-id={rowId}
+            data-activity-download-id={queueItem.id}
+            data-activity-client-item-id={queueItem.downloadClientItemId}
+            data-activity-title-id={queueItem.titleId ?? ""}
+            data-activity-client-id={queueItem.clientId}
+            data-activity-client-name={queueItem.clientName ?? ""}
+            data-activity-client-type={queueItem.clientType}
             className="rounded-xl border border-border bg-card/40 p-3"
           >
             <div className="flex items-start justify-between gap-3">
@@ -1576,7 +1585,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
         return (
           <Fragment key={rowId}>
-            <TableRow id={selectorId("activity", activeTab, "row", rowSelectorKey)}>
+            <TableRow
+              id={selectorId("activity", activeTab, "row", rowSelectorKey)}
+              data-ui="activity-row"
+              data-activity-tab={activeTab}
+              data-activity-row-id={rowId}
+              data-activity-download-id={queueItem.id}
+              data-activity-client-item-id={queueItem.downloadClientItemId}
+              data-activity-title-id={queueItem.titleId ?? ""}
+              data-activity-client-id={queueItem.clientId}
+              data-activity-client-name={queueItem.clientName ?? ""}
+              data-activity-client-type={queueItem.clientType}
+            >
               {activeTab === "import" ? (
                 <TableCell className="w-12 min-w-12 align-middle">
                   <Checkbox

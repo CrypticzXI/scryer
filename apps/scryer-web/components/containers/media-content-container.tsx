@@ -114,6 +114,12 @@ type MediaContentContainerProps = {
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
+type ActiveCatalogListFilters = {
+  facet: TitleRecord["facet"];
+  query: string;
+  libraryIds: readonly string[];
+};
+
 function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
   return [...titles].sort((left, right) => {
     const nameCompare = left.name.toLocaleLowerCase().localeCompare(
@@ -165,12 +171,55 @@ function mergeCatalogTitlesPreservingImages(
   );
 }
 
+function buildActiveCatalogListFilters(
+  facet: TitleRecord["facet"],
+  query: string,
+  libraryIds: readonly string[],
+): ActiveCatalogListFilters {
+  return {
+    facet,
+    query: query.trim().toLocaleLowerCase(),
+    libraryIds: [...libraryIds],
+  };
+}
+
+function catalogTitleMatchesActiveListFilters(
+  title: TitleRecord,
+  filters: ActiveCatalogListFilters,
+): boolean {
+  if (title.facet !== filters.facet) {
+    return false;
+  }
+
+  if (
+    filters.libraryIds.length > 0 &&
+    !filters.libraryIds.includes(title.libraryId)
+  ) {
+    return false;
+  }
+
+  return (
+    filters.query.length === 0 ||
+    title.name.toLocaleLowerCase().includes(filters.query)
+  );
+}
+
 function upsertCatalogTitleRecord(
   titles: TitleRecord[],
   title: TitleRecord,
+  filters?: ActiveCatalogListFilters,
 ): TitleRecord[] {
+  const existingIndex = titles.findIndex((item) => item.id === title.id);
+  if (filters && !catalogTitleMatchesActiveListFilters(title, filters)) {
+    if (existingIndex === -1) {
+      return titles;
+    }
+    const next = [...titles];
+    next.splice(existingIndex, 1);
+    return next;
+  }
+
   const next = [...titles];
-  const existingIndex = next.findIndex((item) => item.id === title.id);
   if (existingIndex === -1) {
     next.push(title);
   } else {
@@ -492,6 +541,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
+  const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
+    facet: activeFacet,
+    query: "",
+    libraryIds: [],
+  });
   const catalogTitleRequestSeqRef = React.useRef(0);
   const catalogBootstrapRequestSeqRef = React.useRef(0);
   const latestCriticalMutationEpochRef = React.useRef(0);
@@ -956,6 +1010,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setTitleStatus(t("title.loading"));
       const query = (queryOverride ?? activeCatalogQueryRef.current).trim();
       const libraryIds = libraryIdsOverride ?? selectedLibraryIds;
+      activeCatalogListFiltersRef.current = buildActiveCatalogListFilters(
+        activeFacet,
+        query,
+        libraryIds,
+      );
       const requestSeq = ++catalogTitleRequestSeqRef.current;
 
       try {
@@ -1133,6 +1192,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           return next;
         }
 
+        if (!catalogTitleMatchesActiveListFilters(
+          title,
+          activeCatalogListFiltersRef.current,
+        )) {
+          if (existingIndex === -1) {
+            return current;
+          }
+          next.splice(existingIndex, 1);
+          setTitleStatus(t("title.statusTemplate", { count: next.length }));
+          return next;
+        }
+
         if (existingIndex === -1) {
           next.push(title);
         } else {
@@ -1274,11 +1345,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
         if (shouldLoadCatalogTitles && data?.addTitle?.title) {
           setMonitoredTitles((current) => {
+            const title = data.addTitle.title as TitleRecord;
             const next = upsertCatalogTitleRecord(
               current,
-              data.addTitle.title as TitleRecord,
+              title,
+              activeCatalogListFiltersRef.current,
             );
-            setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            if (next !== current) {
+              setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            }
             return next;
           });
         }

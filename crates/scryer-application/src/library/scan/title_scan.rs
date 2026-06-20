@@ -310,6 +310,7 @@ fn parsed_release_for_movie_media_file(file: &TitleMediaFile) -> crate::ParsedRe
     let acceptance = crate::post_download_gate::ImportedFileAcceptance {
         analysis: Some(media_analysis_from_title_media_file(file)),
         scan_error: None,
+        rule_file_doc: None,
     };
     crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance).0
 }

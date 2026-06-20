@@ -84,6 +84,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         accepted: Box::new(crate::post_download_gate::ImportedFileAcceptance {
             analysis: None,
             scan_error: None,
+            rule_file_doc: None,
         }),
         rescore_changes: Vec::new(),
         source_snapshot: import_source_snapshot_for_test(source_path)?,
@@ -101,6 +102,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         prepared.parsed.quality.as_deref(),
         final_score,
         old_score,
+        None,
         target_episode_ids,
         media_root,
         recycle_config,
