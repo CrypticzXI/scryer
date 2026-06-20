@@ -3377,7 +3377,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
             .count()
     };
 
-    assert_eq!(query_field_count, 102);
+    assert_eq!(query_field_count, 101);
     assert_eq!(mutation_field_count, 156);
     assert_eq!(subscription_field_count, 13);
     assert_eq!(public_types.len(), 429);
@@ -9590,11 +9590,19 @@ async fn graphql_introspection_lists_title_fields() {
         &ctx,
         r#"
         {
-	          queryRoot: __type(name: "QueryRoot") {
-	            fields {
-	              name
-	              args {
-	                name
+		          queryRoot: __type(name: "QueryRoot") {
+		            fields {
+		              name
+		              type {
+		                kind
+		                name
+		                ofType {
+		                  kind
+		                  name
+		                }
+		              }
+		              args {
+		                name
 	                type {
 	                  kind
 	                  name
@@ -19576,7 +19584,7 @@ async fn graphql_invalid_mutation_input() {
 async fn graphql_batch_request_not_supported_via_single() {
     let ctx = TestContext::new().await;
     // Verify single requests work (batch is handled at the middleware level)
-    let body = gql(&ctx, "{ titles { id } }", json!({})).await;
+    let body = gql(&ctx, "{ titles { items { id } } }", json!({})).await;
     assert_no_errors(&body);
 }
 
@@ -19924,7 +19932,7 @@ async fn unauthenticated_request_returns_error() {
     let ctx = TestContext::new().await;
 
     // `titles` calls actor_from_ctx — must fail without a user in context.
-    let body = schema_exec(&ctx, "{ titles { id } }", None).await;
+    let body = schema_exec(&ctx, "{ titles { items { id } } }", None).await;
 
     let errors = body["errors"].as_array().expect("should have errors");
     assert!(
