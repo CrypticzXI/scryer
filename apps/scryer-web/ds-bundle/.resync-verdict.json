@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "ok": true,
+  "shape": "package",
+  "anchor": "ok",
+  "learningsUnmerged": [],
+  "stages": {
+    "build": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "diff": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "validate": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "capture": {
+      "ok": null,
+      "exit": null,
+      "skipped": "empty_worklist"
+    }
+  },
+  "verification": {
+    "unchanged": [
+      "Button",
+      "Card",
+      "Checkbox",
+      "Collapsible",
+      "Command",
+      "Dialog",
+      "HoverCard",
+      "Input",
+      "Label",
+      "Popover",
+      "Progress",
+      "Select",
+      "Separator",
+      "Sheet",
+      "Sidebar",
+      "Skeleton",
+      "Table",
+      "Tabs",
+      "Textarea",
+      "TimePicker",
+      "Toaster",
+      "ToggleGroup",
+      "Tooltip"
+    ],
+    "changed": [],
+    "added": [],
+    "removed": [],
+    "pendingGrade": [],
+    "canary": null
+  },
+  "upload": {
+    "any": true,
+    "components": [],
+    "deletePaths": [],
+    "bundle": true,
+    "styling": true,
+    "aux": false
+  }
+}
