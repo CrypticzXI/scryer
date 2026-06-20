@@ -571,7 +571,7 @@ impl AppUseCase {
                 .collect();
             if let Err(error) = self
                 .append_domain_event(new_title_domain_event(
-                    Some(actor.id.clone()),
+                    actor,
                     &title,
                     DomainEventPayload::MediaFileRenamed(MediaFileRenamedEventData {
                         title: title_context_snapshot(&title),
@@ -1092,8 +1092,82 @@ fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> 
     out
 }
 
+const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
+const RENAME_LITERAL_COLON_SENTINEL: char = '\u{E001}';
+
+fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = template.chars().collect();
+    let mut cursor = 0usize;
+    let mut escaped_literal_open_count = 0usize;
+
+    while cursor < chars.len() {
+        let ch = chars[cursor];
+        if ch == '{' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '{') {
+                out.push('{');
+                escaped_literal_open_count += 1;
+                cursor += 2;
+                continue;
+            }
+
+            if let Some(end) = chars[cursor + 1..].iter().position(|c| *c == '}') {
+                let end_index = cursor + 1 + end;
+                let token_spec: String = chars[cursor + 1..end_index].iter().collect();
+                out.push_str(&resolve_template_token(tokens, token_spec.trim()));
+                cursor = end_index + 1;
+                continue;
+            }
+        } else if ch == '}' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                out.push('}');
+                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
+                cursor += 2;
+                continue;
+            }
+            if escaped_literal_open_count > 0 {
+                out.push('}');
+                escaped_literal_open_count -= 1;
+                cursor += 1;
+                continue;
+            }
+        }
+
+        push_rename_literal_text_char(&mut out, ch, escaped_literal_open_count);
+        cursor += 1;
+    }
+
+    out
+}
+
 pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    sanitize_filesystem_component(&render_template_tokens(template, tokens))
+    restore_rename_literal_sentinels(&sanitize_filesystem_component(
+        &render_rename_template_tokens(template, tokens),
+    ))
+}
+
+fn push_rename_literal_text_char(out: &mut String, ch: char, escaped_literal_open_count: usize) {
+    if escaped_literal_open_count == 0 {
+        out.push(ch);
+        return;
+    }
+
+    match ch {
+        '|' => out.push(RENAME_LITERAL_PIPE_SENTINEL),
+        ':' => out.push(RENAME_LITERAL_COLON_SENTINEL),
+        _ => out.push(ch),
+    }
+}
+
+fn restore_rename_literal_sentinels(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            RENAME_LITERAL_PIPE_SENTINEL => '|',
+            RENAME_LITERAL_COLON_SENTINEL => ':',
+            _ => ch,
+        })
+        .collect()
 }
 
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
@@ -1138,8 +1212,11 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
                 "folder template contains an unmatched '{'".to_string(),
             ));
         }
-        let token_name = token_spec.trim().to_ascii_lowercase();
-        if !matches!(token_name.as_str(), "title" | "year") {
+        let token_name = token_spec
+            .split_once(':')
+            .map_or(token_spec.trim(), |(name, _)| name.trim())
+            .to_ascii_lowercase();
+        if !is_supported_title_folder_token(&token_name) {
             return Err(AppError::Validation(format!(
                 "unsupported folder template token: {{{}}}",
                 token_spec.trim()
@@ -1206,10 +1283,12 @@ pub(crate) fn build_title_folder_tokens(
     let resolved_year = title_year_hint
         .or_else(|| title.year.map(|value| value.to_string()))
         .unwrap_or_default();
-    BTreeMap::from([
+    let mut tokens = BTreeMap::from([
         ("title".to_string(), title_token),
         ("year".to_string(), resolved_year),
-    ])
+    ]);
+    insert_title_external_id_tokens(&mut tokens, title);
+    tokens
 }
 
 pub(crate) fn configured_title_folder_path(
@@ -1499,6 +1578,54 @@ fn insert_common_rename_tokens(tokens: &mut BTreeMap<String, String>, common: Re
     tokens.insert("audio_channels".to_string(), common.audio_channels);
     tokens.insert("group".to_string(), common.group);
     tokens.insert("ext".to_string(), common.extension);
+}
+
+const TITLE_EXTERNAL_ID_TOKENS: [(&str, &str); 6] = [
+    ("imdb_id", "imdb"),
+    ("tmdb_id", "tmdb"),
+    ("tvdb_id", "tvdb"),
+    ("anidb_id", "anidb"),
+    ("mal_id", "mal"),
+    ("anilist_id", "anilist"),
+];
+
+fn is_supported_title_folder_token(token: &str) -> bool {
+    matches!(token, "title" | "year")
+        || TITLE_EXTERNAL_ID_TOKENS
+            .iter()
+            .any(|(token_name, _)| *token_name == token)
+}
+
+fn insert_title_external_id_tokens(tokens: &mut BTreeMap<String, String>, title: &Title) {
+    for (token_name, source) in TITLE_EXTERNAL_ID_TOKENS {
+        let value = if source == "imdb" {
+            imdb_id_from_title(title)
+        } else {
+            title_external_id_value(title, source)
+        }
+        .unwrap_or_default();
+        tokens.insert(token_name.to_string(), value);
+    }
+}
+
+fn imdb_id_from_title(title: &Title) -> Option<String> {
+    title
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+        .or_else(|| {
+            title_external_id_value(title, "imdb")
+                .and_then(|id| crate::normalize::normalize_imdb_id(&id))
+        })
+}
+
+fn title_external_id_value(title: &Title, source: &str) -> Option<String> {
+    title
+        .external_ids
+        .iter()
+        .find(|id| id.source.eq_ignore_ascii_case(source))
+        .map(|id| id.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn resolved_analysis_labels_for_media_file(
@@ -1824,6 +1951,7 @@ fn build_series_media_file_rename_plan_item(
 
     let mut tokens = BTreeMap::new();
     insert_common_rename_tokens(&mut tokens, common.common);
+    insert_title_external_id_tokens(&mut tokens, title);
     tokens.insert("season".to_string(), rename_metadata.season.clone());
     tokens.insert(
         "season_order".to_string(),
@@ -2194,6 +2322,7 @@ fn build_movie_rename_plan_item(
     let mut tokens = BTreeMap::new();
     let edition = common.edition.clone();
     insert_common_rename_tokens(&mut tokens, common.common);
+    insert_title_external_id_tokens(&mut tokens, title);
     tokens.insert("edition".to_string(), edition);
     let rendered = match resolve_rendered_rename_filename(
         &source_file,
@@ -2242,13 +2371,22 @@ pub(crate) fn split_title_and_year_hint(raw_title: &str) -> (String, Option<Stri
     (trimmed.to_string(), None)
 }
 
+enum RenameTemplateTokenFilter {
+    Space(String),
+}
+
+struct RenameTemplateTokenSpec {
+    name: String,
+    pad_width: Option<usize>,
+    filters: Vec<RenameTemplateTokenFilter>,
+}
+
 fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -> String {
-    let (name, pad_width) = match token_spec.split_once(':') {
-        Some((n, fmt)) => (n.trim().to_lowercase(), fmt.trim().parse::<usize>().ok()),
-        None => (token_spec.trim().to_lowercase(), None),
+    let Some(spec) = parse_rename_template_token_spec(token_spec) else {
+        return String::new();
     };
-    let raw = tokens.get(&name).cloned().unwrap_or_default();
-    match pad_width {
+    let raw = tokens.get(&spec.name).cloned().unwrap_or_default();
+    let mut rendered = match spec.pad_width {
         Some(width) if width > 0 => {
             if raw.chars().all(|c| c.is_ascii_digit()) && !raw.is_empty() {
                 format!("{:0>width$}", raw, width = width)
@@ -2257,7 +2395,63 @@ fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -
             }
         }
         _ => raw,
+    };
+
+    for filter in spec.filters {
+        match filter {
+            RenameTemplateTokenFilter::Space(replacement) => {
+                rendered = replace_token_whitespace(&rendered, &replacement);
+            }
+        }
     }
+
+    rendered
+}
+
+fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTokenSpec> {
+    let mut parts = token_spec.split('|');
+    let token_core = parts.next().unwrap_or("").trim();
+    if token_core.is_empty() {
+        return None;
+    }
+    let (name, pad_width) = match token_core.split_once(':') {
+        Some((n, fmt)) => (n.trim().to_lowercase(), fmt.trim().parse::<usize>().ok()),
+        None => (token_core.trim().to_lowercase(), None),
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let mut filters = Vec::new();
+    for filter_spec in parts {
+        filters.push(parse_rename_template_token_filter(filter_spec)?);
+    }
+
+    Some(RenameTemplateTokenSpec {
+        name,
+        pad_width,
+        filters,
+    })
+}
+
+fn parse_rename_template_token_filter(filter_spec: &str) -> Option<RenameTemplateTokenFilter> {
+    let filter_spec = filter_spec.trim();
+    let replacement = filter_spec.strip_prefix("space:")?;
+    match replacement {
+        "_" | "." | "-" | "" => Some(RenameTemplateTokenFilter::Space(replacement.to_string())),
+        _ => None,
+    }
+}
+
+fn replace_token_whitespace(value: &str, replacement: &str) -> String {
+    let mut rendered = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            rendered.push_str(replacement);
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered
 }
 
 pub fn sanitize_filesystem_component(raw: &str) -> String {

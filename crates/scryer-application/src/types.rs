@@ -1368,11 +1368,86 @@ pub enum JwtSessionScope {
     MfaEnrollment,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthenticatedTokenClaims {
     pub mfa_verified_until: Option<i64>,
     pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub oauth_client_id: Option<String>,
+    pub oauth_grant_id: Option<String>,
+    pub actor_capabilities: scryer_domain::ActorCapabilityMask,
+}
+
+impl AuthenticatedTokenClaims {
+    pub fn is_oauth_access_token(&self) -> bool {
+        self.oauth_client_id.is_some() && self.oauth_grant_id.is_some()
+    }
+
+    pub fn has_partial_oauth_marker(&self) -> bool {
+        self.oauth_client_id.is_some() ^ self.oauth_grant_id.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthAuthorizationCodeRecord {
+    pub id: String,
+    pub code_hash: String,
+    pub client_id: String,
+    pub user_id: String,
+    pub redirect_uri: String,
+    pub scope: String,
+    pub code_challenge: String,
+    pub code_challenge_method: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub consumed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthRefreshGrantRecord {
+    pub id: String,
+    pub family_id: String,
+    pub user_id: String,
+    pub client_id: String,
+    pub scope: String,
+    pub auth_session_version: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthRefreshTokenRecord {
+    pub id: String,
+    pub grant_id: String,
+    pub family_id: String,
+    pub token_hash: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub consumed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthRefreshRotation {
+    pub grant: OAuthRefreshGrantRecord,
+    pub previous_token: OAuthRefreshTokenRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OAuthRefreshRotationOutcome {
+    Rotated(Box<OAuthRefreshRotation>),
+    Unavailable,
+    Reused,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthConnectedAppRecord {
+    pub grant_id: String,
+    pub client_id: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1393,6 +1468,12 @@ pub(crate) struct JwtClaims {
     pub mfa_step_up_verified_until: Option<i64>,
     #[serde(default, rename = "authScope")]
     pub auth_scope: JwtSessionScope,
+    #[serde(default, rename = "oauthClientId")]
+    pub oauth_client_id: Option<String>,
+    #[serde(default, rename = "oauthGrantId")]
+    pub oauth_grant_id: Option<String>,
+    #[serde(default, rename = "actorCapabilities")]
+    pub actor_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1415,6 +1496,8 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_hint: String,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

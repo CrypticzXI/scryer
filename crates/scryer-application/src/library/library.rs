@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
+use crate::domain_events::DomainEventActor;
 use crate::library_discovery::{
     BackgroundRefreshProbeOutcome, MovieTopLevelEntry, elapsed_ms_u64, list_child_directories,
     list_movie_top_level_entries, matching_movie_nfo_path, run_background_refresh_probe_with_delta,
@@ -647,9 +648,10 @@ impl AppUseCase {
             )
             .await?;
         let title_ids: Vec<String> = titles.iter().map(|title| title.id.clone()).collect();
+        let actor_event = DomainEventActor::from(actor);
 
         for title in &titles {
-            self.purge_title_logical_dependents(title, false, None)
+            self.purge_title_logical_dependents(title, false, actor_event.clone())
                 .await?;
         }
 
@@ -677,7 +679,8 @@ impl AppUseCase {
         }
 
         for title in &titles {
-            self.delete_title_row(title, None, false).await?;
+            self.delete_title_row(title, actor_event.clone(), true)
+                .await?;
         }
 
         self.services

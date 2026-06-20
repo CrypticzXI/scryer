@@ -165,14 +165,10 @@ fn log_indexer_skip(
 
 fn should_run_fallback_tier(
     collected_results: &[IndexerSearchResult],
-    primary_had_success: bool,
-    primary_had_error: bool,
+    primary_attempted: bool,
     fallback_strategies: &[SearchStrategy],
 ) -> bool {
-    collected_results.is_empty()
-        && primary_had_success
-        && !primary_had_error
-        && !fallback_strategies.is_empty()
+    collected_results.is_empty() && primary_attempted && !fallback_strategies.is_empty()
 }
 
 /// Records transport metrics per outbound indexer request.
@@ -247,7 +243,9 @@ fn is_freetext_strategy_label(label: &str) -> bool {
 }
 
 fn should_defer_freetext_to_fallback(_facet: &str, strategies: &[SearchStrategy]) -> bool {
-    strategies.iter().any(|strategy| !strategy.ids.is_empty())
+    strategies
+        .iter()
+        .any(|strategy| !is_freetext_strategy_label(&strategy.label))
         && strategies
             .iter()
             .any(|strategy| is_freetext_strategy_label(&strategy.label))
@@ -1272,8 +1270,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                 set.spawn(async move {
                     let mut collected_results = Vec::new();
-                    let mut primary_had_success = false;
-                    let mut primary_had_error = false;
+                    let mut primary_attempted = false;
                     let mut batch_health = StrategyBatchHealth::default();
 
                     let primary_outcomes = Self::execute_strategy_tier(
@@ -1287,9 +1284,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                     .await;
 
                     for outcome in primary_outcomes {
+                        primary_attempted = true;
                         match outcome.response {
                             Ok(mut response) => {
-                                primary_had_success = true;
                                 batch_health.mark_success();
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -1329,7 +1326,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 collected_results.append(&mut response.results);
                             }
                             Err(err) => {
-                                primary_had_error = true;
                                 batch_health.mark_error();
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -1358,8 +1354,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                     if should_run_fallback_tier(
                         &collected_results,
-                        primary_had_success,
-                        primary_had_error,
+                        primary_attempted,
                         &fallback_strategies,
                     ) {
                         info!(
@@ -3624,7 +3619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn id_tier_errors_do_not_trigger_title_fallback() {
+    async fn id_tier_errors_trigger_title_fallback() {
         let (client, calls) = scripted_search_client(series_caps(), |call| {
             if call.ids.contains_key("tvdb_id") {
                 Err(AppError::Repository("boom".into()))
@@ -3633,7 +3628,7 @@ mod tests {
             }
         });
 
-        let error = client
+        let response = client
             .search(
                 "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
@@ -3649,22 +3644,19 @@ mod tests {
                 vec![],
             )
             .await
-            .expect_err("ID-tier errors should surface instead of falling back");
-        assert!(
-            error
-                .to_string()
-                .contains("all attempted indexer strategies failed"),
-            "unexpected error: {error}"
-        );
+            .expect("ID-tier errors should fall back to freetext search");
 
         let calls = calls.lock().expect("call log mutex");
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2);
         assert!(calls[0].ids.contains_key("tvdb_id"));
         assert!(calls[0].query.is_empty());
+        assert!(calls[1].ids.is_empty());
+        assert_eq!(calls[1].query, "Signal Run S01E12");
+        assert_eq!(response.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
     }
 
     #[tokio::test]
-    async fn mixed_primary_outcomes_do_not_trigger_fallback() {
+    async fn mixed_primary_outcomes_trigger_fallback_when_no_primary_results_are_usable() {
         let (client, calls) = scripted_search_client(anime_caps(), |call| {
             if call.ids.contains_key("anidb_id") && call.absolute_episode.is_some() {
                 Err(AppError::Repository("abs lookup failed".into()))
@@ -3694,9 +3686,13 @@ mod tests {
             .expect("mixed primary outcomes should still aggregate cleanly");
 
         let calls = calls.lock().expect("call log mutex");
-        assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|call| call.ids.contains_key("anidb_id")));
-        assert!(calls.iter().all(|call| call.query.is_empty()));
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].ids.contains_key("anidb_id"));
+        assert!(calls[1].ids.contains_key("anidb_id"));
+        assert!(calls[0].query.is_empty());
+        assert!(calls[1].query.is_empty());
+        assert!(calls[2].ids.is_empty());
+        assert_eq!(calls[2].query, "Blade Summit S02E03");
         assert!(response.results.is_empty());
     }
 
@@ -3742,8 +3738,10 @@ mod tests {
 
         {
             let calls = calls.lock().expect("call log mutex");
-            assert_eq!(calls.len(), 2);
-            assert!(response.results.is_empty());
+            assert_eq!(calls.len(), 3);
+            assert!(calls[2].ids.is_empty());
+            assert_eq!(calls[2].query, "Blade Summit S02E03");
+            assert_eq!(response.results[0].title, "Blade.Summit.S02E03.720p.WEB-DL");
         }
         assert!(client.backoff_tracker.is_disabled("idx-1").await.is_none());
         let state = backoff_state(&client, "idx-1")
@@ -3753,13 +3751,13 @@ mod tests {
         assert!(state.disabled_until.is_none());
 
         let stats = stats.queries.lock().expect("stats log mutex");
-        assert_eq!(stats.len(), 2);
-        assert_eq!(stats.iter().filter(|success| **success).count(), 1);
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats.iter().filter(|success| **success).count(), 2);
         assert_eq!(stats.iter().filter(|success| !**success).count(), 1);
     }
 
     #[tokio::test]
-    async fn all_request_failures_back_off_once() {
+    async fn all_primary_request_failures_fall_back_before_backoff() {
         let stats = Arc::new(RecordingIndexerStatsTracker::default());
         let (client, calls) =
             scripted_search_client_with_stats(anime_caps(), stats.clone(), |call| {
@@ -3770,7 +3768,7 @@ mod tests {
                 }
             });
 
-        let error = client
+        let response = client
             .search(
                 "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
@@ -3786,30 +3784,28 @@ mod tests {
                 vec![],
             )
             .await
-            .expect_err("all-failure primary outcomes should report an interactive error");
-        assert!(
-            error
-                .to_string()
-                .contains("all attempted indexer strategies failed"),
-            "unexpected error: {error}"
-        );
+            .expect("all-failure primary outcomes should fall back to freetext");
 
         {
             let calls = calls.lock().expect("call log mutex");
-            assert_eq!(calls.len(), 2);
-            assert!(calls.iter().all(|call| call.ids.contains_key("anidb_id")));
+            assert_eq!(calls.len(), 3);
+            assert!(calls[0].ids.contains_key("anidb_id"));
+            assert!(calls[1].ids.contains_key("anidb_id"));
+            assert!(calls[2].ids.is_empty());
+            assert_eq!(calls[2].query, "Blade Summit S02E03");
         }
-        assert!(client.backoff_tracker.is_disabled("idx-1").await.is_some());
+        assert_eq!(response.results[0].title, "Blade.Summit.S02E03.720p.WEB-DL");
+        assert!(client.backoff_tracker.is_disabled("idx-1").await.is_none());
 
-        let state = backoff_state(&client, "idx-1")
-            .await
-            .expect("indexer should have backoff state");
-        assert_eq!(state.escalation_level, 1);
-        assert!(state.disabled_until.is_some());
+        assert!(
+            backoff_state(&client, "idx-1").await.is_none(),
+            "fallback success should not create a new backoff entry"
+        );
 
         let stats = stats.queries.lock().expect("stats log mutex");
-        assert_eq!(stats.len(), 2);
-        assert!(stats.iter().all(|success| !*success));
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats.iter().filter(|success| **success).count(), 1);
+        assert_eq!(stats.iter().filter(|success| !**success).count(), 2);
     }
 
     #[tokio::test]

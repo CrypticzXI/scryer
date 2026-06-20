@@ -60,6 +60,7 @@ impl ApqCache {
     }
 }
 
+use crate::metadata::response_body::{ResponseBodyPreview, read_response_body_preview};
 use crate::{graphql::metadata_gateway as graphql_docs, smg_enrollment};
 
 fn sha256_hex(input: &str) -> String {
@@ -825,15 +826,24 @@ impl MetadataGatewayClient {
                 && !retried_after_reenrollment
                 && self.enrollment_config.registration_secret.is_some()
             {
-                let body = response.text().await.map_err(|error| {
-                    AppError::Repository(format!(
-                        "SMG version compatibility response read failed: {error}"
-                    ))
-                })?;
+                let preview = read_response_body_preview(
+                    response,
+                    "SMG version compatibility response read failed",
+                )
+                .await?;
                 retried_after_reenrollment = true;
                 if !self.invalidate_enrollment().await {
+                    warn!(
+                        status = %status,
+                        body_preview = %preview.escaped_text(),
+                        body_preview_bytes = preview.preview_bytes,
+                        content_length = ?preview.content_length,
+                        content_type = ?preview.content_type,
+                        body_truncated = preview.truncated,
+                        "SMG version compatibility auth rejected during re-enrollment cooldown"
+                    );
                     return Err(AppError::Repository(format!(
-                        "SMG version compatibility check auth rejected ({status}), re-enrollment on cooldown: {body}"
+                        "SMG version compatibility check auth rejected ({status}), re-enrollment on cooldown"
                     )));
                 }
                 info!("retrying SMG version compatibility check after re-enrollment");
@@ -856,18 +866,26 @@ impl MetadataGatewayClient {
             }
 
             if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
-                let body = response.bytes().await.map_err(|error| {
-                    AppError::Repository(format!(
-                        "SMG version compatibility response read failed: {error}"
-                    ))
-                })?;
-                if !is_version_incompatible_response(&body) {
-                    let raw = String::from_utf8_lossy(&body);
+                let preview = read_response_body_preview(
+                    response,
+                    "SMG version compatibility response read failed",
+                )
+                .await?;
+                if preview.truncated || !is_version_incompatible_response(preview.text.as_bytes()) {
+                    warn!(
+                        status = %status,
+                        body_preview = %preview.escaped_text(),
+                        body_preview_bytes = preview.preview_bytes,
+                        content_length = ?preview.content_length,
+                        content_type = ?preview.content_type,
+                        body_truncated = preview.truncated,
+                        "SMG version compatibility check returned unexpected response"
+                    );
                     return Err(AppError::Repository(format!(
-                        "SMG version compatibility check failed (HTTP {status}): {raw}"
+                        "SMG version compatibility check failed (HTTP {status})"
                     )));
                 }
-                let check = parse_version_compatibility_incompatible(&body)?;
+                let check = parse_version_compatibility_incompatible(preview.text.as_bytes())?;
                 self.store_version_compatibility_state(
                     check.compatibility_notice.clone(),
                     check.update_notice,
@@ -1048,13 +1066,20 @@ impl MetadataGatewayClient {
             }
             Ok(resp) => {
                 let status = resp.status();
-                let raw = resp
-                    .text()
-                    .await
-                    .map_err(|error| AppError::Repository(error.to_string()))?;
-                warn!(status = %status, hash, body = %raw, "APQ GET failed");
+                let preview =
+                    read_response_body_preview(resp, "APQ GET response read failed").await?;
+                warn!(
+                    status = %status,
+                    hash,
+                    body_preview = %preview.escaped_text(),
+                    body_preview_bytes = preview.preview_bytes,
+                    content_length = ?preview.content_length,
+                    content_type = ?preview.content_type,
+                    body_truncated = preview.truncated,
+                    "APQ GET failed"
+                );
                 Err(AppError::Repository(format!(
-                    "metadata gateway request failed ({status}): {raw}"
+                    "metadata gateway request failed ({status})"
                 )))
             }
             Err(error) => {
@@ -1088,44 +1113,83 @@ impl MetadataGatewayClient {
         let response = self.send_with_retry(&payload).await?;
 
         let status = response.status();
+
+        // On instance-auth rejection, invalidate enrollment and retry once with fresh creds.
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && self.enrollment_config.registration_secret.is_some()
+        {
+            let preview = read_response_body_preview(
+                response,
+                "metadata gateway auth rejection response read failed",
+            )
+            .await?;
+            if !self.invalidate_enrollment().await {
+                warn!(
+                    status = %status,
+                    body_preview = %preview.escaped_text(),
+                    body_preview_bytes = preview.preview_bytes,
+                    content_length = ?preview.content_length,
+                    content_type = ?preview.content_type,
+                    body_truncated = preview.truncated,
+                    "metadata gateway instance auth rejected during re-enrollment cooldown"
+                );
+                return Err(AppError::Repository(format!(
+                    "metadata gateway instance auth rejected ({status}), re-enrollment on cooldown"
+                )));
+            }
+            info!("retrying metadata request after re-enrollment");
+            let retry_resp = self.send_with_retry(&payload).await?;
+            let retry_status = retry_resp.status();
+            if !retry_status.is_success() {
+                let preview = read_response_body_preview(
+                    retry_resp,
+                    "metadata gateway retry response read failed",
+                )
+                .await?;
+                warn!(
+                    status = %retry_status,
+                    body_preview = %preview.escaped_text(),
+                    body_preview_bytes = preview.preview_bytes,
+                    content_length = ?preview.content_length,
+                    content_type = ?preview.content_type,
+                    body_truncated = preview.truncated,
+                    "metadata gateway request failed after re-enrollment"
+                );
+                return Err(AppError::Repository(format!(
+                    "metadata gateway request failed ({retry_status})"
+                )));
+            }
+            let retry_text = retry_resp
+                .text()
+                .await
+                .map_err(|err| AppError::Repository(err.to_string()))?;
+            return self.parse_graphql_response(&retry_text);
+        }
+
+        if !status.is_success() {
+            let preview =
+                read_response_body_preview(response, "metadata gateway response read failed")
+                    .await?;
+            warn!(
+                status = %status,
+                body_preview = %preview.escaped_text(),
+                body_preview_bytes = preview.preview_bytes,
+                content_length = ?preview.content_length,
+                content_type = ?preview.content_type,
+                body_truncated = preview.truncated,
+                "metadata gateway request failed"
+            );
+            return Err(AppError::Repository(format!(
+                "metadata gateway request failed ({status})"
+            )));
+        }
+
         let raw_text = response
             .text()
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
 
         debug!(status = %status, body_len = raw_text.len(), "metadata gateway response");
-
-        // On instance-auth rejection, invalidate enrollment and retry once with fresh creds.
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            && self.enrollment_config.registration_secret.is_some()
-        {
-            if !self.invalidate_enrollment().await {
-                return Err(AppError::Repository(format!(
-                    "metadata gateway instance auth rejected ({status}), re-enrollment on cooldown: {raw_text}"
-                )));
-            }
-            info!("retrying metadata request after re-enrollment");
-            let retry_resp = self.send_with_retry(&payload).await?;
-            let retry_status = retry_resp.status();
-            let retry_text = retry_resp
-                .text()
-                .await
-                .map_err(|err| AppError::Repository(err.to_string()))?;
-            if !retry_status.is_success() {
-                warn!(status = %retry_status, body = %retry_text, "metadata gateway request failed after re-enrollment");
-                return Err(AppError::Repository(format!(
-                    "metadata gateway request failed ({retry_status}): {retry_text}"
-                )));
-            }
-            return self.parse_graphql_response(&retry_text);
-        }
-
-        if !status.is_success() {
-            warn!(status = %status, body = %raw_text, "metadata gateway request failed");
-            return Err(AppError::Repository(format!(
-                "metadata gateway request failed ({status}): {raw_text}"
-            )));
-        }
 
         self.parse_graphql_response(&raw_text)
     }
@@ -1135,7 +1199,16 @@ impl MetadataGatewayClient {
         raw_text: &str,
     ) -> AppResult<T> {
         let parsed: GraphqlResponse<T> = serde_json::from_str(raw_text).map_err(|err| {
-            warn!(body = %raw_text, error = %err, "metadata gateway returned invalid JSON");
+            let preview = ResponseBodyPreview::from_text(raw_text);
+            warn!(
+                body_preview = %preview.escaped_text(),
+                body_preview_bytes = preview.preview_bytes,
+                content_length = ?preview.content_length,
+                content_type = ?preview.content_type,
+                body_truncated = preview.truncated,
+                error = %err,
+                "metadata gateway returned invalid JSON"
+            );
             AppError::Repository(format!("metadata gateway returned invalid JSON: {err}"))
         })?;
 
@@ -1149,7 +1222,15 @@ impl MetadataGatewayClient {
         }
 
         if parsed.data.is_none() {
-            warn!(body = %raw_text, "metadata gateway returned empty data");
+            let preview = ResponseBodyPreview::from_text(raw_text);
+            warn!(
+                body_preview = %preview.escaped_text(),
+                body_preview_bytes = preview.preview_bytes,
+                content_length = ?preview.content_length,
+                content_type = ?preview.content_type,
+                body_truncated = preview.truncated,
+                "metadata gateway returned empty data"
+            );
         }
 
         parsed
@@ -1389,18 +1470,29 @@ impl MetadataGatewayClient {
             .await;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::Repository(format!("bulk metadata read body: {e}")))?;
 
         // On instance-auth rejection, invalidate and retry with fresh creds.
         if status == reqwest::StatusCode::UNAUTHORIZED
             && self.enrollment_config.registration_secret.is_some()
         {
+            let preview = read_response_body_preview(
+                resp,
+                "bulk metadata auth rejection response read failed",
+            )
+            .await?;
             if !self.invalidate_enrollment().await {
+                warn!(
+                    request = request_label,
+                    status = %status,
+                    body_preview = %preview.escaped_text(),
+                    body_preview_bytes = preview.preview_bytes,
+                    content_length = ?preview.content_length,
+                    content_type = ?preview.content_type,
+                    body_truncated = preview.truncated,
+                    "bulk metadata instance auth rejected during re-enrollment cooldown"
+                );
                 return Err(AppError::Repository(format!(
-                    "bulk metadata instance auth rejected ({status}), re-enrollment on cooldown: {body}"
+                    "bulk metadata instance auth rejected ({status}), re-enrollment on cooldown"
                 )));
             }
             info!(
@@ -1436,24 +1528,53 @@ impl MetadataGatewayClient {
                 .send_request_with_retry(build_retry_req, request_label)
                 .await?;
             let status2 = resp2.status();
+            if !status2.is_success() {
+                let preview =
+                    read_response_body_preview(resp2, "bulk metadata retry response read failed")
+                        .await?;
+                warn!(
+                    request = request_label,
+                    status = %status2,
+                    body_preview = %preview.escaped_text(),
+                    body_preview_bytes = preview.preview_bytes,
+                    content_length = ?preview.content_length,
+                    content_type = ?preview.content_type,
+                    body_truncated = preview.truncated,
+                    "bulk metadata request failed after re-enrollment"
+                );
+                return Err(AppError::Repository(format!(
+                    "bulk metadata request failed after re-enrollment ({status2})"
+                )));
+            }
             let body2 = resp2
                 .text()
                 .await
                 .map_err(|e| AppError::Repository(format!("bulk metadata read body: {e}")))?;
-            if !status2.is_success() {
-                return Err(AppError::Repository(format!(
-                    "bulk metadata request failed after re-enrollment ({status2}): {body2}"
-                )));
-            }
             return self.parse_partial_response(&body2);
         }
 
         if !status.is_success() {
+            let preview =
+                read_response_body_preview(resp, "bulk metadata response read failed").await?;
+            warn!(
+                request = request_label,
+                status = %status,
+                body_preview = %preview.escaped_text(),
+                body_preview_bytes = preview.preview_bytes,
+                content_length = ?preview.content_length,
+                content_type = ?preview.content_type,
+                body_truncated = preview.truncated,
+                "bulk metadata request failed"
+            );
             return Err(AppError::Repository(format!(
-                "bulk metadata request failed ({status}): {body}"
+                "bulk metadata request failed ({status})"
             )));
         }
 
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Repository(format!("bulk metadata read body: {e}")))?;
         self.parse_partial_response(&body)
     }
 

@@ -1218,10 +1218,11 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::WantedStatus::Wanted
     );
 
-    let failures = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore())
-        .list_failed_release_signatures_for_title(&title.id, 10)
-        .await
-        .expect("failed signatures");
+    let failures =
+        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state())
+            .list_failed_release_signatures_for_title(&title.id, 10)
+            .await
+            .expect("failed signatures");
     assert!(failures.iter().any(|failure| {
         failure.source_title.as_deref() == Some("test.download.dl-rule-blocked")
             && failure
@@ -1357,11 +1358,13 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-success-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode.id.clone(),
+            episode_id: Some(episode.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,
@@ -1424,11 +1427,13 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-existing-folder-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode.id.clone(),
+            episode_id: Some(episode.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,
@@ -1506,11 +1511,13 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
+        "manual-series-broader-incumbent-import",
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode1.id.clone(),
+            episode_id: Some(episode1.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,

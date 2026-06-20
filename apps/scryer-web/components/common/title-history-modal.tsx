@@ -199,7 +199,7 @@ export function TitleHistoryModal({
             </div>
           ) : (
             <>
-              <HistoryEventTable events={events} emptyMessage={t("history.empty")} />
+              <HistoryEventTable events={events} showActor emptyMessage={t("history.empty")} />
               {hasMore ? (
                 <div className="mt-4 flex justify-center pb-2">
                   <Button

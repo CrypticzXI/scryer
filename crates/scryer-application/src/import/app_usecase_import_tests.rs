@@ -172,7 +172,8 @@ fn extract_parameter_first_match() {
 fn queued_mapped_manual_import_allows_missing_source() {
     let payload = test_manual_import_payload(vec![ManualImportFileMapping {
         file_path: "/downloads/episode.mkv".to_string(),
-        episode_id: "ep-1".to_string(),
+        episode_id: Some("ep-1".to_string()),
+        series_movie_link_id: None,
         quality: None,
     }]);
 
@@ -594,12 +595,59 @@ fn test_media_analysis(video_height: Option<i32>) -> crate::MediaFileAnalysis {
     }
 }
 
+fn test_rule_file_doc(
+    dovi_profile: Option<u8>,
+    dovi_bl_compat_id: Option<u8>,
+) -> scryer_rules::FileDoc {
+    scryer_rules::FileDoc {
+        video_codec: Some("hevc".to_string()),
+        video_width: Some(3840),
+        video_height: Some(2160),
+        video_bitrate_kbps: None,
+        video_bit_depth: Some(10),
+        video_hdr_format: Some("Dolby Vision".to_string()),
+        dovi_profile,
+        dovi_bl_compat_id,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: Some("eac3".to_string()),
+        audio_profile: None,
+        audio_channels: Some(6),
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format: Some("Matroska".to_string()),
+    }
+}
+
+fn post_download_test_profile() -> crate::QualityProfile {
+    crate::QualityProfile::parse(
+        r#"{
+            "id": "test",
+            "name": "Test",
+            "criteria": {
+                "quality_tiers": ["2160p", "1080p", "720p"],
+                "allow_unknown_quality": false,
+                "allow_upgrades": true
+            }
+        }"#,
+    )
+    .expect("quality profile should parse")
+}
+
 #[test]
 fn rescore_from_mediainfo_updates_quality_when_parsed_quality_is_missing() {
     let parsed = crate::parse_release_metadata("obfuscated.release.name");
     let acceptance = crate::post_download_gate::ImportedFileAcceptance {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
+        rule_file_doc: None,
     };
 
     let (rescored, changes) =
@@ -607,6 +655,187 @@ fn rescore_from_mediainfo_updates_quality_when_parsed_quality_is_missing() {
 
     assert_eq!(rescored.quality.as_deref(), Some("1080p"));
     assert!(changes.iter().any(|change| change.contains("resolution")));
+}
+
+#[tokio::test]
+async fn post_download_score_uses_rescored_quality_and_records_negative_audit() {
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    );
+    let title = test_title(MediaFacet::Movie);
+    let profile = crate::QualityProfile::parse(
+        r#"{
+            "id": "test",
+            "name": "Test",
+            "criteria": {
+                "quality_tiers": ["1080p", "720p"],
+                "allow_unknown_quality": false,
+                "allow_upgrades": true
+            }
+        }"#,
+    )
+    .expect("quality profile should parse");
+    let parsed = crate::parse_release_metadata("Test.Movie.2024.1080p.WEB-DL.H264.AAC2.0-GRP");
+    let mut analysis = test_media_analysis(Some(720));
+    analysis.video_width = Some(1280);
+    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(analysis),
+        scan_error: None,
+        rule_file_doc: None,
+    };
+
+    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
+        &app,
+        &parsed,
+        &acceptance,
+        &profile,
+        &title,
+        title.runtime_minutes,
+        5 * 1024 * 1024,
+        false,
+        None,
+        &[],
+        false,
+    )
+    .await;
+
+    assert_eq!(result.parsed.quality.as_deref(), Some("720p"));
+    assert!(result.score < 0);
+    let scoring_log = result.scoring_log.expect("scoring log should serialize");
+    let scoring_log: serde_json::Value =
+        serde_json::from_str(&scoring_log).expect("scoring log should be JSON");
+    assert_eq!(
+        scoring_log["kind"],
+        serde_json::Value::String("post_download_acquisition_score".to_string())
+    );
+    assert_eq!(scoring_log["preference_score"], result.score);
+    assert!(
+        scoring_log["rescore_changes"]
+            .as_array()
+            .expect("rescore changes should be an array")
+            .iter()
+            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+    );
+}
+
+#[tokio::test]
+async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_already_rescored() {
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    );
+    let title = test_title(MediaFacet::Movie);
+    let profile = post_download_test_profile();
+    let parsed = crate::parse_release_metadata("obfuscated.release.name");
+    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(test_media_analysis(Some(1080))),
+        scan_error: None,
+        rule_file_doc: None,
+    };
+    let (prepared_parsed, first_pass_changes) =
+        crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
+    assert!(
+        first_pass_changes
+            .iter()
+            .any(|change| change.contains("resolution"))
+    );
+
+    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
+        &app,
+        &prepared_parsed,
+        &acceptance,
+        &profile,
+        &title,
+        title.runtime_minutes,
+        5 * 1024 * 1024,
+        false,
+        None,
+        &first_pass_changes,
+        false,
+    )
+    .await;
+
+    let scoring_log = result.scoring_log.expect("scoring log should serialize");
+    let scoring_log: serde_json::Value =
+        serde_json::from_str(&scoring_log).expect("scoring log should be JSON");
+    assert!(
+        scoring_log["rescore_changes"]
+            .as_array()
+            .expect("rescore changes should be an array")
+            .iter()
+            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+    );
+}
+
+#[tokio::test]
+async fn post_download_user_rule_scoring_uses_probe_file_doc_dovi_facts() {
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    );
+    let policy = scryer_rules::UserPolicy {
+        id: "dv_profile".to_string(),
+        name: "DV Profile".to_string(),
+        rego_source: scryer_rules::rewrite_package_declaration(
+            r#"
+score_entry["dv_profile_bonus"] := 123 if {
+    input.file != null
+    input.file.dovi_profile == 8
+    input.file.dovi_bl_compat_id == 1
+}
+"#,
+            "dv_profile",
+        ),
+        applied_facets: vec!["movie".to_string()],
+    };
+    let engine = scryer_rules::UserRulesEngine::build(&[policy])
+        .expect("user rule engine should compile");
+    *app.services
+        .customization
+        .user_rules
+        .write()
+        .expect("user rules lock should be writable") = engine;
+
+    let title = test_title(MediaFacet::Movie);
+    let profile = post_download_test_profile();
+    let parsed = crate::parse_release_metadata("Test.Movie.2024.2160p.WEB-DL.HEVC-GRP");
+    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(test_media_analysis(Some(2160))),
+        scan_error: None,
+        rule_file_doc: Some(test_rule_file_doc(Some(8), Some(1))),
+    };
+
+    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
+        &app,
+        &parsed,
+        &acceptance,
+        &profile,
+        &title,
+        title.runtime_minutes,
+        5 * 1024 * 1024,
+        false,
+        None,
+        &[],
+        false,
+    )
+    .await;
+
+    let scoring_log = result.scoring_log.expect("scoring log should serialize");
+    let scoring_log: serde_json::Value =
+        serde_json::from_str(&scoring_log).expect("scoring log should be JSON");
+    assert!(
+        scoring_log["scoring_log"]
+            .as_array()
+            .expect("scoring log should be an array")
+            .iter()
+            .any(|entry| {
+                entry["code"] == "dv_profile_bonus"
+                    && entry["delta"] == 123
+                    && entry["source"]["kind"] == "user_rule"
+                    && entry["source"]["id"] == "dv_profile"
+            })
+    );
 }
 
 #[test]
@@ -617,6 +846,7 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
     let acceptance = crate::post_download_gate::ImportedFileAcceptance {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
+        rule_file_doc: None,
     };
     let (rescored, _) = crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
 
@@ -696,6 +926,30 @@ fn find_video_files_finds_mkv_in_dir() {
     let files = find_video_files(dir.path(), false).expect("find");
     assert_eq!(files.len(), 1);
     assert!(files[0].to_str().unwrap().ends_with("movie.mkv"));
+}
+
+#[test]
+fn find_video_files_includes_trailing_sanitized_video_extension() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sanitized_path = dir.path().join("Fixture.Payload.mkv_");
+    let quoted_path = dir.path().join("Fixture.Payload.mkv\"");
+    let executable_path = dir.path().join("Fixture.Payload.mkv.exe");
+    std::fs::write(&sanitized_path, b"data").expect("write sanitized");
+    std::fs::write(&quoted_path, b"data").expect("write quoted");
+    std::fs::write(&executable_path, b"data").expect("write executable");
+
+    let mut files = find_video_files(dir.path(), false).expect("find");
+    files.sort();
+
+    assert_eq!(files, vec![quoted_path, sanitized_path]);
+}
+
+#[test]
+fn preserved_import_filename_sanitizes_trailing_bad_chars() {
+    assert_eq!(
+        preserved_import_filename(std::path::Path::new("Fixture.Payload.mkv\"")),
+        "Fixture.Payload.mkv"
+    );
 }
 
 #[test]

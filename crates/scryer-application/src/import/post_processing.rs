@@ -1,3 +1,4 @@
+use crate::domain_events::DomainEventActor;
 use crate::stored_paths::path_to_stored_string;
 use crate::{AppError, AppUseCase};
 use chrono::Utc;
@@ -17,7 +18,7 @@ use tokio::io::AsyncReadExt;
 pub struct PostProcessingContext {
     /// Cheap clone of AppUseCase — all internal fields are Arc.
     pub app: AppUseCase,
-    pub actor_id: Option<String>,
+    pub actor: DomainEventActor,
     pub title_id: String,
     pub title_name: String,
     pub facet: MediaFacet,
@@ -188,7 +189,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
     // Fire-and-forget scripts run in parallel.
     for script in &fire_and_forget {
         let app = ctx.app.clone();
-        let actor_id = ctx.actor_id.clone();
+        let actor = ctx.actor.clone();
         let title_id = ctx.title_id.clone();
         let title_name = ctx.title_name.clone();
         let dest_path = ctx.dest_path.clone();
@@ -199,7 +200,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
         tokio::spawn(async move {
             let ff_ctx = PostProcessingContext {
                 app: app.clone(),
-                actor_id,
+                actor,
                 title_id,
                 title_name,
                 facet,
@@ -545,7 +546,7 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
     {
         ctx.app
             .emit_post_processing_completed_event(
-                ctx.actor_id.clone(),
+                ctx.actor.clone(),
                 &title,
                 run.script_name.clone(),
                 result,
@@ -566,7 +567,9 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
-            actor_user_id: ctx.actor_id.clone(),
+            actor_kind: ctx.actor.kind,
+            actor_user_id: ctx.actor.user_id.clone(),
+            actor_display_name: ctx.actor.display_name.clone(),
             title_id: Some(ctx.title_id.clone()),
             facet: Some(ctx.facet.clone()),
             correlation_id: None,

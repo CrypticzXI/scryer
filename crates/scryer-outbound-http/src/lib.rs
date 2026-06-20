@@ -472,14 +472,18 @@ pub fn generic_reqwest_client() -> Client {
 }
 
 pub fn external_arr_reqwest_client() -> Client {
-    let mut builder = reqwest_client_builder().timeout(Duration::from_secs(15));
+    let mut builder = reqwest_client_builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none());
     if let Ok(proxy_url) = std::env::var("SCRYER_EXTERNAL_ARR_PROXY_URL")
         && !proxy_url.trim().is_empty()
         && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
     {
         builder = builder.proxy(proxy);
     }
-    builder.build().unwrap_or_else(|_| generic_reqwest_client())
+    builder
+        .build()
+        .unwrap_or_else(|_| no_redirect_reqwest_client())
 }
 
 pub fn plugin_reqwest_client() -> Client {

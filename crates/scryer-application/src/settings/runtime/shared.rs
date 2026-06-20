@@ -110,7 +110,7 @@ impl AppUseCase {
         changed_keys: Vec<String>,
     ) {
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             resource_type.to_string(),
             resource_id,
             scryer_domain::ConfigurationChangeAction::Updated,

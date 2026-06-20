@@ -31,7 +31,7 @@ const queueStateLabels: Record<string, string> = {
   post_processing: "queue.state.postProcessing",
   paused: "queue.state.paused",
   completed: "queue.state.completed",
-  importing: "queue.manualImporting",
+  importing: "queue.state.importing",
   removing: "queue.deleting",
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
@@ -51,6 +51,58 @@ function formatProgress(progressPercent: number): number {
     return 100;
   }
   return Math.round(progressPercent);
+}
+
+function parseByteCount(sizeBytes: string | null): number | null {
+  if (!sizeBytes) {
+    return null;
+  }
+  const bytes = Number.parseFloat(sizeBytes);
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return null;
+  }
+  return bytes;
+}
+
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "\u2014";
+  }
+  if (bytes === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function queueItemProgress(item: DownloadQueueItem): {
+  percent: number;
+  remainingLabel: string | null;
+} {
+  const transferBytes = parseByteCount(item.importTransferBytes);
+  const transferTotalBytes = parseByteCount(item.importTransferTotalBytes);
+  if (
+    item.displayState === "importing" &&
+    item.importTransferPhase !== null &&
+    transferBytes !== null &&
+    transferTotalBytes !== null &&
+    transferTotalBytes > 0
+  ) {
+    return {
+      percent: formatProgress((transferBytes / transferTotalBytes) * 100),
+      remainingLabel: `${formatByteCount(transferBytes)} / ${formatByteCount(transferTotalBytes)}`,
+    };
+  }
+  return {
+    percent: formatProgress(item.progressPercent),
+    remainingLabel: formatRemainingDuration(item.remainingSeconds),
+  };
 }
 
 function formatRemainingDuration(remainingSeconds: number | null): string | null {
@@ -105,6 +157,12 @@ function queueStatusLabel(
   if (stateKey === "post_processing" && stageLabel.length > 0) {
     return stageLabel;
   }
+  if (queueItem.importTransferPhase === "copying") {
+    return t("queue.transfer.copying");
+  }
+  if (queueItem.importTransferPhase === "finalizing") {
+    return t("queue.transfer.finalizing");
+  }
   return t(queueStateLabels[stateKey] ?? "queue.state.unknown");
 }
 
@@ -121,8 +179,7 @@ export function MovieOverviewDownloadList({
     <div className={cn("space-y-3", className)}>
       {items.map((item) => {
         const stateKey = item.displayState;
-        const progress = formatProgress(item.progressPercent);
-        const remainingLabel = formatRemainingDuration(item.remainingSeconds);
+        const { percent: progress, remainingLabel } = queueItemProgress(item);
         const detail = buildQueueStatusDetail(item);
         const rowId = downloadQueueItemIdentityKey(item);
 
@@ -193,8 +250,8 @@ export function EpisodeQueueIndicator({
   return (
     <div className={cn("w-24", className)}>
       <ActivityProgressBar
-        percent={formatProgress(item.progressPercent)}
-        remainingLabel={formatRemainingDuration(item.remainingSeconds)}
+        percent={queueItemProgress(item).percent}
+        remainingLabel={queueItemProgress(item).remainingLabel}
         colorClass={getProgressBarColor(stateKey)}
         compact
         hideLabel

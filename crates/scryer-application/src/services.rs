@@ -811,10 +811,23 @@ pub struct AppRuntimeAcquisitionState {
     pub acquisition_wake: Arc<tokio::sync::Notify>,
     pub download_submission_guards: DownloadSubmissionGuardTable,
     pub download_failure_guards: DownloadFailureGuardTable,
+    pub(crate) release_candidate_passwords:
+        Arc<std::sync::Mutex<HashMap<String, ReleaseCandidatePasswordTicket>>>,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
+}
+
+pub(crate) struct ReleaseCandidatePasswordTicket {
+    pub actor_id: String,
+    pub title_id: String,
+    pub scope_kind: String,
+    pub scope_id: Option<String>,
+    pub source_hint: String,
+    pub source_title: String,
+    pub password: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -1006,6 +1019,7 @@ impl AppRuntimeState {
                 acquisition_wake: Arc::new(tokio::sync::Notify::new()),
                 download_submission_guards: DownloadSubmissionGuardTable::default(),
                 download_failure_guards: DownloadFailureGuardTable::default(),
+                release_candidate_passwords: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -1070,6 +1084,7 @@ pub struct AppIdentityServices {
     pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
     pub(crate) totp: Arc<dyn TotpRepository>,
+    pub(crate) oauth: Arc<dyn OAuthRepository>,
 }
 
 #[derive(Clone)]
@@ -1312,6 +1327,7 @@ impl AppServices {
                 external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
                 totp: Arc::new(null_repositories::NullTotpRepository),
+                oauth: Arc::new(null_repositories::NullOAuthRepository),
             },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
@@ -1588,6 +1604,7 @@ impl AppServicesBuilder {
         identity.external_accounts,
         Arc<dyn UserExternalAccountRepository>
     );
+    app_services_builder_setter!(with_oauth_store, identity.oauth, Arc<dyn OAuthRepository>);
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: PluginInstallationRepository
@@ -2193,7 +2210,9 @@ impl AppUseCase {
                 NewDomainEvent {
                     event_id: Id::new().0,
                     occurred_at: Utc::now(),
+                    actor_kind: scryer_domain::DomainEventActorKind::System,
                     actor_user_id: None,
+                    actor_display_name: "System".to_string(),
                     title_id: Some(title_id.clone()),
                     facet,
                     correlation_id: None,

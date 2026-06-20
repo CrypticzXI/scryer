@@ -799,47 +799,10 @@ fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDisco
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
-                if element.name().as_ref() != b"Device" {
-                    continue;
-                }
-                let mut machine_id = None;
-                let mut name = None;
-                let mut product = None;
-                let mut provides = None;
-                for attribute in element.attributes() {
-                    let attribute = attribute.map_err(|error| {
-                        AppError::Repository(format!("invalid Plex resources XML: {error}"))
-                    })?;
-                    let value = attribute
-                        .normalized_value(XmlVersion::Implicit1_0)
-                        .map_err(|error| {
-                            AppError::Repository(format!("invalid Plex resources XML: {error}"))
-                        })?
-                        .trim()
-                        .to_string();
-                    if value.is_empty() {
-                        continue;
-                    }
-                    match attribute.key.as_ref() {
-                        b"machineIdentifier" | b"clientIdentifier" => machine_id = Some(value),
-                        b"name" => name = Some(value),
-                        b"product" => product = Some(value),
-                        b"provides" => provides = Some(value),
-                        _ => {}
-                    }
-                }
-                if provides
-                    .as_deref()
-                    .is_some_and(|value| !value.split(',').any(|part| part.trim() == "server"))
+                if element.name().as_ref() == b"Device"
+                    && let Some(device) = parse_plex_device(&element)?
                 {
-                    continue;
-                }
-                if let Some(machine_id) = machine_id {
-                    let name = name.or(product).unwrap_or_else(|| machine_id.clone());
-                    servers.push(PlexServerDiscovery {
-                        id: machine_id,
-                        name,
-                    });
+                    servers.push(device.into_discovery());
                 }
             }
             Ok(Event::Eof) => {
@@ -860,6 +823,63 @@ fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDisco
             _ => {}
         }
     }
+}
+
+struct PendingPlexServerDiscovery {
+    id: String,
+    name: String,
+}
+
+impl PendingPlexServerDiscovery {
+    fn into_discovery(self) -> PlexServerDiscovery {
+        PlexServerDiscovery {
+            id: self.id,
+            name: self.name,
+        }
+    }
+}
+
+fn parse_plex_device(
+    element: &quick_xml::events::BytesStart<'_>,
+) -> AppResult<Option<PendingPlexServerDiscovery>> {
+    let mut machine_id = None;
+    let mut name = None;
+    let mut product = None;
+    let mut provides = None;
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| {
+            AppError::Repository(format!("invalid Plex resources XML: {error}"))
+        })?;
+        let value = attribute
+            .normalized_value(XmlVersion::Implicit1_0)
+            .map_err(|error| AppError::Repository(format!("invalid Plex resources XML: {error}")))?
+            .trim()
+            .to_string();
+        if value.is_empty() {
+            continue;
+        }
+        match attribute.key.as_ref() {
+            b"machineIdentifier" | b"clientIdentifier" => machine_id = Some(value),
+            b"name" => name = Some(value),
+            b"product" => product = Some(value),
+            b"provides" => provides = Some(value),
+            _ => {}
+        }
+    }
+    if provides
+        .as_deref()
+        .is_some_and(|value| !value.split(',').any(|part| part.trim() == "server"))
+    {
+        return Ok(None);
+    }
+    let Some(machine_id) = machine_id else {
+        return Ok(None);
+    };
+    let name = name.or(product).unwrap_or_else(|| machine_id.clone());
+    Ok(Some(PendingPlexServerDiscovery {
+        id: machine_id,
+        name,
+    }))
 }
 
 fn plex_resources_include_machine(resources_xml: &str, machine_id: &str) -> AppResult<bool> {
@@ -1237,7 +1257,7 @@ mod tests {
     #[test]
     fn plex_server_discovery_uses_client_identifier() {
         let servers = plex_server_discoveries(
-            r#"<MediaContainer><Device clientIdentifier="machine-1" name="E2E Plex" provides="server" /></MediaContainer>"#,
+            r#"<MediaContainer><Device clientIdentifier="machine-1" name="E2E Plex" provides="server"><Connection protocol="http" address="plex-auth" port="32400" uri="http://plex-auth:32400" local="0" /><Connection protocol="https" address="172.21.0.2" port="32400" uri="https://172-21-0-2.example.plex.direct:32400" local="1" /></Device></MediaContainer>"#,
         )
         .expect("resources should parse");
 

@@ -208,6 +208,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             is_sensitive: true,
         },
         ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: scryer_application::AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
             category: SETTINGS_CATEGORY_SECURITY,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: FORM_LOGIN_ENABLED_KEY,
@@ -1098,6 +1106,13 @@ mod tests {
                 && seed.key_name == AUTO_BACKUP_KEY_KEY
                 && seed.data_type == "string"
                 && seed.is_sensitive
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+                && !seed.is_sensitive
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_MEDIA

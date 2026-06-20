@@ -760,11 +760,27 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let show_dir = dir.path().join("Anime Show");
         let season_dir = show_dir.join("Season 1");
+        let extras_dir = show_dir.join("extras");
+        let featurettes_dir = show_dir.join("Featurettes");
+        let backdrops_dir = show_dir.join("backdrops");
+        let theme_music_dir = show_dir.join("theme_music");
         let trailers_dir = show_dir.join("trailers");
         let titled_trailers_dir = show_dir.join("12 Years a Slave (Trailers)");
         tokio::fs::create_dir_all(&season_dir)
             .await
             .expect("season dir");
+        tokio::fs::create_dir_all(&extras_dir)
+            .await
+            .expect("extras dir");
+        tokio::fs::create_dir_all(&featurettes_dir)
+            .await
+            .expect("featurettes dir");
+        tokio::fs::create_dir_all(&backdrops_dir)
+            .await
+            .expect("backdrops dir");
+        tokio::fs::create_dir_all(&theme_music_dir)
+            .await
+            .expect("theme music dir");
         tokio::fs::create_dir_all(&trailers_dir)
             .await
             .expect("trailers dir");
@@ -774,6 +790,21 @@ mod tests {
         tokio::fs::write(season_dir.join("Episode.S01E01.mkv"), b"video")
             .await
             .expect("episode");
+        tokio::fs::write(show_dir.join("Episode.S01E02-trailer.mkv"), b"video")
+            .await
+            .expect("trailer suffix");
+        tokio::fs::write(extras_dir.join("Episode.S00E01.mkv"), b"video")
+            .await
+            .expect("extra");
+        tokio::fs::write(featurettes_dir.join("Featurette.mkv"), b"video")
+            .await
+            .expect("featurette");
+        tokio::fs::write(backdrops_dir.join("Backdrop.mkv"), b"video")
+            .await
+            .expect("backdrop");
+        tokio::fs::write(theme_music_dir.join("Theme.Music.mkv"), b"video")
+            .await
+            .expect("theme music");
         tokio::fs::write(trailers_dir.join("Episode.S00E01.mkv"), b"video")
             .await
             .expect("trailer");
@@ -806,15 +837,32 @@ mod tests {
     async fn scan_library_skips_movie_extras_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         let extras_dir = dir.path().join("extras");
+        let trailers_dir = dir.path().join("trailers");
+        let theme_music_dir = dir.path().join("theme-music");
         tokio::fs::create_dir_all(&extras_dir)
             .await
             .expect("extras dir");
+        tokio::fs::create_dir_all(&trailers_dir)
+            .await
+            .expect("trailers dir");
+        tokio::fs::create_dir_all(&theme_music_dir)
+            .await
+            .expect("theme music dir");
         tokio::fs::write(dir.path().join("Movie.Title.2024.mkv"), b"video")
             .await
             .expect("movie");
+        tokio::fs::write(dir.path().join("Movie.Title.2024-trailer.mkv"), b"video")
+            .await
+            .expect("trailer suffix");
         tokio::fs::write(extras_dir.join("Featurette.mkv"), b"video")
             .await
             .expect("featurette");
+        tokio::fs::write(trailers_dir.join("Trailer.mkv"), b"video")
+            .await
+            .expect("trailer");
+        tokio::fs::write(theme_music_dir.join("Theme.Music.mkv"), b"video")
+            .await
+            .expect("theme music");
 
         let scanner = FileSystemLibraryScanner::new();
         let files = scanner
@@ -841,7 +889,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let level1 = dir.path().join("Season 1");
         let level2 = level1.join("Disc 1");
-        let level3 = level2.join("Extras");
+        let level3 = level2.join("Nested");
         let level4 = level3.join("TooDeep");
         tokio::fs::create_dir_all(&level4).await.expect("level4");
         tokio::fs::write(level3.join("Episode.S01E01.mkv"), b"video")

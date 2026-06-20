@@ -105,6 +105,10 @@ const ja: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -472,6 +476,12 @@ const ja: LocaleDictionary = {
   "settings.renameTokenYear": "公開年",
   "settings.renameTokenQuality": "品質（例: 1080p）",
   "settings.renameTokenEdition": "エディション（例: ディレクターズカット）",
+  "settings.renameTokenImdbId": "IMDb ID",
+  "settings.renameTokenTmdbId": "TMDb ID",
+  "settings.renameTokenTvdbId": "TVDb ID",
+  "settings.renameTokenAnidbId": "AniDB ID",
+  "settings.renameTokenMalId": "MAL ID",
+  "settings.renameTokenAnilistId": "AniList ID",
   "settings.renameTokenSource": "ソース（例: BluRay, WEB-DL）",
   "settings.renameTokenVideoCodec": "映像コーデック（例: x265）",
   "settings.renameTokenAudioCodec": "音声コーデック（例: DTS）",
@@ -486,6 +496,8 @@ const ja: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "対応しない開き括弧 '{'",
   "settings.renameValidationUnmatchedClose": "対応しない閉じ括弧 '}'",
   "settings.renameValidationUnknownToken": "不明なトークン: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "フォルダテンプレートは {title}、{year}、外部 ID トークンをサポートします。不明なトークン: {{token}}",
   "settings.renameValidationEmpty": "リネームテンプレートは空にできません",
   "settings.renameComingSoon": "リネームルールは近日公開予定です。",
   "settings.mediaSettingsSaved": "メディア設定を保存しました。",
@@ -746,6 +758,7 @@ const ja: LocaleDictionary = {
   "queue.state.postProcessing": "後処理中",
   "queue.state.paused": "一時停止",
   "queue.state.completed": "完了",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "インポート待ち",
   "queue.state.importBlocked": "輸入がブロックされました",
   "queue.state.failed": "失敗",
@@ -758,6 +771,8 @@ const ja: LocaleDictionary = {
     "{{downloading}}件ダウンロード中、{{waiting}}件インポート待ち、{{attention}}件要対応",
   "queue.manualImport": "手動インポート",
   "queue.manualImporting": "キューイング中…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "手動インポートがキューに追加されました。",
   "queue.manualImportFailed": "手動インポートに失敗しました。",
   "queue.removeFailed": "削除に失敗しました",
@@ -1045,6 +1060,8 @@ const ja: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新あり: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}にアップグレード",
+  "settings.pluginOptimizedBuildAvailable": "最適化ビルドがあります",
+  "settings.pluginInstallOptimizedBuild": "最適化ビルドをインストール",
   "settings.pluginNoCompatibleRelease":
     "このScryerバージョンに対応するリリースはありません",
   "settings.pluginNewerReleaseRequiresNewerScryer":

@@ -5,7 +5,7 @@ const RESERVED_PREFIXES = [
   "/graphql",
   "/health",
   "/metrics",
-  "/admin",
+  "/backups",
   "/images",
 ];
 const STATIC_PATH_PREFIXES = [

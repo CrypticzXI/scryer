@@ -48,6 +48,11 @@ pub struct MediaServerConnectionPatch {
     pub path_mappings: Option<Vec<MediaServerPathMapping>>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ResolvedPlexServerSelection {
+    machine_id: Option<String>,
+}
+
 impl AppUseCase {
     pub async fn list_media_server_connections(
         &self,
@@ -84,8 +89,8 @@ impl AppUseCase {
     ) -> AppResult<MediaServerConnection> {
         self.require_media_server_permission(actor, &draft).await?;
         let now = Utc::now();
-        let machine_id = self
-            .resolve_plex_machine_id(
+        let plex_selection = self
+            .resolve_plex_server_selection(
                 &draft.provider,
                 None,
                 draft.machine_id.clone(),
@@ -114,7 +119,7 @@ impl AppUseCase {
                 draft.auto_add_enabled,
                 draft.default_app_permissions,
                 draft.default_library_grants,
-                machine_id,
+                plex_selection.machine_id,
                 api_key,
                 draft.path_mappings,
                 now,
@@ -130,6 +135,7 @@ impl AppUseCase {
                 api_key_supplied,
             )
             .await?;
+
         self.test_media_server_connection_internal(
             &connection,
             draft.plex_auth_token.as_deref(),
@@ -144,7 +150,7 @@ impl AppUseCase {
             .create(connection)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(created.id.clone()),
             scryer_domain::ConfigurationChangeAction::Saved,
@@ -199,8 +205,8 @@ impl AppUseCase {
         } else {
             patch.machine_id.clone().or(existing.machine_id.clone())
         };
-        let machine_id = self
-            .resolve_plex_machine_id(
+        let plex_selection = self
+            .resolve_plex_server_selection(
                 &provider,
                 existing.machine_id.as_deref(),
                 requested_machine_id,
@@ -248,7 +254,7 @@ impl AppUseCase {
                 patch
                     .default_library_grants
                     .unwrap_or_else(|| existing.default_library_grants.clone()),
-                machine_id,
+                plex_selection.machine_id,
                 api_key,
                 patch
                     .path_mappings
@@ -267,6 +273,7 @@ impl AppUseCase {
                 api_key_supplied,
             )
             .await?;
+
         self.test_media_server_connection_internal(
             &connection,
             patch.plex_auth_token.as_deref(),
@@ -281,7 +288,7 @@ impl AppUseCase {
             .update(connection)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(updated.id.clone()),
             scryer_domain::ConfigurationChangeAction::Updated,
@@ -324,7 +331,7 @@ impl AppUseCase {
             .delete(id)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "media_server_connection",
             Some(id.to_string()),
             scryer_domain::ConfigurationChangeAction::Deleted,
@@ -697,16 +704,16 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn resolve_plex_machine_id(
+    async fn resolve_plex_server_selection(
         &self,
         provider: &MediaServerProvider,
         existing_machine_id: Option<&str>,
         requested_machine_id: Option<String>,
         plex_auth_token: Option<&str>,
         plex_server_id: Option<&str>,
-    ) -> AppResult<Option<String>> {
+    ) -> AppResult<ResolvedPlexServerSelection> {
         if *provider != MediaServerProvider::Plex {
-            return Ok(None);
+            return Ok(ResolvedPlexServerSelection::default());
         }
 
         let token = plex_auth_token
@@ -744,7 +751,9 @@ impl AppUseCase {
                     "Select a Plex server before saving this connection".into(),
                 ));
             };
-            return Ok(Some(selected.id.clone()));
+            return Ok(ResolvedPlexServerSelection {
+                machine_id: Some(selected.id.clone()),
+            });
         }
 
         if selected_server_id.is_some() {
@@ -753,8 +762,10 @@ impl AppUseCase {
             ));
         }
 
-        Ok(normalize_optional_string(requested_machine_id)
-            .or_else(|| existing_machine_id.map(ToString::to_string)))
+        Ok(ResolvedPlexServerSelection {
+            machine_id: normalize_optional_string(requested_machine_id)
+                .or_else(|| existing_machine_id.map(ToString::to_string)),
+        })
     }
 }
 
@@ -1246,7 +1257,10 @@ fn normalize_default_library_grants(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use tokio::sync::Mutex;
 
@@ -1443,6 +1457,77 @@ mod tests {
         }
     }
 
+    struct CountingExternalIdentityVerifier {
+        test_jellyfin_api_key_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ExternalIdentityVerifier for CountingExternalIdentityVerifier {
+        async fn verify_plex(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            Err(AppError::Repository(
+                "plex verification is not configured".into(),
+            ))
+        }
+
+        async fn discover_plex_servers(&self, _: &str) -> AppResult<Vec<PlexServerDiscovery>> {
+            Ok(Vec::new())
+        }
+
+        async fn verify_jellyfin(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            Err(AppError::Repository(
+                "jellyfin verification is not configured".into(),
+            ))
+        }
+
+        async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+            self.test_jellyfin_api_key_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Repository("Jellyfin is unreachable".into()))
+        }
+
+        async fn exchange_jellyfin_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<String> {
+            Ok("generated-api-key".to_string())
+        }
+
+        async fn list_jellyfin_users(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<JellyfinServerUser>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_plex_users(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<PlexServerUser>> {
+            Ok(Vec::new())
+        }
+    }
+
     struct TestNotificationPluginProvider;
 
     impl NotificationPluginProvider for TestNotificationPluginProvider {
@@ -1493,7 +1578,9 @@ mod tests {
                 sequence: 1,
                 event_id: event.event_id,
                 occurred_at: event.occurred_at,
+                actor_kind: event.actor_kind,
                 actor_user_id: event.actor_user_id,
+                actor_display_name: event.actor_display_name,
                 title_id: event.title_id,
                 facet: event.facet,
                 correlation_id: event.correlation_id,
@@ -1553,7 +1640,10 @@ mod tests {
         }
     }
 
-    fn app_with_connections(connections: Vec<MediaServerConnection>) -> AppUseCase {
+    fn app_with_connections_and_verifier(
+        connections: Vec<MediaServerConnection>,
+        verifier: Arc<dyn ExternalIdentityVerifier>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -1567,7 +1657,7 @@ mod tests {
             Arc::new(NullQualityProfileRepository),
             String::new(),
         )
-        .with_external_identity_verifier(Arc::new(NoopExternalIdentityVerifier))
+        .with_external_identity_verifier(verifier)
         .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
             connections,
         )))
@@ -1586,6 +1676,10 @@ mod tests {
         )
     }
 
+    fn app_with_connections(connections: Vec<MediaServerConnection>) -> AppUseCase {
+        app_with_connections_and_verifier(connections, Arc::new(NoopExternalIdentityVerifier))
+    }
+
     fn app_with_connection(connection: MediaServerConnection) -> AppUseCase {
         app_with_connections(vec![connection])
     }
@@ -1600,6 +1694,7 @@ mod tests {
                 app,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }
@@ -1691,6 +1786,45 @@ mod tests {
 
         assert!(message.contains("save an API key to load Jellyfin users"));
         assert!(!message.contains("manually"));
+    }
+
+    #[tokio::test]
+    async fn media_server_create_with_api_key_tests_connection_on_save() {
+        let test_calls = Arc::new(AtomicUsize::new(0));
+        let app = app_with_connections_and_verifier(
+            Vec::new(),
+            Arc::new(CountingExternalIdentityVerifier {
+                test_jellyfin_api_key_calls: Arc::clone(&test_calls),
+            }),
+        );
+
+        let error = app
+            .create_media_server_connection(
+                &system_settings_user(),
+                MediaServerConnectionDraft {
+                    provider: MediaServerProvider::Jellyfin,
+                    display_name: "Dead Jellyfin".to_string(),
+                    base_url: "http://127.0.0.1:9".to_string(),
+                    enabled: true,
+                    login_enabled: false,
+                    linking_enabled: false,
+                    auto_add_enabled: false,
+                    default_app_permissions: AppPermissionMask::NONE,
+                    default_library_grants: Vec::new(),
+                    machine_id: None,
+                    plex_auth_token: None,
+                    plex_server_id: None,
+                    api_key: Some("saved-api-key".to_string()),
+                    admin_username: None,
+                    admin_password: None,
+                    path_mappings: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("API-key media server save should test reachability");
+
+        assert!(error.to_string().contains("Jellyfin is unreachable"));
+        assert_eq!(test_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1924,6 +2058,7 @@ mod tests {
             .expect("Plex connection should be created");
 
         assert_eq!(created.api_key.as_deref(), Some("plex-token"));
+        assert_eq!(created.base_url, "http://plex:32400");
         assert_eq!(
             created.path_mappings,
             vec![MediaServerPathMapping {
@@ -1954,6 +2089,7 @@ mod tests {
             .expect("Plex connection should update");
 
         assert_eq!(updated.api_key.as_deref(), Some("new-token"));
+        assert_eq!(updated.base_url, "https://plex.tv");
         assert_eq!(updated.path_mappings.len(), 1);
 
         let app = app_with_connection(updated);
@@ -1966,6 +2102,7 @@ mod tests {
             .expect("empty update should preserve Plex token");
 
         assert_eq!(unchanged.api_key.as_deref(), Some("new-token"));
+        assert_eq!(unchanged.base_url, "https://plex.tv");
         assert_eq!(unchanged.path_mappings.len(), 1);
     }
 

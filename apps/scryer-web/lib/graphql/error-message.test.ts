@@ -17,12 +17,12 @@ test("normalizeGraphQlErrorMessage strips GraphQL validation prefixes", () => {
   );
 });
 
-test("normalizeGraphQlErrorMessage strips nested GraphQL repository validation prefixes", () => {
+test("normalizeGraphQlErrorMessage masks legacy GraphQL repository prefixes", () => {
   assert.equal(
     normalizeGraphQlErrorMessage(
       "[GraphQL] repository: validation: passkeys require a password-backed account",
     ),
-    "passkeys require a password-backed account",
+    "Internal server error",
   );
 });
 
@@ -92,5 +92,26 @@ test("queue validation failure normalizes into global status text that toasts as
   );
 
   assert.equal(message, "no download client enabled for library movie_default_library");
+  assert.equal(classifyStatusToastLevel(message), "error");
+});
+
+test("GraphQL internal errors mask repository details and include the reference id", () => {
+  const message = userFacingGraphQlErrorMessage(
+    {
+      graphQLErrors: [
+        {
+          message:
+            "[GraphQL] repository: metadata gateway request failed (502 Bad Gateway): <!DOCTYPE html><html><body>Bad gateway</body></html>",
+          extensions: { code: "INTERNAL_ERROR", errorId: "err-123" },
+        },
+      ],
+    },
+    "metadata search failed",
+  );
+
+  assert.equal(
+    message,
+    "Internal server error. Reference ID: err-123",
+  );
   assert.equal(classifyStatusToastLevel(message), "error");
 });

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useClient } from "urql";
 import { toast } from "sonner";
 import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
@@ -11,8 +12,11 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useAuth } from "@/lib/hooks/use-auth";
 import type { SecuritySettings } from "@/lib/types/settings";
 import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
+import { LatestWinsSaveQueue } from "@/lib/utils/latest-wins-save-queue";
 
 const MIN_PASSWORD_LENGTH = 8;
+const DEFAULT_ADMIN_PASSWORD_FORM_LOGIN_ERROR =
+  "change the default admin password before enabling form login";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
@@ -45,6 +49,7 @@ function parsePasswordMinLengthDraft(value: string): number | null {
 }
 
 export function SettingsSecurityContainer() {
+  const navigate = useNavigate();
   const client = useClient();
   const t = useTranslate();
   const { token, user, login, adoptSession, logout } = useAuth();
@@ -54,6 +59,7 @@ export function SettingsSecurityContainer() {
   const [loading, setLoading] = React.useState(true);
   const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = React.useState(false);
+  const [adminPasswordRequiredOpen, setAdminPasswordRequiredOpen] = React.useState(false);
   const [confirmBusy, setConfirmBusy] = React.useState(false);
   const [saveBusy, setSaveBusy] = React.useState(false);
   const [confirmUsername, setConfirmUsername] = React.useState("");
@@ -62,12 +68,18 @@ export function SettingsSecurityContainer() {
   const [passwordMinLengthDraft, setPasswordMinLengthDraft] = React.useState(
     String(DEFAULT_SECURITY_SETTINGS.passwordMinLength),
   );
-  const passwordMinLengthSavePromiseRef = React.useRef<Promise<SecuritySettings | null> | null>(
-    null,
-  );
+  const settingsRef = React.useRef(settings);
+  const passwordMinLengthSaveQueueRef = React.useRef<LatestWinsSaveQueue<string> | null>(null);
+  if (passwordMinLengthSaveQueueRef.current == null) {
+    passwordMinLengthSaveQueueRef.current = new LatestWinsSaveQueue<string>();
+  }
   const passwordMinLengthSaveToastRequestedRef = React.useRef(false);
   const canManageExternalInvites =
     user != null && hasAppPermission(user, APP_PERMISSIONS.manageUsers);
+
+  React.useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   React.useEffect(() => {
     setPasswordMinLengthDraft(String(settings.passwordMinLength));
@@ -79,6 +91,14 @@ export function SettingsSecurityContainer() {
   );
   const effectivePasswordMinLength =
     draftPasswordMinLength ?? settings.passwordMinLength;
+
+  const openAdminPasswordRequiredDialog = React.useCallback(() => {
+    setEnableConfirmOpen(false);
+    setConfirmUsername("");
+    setConfirmPassword("");
+    setConfirmError(null);
+    setAdminPasswordRequiredOpen(true);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -140,78 +160,75 @@ export function SettingsSecurityContainer() {
     } as SecuritySettings;
   }, [client, t]);
 
-  const submitPasswordMinLength = React.useCallback(async (showSuccessToast: boolean) => {
-    if (showSuccessToast) {
-      passwordMinLengthSaveToastRequestedRef.current = true;
-    }
+  const runPasswordMinLengthSave = React.useCallback(async (submittedDraft: string) => {
+    const currentSettings = settingsRef.current;
+    const submittedPasswordMinLength = parsePasswordMinLengthDraft(submittedDraft);
 
-    if (passwordMinLengthSavePromiseRef.current) {
-      return passwordMinLengthSavePromiseRef.current;
-    }
-
-    if (loading || confirmBusy || saveBusy) {
-      return null;
-    }
-
-    if (draftPasswordMinLength == null) {
-      setPasswordMinLengthDraft(String(settings.passwordMinLength));
+    if (submittedPasswordMinLength == null) {
+      setPasswordMinLengthDraft(String(currentSettings.passwordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
       toast.error(
         t("settings.securityPasswordMinLengthInvalid", {
           min: MIN_PASSWORD_LENGTH,
         }),
       );
-      return null;
+      return;
     }
 
-    if (draftPasswordMinLength === settings.passwordMinLength) {
-      setPasswordMinLengthDraft(String(draftPasswordMinLength));
+    if (submittedPasswordMinLength === currentSettings.passwordMinLength) {
+      setPasswordMinLengthDraft(String(submittedPasswordMinLength));
       passwordMinLengthSaveToastRequestedRef.current = false;
+      return;
+    }
+
+    setSaveBusy(true);
+    try {
+      const nextSettings = await applySecuritySettings(
+        currentSettings.formLoginEnabled,
+        submittedPasswordMinLength,
+        currentSettings.skipLoginForLocalIps,
+        currentSettings.mfaRequireConfigStepUp,
+        currentSettings.mfaRequirePasswordLogin,
+        currentSettings.totpRequireJellyfinLogin,
+      );
+      settingsRef.current = nextSettings;
+      setSettings(nextSettings);
+      setPasswordMinLengthDraft(String(nextSettings.passwordMinLength));
+      if (passwordMinLengthSaveToastRequestedRef.current) {
+        toast.success(t("settings.securityPreferenceSaved"));
+      }
+    } catch (error) {
+      setPasswordMinLengthDraft(String(settingsRef.current.passwordMinLength));
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    } finally {
+      passwordMinLengthSaveToastRequestedRef.current = false;
+      setSaveBusy(false);
+    }
+  }, [applySecuritySettings, t]);
+
+  const submitPasswordMinLength = React.useCallback(async (
+    showSuccessToast: boolean,
+    draftOverride?: string,
+  ): Promise<SecuritySettings | null> => {
+    if (showSuccessToast) {
+      passwordMinLengthSaveToastRequestedRef.current = true;
+    }
+
+    if (loading || confirmBusy) {
       return null;
     }
 
-    const savePromise = (async () => {
-      setSaveBusy(true);
-      try {
-        const nextSettings = await applySecuritySettings(
-          settings.formLoginEnabled,
-          draftPasswordMinLength,
-          settings.skipLoginForLocalIps,
-          settings.mfaRequireConfigStepUp,
-          settings.mfaRequirePasswordLogin,
-          settings.totpRequireJellyfinLogin,
-        );
-        setSettings(nextSettings);
-        if (passwordMinLengthSaveToastRequestedRef.current) {
-          toast.success(t("settings.securityPreferenceSaved"));
-        }
-        return nextSettings;
-      } catch (error) {
-        setPasswordMinLengthDraft(String(settings.passwordMinLength));
-        toast.error(errorMessage(error, t("settings.securitySaveFailed")));
-        return null;
-      } finally {
-        passwordMinLengthSaveToastRequestedRef.current = false;
-        passwordMinLengthSavePromiseRef.current = null;
-        setSaveBusy(false);
-      }
-    })();
-
-    passwordMinLengthSavePromiseRef.current = savePromise;
-    return savePromise;
+    const submittedDraft = draftOverride ?? passwordMinLengthDraft;
+    await passwordMinLengthSaveQueueRef.current?.enqueue(
+      submittedDraft,
+      runPasswordMinLengthSave,
+    );
+    return settingsRef.current;
   }, [
-    applySecuritySettings,
     confirmBusy,
-    draftPasswordMinLength,
     loading,
-    saveBusy,
-    settings.formLoginEnabled,
-    settings.passwordMinLength,
-    settings.skipLoginForLocalIps,
-    settings.mfaRequireConfigStepUp,
-    settings.totpRequireJellyfinLogin,
-    settings.mfaRequirePasswordLogin,
-    t,
+    passwordMinLengthDraft,
+    runPasswordMinLengthSave,
   ]);
 
   const handleToggle = React.useCallback((enabled: boolean) => {
@@ -220,6 +237,11 @@ export function SettingsSecurityContainer() {
     }
 
     if (enabled) {
+      if (user?.hasPassword === false) {
+        openAdminPasswordRequiredDialog();
+        return;
+      }
+
       setConfirmError(null);
       setEnableConfirmOpen(true);
       return;
@@ -228,8 +250,10 @@ export function SettingsSecurityContainer() {
     setDisableConfirmOpen(true);
   }, [
     confirmBusy,
+    openAdminPasswordRequiredDialog,
     saveBusy,
     settings.formLoginEnabled,
+    user?.hasPassword,
   ]);
 
   const handleConfirmEnable = React.useCallback(async () => {
@@ -285,8 +309,14 @@ export function SettingsSecurityContainer() {
       setConfirmPassword("");
       setConfirmError(null);
     } catch (error) {
-      setConfirmError(errorMessage(error, t("settings.securitySaveFailed")));
-      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+      const saveErrorMessage = errorMessage(error, t("settings.securitySaveFailed"));
+      if (saveErrorMessage === DEFAULT_ADMIN_PASSWORD_FORM_LOGIN_ERROR) {
+        openAdminPasswordRequiredDialog();
+        return;
+      }
+
+      setConfirmError(saveErrorMessage);
+      toast.error(saveErrorMessage);
     } finally {
       setConfirmBusy(false);
     }
@@ -296,6 +326,7 @@ export function SettingsSecurityContainer() {
     confirmPassword,
     confirmUsername,
     login,
+    openAdminPasswordRequiredDialog,
     settings.effectiveFormLoginEnabled,
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
@@ -317,6 +348,15 @@ export function SettingsSecurityContainer() {
     setConfirmPassword("");
     setConfirmError(null);
   }, [confirmBusy]);
+
+  const handleConfirmAdminPasswordRequired = React.useCallback(() => {
+    setAdminPasswordRequiredOpen(false);
+    navigate("/settings/profile");
+  }, [navigate]);
+
+  const handleCancelAdminPasswordRequired = React.useCallback(() => {
+    setAdminPasswordRequiredOpen(false);
+  }, []);
 
   const handleConfirmDisable = React.useCallback(async () => {
     const effectiveChangesNow =
@@ -536,9 +576,12 @@ export function SettingsSecurityContainer() {
     t,
   ]);
 
-  const handlePasswordMinLengthSubmit = React.useCallback(async () => {
-    await submitPasswordMinLength(true);
-  }, [submitPasswordMinLength]);
+  const handlePasswordMinLengthSubmit = React.useCallback(
+    async (value?: string) => {
+      await submitPasswordMinLength(true, value);
+    },
+    [submitPasswordMinLength],
+  );
 
   return (
     <SettingsSecuritySection
@@ -546,6 +589,7 @@ export function SettingsSecurityContainer() {
       loading={loading || saveBusy}
       enableConfirmOpen={enableConfirmOpen}
       disableConfirmOpen={disableConfirmOpen}
+      adminPasswordRequiredOpen={adminPasswordRequiredOpen}
       confirmBusy={confirmBusy}
       confirmUsername={confirmUsername}
       confirmPassword={confirmPassword}
@@ -559,6 +603,8 @@ export function SettingsSecurityContainer() {
       onCancelEnable={handleCancelEnable}
       onConfirmDisable={handleConfirmDisable}
       onCancelDisable={handleCancelDisable}
+      onConfirmAdminPasswordRequired={handleConfirmAdminPasswordRequired}
+      onCancelAdminPasswordRequired={handleCancelAdminPasswordRequired}
       onPasswordMinLengthDraftChange={setPasswordMinLengthDraft}
       onPasswordMinLengthSubmit={handlePasswordMinLengthSubmit}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}

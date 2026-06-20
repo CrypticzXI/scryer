@@ -263,6 +263,86 @@ fn installed_catalog_release(
         })
         .cloned()
 }
+fn catalog_artifact_requires_simd(artifact: &CatalogV3PluginArtifact) -> bool {
+    artifact.required_features.iter().any(|feature| {
+        matches!(
+            feature.trim().to_ascii_lowercase().as_str(),
+            "simd128" | "relaxed-simd"
+        )
+    })
+}
+fn parsed_digest_matches(candidate: &str, algorithm: &str, digest: &str) -> bool {
+    parse_digest_string(candidate).is_ok_and(|(candidate_algorithm, candidate_digest)| {
+        candidate_algorithm.eq_ignore_ascii_case(algorithm)
+            && candidate_digest.eq_ignore_ascii_case(digest)
+    })
+}
+fn installed_wasm_matches_catalog_artifact(
+    installation: &PluginInstallation,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    let (Some(algorithm), Some(digest)) = (
+        installation.wasm_digest_algo.as_deref(),
+        installation.wasm_digest.as_deref(),
+    ) else {
+        return false;
+    };
+    artifact
+        .wasm_digests
+        .iter()
+        .any(|candidate| parsed_digest_matches(candidate, algorithm, digest))
+}
+fn installed_artifact_matches_catalog_artifact(
+    installation: &PluginInstallation,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    if installation.wasm_digest_algo.is_some() && installation.wasm_digest.is_some() {
+        return installed_wasm_matches_catalog_artifact(installation, artifact);
+    }
+    if let Some(artifact_digest) = installation.artifact_digest.as_deref()
+        && let Ok((algorithm, digest)) = parse_digest_string(artifact_digest)
+    {
+        return artifact
+            .digests
+            .iter()
+            .any(|candidate| parsed_digest_matches(candidate, &algorithm, &digest));
+    }
+    installation
+        .source_url
+        .as_deref()
+        .is_some_and(|source_url| source_url.trim() == artifact.url.trim())
+}
+fn same_version_simd_artifact_update_available(
+    installation: &PluginInstallation,
+    release: &CatalogV3PluginRelease,
+    artifact: &CatalogV3PluginArtifact,
+) -> bool {
+    release.sdk_constraint == installation.sdk_constraint
+        && catalog_artifact_requires_simd(artifact)
+        && !installed_artifact_matches_catalog_artifact(installation, artifact)
+}
+fn catalog_plugin_update_available(
+    installation: &PluginInstallation,
+    resolved: &CatalogPluginResolution,
+) -> bool {
+    let Some(selected_version) =
+        parse_catalog_release_version(&resolved.catalog_entry.id, &resolved.release)
+    else {
+        return false;
+    };
+    let Ok(installed_version) = semver::Version::parse(installation.version.as_str()) else {
+        return false;
+    };
+    match selected_version.cmp(&installed_version) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Equal => same_version_simd_artifact_update_available(
+            installation,
+            &resolved.release,
+            &resolved.artifact,
+        ),
+        std::cmp::Ordering::Less => false,
+    }
+}
 fn artifact_required_features_supported(
     artifact: &CatalogV3PluginArtifact,
     supported_features: &HashSet<String>,
@@ -461,9 +541,56 @@ async fn fetch_plugin_bytes_from_locations_with_redirect_policy(
 
 async fn decode_signature_bundle(bundle: Vec<u8>, actual_url: &str) -> AppResult<Vec<u8>> {
     match artifact_encoding_from_url(actual_url) {
-        Some("zst") => decompress_zstd(bundle).await,
-        Some("br") => decompress_brotli(bundle).await,
-        _ => Ok(bundle),
+        Some("zst") => {
+            decompress_zstd(
+                bundle,
+                PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+                "plugin signature bundle",
+            )
+            .await
+        }
+        Some("br") => {
+            decompress_brotli(
+                bundle,
+                PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+                "plugin signature bundle",
+            )
+            .await
+        }
+        _ => bound_uncompressed_bytes(
+            bundle,
+            PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT,
+            "plugin signature bundle",
+        ),
+    }
+}
+async fn decode_catalog_json(raw: Vec<u8>, actual_url: &str, label: &str) -> AppResult<Vec<u8>> {
+    match artifact_encoding_from_url(actual_url) {
+        Some("zst") => decompress_zstd(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label).await,
+        Some("br") => decompress_brotli(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label).await,
+        _ => bound_uncompressed_bytes(raw, PLUGIN_CATALOG_JSON_OUTPUT_LIMIT, label),
+    }
+}
+async fn decode_rule_pack_manifest_bytes(
+    compressed_manifest: Vec<u8>,
+    actual_url: &str,
+    pack_id: &str,
+    release: &CatalogV3RulePackRelease,
+) -> AppResult<Vec<u8>> {
+    let rule_pack_manifest_limit = release
+        .rule_pack_bytes
+        .unwrap_or(RULE_PACK_MANIFEST_FALLBACK_OUTPUT_LIMIT);
+    let manifest_label = format!("rule pack '{pack_id}' manifest");
+    match artifact_encoding_from_url(actual_url) {
+        Some("br") => {
+            decompress_brotli(compressed_manifest, rule_pack_manifest_limit, manifest_label).await
+        }
+        Some("zst") => {
+            decompress_zstd(compressed_manifest, rule_pack_manifest_limit, manifest_label).await
+        }
+        _ => Err(AppError::Validation(format!(
+            "rule pack '{pack_id}' selected artifact '{actual_url}' has unsupported encoding"
+        ))),
     }
 }
 async fn fetch_signed_blob_from_locations(
@@ -535,7 +662,12 @@ async fn fetch_verified_catalog_redirect_candidate(
         central_catalog_required_signer(),
     )
     .await?;
-    let redirect = parse_and_validate_catalog_v3_redirect(&fetched.raw)?;
+    let redirect_raw = bound_uncompressed_bytes(
+        fetched.raw,
+        PLUGIN_CATALOG_REDIRECT_OUTPUT_LIMIT,
+        "plugin catalog redirect",
+    )?;
+    let redirect = parse_and_validate_catalog_v3_redirect(&redirect_raw)?;
     Ok((redirect, fetched.actual_url))
 }
 fn validate_community_catalog_v3_delegate(
@@ -945,11 +1077,7 @@ impl AppUseCase {
                 "plugin catalog",
             )
             .await?;
-        let decoded = match artifact_encoding_from_url(&actual_url) {
-            Some("zst") => decompress_zstd(raw).await?,
-            Some("br") => decompress_brotli(raw).await?,
-            _ => raw,
-        };
+        let decoded = decode_catalog_json(raw, &actual_url, "plugin catalog").await?;
         let catalog = parse_and_validate_catalog_v3(&decoded)?;
         Ok((catalog, redirect_url, redirect.catalog_version))
     }
@@ -974,11 +1102,7 @@ impl AppUseCase {
                 "community plugin catalog",
             )
             .await?;
-        let decoded = match artifact_encoding_from_url(&actual_url) {
-            Some("zst") => decompress_zstd(raw).await?,
-            Some("br") => decompress_brotli(raw).await?,
-            _ => raw,
-        };
+        let decoded = decode_catalog_json(raw, &actual_url, "community plugin catalog").await?;
         let catalog = parse_and_validate_catalog_v3(&decoded)?;
         validate_community_catalog_v3_delegate(source, &repo, &catalog)?;
         Ok((catalog, actual_url))
@@ -1246,16 +1370,9 @@ impl AppUseCase {
             &artifact.digests,
             &compressed_manifest,
         )?;
-        let manifest_bytes = match artifact_encoding_from_url(&actual_url) {
-            Some("br") => decompress_brotli(compressed_manifest).await?,
-            Some("zst") => decompress_zstd(compressed_manifest).await?,
-            _ => {
-                return Err(AppError::Validation(format!(
-                    "rule pack '{}' selected artifact '{}' has unsupported encoding",
-                    pack_id, actual_url
-                )));
-            }
-        };
+        let manifest_bytes =
+            decode_rule_pack_manifest_bytes(compressed_manifest, &actual_url, pack_id, &release)
+                .await?;
         verify_digest_set(
             "rule pack manifest",
             &release.rule_pack_digests,

@@ -5,10 +5,11 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use aws_lc_rs::hmac;
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use super::*;
-use crate::services::AppAssembly;
-use crate::services::RuntimeFeature;
+use crate::services::{AppAssembly, ReleaseCandidatePasswordTicket, RuntimeFeature};
 use crate::types::{
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupDownloadTokenClaims,
     JwtLibraryPermissionClaim, JwtSessionScope, LoginFailureTimingClass,
@@ -21,6 +22,7 @@ impl AppUseCase {
     const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
     const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
     const MFA_ENROLLMENT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
+    pub(crate) const OAUTH_ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
@@ -32,6 +34,14 @@ impl AppUseCase {
             scryer_domain::AppPermission::ManagePermissions => "managePermissions",
             scryer_domain::AppPermission::ManageSystemSettings => "manageSystemSettings",
             scryer_domain::AppPermission::ManageCatalogSettings => "manageCatalogSettings",
+        }
+    }
+
+    pub(crate) fn actor_capability_claim_string(
+        capability: scryer_domain::ActorCapability,
+    ) -> &'static str {
+        match capability {
+            scryer_domain::ActorCapability::ManageOwnAccount => "manageOwnAccount",
         }
     }
 
@@ -137,6 +147,113 @@ impl AppUseCase {
         u64::from_le_bytes(bytes)
     }
 
+    fn release_candidate_password_ref() -> AppResult<String> {
+        let rng = SystemRandom::new();
+        let mut bytes = [0_u8; 32];
+        rng.fill(&mut bytes).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to generate release candidate password reference: {error}"
+            ))
+        })?;
+        Ok(URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "release candidate password tickets bind several immutable claim fields"
+    )]
+    fn store_release_candidate_password_ticket(
+        &self,
+        actor: &User,
+        title_id: &str,
+        scope_kind: &str,
+        scope_id: Option<&str>,
+        source_hint: &str,
+        source_title: &str,
+        raw_password: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> AppResult<Option<String>> {
+        let Some(password) = normalize_release_password(raw_password) else {
+            return Ok(None);
+        };
+        let password_ref = Self::release_candidate_password_ref()?;
+        let mut tickets = self
+            .runtime
+            .acquisition
+            .release_candidate_passwords
+            .lock()
+            .map_err(|_| {
+                AppError::Repository(
+                    "release candidate password ticket store is unavailable".to_string(),
+                )
+            })?;
+        let now = Utc::now();
+        tickets.retain(|_, ticket| ticket.expires_at > now);
+        tickets.insert(
+            password_ref.clone(),
+            ReleaseCandidatePasswordTicket {
+                actor_id: actor.id.clone(),
+                title_id: title_id.to_string(),
+                scope_kind: scope_kind.to_string(),
+                scope_id: scope_id.map(str::to_string),
+                source_hint: source_hint.to_string(),
+                source_title: source_title.to_string(),
+                password,
+                expires_at,
+            },
+        );
+        Ok(Some(password_ref))
+    }
+
+    fn resolve_release_candidate_password_ticket(
+        &self,
+        actor: &User,
+        title_id: &str,
+        claims: &ReleaseCandidateTokenClaims,
+        claimed_scope: &SubmissionScope,
+    ) -> AppResult<Option<String>> {
+        let Some(password_ref) = claims
+            .password_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let (scope_kind, scope_id) = Self::submission_scope_claims(claimed_scope);
+        let mut tickets = self
+            .runtime
+            .acquisition
+            .release_candidate_passwords
+            .lock()
+            .map_err(|_| {
+                AppError::Repository(
+                    "release candidate password ticket store is unavailable".to_string(),
+                )
+            })?;
+        let now = Utc::now();
+        tickets.retain(|_, ticket| ticket.expires_at > now);
+        let Some(ticket) = tickets.get(password_ref) else {
+            return Err(AppError::Unauthorized(
+                "release candidate expired; search again".to_string(),
+            ));
+        };
+
+        if ticket.actor_id != actor.id
+            || ticket.title_id != title_id
+            || ticket.scope_kind != scope_kind
+            || ticket.scope_id != scope_id
+            || ticket.source_hint != claims.source_hint
+            || ticket.source_title != claims.source_title
+        {
+            return Err(AppError::Unauthorized(
+                "release candidate expired; search again".to_string(),
+            ));
+        }
+
+        Ok(Some(ticket.password.clone()))
+    }
+
     pub async fn apply_login_failure_timing(class: LoginFailureTimingClass, started_at: Instant) {
         let random = Self::login_failure_random();
         if let Some(remaining) =
@@ -228,6 +345,38 @@ impl AppUseCase {
         claims.sort();
         claims.dedup();
         claims
+    }
+
+    fn canonical_actor_capability_claims(user: &User) -> Vec<String> {
+        let mut claims = user
+            .authorization
+            .actor_capabilities
+            .to_capabilities()
+            .into_iter()
+            .map(Self::actor_capability_claim_string)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        claims.sort();
+        claims.dedup();
+        claims
+    }
+
+    fn actor_capability_claims_to_mask(
+        claims: &[String],
+    ) -> AppResult<scryer_domain::ActorCapabilityMask> {
+        let mut mask = scryer_domain::ActorCapabilityMask::NONE;
+        for claim in claims {
+            let capability = match claim.as_str() {
+                "manageOwnAccount" => scryer_domain::ActorCapability::ManageOwnAccount,
+                value => scryer_domain::ActorCapability::parse(value).ok_or_else(|| {
+                    AppError::Unauthorized(format!("unknown actor capability claim: {value}"))
+                })?,
+            };
+            mask.insert(scryer_domain::ActorCapabilityMask::from_capability(
+                capability,
+            ));
+        }
+        Ok(mask)
     }
 
     fn canonical_library_permission_claims(user: &User) -> Vec<JwtLibraryPermissionClaim> {
@@ -435,6 +584,23 @@ impl AppUseCase {
         .await
     }
 
+    pub async fn issue_oauth_access_token(
+        &self,
+        actor: &User,
+        client_id: &str,
+        grant_id: &str,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            None,
+            None,
+            JwtSessionScope::Full,
+            Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+            Some((client_id.to_string(), grant_id.to_string())),
+        )
+        .await
+    }
+
     async fn issue_access_token_with_mfa_and_scope(
         &self,
         actor: &User,
@@ -442,6 +608,26 @@ impl AppUseCase {
         mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
         auth_scope: JwtSessionScope,
         ttl_seconds: i64,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            auth_scope,
+            ttl_seconds,
+            None,
+        )
+        .await
+    }
+
+    async fn issue_access_token_with_mfa_scope_and_oauth(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        auth_scope: JwtSessionScope,
+        ttl_seconds: i64,
+        oauth: Option<(String, String)>,
     ) -> AppResult<String> {
         let actor = self.load_user_for_auth_payload(actor).await?;
         let signing_seed = actor
@@ -453,8 +639,21 @@ impl AppUseCase {
         let iat = now.timestamp();
         let exp = (now + Duration::seconds(ttl_seconds)).timestamp();
 
-        let app_permissions = Self::canonical_app_permission_claims(&actor);
+        let is_oauth = oauth.is_some();
+        let app_permissions = if is_oauth {
+            Vec::new()
+        } else {
+            Self::canonical_app_permission_claims(&actor)
+        };
         let library_permissions = Self::canonical_library_permission_claims(&actor);
+        let actor_capabilities = if is_oauth || auth_scope == JwtSessionScope::MfaEnrollment {
+            Vec::new()
+        } else {
+            Self::canonical_actor_capability_claims(&actor)
+        };
+        let (oauth_client_id, oauth_grant_id) = oauth
+            .map(|(client_id, grant_id)| (Some(client_id), Some(grant_id)))
+            .unwrap_or((None, None));
 
         let claims = JwtClaims {
             sub: actor.id.clone(),
@@ -467,6 +666,9 @@ impl AppUseCase {
             mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
             mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
             auth_scope,
+            oauth_client_id,
+            oauth_grant_id,
+            actor_capabilities,
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -630,8 +832,19 @@ impl AppUseCase {
 
         let now = Utc::now();
         let iat = now.timestamp();
-        let exp = (now + Duration::seconds(Self::RELEASE_CANDIDATE_TOKEN_TTL_SECONDS)).timestamp();
+        let expires_at = now + Duration::seconds(Self::RELEASE_CANDIDATE_TOKEN_TTL_SECONDS);
+        let exp = expires_at.timestamp();
         let (scope_kind, scope_id) = Self::submission_scope_claims(scope);
+        let password_ref = self.store_release_candidate_password_ticket(
+            actor,
+            title_id,
+            scope_kind,
+            scope_id.as_deref(),
+            source_hint,
+            source_title,
+            selection.source_password.as_deref(),
+            expires_at,
+        )?;
         let claims = ReleaseCandidateTokenClaims {
             sub: actor.id.clone(),
             exp,
@@ -644,6 +857,7 @@ impl AppUseCase {
             source_hint: source_hint.to_string(),
             source_kind: selection.source_kind,
             source_title: source_title.to_string(),
+            password_ref,
         };
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         let key = jsonwebtoken::EncodingKey::from_secret(signing_key);
@@ -829,13 +1043,20 @@ impl AppUseCase {
         }
 
         let claimed_scope =
-            Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id)?;
+            Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id.clone())?;
+        let source_password = self.resolve_release_candidate_password_ticket(
+            actor,
+            title_id,
+            &claims,
+            &claimed_scope,
+        )?;
 
         Ok((
             QueuedReleaseSelection {
                 source_hint: Some(claims.source_hint),
                 source_kind: claims.source_kind,
                 source_title: Some(claims.source_title),
+                source_password,
             },
             claimed_scope,
         ))
@@ -875,21 +1096,54 @@ impl AppUseCase {
         let verified = jsonwebtoken::decode::<JwtClaims>(token, &key, &validation)
             .map_err(|err| AppError::Unauthorized(format!("invalid token: {err}")))?;
         let claims = verified.claims;
+        let oauth_client_present = claims.oauth_client_id.is_some();
+        let oauth_grant_present = claims.oauth_grant_id.is_some();
+        if oauth_client_present ^ oauth_grant_present {
+            return Err(AppError::Unauthorized("invalid OAuth token claims".into()));
+        }
+        let is_oauth = oauth_client_present && oauth_grant_present;
+        if is_oauth && !claims.app_permissions.is_empty() {
+            return Err(AppError::Unauthorized(
+                "OAuth tokens cannot carry app permissions".into(),
+            ));
+        }
+        let actor_capabilities = if claims.actor_capabilities.is_empty() {
+            if is_oauth || claims.auth_scope == JwtSessionScope::MfaEnrollment {
+                scryer_domain::ActorCapabilityMask::NONE
+            } else {
+                scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT
+            }
+        } else {
+            let mask = Self::actor_capability_claims_to_mask(&claims.actor_capabilities)?;
+            if is_oauth && !mask.is_empty() {
+                return Err(AppError::Unauthorized(
+                    "OAuth tokens cannot carry actor capabilities".into(),
+                ));
+            }
+            if claims.auth_scope == JwtSessionScope::MfaEnrollment && !mask.is_empty() {
+                return Err(AppError::Unauthorized(
+                    "MFA enrollment tokens cannot carry actor capabilities".into(),
+                ));
+            }
+            mask
+        };
+        let subject = claims.sub.clone();
+        let token_claims = AuthenticatedTokenClaims {
+            mfa_verified_until: claims.mfa_verified_until,
+            mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
+            session_scope: claims.auth_scope,
+            oauth_client_id: claims.oauth_client_id,
+            oauth_grant_id: claims.oauth_grant_id,
+            actor_capabilities,
+        };
         self.services
             .identity
             .users
-            .get_by_id(&claims.sub)
+            .get_by_id(&subject)
             .await?
             .map(|mut user| {
                 user.password_hash = None;
-                (
-                    user,
-                    AuthenticatedTokenClaims {
-                        mfa_verified_until: claims.mfa_verified_until,
-                        mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
-                        session_scope: claims.auth_scope,
-                    },
-                )
+                (user, token_claims)
             })
             .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
     }

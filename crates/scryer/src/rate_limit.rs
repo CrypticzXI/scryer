@@ -24,6 +24,8 @@ struct RateLimitBuckets {
     search: Bucket,
     mutation: Bucket,
     api: Bucket,
+    authless_client: Bucket,
+    oauth: Bucket,
 }
 
 struct Bucket {
@@ -36,6 +38,13 @@ pub(crate) enum GraphqlRateLimitClass {
     Search,
     Mutation,
     Api,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HttpRateLimitClass {
+    Api,
+    AuthlessClient,
+    OAuth,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +108,18 @@ impl ScryerRateLimiter {
                     300,
                     60,
                 ),
+                authless_client: Bucket::from_env(
+                    "SCRYER_AUTHLESS_CLIENT_RATE_LIMIT_REQUESTS",
+                    "SCRYER_AUTHLESS_CLIENT_RATE_LIMIT_WINDOW_SECS",
+                    120,
+                    60,
+                ),
+                oauth: Bucket::from_env(
+                    "SCRYER_OAUTH_RATE_LIMIT_REQUESTS",
+                    "SCRYER_OAUTH_RATE_LIMIT_WINDOW_SECS",
+                    30,
+                    60,
+                ),
             }),
         }
     }
@@ -130,11 +151,20 @@ impl ScryerRateLimiter {
             .check(&key.value, GraphqlRateLimitClass::Login)
     }
 
-    pub(crate) fn check_http_api(&self, key: &RateLimitKey) -> Result<(), RateLimitDecision> {
+    pub(crate) fn check_http(
+        &self,
+        class: HttpRateLimitClass,
+        key: &RateLimitKey,
+    ) -> Result<(), RateLimitDecision> {
         if self.is_bypassed(key.client_ip) {
             return Ok(());
         }
-        self.inner.api.check(&key.value, GraphqlRateLimitClass::Api)
+        let bucket = match class {
+            HttpRateLimitClass::Api => &self.inner.api,
+            HttpRateLimitClass::AuthlessClient => &self.inner.authless_client,
+            HttpRateLimitClass::OAuth => &self.inner.oauth,
+        };
+        bucket.check(&key.value, class)
     }
 
     fn is_bypassed(&self, ip: IpAddr) -> bool {
@@ -159,8 +189,13 @@ impl Bucket {
         }
     }
 
-    fn check(&self, key: &str, class: GraphqlRateLimitClass) -> Result<(), RateLimitDecision> {
+    fn check(
+        &self,
+        key: &str,
+        class: impl Into<RateLimitMessageClass>,
+    ) -> Result<(), RateLimitDecision> {
         let key = key.to_string();
+        let class = class.into();
         self.limiter.check_key(&key).map_err(|blocked| {
             let retry_after = blocked.wait_time_from(self.limiter.clock().now());
             RateLimitDecision {
@@ -199,12 +234,46 @@ pub(crate) fn rate_limited_graphql_response(decision: &RateLimitDecision) -> Bat
     BatchResponse::Single(Response::from_errors(vec![error]))
 }
 
-pub(crate) fn rate_limited_message(class: GraphqlRateLimitClass) -> String {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RateLimitMessageClass {
+    Login,
+    Search,
+    Mutation,
+    Api,
+    AuthlessClient,
+    OAuth,
+}
+
+impl From<GraphqlRateLimitClass> for RateLimitMessageClass {
+    fn from(class: GraphqlRateLimitClass) -> Self {
+        match class {
+            GraphqlRateLimitClass::Login => Self::Login,
+            GraphqlRateLimitClass::Search => Self::Search,
+            GraphqlRateLimitClass::Mutation => Self::Mutation,
+            GraphqlRateLimitClass::Api => Self::Api,
+        }
+    }
+}
+
+impl From<HttpRateLimitClass> for RateLimitMessageClass {
+    fn from(class: HttpRateLimitClass) -> Self {
+        match class {
+            HttpRateLimitClass::Api => Self::Api,
+            HttpRateLimitClass::AuthlessClient => Self::AuthlessClient,
+            HttpRateLimitClass::OAuth => Self::OAuth,
+        }
+    }
+}
+
+pub(crate) fn rate_limited_message(class: impl Into<RateLimitMessageClass>) -> String {
+    let class = class.into();
     match class {
-        GraphqlRateLimitClass::Login => "too many login attempts".to_string(),
-        GraphqlRateLimitClass::Search => "search rate limit exceeded".to_string(),
-        GraphqlRateLimitClass::Mutation => "mutation rate limit exceeded".to_string(),
-        GraphqlRateLimitClass::Api => "API rate limit exceeded".to_string(),
+        RateLimitMessageClass::Login => "too many login attempts".to_string(),
+        RateLimitMessageClass::Search => "search rate limit exceeded".to_string(),
+        RateLimitMessageClass::Mutation => "mutation rate limit exceeded".to_string(),
+        RateLimitMessageClass::Api => "API rate limit exceeded".to_string(),
+        RateLimitMessageClass::AuthlessClient => "authless client rate limit exceeded".to_string(),
+        RateLimitMessageClass::OAuth => "OAuth rate limit exceeded".to_string(),
     }
 }
 

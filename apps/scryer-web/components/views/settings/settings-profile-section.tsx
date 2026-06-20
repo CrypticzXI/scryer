@@ -26,6 +26,7 @@ import type {
   ExternalAccountProvider,
   ExternalAuthRuntimeConnection,
   LinkedAccount,
+  OAuthConnectedApp,
   PasskeySummary,
   TotpEnrollmentStart,
   TotpStatus,
@@ -51,6 +52,7 @@ type Props = {
   showPasskeys: boolean;
   canAddPasskey: boolean;
   passkeys: PasskeySummary[];
+  oauthApps: OAuthConnectedApp[];
   totpStatus: TotpStatus | null;
   totpEnrollment: TotpEnrollmentStart | null;
   totpEnrollmentCode: string;
@@ -67,15 +69,18 @@ type Props = {
   linkAccountBusy: boolean;
   linkAccountError: string | null;
   loadingPasskeys: boolean;
+  loadingOauthApps: boolean;
   loadingTotp: boolean;
   loadingLinkedAccounts: boolean;
   loadingLinkOptions: boolean;
   addingPasskey: boolean;
   totpBusy: boolean;
   deletingPasskeyId: string | null;
+  revokingOauthGrantId: string | null;
   unlinkingAccountId: string | null;
   onAddPasskey: () => void;
   onDeletePasskey: (id: string) => void;
+  onRevokeOauthApp: (grantId: string) => void;
   onStartTotpEnrollment: () => void;
   onTotpEnrollmentCodeChange: (value: string) => void;
   onCompleteTotpEnrollment: () => void;
@@ -154,6 +159,7 @@ export function SettingsProfileSection({
   showPasskeys,
   canAddPasskey,
   passkeys,
+  oauthApps,
   totpStatus,
   totpEnrollment,
   totpEnrollmentCode,
@@ -170,15 +176,18 @@ export function SettingsProfileSection({
   linkAccountBusy,
   linkAccountError,
   loadingPasskeys,
+  loadingOauthApps,
   loadingTotp,
   loadingLinkedAccounts,
   loadingLinkOptions,
   addingPasskey,
   totpBusy,
   deletingPasskeyId,
+  revokingOauthGrantId,
   unlinkingAccountId,
   onAddPasskey,
   onDeletePasskey,
+  onRevokeOauthApp,
   onStartTotpEnrollment,
   onTotpEnrollmentCodeChange,
   onCompleteTotpEnrollment,
@@ -394,6 +403,65 @@ export function SettingsProfileSection({
           </div>
         </>
       ) : null}
+
+      <Separator />
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-base font-medium">Connected apps</h3>
+          <p className="text-sm text-muted-foreground">
+            OAuth integrations authorized to access Scryer as you.
+          </p>
+        </div>
+
+        {loadingOauthApps ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : oauthApps.length === 0 ? (
+          <p id="settings-profile-oauth-apps-empty" className="text-sm text-muted-foreground">
+            No connected apps.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {oauthApps.map((app) => (
+              <div
+                id={selectorId("settings-profile-oauth-app-row", app.clientId)}
+                key={app.grantId}
+                className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+              >
+                <div className="space-y-1">
+                  <div className="font-medium text-foreground">{app.clientName}</div>
+                  <div
+                    id={selectorId("settings-profile-oauth-app-authorized-at", app.clientId)}
+                    className="text-sm text-muted-foreground"
+                  >
+                    Authorized: {formatTimestamp(app.authorizedAt)}
+                  </div>
+                  <div
+                    id={selectorId("settings-profile-oauth-app-last-used", app.clientId)}
+                    className="text-sm text-muted-foreground"
+                  >
+                    Last used: {formatTimestamp(app.lastUsedAt)}
+                  </div>
+                </div>
+                <Button
+                  id={selectorId("settings-profile-revoke-oauth-app", app.clientId)}
+                  variant="outline"
+                  onClick={() => onRevokeOauthApp(app.grantId)}
+                  disabled={revokingOauthGrantId === app.grantId}
+                  className="w-fit"
+                >
+                  {revokingOauthGrantId === app.grantId ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Revoke
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <Separator />
       <div className="space-y-4">

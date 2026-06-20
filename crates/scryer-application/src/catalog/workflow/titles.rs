@@ -780,8 +780,9 @@ impl AppUseCase {
         &self,
         title: &scryer_domain::Title,
         purge_recycle_bin_entries: bool,
-        actor_user_id: Option<&str>,
+        actor: impl Into<DomainEventActor>,
     ) -> AppResult<()> {
+        let actor = actor.into();
         let title_id = title.id.as_str();
 
         if purge_recycle_bin_entries
@@ -790,18 +791,66 @@ impl AppUseCase {
             let config = self
                 .recycle_bin_config_for_media_root(Some(&media_root))
                 .await;
-            match crate::recycle_bin::purge_for_title(&config, title_id).await {
-                Ok(n) if n > 0 => info!(
-                    purged = n,
-                    title_id = %title_id,
-                    "purged recycle bin entries for deleted title"
-                ),
+            let mut purged = 0u32;
+            match crate::recycle_bin::list_committed_entries(&config).await {
+                Ok(entries) => {
+                    for entry in entries {
+                        if entry.manifest.title_id.as_deref() != Some(title_id) {
+                            continue;
+                        }
+                        match crate::recycle_bin::purge_committed_entry(
+                            &config,
+                            &entry.entry_dir,
+                            &entry.manifest,
+                        )
+                        .await
+                        {
+                            Ok(true) => {
+                                purged += 1;
+                                let event = new_title_domain_event(
+                                    actor.clone(),
+                                    title,
+                                    scryer_domain::DomainEventPayload::MediaFileDeleted(
+                                        scryer_domain::MediaFileDeletedEventData {
+                                            title: title_context_snapshot(title),
+                                            media_updates: vec![deleted_media_update(
+                                                entry.manifest.original_path.clone(),
+                                            )],
+                                            file_id: entry.manifest.original_file_id.clone(),
+                                            reason: scryer_domain::MediaFileDeletedReason::RecycleBinPurged,
+                                            episode_ids: Vec::new(),
+                                        },
+                                    ),
+                                );
+                                if let Err(error) = self.append_domain_event(event).await {
+                                    warn!(
+                                        error = %error,
+                                        title_id = %title_id,
+                                        "recycle entry purged for deleted title but audit event could not be recorded"
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(error) => warn!(
+                                error = %error,
+                                title_id = %title_id,
+                                "failed to purge recycle entry for deleted title"
+                            ),
+                        }
+                    }
+                }
                 Err(e) => warn!(
                     error = %e,
                     title_id = %title_id,
-                    "failed to purge recycle entries for deleted title"
+                    "failed to list recycle entries for deleted title"
                 ),
-                _ => {}
+            }
+            if purged > 0 {
+                info!(
+                    purged,
+                    title_id = %title_id,
+                    "purged recycle bin entries for deleted title"
+                );
             }
         }
 
@@ -858,7 +907,7 @@ impl AppUseCase {
                     &identity.client_type,
                     &identity.item_id,
                     false,
-                    actor_user_id,
+                    actor.user_id.as_deref(),
                 )
                 .await
             {

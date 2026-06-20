@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::{AppError, AppResult};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    external_arr_reqwest_client,
+    external_arr_reqwest_client, validate_operator_http_url,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -203,10 +203,55 @@ fn external_arr_version_major(version: &str) -> Option<u64> {
     version.trim().split('.').next()?.parse().ok()
 }
 
+#[derive(Debug, Clone)]
+struct ExternalArrBaseUrl {
+    configured: String,
+    effective: String,
+    localhost_ipv4_hint: Option<String>,
+}
+
+fn normalize_external_arr_base_url(
+    raw: &str,
+    label: &'static str,
+) -> AppResult<ExternalArrBaseUrl> {
+    let trimmed = raw.trim();
+    let url = validate_operator_http_url(trimmed, label)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(AppError::Validation(format!(
+            "{label} must not include a query string or fragment"
+        )));
+    }
+
+    let configured = trimmed.trim_end_matches('/').to_string();
+    let mut effective_url = url.clone();
+    let is_http_localhost = url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("localhost"));
+
+    if is_http_localhost {
+        effective_url
+            .set_host(Some("127.0.0.1"))
+            .map_err(|_| AppError::Validation(format!("{label} has an invalid host")))?;
+    }
+
+    let effective = effective_url.as_str().trim_end_matches('/').to_string();
+    let localhost_ipv4_hint = is_http_localhost.then_some(effective.clone());
+
+    Ok(ExternalArrBaseUrl {
+        configured,
+        effective,
+        localhost_ipv4_hint,
+    })
+}
+
 /// HTTP client for Sonarr/Radarr APIs pinned to supported product-major buckets.
 #[derive(Clone)]
 pub struct ExternalArrClient {
-    base_url: String,
+    configured_base_url: String,
+    effective_base_url: String,
+    localhost_ipv4_hint: Option<String>,
     api_key: String,
     outbound_http: OutboundHttpClient,
     api_bucket: ExternalArrApiBucket,
@@ -215,24 +260,42 @@ pub struct ExternalArrClient {
 }
 
 impl ExternalArrClient {
-    pub fn for_sonarr_v4(base_url: String, api_key: String) -> Self {
-        Self::new(base_url, api_key, ExternalArrApiBucket::SonarrV4)
+    pub fn for_sonarr_v4(base_url: String, api_key: String) -> AppResult<Self> {
+        Self::new(
+            base_url,
+            api_key,
+            ExternalArrApiBucket::SonarrV4,
+            "Sonarr base URL",
+        )
     }
 
-    pub fn for_radarr_v6(base_url: String, api_key: String) -> Self {
-        Self::new(base_url, api_key, ExternalArrApiBucket::RadarrV6)
+    pub fn for_radarr_v6(base_url: String, api_key: String) -> AppResult<Self> {
+        Self::new(
+            base_url,
+            api_key,
+            ExternalArrApiBucket::RadarrV6,
+            "Radarr base URL",
+        )
     }
 
-    fn new(base_url: String, api_key: String, api_bucket: ExternalArrApiBucket) -> Self {
+    fn new(
+        base_url: String,
+        api_key: String,
+        api_bucket: ExternalArrApiBucket,
+        label: &'static str,
+    ) -> AppResult<Self> {
+        let base_url = normalize_external_arr_base_url(&base_url, label)?;
         let http_client = external_arr_reqwest_client();
-        Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+        Ok(Self {
+            configured_base_url: base_url.configured,
+            effective_base_url: base_url.effective,
+            localhost_ipv4_hint: base_url.localhost_ipv4_hint,
             api_key,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             api_bucket,
             api_prefix: Arc::new(RwLock::new(None)),
             system_status: Arc::new(RwLock::new(None)),
-        }
+        })
     }
 
     /// Test connectivity and return (app_name, version).
@@ -583,19 +646,22 @@ impl ExternalArrClient {
     }
 
     async fn api_get_with_prefix(&self, api_prefix: &str, path: &str) -> AppResult<Value> {
-        let url = format!("{}/api/{}/{}", self.base_url, api_prefix, path);
-        self.request_json(&url, path).await
+        let url = format!("{}/api/{}/{}", self.effective_base_url, api_prefix, path);
+        let display_url = format!("{}/api/{}/{}", self.configured_base_url, api_prefix, path);
+        self.request_json(&url, &display_url, path).await
     }
 
     async fn api_get_unversioned<T>(&self, path: &str) -> AppResult<T>
     where
         T: for<'de> Deserialize<'de>,
     {
-        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
-        self.request_json(&url, path).await
+        let path = path.trim_start_matches('/');
+        let url = format!("{}/{}", self.effective_base_url, path);
+        let display_url = format!("{}/{}", self.configured_base_url, path);
+        self.request_json(&url, &display_url, path).await
     }
 
-    async fn request_json<T>(&self, url: &str, path: &str) -> AppResult<T>
+    async fn request_json<T>(&self, url: &str, display_url: &str, path: &str) -> AppResult<T>
     where
         T: for<'de> Deserialize<'de>,
     {
@@ -612,20 +678,22 @@ impl ExternalArrClient {
                 OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
                     match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
                         Some(delay) => format!(
-                            "external api call to {path} was rate limited; retry after {}s",
+                            "external api call to {display_url} was rate limited; retry after {}s",
                             delay.as_secs()
                         ),
-                        None => format!("external api call to {path} was rate limited"),
+                        None => format!("external api call to {display_url} was rate limited"),
                     },
                 ),
                 OutboundHttpError::Transport { source, .. } => {
-                    AppError::Repository(format!("external api call to {path} failed: {source}"))
+                    AppError::Repository(self.transport_error_message(display_url, url, &source))
                 }
             })?;
 
         let status = response.status();
         let body = response.text().await.map_err(|err| {
-            AppError::Repository(format!("external api response read failed: {err}"))
+            AppError::Repository(format!(
+                "external api response from {display_url} read failed: {err}"
+            ))
         })?;
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -634,12 +702,34 @@ impl ExternalArrClient {
         if !status.is_success() {
             let preview = body.chars().take(400).collect::<String>();
             return Err(AppError::Repository(format!(
-                "external api returned status {status}: {preview}"
+                "external api call to {display_url} returned status {status}: {preview}"
             )));
         }
 
-        serde_json::from_str(&body)
-            .map_err(|err| AppError::Repository(format!("external api returned non-json: {err}")))
+        serde_json::from_str(&body).map_err(|err| {
+            AppError::Repository(format!(
+                "external api call to {display_url} returned non-json: {err}"
+            ))
+        })
+    }
+
+    fn transport_error_message(
+        &self,
+        display_url: &str,
+        effective_url: &str,
+        source: &reqwest::Error,
+    ) -> String {
+        let mut message = format!("external api call to {display_url}");
+        if display_url != effective_url {
+            message.push_str(&format!(" via {effective_url}"));
+        }
+        message.push_str(&format!(" failed: {source}"));
+        if let Some(hint) = &self.localhost_ipv4_hint {
+            message.push_str(&format!(
+                "; try {hint} if Sonarr/Radarr only listen on IPv4"
+            ));
+        }
+        message
     }
 
     fn request_policy(&self, path: &str) -> RequestPolicy {
@@ -647,7 +737,7 @@ impl ExternalArrClient {
             format!(
                 "external_arr:{}:{}",
                 self.api_bucket.request_namespace(),
-                self.base_url
+                self.configured_base_url
             ),
             format!(
                 "external_arr:{}:{path}",
@@ -869,14 +959,185 @@ fn flatten_arr_fields(fields: &[Value]) -> HashMap<String, Value> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::net::TcpListener as StdTcpListener;
 
     use serde_json::Value;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     use super::{
-        ArrIndexer, ExternalArrApiBucket, detect_linked_prowlarr_proxy_indexer,
+        ArrIndexer, ExternalArrApiBucket, ExternalArrClient, detect_linked_prowlarr_proxy_indexer,
         detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
         should_skip_imported_indexer, sonarr_episode_list_path,
     };
+
+    fn json_response(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    fn redirect_response(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        )
+    }
+
+    async fn spawn_ipv4_arr_mock(responses: Vec<String>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ipv4 arr mock");
+        let port = listener.local_addr().expect("mock address").port();
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut stream, _peer)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0_u8; 2048];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        format!("http://localhost:{port}")
+    }
+
+    fn unused_ipv4_port() -> u16 {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind unused ipv4 port");
+        listener.local_addr().expect("unused ipv4 address").port()
+    }
+
+    #[test]
+    fn external_arr_operator_urls_accept_local_and_lan_targets() {
+        for raw in [
+            "http://localhost:8989",
+            "http://127.0.0.1:8989",
+            "http://192.168.1.20:8989",
+        ] {
+            ExternalArrClient::for_sonarr_v4(raw.into(), "fixture-key".into())
+                .unwrap_or_else(|error| panic!("{raw} should be accepted: {error}"));
+        }
+    }
+
+    #[test]
+    fn external_arr_operator_urls_reject_unsupported_schemes_missing_hosts_and_credentials() {
+        for raw in [
+            "file:///fixture/sonarr",
+            "http://",
+            "http://fixture-user:fixture-pass@localhost:8989",
+        ] {
+            assert!(
+                ExternalArrClient::for_sonarr_v4(raw.into(), "fixture-key".into()).is_err(),
+                "{raw} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn external_arr_http_localhost_uses_ipv4_effective_base_url() {
+        let client =
+            ExternalArrClient::for_sonarr_v4("http://localhost:8989".into(), "fixture-key".into())
+                .expect("valid localhost URL");
+
+        assert_eq!(client.configured_base_url, "http://localhost:8989");
+        assert_eq!(client.effective_base_url, "http://127.0.0.1:8989");
+    }
+
+    #[test]
+    fn external_arr_http_localhost_preserves_path_prefix() {
+        let client = ExternalArrClient::for_sonarr_v4(
+            "http://localhost:8989/sonarr".into(),
+            "fixture-key".into(),
+        )
+        .expect("valid localhost URL");
+
+        assert_eq!(client.configured_base_url, "http://localhost:8989/sonarr");
+        assert_eq!(client.effective_base_url, "http://127.0.0.1:8989/sonarr");
+    }
+
+    #[test]
+    fn external_arr_https_localhost_is_not_rewritten() {
+        let client =
+            ExternalArrClient::for_sonarr_v4("https://localhost:8989".into(), "fixture-key".into())
+                .expect("valid https localhost URL");
+
+        assert_eq!(client.effective_base_url, "https://localhost:8989");
+    }
+
+    #[test]
+    fn external_arr_ipv6_loopback_is_not_rewritten() {
+        let client =
+            ExternalArrClient::for_sonarr_v4("http://[::1]:8989".into(), "fixture-key".into())
+                .expect("valid ipv6 loopback URL");
+
+        assert_eq!(client.effective_base_url, "http://[::1]:8989");
+    }
+
+    #[tokio::test]
+    async fn external_arr_http_localhost_reaches_ipv4_bound_mock() {
+        let base_url = spawn_ipv4_arr_mock(vec![
+            json_response(r#"{"current":"v3"}"#),
+            json_response(r#"{"appName":"Sonarr","version":"4.0.17.2952"}"#),
+        ])
+        .await;
+        let client = ExternalArrClient::for_sonarr_v4(base_url, "fixture-key".into())
+            .expect("valid localhost URL");
+
+        let (app_name, version) = client.test_connection().await.expect("mock responds");
+
+        assert_eq!(app_name, "Sonarr");
+        assert_eq!(version, "4.0.17.2952");
+    }
+
+    #[tokio::test]
+    async fn external_arr_cross_host_redirect_is_rejected() {
+        let base_url =
+            spawn_ipv4_arr_mock(vec![redirect_response("http://example.invalid/api")]).await;
+        let client = ExternalArrClient::for_sonarr_v4(base_url.clone(), "fixture-key".into())
+            .expect("valid localhost URL");
+
+        let error = client
+            .test_connection()
+            .await
+            .expect_err("redirect should not be followed")
+            .to_string();
+
+        assert!(
+            error.contains(&format!(
+                "external api call to {base_url}/api returned status 302"
+            )),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_arr_localhost_transport_error_includes_effective_url_and_hint() {
+        let port = unused_ipv4_port();
+        let base_url = format!("http://localhost:{port}");
+        let client = ExternalArrClient::for_sonarr_v4(base_url.clone(), "fixture-key".into())
+            .expect("valid localhost URL");
+
+        let error = client
+            .test_connection()
+            .await
+            .expect_err("closed port should fail")
+            .to_string();
+
+        assert!(
+            error.contains(&format!(
+                "external api call to {base_url}/api via http://127.0.0.1:{port}/api failed"
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "try http://127.0.0.1:{port} if Sonarr/Radarr only listen on IPv4"
+            )),
+            "{error}"
+        );
+    }
 
     #[test]
     fn sonarr_v4_bucket_accepts_sonarr_v4_status() {

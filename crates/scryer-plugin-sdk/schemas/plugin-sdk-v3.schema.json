@@ -57,6 +57,9 @@
     "download_completed_result": {
       "$ref": "#/$defs/PluginResult8"
     },
+    "download_recent_completed_request": {
+      "$ref": "#/$defs/PluginDownloadListRecentCompletedRequest"
+    },
     "download_control_request": {
       "$ref": "#/$defs/PluginDownloadClientControlRequest"
     },
@@ -98,6 +101,7 @@
     "download_queue_result",
     "download_history_result",
     "download_completed_result",
+    "download_recent_completed_request",
     "download_control_request",
     "download_control_result",
     "download_mark_imported_request",
@@ -3618,6 +3622,19 @@
         "file",
         "directory",
         "unknown"
+      ]
+    },
+    "PluginDownloadListRecentCompletedRequest": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "limit"
       ]
     },
     "PluginDownloadClientControlRequest": {

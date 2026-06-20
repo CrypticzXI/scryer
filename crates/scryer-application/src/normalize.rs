@@ -1,6 +1,6 @@
 /// Normalize an IMDb ID to the canonical `tt{digits}` format.
 ///
-/// Accepts any of: "tt1234567", "1234567", "tt1234567abc".
+/// Accepts any of: "tt1234567", "1234567", "tt1234567abc", IMDb URLs.
 /// Returns `None` for empty strings or strings with no digits.
 pub(crate) fn normalize_imdb_id(raw: &str) -> Option<String> {
     let value = raw.trim();
@@ -8,8 +8,9 @@ pub(crate) fn normalize_imdb_id(raw: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(tt_index) = value.to_ascii_lowercase().find("tt") {
-        let digits: String = value[tt_index + 2..]
+    let lower = value.to_ascii_lowercase();
+    for (tt_index, _) in lower.match_indices("tt") {
+        let digits: String = lower[tt_index + 2..]
             .chars()
             .take_while(|ch| ch.is_ascii_digit())
             .collect();
@@ -61,6 +62,14 @@ mod tests {
         assert_eq!(
             normalize_imdb_id("tt0123456abc"),
             Some("tt0123456".to_string())
+        );
+    }
+
+    #[test]
+    fn imdb_id_from_url() {
+        assert_eq!(
+            normalize_imdb_id("https://www.imdb.com/title/tt0468569/"),
+            Some("tt0468569".to_string())
         );
     }
 

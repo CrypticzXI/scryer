@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Film, Loader2, Monitor, Search } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -43,6 +43,23 @@ function settingsUrl(raw: string): string | null {
   }
 }
 
+const IMPORT_SOURCE_LOGOS = {
+  sonarr: "/sonarr.svg",
+  radarr: "/radarr.svg",
+  prowlarr: "/media-sites/prowlarr.svg",
+} as const;
+
+function ImportSourceLogo({ src }: { src: string }) {
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden="true"
+      className="h-16 w-16 shrink-0 object-contain"
+    />
+  );
+}
+
 export function SetupImportConnectView({
   t,
   sonarrUrl,
@@ -84,10 +101,9 @@ export function SetupImportConnectView({
       <div className="grid gap-6 xl:grid-cols-3">
         {/* Sonarr */}
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <div className="flex items-center gap-2 font-medium">
-            <Monitor className="h-4 w-4 text-blue-500" />
+          <div className="flex flex-col items-center justify-center gap-3 text-center text-2xl font-semibold">
+            <ImportSourceLogo src={IMPORT_SOURCE_LOGOS.sonarr} />
             <span>Sonarr</span>
-            <span className="text-xs text-muted-foreground">(series)</span>
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
@@ -133,10 +149,9 @@ export function SetupImportConnectView({
 
         {/* Radarr */}
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <div className="flex items-center gap-2 font-medium">
-            <Film className="h-4 w-4 text-amber-500" />
+          <div className="flex flex-col items-center justify-center gap-3 text-center text-2xl font-semibold">
+            <ImportSourceLogo src={IMPORT_SOURCE_LOGOS.radarr} />
             <span>Radarr</span>
-            <span className="text-xs text-muted-foreground">(movies)</span>
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
@@ -182,10 +197,9 @@ export function SetupImportConnectView({
 
         {/* Prowlarr */}
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <div className="flex items-center gap-2 font-medium">
-            <Search className="h-4 w-4 text-emerald-500" />
+          <div className="flex flex-col items-center justify-center gap-3 text-center text-2xl font-semibold">
+            <ImportSourceLogo src={IMPORT_SOURCE_LOGOS.prowlarr} />
             <span>Prowlarr</span>
-            <span className="text-xs text-muted-foreground">(managed indexers)</span>
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">

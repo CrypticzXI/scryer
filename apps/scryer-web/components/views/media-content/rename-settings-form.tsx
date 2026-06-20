@@ -7,6 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  applyRenameTemplatePreview,
+  validateRenameTemplateSyntax,
+  type RenameTemplateValidationIssue,
+} from "@/lib/utils/rename-template";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 type ParsedQualityProfile = {
@@ -46,6 +51,7 @@ const VALID_RENAME_TOKENS = new Set([
   "title", "year", "quality", "edition", "source",
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
   "season", "season_order", "episode", "episode_title", "absolute_episode",
+  "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
 ]);
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -62,6 +68,15 @@ const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = 
 const MOVIE_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "year", labelKey: "settings.renameTokenYear" },
   { token: "edition", labelKey: "settings.renameTokenEdition" },
+];
+
+const EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
+  { token: "imdb_id", labelKey: "settings.renameTokenImdbId" },
+  { token: "tmdb_id", labelKey: "settings.renameTokenTmdbId" },
+  { token: "tvdb_id", labelKey: "settings.renameTokenTvdbId" },
+  { token: "anidb_id", labelKey: "settings.renameTokenAnidbId" },
+  { token: "mal_id", labelKey: "settings.renameTokenMalId" },
+  { token: "anilist_id", labelKey: "settings.renameTokenAnilistId" },
 ];
 
 const SERIES_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -87,38 +102,38 @@ function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; l
   const shared = scopeId === "series"
     ? SHARED_RENAME_TOKEN_DESCRIPTIONS.filter((token) => token.token !== "group")
     : SHARED_RENAME_TOKEN_DESCRIPTIONS;
-  return [...scopeSpecific, ...shared];
+  return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
 function validateRenameTemplate(
   template: string,
   t: Translate,
 ): string | null {
-  if (!template.trim()) {
-    return t("settings.renameValidationEmpty");
+  return formatRenameValidationIssue(
+    validateRenameTemplateSyntax(template, VALID_RENAME_TOKENS),
+    t,
+  );
+}
+
+function formatRenameValidationIssue(
+  issue: RenameTemplateValidationIssue | null,
+  t: Translate,
+): string | null {
+  if (!issue) {
+    return null;
   }
 
-  let i = 0;
-  while (i < template.length) {
-    if (template[i] === "{") {
-      const closeIndex = template.indexOf("}", i + 1);
-      if (closeIndex === -1) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const inner = template.slice(i + 1, closeIndex);
-      if (inner.includes("{")) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
-      if (!VALID_RENAME_TOKENS.has(tokenName)) {
-        return t("settings.renameValidationUnknownToken", { token: tokenName });
-      }
-      i = closeIndex + 1;
-    } else if (template[i] === "}") {
+  switch (issue.kind) {
+    case "empty":
+      return t("settings.renameValidationEmpty");
+    case "unmatchedOpen":
+      return t("settings.renameValidationUnmatchedOpen");
+    case "unmatchedClose":
       return t("settings.renameValidationUnmatchedClose");
-    } else {
-      i++;
-    }
+    case "unknownToken":
+      return t("settings.renameValidationUnknownToken", { token: issue.token });
+    case "invalidFilter":
+      return t("settings.renameValidationInvalidFilter", { filter: issue.filter });
   }
 
   return null;
@@ -135,6 +150,12 @@ const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
   audio_channels: "5.1",
   group: "FraMeSToR",
   ext: "mkv",
+  imdb_id: "tt0468569",
+  tmdb_id: "155",
+  tvdb_id: "123456",
+  anidb_id: "",
+  mal_id: "",
+  anilist_id: "",
   season: "1",
   episode: "5",
   episode_title: "Pilot",
@@ -151,6 +172,12 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
   audio_channels: "2.0",
   group: "NTb",
   ext: "mkv",
+  imdb_id: "tt0108778",
+  tmdb_id: "1668",
+  tvdb_id: "79168",
+  anidb_id: "",
+  mal_id: "",
+  anilist_id: "",
   season: "5",
   episode: "12",
   episode_title: "The One with the Embryos",
@@ -167,6 +194,12 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
   audio_channels: "2.0",
   group: "SubsPlease",
   ext: "mkv",
+  imdb_id: "tt0388629",
+  tmdb_id: "37854",
+  tvdb_id: "81797",
+  anidb_id: "69",
+  mal_id: "21",
+  anilist_id: "21",
   season: "1",
   season_order: "1",
   episode: "1",
@@ -175,39 +208,13 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
 };
 
 function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string | null {
-  if (!template.trim()) return null;
-  let result = "";
-  let i = 0;
   const sampleValues =
     scopeId === "movie"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
       : scopeId === "anime"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
-  while (i < template.length) {
-    if (template[i] === "{") {
-      const closeIndex = template.indexOf("}", i + 1);
-      if (closeIndex === -1) return null;
-      const inner = template.slice(i + 1, closeIndex);
-      if (inner.includes("{")) return null;
-      const colonIdx = inner.indexOf(":");
-      const tokenName = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
-      const padWidth = colonIdx >= 0 ? parseInt(inner.slice(colonIdx + 1), 10) : 0;
-      if (!VALID_RENAME_TOKENS.has(tokenName)) return null;
-      let value = sampleValues[tokenName] ?? tokenName;
-      if (padWidth > 0 && /^\d+$/.test(value)) {
-        value = value.padStart(padWidth, "0");
-      }
-      result += value;
-      i = closeIndex + 1;
-    } else if (template[i] === "}") {
-      return null;
-    } else {
-      result += template[i];
-      i++;
-    }
-  }
-  return result;
+  return applyRenameTemplatePreview(template, VALID_RENAME_TOKENS, sampleValues);
 }
 
 // --- Component ---
@@ -414,6 +421,16 @@ export function RenameSettingsForm({
                   <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
                 </button>
               ))}
+            </div>
+            <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+              <p>
+                <span className="font-medium text-card-foreground">{t("settings.renameLiteralBracesLabel")}:</span>{" "}
+                <code className="text-emerald-600 dark:text-emerald-400">{"{{edition-{edition}}}"}</code>
+              </p>
+              <p>
+                <span className="font-medium text-card-foreground">{t("settings.renameSpaceFilterLabel")}:</span>{" "}
+                <code className="text-emerald-600 dark:text-emerald-400">{"{title|space:_}"}</code>
+              </p>
             </div>
           </div>
 

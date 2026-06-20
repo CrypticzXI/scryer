@@ -3,7 +3,12 @@ import {
   fetchExchange,
   subscriptionExchange,
 } from "@urql/core";
-import { clearClientAuthSession, getAuthToken } from "@/lib/hooks/use-auth";
+import { getAuthlessWebClientProof } from "@/lib/authless-web-client";
+import {
+  clearClientAuthSession,
+  getAuthToken,
+  getMfaEnrollmentToken,
+} from "@/lib/hooks/use-auth";
 import { getRuntimeBasePath, getRuntimeGraphqlUrl } from "@/lib/runtime-config";
 import { wsClient } from "@/lib/graphql/ws-client";
 
@@ -107,8 +112,48 @@ async function backendHealthLooksOk(): Promise<boolean> {
   }
 }
 
+function inputPath(input: RequestInfo | URL): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+    return new URL(raw, window.location.origin).pathname;
+  } catch {
+    return null;
+  }
+}
+
+async function withAuthlessProof(input: RequestInfo | URL, init?: RequestInit) {
+  if (
+    typeof window === "undefined" ||
+    headersHaveAuthorization(init?.headers) ||
+    getAuthToken()
+  ) {
+    return init;
+  }
+  const graphqlPath = new URL(getRuntimeGraphqlUrl(), window.location.origin).pathname;
+  if (inputPath(input) !== graphqlPath) {
+    return init;
+  }
+  const proof = await getAuthlessWebClientProof();
+  if (!proof) {
+    return init;
+  }
+  const headers = new Headers(init?.headers);
+  headers.set("x-scryer-web-client", proof);
+  return { ...init, credentials: "include" as RequestCredentials, headers };
+}
+
+function headersHaveAuthorization(headersInit?: HeadersInit): boolean {
+  if (!headersInit) {
+    return false;
+  }
+  return new Headers(headersInit).has("authorization");
+}
+
 export const scryerFetch: typeof fetch = async (input, init) => {
-  const response = await fetch(input, init);
+  const response = await fetch(input, await withAuthlessProof(input, init));
   if (response.status === 401) {
     redirectToLogin();
     throw new TypeError("Authentication required");
@@ -188,6 +233,24 @@ export const backendClient = new Client({
       "x-scryer-language": currentLanguage,
     };
     const token = getAuthToken();
+    if (token) {
+      headers["authorization"] = `Bearer ${token}`;
+    }
+    return { headers };
+  },
+});
+
+export const mfaEnrollmentClient = new Client({
+  url: getRuntimeGraphqlUrl(),
+  preferGetMethod: false,
+  requestPolicy: "network-only",
+  fetch: scryerFetch,
+  exchanges: [fetchExchange],
+  fetchOptions: () => {
+    const headers: Record<string, string> = {
+      "x-scryer-language": currentLanguage,
+    };
+    const token = getMfaEnrollmentToken();
     if (token) {
       headers["authorization"] = `Bearer ${token}`;
     }

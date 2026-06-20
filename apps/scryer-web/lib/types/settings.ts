@@ -166,6 +166,7 @@ export type AutoBackupSettings = {
   enabled: boolean;
   dailyTimeLocal: string;
   autoBackupKeyPresent: boolean;
+  autoBackupDisabledMissingKeyNotice: boolean;
   nextRunAt: string | null;
 };
 
@@ -183,6 +184,14 @@ export type PasskeySummary = {
   id: string;
   friendlyName: string | null;
   createdAt: string;
+  lastUsedAt: string | null;
+};
+
+export type OAuthConnectedApp = {
+  grantId: string;
+  clientId: string;
+  clientName: string;
+  authorizedAt: string;
   lastUsedAt: string | null;
 };
 

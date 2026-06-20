@@ -21,8 +21,9 @@ use crate::import_workflow::{
     completed_import_result_is_retryable, import_completed_download,
     resolve_completed_download_origin_for_import,
 };
-use crate::tracked_downloads::TrackedDownload;
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
+use crate::stored_paths::path_to_stored_string;
+use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
+use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };
@@ -34,13 +35,42 @@ const PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE: &str = "Completed download path is st
 const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const FOREIGN_CATEGORY_BLOCKED_MESSAGE: &str = "Download wasn't grabbed by Scryer and is not in a Scryer download category. Manual confirmation required before import.";
+const NO_VIDEO_FIRST_RETRY_DELAY_SECS: i64 = 30;
+const NO_VIDEO_SECOND_RETRY_DELAY_SECS: i64 = 120;
+const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CompletedDownloadLookupCoverage {
+    Full,
+    #[default]
+    Recent,
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct CompletedDownloadLookup {
+    coverage: CompletedDownloadLookupCoverage,
     by_source: HashMap<(String, String, String), CompletedDownload>,
     by_download_id: HashMap<(String, String, String), Vec<CompletedDownload>>,
+}
+
+impl CompletedDownloadLookup {
+    fn empty_recent() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn empty_full() -> Self {
+        Self {
+            coverage: CompletedDownloadLookupCoverage::Full,
+            ..Self::default()
+        }
+    }
+
+    fn is_exhaustive(&self) -> bool {
+        self.coverage == CompletedDownloadLookupCoverage::Full
+    }
 }
 
 enum ExpectedEpisodeResolution {
@@ -48,6 +78,19 @@ enum ExpectedEpisodeResolution {
     Unresolved,
     Resolved(HashSet<String>),
     AtLeastOne(HashSet<String>),
+}
+
+enum SourceVideoEpisodeResolution {
+    Unavailable,
+    NoVisibleVideos,
+    Unmapped,
+    Resolved(HashSet<String>),
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+enum ImportArtifactSourceKey {
+    RelativePath(String),
+    NormalizedFileName(String),
 }
 
 /// Phase 1: evaluate a tracked download whose client reports completion.
@@ -107,6 +150,26 @@ pub(crate) async fn check_with_lookup(
 
     let Some(completed) = find_completed_download(app, td, completed_lookup).await else {
         if !crate::download_submission_identity_is_empty(&queue_identity) {
+            if completed_lookup.is_some_and(|lookup| !lookup.is_exhaustive())
+                || missing_completed_history_is_retryable(td, &queue_identity)
+            {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    download_id = ?queue_identity.download_id,
+                    match_type = ?td.match_type,
+                    is_scryer_origin = td.client_item.is_scryer_origin,
+                    lookup_exhaustive = completed_lookup.is_some_and(CompletedDownloadLookup::is_exhaustive),
+                    "check: completed download not found in client history, will retry"
+                );
+                td.state = TrackedDownloadState::ImportPending;
+                td.status = TrackedDownloadStatus::Warning;
+                td.status_messages = vec![
+                    "Completed download is waiting for client history to expose a matching DownloadId; retrying."
+                        .to_string(),
+                ];
+                return;
+            }
             block_tracked_download_identity_for_manual_review(
                 app,
                 td,
@@ -217,6 +280,33 @@ pub(crate) async fn check_with_lookup(
     td.status_messages.clear();
 }
 
+fn missing_completed_history_is_retryable(
+    td: &TrackedDownload,
+    identity: &crate::DownloadSubmissionIdentity,
+) -> bool {
+    durable_global_download_id(identity)
+        && (td.client_item.is_scryer_origin
+            || matches!(
+                td.match_type,
+                TitleMatchType::Submission | TitleMatchType::ClientParameter
+            ))
+}
+
+fn durable_global_download_id(identity: &crate::DownloadSubmissionIdentity) -> bool {
+    let Some(download_id) = identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    download_id.starts_with("scryer-download:")
+        || (matches!(download_id.len(), 40 | 64)
+            && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
 async fn completed_download_allows_automatic_import(
     app: &AppUseCase,
     td: &TrackedDownload,
@@ -294,58 +384,38 @@ pub(crate) fn mark_importing(td: &mut TrackedDownload) {
 }
 
 pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) -> bool {
+    import_inner(app, actor, td, None).await
+}
+
+pub(crate) async fn import_with_lookup(
+    app: &AppUseCase,
+    actor: &User,
+    td: &mut TrackedDownload,
+    completed_lookup: &CompletedDownloadLookup,
+) -> bool {
+    import_inner(app, actor, td, Some(completed_lookup)).await
+}
+
+async fn import_inner(
+    app: &AppUseCase,
+    actor: &User,
+    td: &mut TrackedDownload,
+    completed_lookup: Option<&CompletedDownloadLookup>,
+) -> bool {
     if td.state != TrackedDownloadState::ImportPending
         && td.state != TrackedDownloadState::Importing
     {
         return false;
     }
 
-    match app
-        .resolve_manual_import_source(
-            Some(td.client_id.as_str()),
-            Some(td.client_type.as_str()),
-            &td.client_item.download_client_item_id,
-        )
-        .await
-    {
-        Ok(crate::ManualImportSourceResolution::Eligible { .. }) => {}
-        Ok(crate::ManualImportSourceResolution::SourceFailed { message })
-        | Ok(crate::ManualImportSourceResolution::NotEligible { message }) => {
-            tracing::warn!(
-                id = %td.id,
-                item_id = %td.client_item.download_client_item_id,
-                reason = %message,
-                "import: source is no longer eligible; routing to failure handling"
-            );
-            td.state = TrackedDownloadState::FailedPending;
-            td.status = TrackedDownloadStatus::Error;
-            td.client_item.attention_reason = Some(message.clone());
-            td.status_messages = vec![message];
-            return false;
-        }
-        Err(error) => {
-            tracing::warn!(
-                id = %td.id,
-                error = %error,
-                "import: could not revalidate source before import"
-            );
-            td.state = TrackedDownloadState::ImportPending;
-            return false;
-        }
-    }
+    let Some(completed) = resolve_completed_download_for_import(app, td, completed_lookup).await
+    else {
+        return false;
+    };
 
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
-    let Some(completed) = find_completed_download(app, td, None).await else {
-        tracing::debug!(
-            id = %td.id,
-            item_id = %td.client_item.download_client_item_id,
-            "import: completed download not found in client history, will retry"
-        );
-        td.state = TrackedDownloadState::ImportPending;
-        return false;
-    };
     let completed = match resolve_completed_download_origin_for_import(
         app,
         &completed,
@@ -389,7 +459,8 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
     let success_before = total_successful_artifacts(app, td).await;
     td.import_attempted = true;
 
-    match import_completed_download(app, actor, &completed).await {
+    let import_actor = actor_for_tracked_download_import(app, actor, td).await;
+    match import_completed_download(app, &import_actor, &completed).await {
         Ok(result) => {
             let success_after = total_successful_artifacts(app, td).await;
             let files_imported_this_pass = success_after.saturating_sub(success_before) as usize;
@@ -401,7 +472,14 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
                 files_imported_this_pass,
                 "import: pipeline returned result"
             );
-            apply_import_result(app, td, result, files_imported_this_pass).await
+            apply_import_result_with_completed(
+                app,
+                td,
+                result,
+                files_imported_this_pass,
+                Some(&completed),
+            )
+            .await
         }
         Err(error) => {
             tracing::warn!(
@@ -418,6 +496,136 @@ pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) ->
     }
 }
 
+async fn actor_for_tracked_download_import(
+    app: &AppUseCase,
+    fallback_actor: &User,
+    td: &TrackedDownload,
+) -> User {
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
+    match app
+        .services
+        .workflow
+        .download_submissions
+        .get_submission_actor_snapshot(&source_identity)
+        .await
+    {
+        Ok(Some(snapshot)) => actor_with_submission_snapshot(fallback_actor, &snapshot),
+        Ok(None) => fallback_actor.clone(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                client_id = td.client_id.as_str(),
+                client_type = td.client_type.as_str(),
+                download_client_item_id = td.client_item.download_client_item_id.as_str(),
+                "failed to load download submission actor snapshot"
+            );
+            fallback_actor.clone()
+        }
+    }
+}
+
+fn actor_with_submission_snapshot(
+    fallback_actor: &User,
+    snapshot: &DownloadSubmissionActorSnapshot,
+) -> User {
+    let mut actor = fallback_actor.clone();
+    if let Some(user_id) = snapshot
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        actor.id = user_id.to_string();
+    }
+    let display_name = snapshot.display_name.trim();
+    if !display_name.is_empty() {
+        actor.username = display_name.to_string();
+    }
+    actor
+}
+
+async fn resolve_completed_download_for_import(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    completed_lookup: Option<&CompletedDownloadLookup>,
+) -> Option<CompletedDownload> {
+    if let Some(lookup) = completed_lookup {
+        let completed = find_completed_download(app, td, Some(lookup)).await;
+        if completed.is_none() {
+            tracing::debug!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                "import: completed download not found in recent snapshot, will retry"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+        }
+        return completed;
+    }
+
+    let manual_completed = match app
+        .resolve_manual_import_source(
+            Some(td.client_id.as_str()),
+            Some(td.client_type.as_str()),
+            &td.client_item.download_client_item_id,
+        )
+        .await
+    {
+        Ok(crate::ManualImportSourceResolution::Eligible { completed }) => completed,
+        Ok(crate::ManualImportSourceResolution::SourceFailed { message })
+        | Ok(crate::ManualImportSourceResolution::NotEligible { message }) => {
+            tracing::warn!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                reason = %message,
+                "import: source is no longer eligible; routing to failure handling"
+            );
+            td.state = TrackedDownloadState::FailedPending;
+            td.status = TrackedDownloadStatus::Error;
+            td.client_item.attention_reason = Some(message.clone());
+            td.status_messages = vec![message];
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                id = %td.id,
+                error = %error,
+                "import: could not revalidate source before import"
+            );
+            td.state = TrackedDownloadState::ImportPending;
+            return None;
+        }
+    };
+
+    if let Some(completed) = manual_completed {
+        return Some(prepare_completed_download_for_tracked_import(app, td, completed).await);
+    }
+
+    let completed = find_completed_download(app, td, None).await;
+    if completed.is_none() {
+        tracing::debug!(
+            id = %td.id,
+            item_id = %td.client_item.download_client_item_id,
+            "import: completed download not found in client history, will retry"
+        );
+        td.state = TrackedDownloadState::ImportPending;
+    }
+    completed
+}
+
+async fn prepare_completed_download_for_tracked_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: CompletedDownload,
+) -> CompletedDownload {
+    let mut completed = with_tracked_metadata(td, completed);
+    remap_completed_download_for_client(app, &mut completed).await;
+    completed
+}
+
 /// Verify whether a download's import is complete by checking cumulative
 /// artifact history across all passes.
 ///
@@ -426,6 +634,15 @@ pub async fn verify_import(
     app: &AppUseCase,
     td: &TrackedDownload,
     files_imported_this_pass: usize,
+) -> bool {
+    verify_import_inner(app, td, files_imported_this_pass, None).await
+}
+
+async fn verify_import_inner(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
 ) -> bool {
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),
@@ -448,11 +665,12 @@ pub async fn verify_import(
         return false;
     }
 
-    let current_visible_files = current_visible_video_file_count(app, td).await;
+    let current_visible_files = current_visible_video_file_count(app, td, completed).await;
+    let source_video_units = visible_source_episode_units(app, td, &artifacts, completed).await;
     let mut successful_units = HashSet::new();
     let mut rejected_units = HashSet::new();
 
-    for artifact in artifacts {
+    for artifact in &artifacts {
         let logical_unit = artifact.episode_id.clone().unwrap_or_else(|| {
             format!("{}:{}", artifact.media_kind, artifact.normalized_file_name)
         });
@@ -482,6 +700,12 @@ pub async fn verify_import(
                 return false;
             }
 
+            if let Some(source_units_complete) =
+                source_video_units_are_complete(&source_video_units, &successful_units)
+            {
+                return source_units_complete;
+            }
+
             return expected_episode_units
                 .iter()
                 .all(|unit| successful_units.contains(unit));
@@ -489,6 +713,12 @@ pub async fn verify_import(
         ExpectedEpisodeResolution::AtLeastOne(expected_episode_units) => {
             if expected_episode_units.is_empty() {
                 return false;
+            }
+
+            if let Some(source_units_complete) =
+                source_video_units_are_complete(&source_video_units, &successful_units)
+            {
+                return source_units_complete;
             }
 
             return expected_episode_units
@@ -512,6 +742,21 @@ pub async fn verify_import(
     !successful_units.is_empty()
 }
 
+fn source_video_units_are_complete(
+    source_video_units: &SourceVideoEpisodeResolution,
+    successful_units: &HashSet<String>,
+) -> Option<bool> {
+    match source_video_units {
+        SourceVideoEpisodeResolution::Resolved(units) if !units.is_empty() => {
+            Some(units.iter().all(|unit| successful_units.contains(unit)))
+        }
+        SourceVideoEpisodeResolution::Unmapped => Some(false),
+        SourceVideoEpisodeResolution::Resolved(_)
+        | SourceVideoEpisodeResolution::NoVisibleVideos
+        | SourceVideoEpisodeResolution::Unavailable => None,
+    }
+}
+
 fn successful_units_cover_visible_files(
     successful_unit_count: usize,
     current_visible_files: usize,
@@ -528,50 +773,172 @@ pub(crate) async fn load_completed_download_lookup(
         .download_client
         .list_completed_downloads()
         .await?;
-    Ok(index_completed_downloads(completed_downloads))
+    Ok(index_completed_downloads(
+        completed_downloads,
+        CompletedDownloadLookupCoverage::Full,
+    ))
 }
 
-pub(crate) async fn load_recent_completed_download_lookup(
+async fn load_recent_completed_download_lookup_for_items_or_default_excluding_client_types(
+    app: &AppUseCase,
+    items: &[DownloadQueueItem],
+    limit: usize,
+    excluded_client_types: &[&str],
+) -> CompletedDownloadLookup {
+    let (client_ids, client_types) = completed_download_client_scope(items, true);
+    load_recent_completed_download_lookup_for_client_scope_or_default_excluding_client_types(
+        app,
+        limit,
+        &client_ids,
+        &client_types,
+        excluded_client_types,
+    )
+    .await
+}
+
+async fn load_recent_completed_download_lookup_for_client_scope_or_default_excluding_client_types(
     app: &AppUseCase,
     limit: usize,
-) -> AppResult<CompletedDownloadLookup> {
-    let completed_downloads = app
+    client_ids: &[String],
+    client_types: &[String],
+    excluded_client_types: &[&str],
+) -> CompletedDownloadLookup {
+    if client_ids.is_empty() && client_types.is_empty() {
+        return CompletedDownloadLookup::empty_recent();
+    }
+
+    match app
         .services
         .integrations
         .download_client
-        .list_recent_completed_downloads(limit)
-        .await?;
-    Ok(index_completed_downloads(completed_downloads))
+        .list_recent_completed_downloads_for_client_scope(
+            limit,
+            client_ids,
+            client_types,
+            excluded_client_types,
+        )
+        .await
+    {
+        Ok(completed_downloads) => {
+            index_completed_downloads(completed_downloads, CompletedDownloadLookupCoverage::Recent)
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "download queue poller: failed to load completed download snapshot for this cycle"
+            );
+            CompletedDownloadLookup::empty_recent()
+        }
+    }
 }
 
+#[cfg(test)]
 pub(crate) async fn load_completed_download_lookup_for_items(
     app: &AppUseCase,
     items: &[DownloadQueueItem],
     limit: usize,
 ) -> Option<CompletedDownloadLookup> {
-    if !items
-        .iter()
-        .any(|item| item.state == DownloadQueueState::Completed)
-    {
+    load_completed_download_lookup_for_items_excluding_client_types(app, items, limit, &[]).await
+}
+
+pub(crate) async fn load_completed_download_lookup_for_items_excluding_client_types(
+    app: &AppUseCase,
+    items: &[DownloadQueueItem],
+    limit: usize,
+    excluded_client_types: &[&str],
+) -> Option<CompletedDownloadLookup> {
+    if !items.iter().any(download_queue_item_needs_completed_lookup) {
         return None;
     }
 
     Some(
-        match load_recent_completed_download_lookup(app, limit).await {
-            Ok(lookup) => lookup,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "download queue poller: failed to load completed download snapshot for this cycle"
-                );
-                CompletedDownloadLookup::default()
-            }
-        },
+        load_recent_completed_download_lookup_for_items_or_default_excluding_client_types(
+            app,
+            items,
+            limit,
+            excluded_client_types,
+        )
+        .await,
     )
 }
 
-fn index_completed_downloads(downloads: Vec<CompletedDownload>) -> CompletedDownloadLookup {
-    let mut lookup = CompletedDownloadLookup::default();
+pub(crate) async fn load_completed_download_lookup_for_tracked_client_items_excluding_client_types(
+    app: &AppUseCase,
+    items: &[DownloadQueueItem],
+    limit: usize,
+    excluded_client_types: &[&str],
+) -> Option<CompletedDownloadLookup> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let (client_ids, client_types) = completed_download_client_scope(items, false);
+    if client_ids.is_empty() && client_types.is_empty() {
+        return None;
+    }
+
+    Some(
+        load_recent_completed_download_lookup_for_client_scope_or_default_excluding_client_types(
+            app,
+            limit,
+            &client_ids,
+            &client_types,
+            excluded_client_types,
+        )
+        .await,
+    )
+}
+
+fn download_queue_item_needs_completed_lookup(item: &DownloadQueueItem) -> bool {
+    matches!(
+        item.state,
+        DownloadQueueState::Completed | DownloadQueueState::ImportPending
+    )
+}
+
+fn completed_download_client_scope(
+    items: &[DownloadQueueItem],
+    require_lookup_state: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut client_ids: Vec<String> = Vec::new();
+    let mut fallback_client_types: Vec<String> = Vec::new();
+
+    for item in items
+        .iter()
+        .filter(|item| !require_lookup_state || download_queue_item_needs_completed_lookup(item))
+    {
+        let client_id = item.client_id.trim();
+        if !client_id.is_empty() {
+            if !client_ids
+                .iter()
+                .any(|existing| existing.as_str() == client_id)
+            {
+                client_ids.push(client_id.to_string());
+            }
+            continue;
+        }
+
+        let client_type = item.client_type.trim();
+        if !client_type.is_empty()
+            && !fallback_client_types
+                .iter()
+                .any(|existing| existing.as_str().eq_ignore_ascii_case(client_type))
+        {
+            fallback_client_types.push(client_type.to_string());
+        }
+    }
+
+    (client_ids, fallback_client_types)
+}
+
+fn index_completed_downloads(
+    downloads: Vec<CompletedDownload>,
+    coverage: CompletedDownloadLookupCoverage,
+) -> CompletedDownloadLookup {
+    let mut lookup = CompletedDownloadLookup {
+        coverage,
+        ..CompletedDownloadLookup::default()
+    };
     for completed in downloads {
         let observed_identity = observed_completed_download_identity(&completed);
         if let Some(download_id) = observed_identity
@@ -997,15 +1364,144 @@ fn has_id_only_conflict(td: &TrackedDownload) -> bool {
         .any(|message| message == ID_ONLY_CONFLICT_MESSAGE)
 }
 
+async fn apply_no_video_import_backoff(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    result: &ImportResult,
+) -> bool {
+    if result.skip_reason != Some(ImportSkipReason::NoVideoFiles) {
+        return false;
+    }
+
+    let signature = no_video_import_source_signature(&result.source_path);
+    let attempts = td
+        .no_video_import_retry
+        .as_ref()
+        .filter(|retry| retry.signature == signature)
+        .map(|retry| retry.attempts.saturating_add(1))
+        .unwrap_or(1);
+
+    if attempts >= NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS {
+        let result_json = serde_json::to_string(result).ok();
+        if let Err(err) = app
+            .update_import_status_and_notify(&result.import_id, ImportStatus::Skipped, result_json)
+            .await
+        {
+            tracing::warn!(
+                import_id = result.import_id.as_str(),
+                error = %err,
+                "failed to mark exhausted no-video import attempt as skipped"
+            );
+        }
+        td.block_no_video_import_after_retries(format!(
+            "{} No video files were found after {attempts} unchanged checks. Manual review required.",
+            import_result_message(result, ImportStatus::Skipped)
+        ));
+        return true;
+    }
+
+    let delay = if attempts == 1 {
+        Duration::seconds(NO_VIDEO_FIRST_RETRY_DELAY_SECS)
+    } else {
+        Duration::seconds(NO_VIDEO_SECOND_RETRY_DELAY_SECS)
+    };
+    let next_retry_at = Utc::now() + delay;
+
+    let result_json = serde_json::to_string(result).ok();
+    if let Err(err) = app
+        .update_import_status_and_notify(&result.import_id, ImportStatus::Pending, result_json)
+        .await
+    {
+        tracing::warn!(
+            import_id = result.import_id.as_str(),
+            error = %err,
+            "failed to restore no-video import attempt to pending status"
+        );
+    }
+
+    td.schedule_no_video_import_retry(
+        signature,
+        attempts,
+        next_retry_at,
+        format!(
+            "{} Retrying automatically at {}.",
+            import_result_message(result, ImportStatus::Skipped),
+            next_retry_at.to_rfc3339()
+        ),
+    );
+    true
+}
+
+fn no_video_import_source_signature(source_path: &str) -> NoVideoImportSourceSignature {
+    let path = Path::new(source_path);
+    let mut signature = NoVideoImportSourceSignature {
+        source_path: source_path.to_string(),
+        file_count: 0,
+        total_bytes: 0,
+        latest_mtime: None,
+    };
+    accumulate_no_video_source_signature(path, &mut signature);
+    signature
+}
+
+fn accumulate_no_video_source_signature(path: &Path, signature: &mut NoVideoImportSourceSignature) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    update_no_video_signature_mtime(signature, metadata.modified().ok());
+
+    if metadata.is_file() {
+        signature.file_count = signature.file_count.saturating_add(1);
+        signature.total_bytes = signature.total_bytes.saturating_add(metadata.len());
+        return;
+    }
+
+    if metadata.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            accumulate_no_video_source_signature(&entry.path(), signature);
+        }
+    }
+}
+
+fn update_no_video_signature_mtime(
+    signature: &mut NoVideoImportSourceSignature,
+    modified: Option<std::time::SystemTime>,
+) {
+    let Some(modified) = modified else {
+        return;
+    };
+    let modified = DateTime::<Utc>::from(modified);
+    if signature
+        .latest_mtime
+        .is_none_or(|latest| modified > latest)
+    {
+        signature.latest_mtime = Some(modified);
+    }
+}
+
+#[cfg(test)]
 async fn apply_import_result(
     app: &AppUseCase,
     td: &mut TrackedDownload,
     result: ImportResult,
     files_imported_this_pass: usize,
 ) -> bool {
+    apply_import_result_with_completed(app, td, result, files_imported_this_pass, None).await
+}
+
+async fn apply_import_result_with_completed(
+    app: &AppUseCase,
+    td: &mut TrackedDownload,
+    result: ImportResult,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+) -> bool {
     let already_imported = result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
-        if verify_import(app, td, files_imported_this_pass).await {
+        td.clear_no_video_import_retry();
+        if verify_import_inner(app, td, files_imported_this_pass, completed).await {
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
@@ -1026,6 +1522,12 @@ async fn apply_import_result(
         ];
         return false;
     }
+
+    if apply_no_video_import_backoff(app, td, &result).await {
+        return false;
+    }
+
+    td.clear_no_video_import_retry();
 
     if completed_import_result_is_retryable(&result) {
         let result_json = serde_json::to_string(&result).ok();
@@ -1330,9 +1832,21 @@ async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u
     imported + already_present
 }
 
-async fn current_visible_video_file_count(app: &AppUseCase, td: &TrackedDownload) -> usize {
-    let Some(completed) = find_completed_download(app, td, None).await else {
-        return 0;
+async fn current_visible_video_file_count(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> usize {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let Some(found) = find_completed_download(app, td, None).await else {
+                return 0;
+            };
+            completed_lookup = found;
+            &completed_lookup
+        }
     };
 
     let path = std::path::Path::new(&completed.dest_dir);
@@ -1340,6 +1854,252 @@ async fn current_visible_video_file_count(app: &AppUseCase, td: &TrackedDownload
     crate::import_workflow::find_video_files(path, filter_samples)
         .map(|files| files.len())
         .unwrap_or(0)
+}
+
+async fn visible_source_episode_units(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    artifacts: &[crate::ImportArtifact],
+    completed: Option<&CompletedDownload>,
+) -> SourceVideoEpisodeResolution {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let Some(found) = find_completed_download(app, td, None).await else {
+                return SourceVideoEpisodeResolution::Unavailable;
+            };
+            completed_lookup = found;
+            &completed_lookup
+        }
+    };
+
+    let Some(title_id) = td.title_id.as_deref() else {
+        return SourceVideoEpisodeResolution::Unavailable;
+    };
+    let Some(title) = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return SourceVideoEpisodeResolution::Unavailable;
+    };
+
+    let path = std::path::Path::new(&completed.dest_dir);
+    let filter_samples = td.facet.as_deref() != Some("movie");
+    let files = match crate::import_workflow::find_video_files(path, filter_samples) {
+        Ok(files) => files,
+        Err(_) => {
+            return artifact_source_episode_units(artifacts)
+                .unwrap_or(SourceVideoEpisodeResolution::Unavailable);
+        }
+    };
+    if files.is_empty() {
+        return artifact_source_episode_units(artifacts)
+            .unwrap_or(SourceVideoEpisodeResolution::NoVisibleVideos);
+    }
+
+    let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
+    let mut visible_file_name_counts: HashMap<String, usize> = HashMap::new();
+    for file in &files {
+        *visible_file_name_counts
+            .entry(normalized_source_file_name(file))
+            .or_default() += 1;
+    }
+    let mut units = HashSet::new();
+    for file in files {
+        let normalized_file_name = normalized_source_file_name(&file);
+        let allow_filename_fallback = visible_file_name_counts
+            .get(&normalized_file_name)
+            .copied()
+            .unwrap_or_default()
+            == 1;
+        if let Some(artifact_units) = episode_units_from_import_artifacts_for_source_file(
+            &file,
+            completed,
+            artifacts,
+            allow_filename_fallback,
+        ) {
+            units.extend(artifact_units);
+            continue;
+        }
+
+        let file_name = file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| file.to_string_lossy().into_owned());
+        let parsed = crate::parse_release_metadata_for_target(&file_name, &parse_context);
+        let Some(ep_meta) = parsed.episode.as_ref() else {
+            tracing::debug!(
+                file = %file.display(),
+                source = %completed.name,
+                "verify_import: visible source video did not parse to an episode"
+            );
+            return SourceVideoEpisodeResolution::Unmapped;
+        };
+        let season_str = ep_meta.season.unwrap_or(1).to_string();
+        let episodes =
+            crate::import_workflow::resolve_target_episodes(app, &title, ep_meta, &season_str)
+                .await;
+        if episodes.is_empty() {
+            tracing::debug!(
+                file = %file.display(),
+                title_id = %title.id,
+                source = %completed.name,
+                "verify_import: visible source video did not resolve to catalog episodes"
+            );
+            return SourceVideoEpisodeResolution::Unmapped;
+        }
+        units.extend(episodes.into_iter().map(|episode| episode.id));
+    }
+
+    if units.is_empty() {
+        SourceVideoEpisodeResolution::NoVisibleVideos
+    } else {
+        SourceVideoEpisodeResolution::Resolved(units)
+    }
+}
+
+fn artifact_source_episode_units(
+    artifacts: &[crate::ImportArtifact],
+) -> Option<SourceVideoEpisodeResolution> {
+    let mut grouped_units: HashMap<ImportArtifactSourceKey, HashSet<String>> = HashMap::new();
+    for artifact in artifacts {
+        let Some(source_key) = import_artifact_source_key(artifact) else {
+            return Some(SourceVideoEpisodeResolution::Unmapped);
+        };
+        let group = grouped_units.entry(source_key).or_default();
+        if let Some(episode_id) = artifact
+            .episode_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            group.insert(episode_id.to_string());
+        }
+    }
+
+    if grouped_units.is_empty() {
+        return None;
+    }
+
+    let mut units = HashSet::new();
+    for group_units in grouped_units.into_values() {
+        if group_units.is_empty() {
+            return Some(SourceVideoEpisodeResolution::Unmapped);
+        }
+        units.extend(group_units);
+    }
+
+    if units.is_empty() {
+        Some(SourceVideoEpisodeResolution::Unmapped)
+    } else {
+        Some(SourceVideoEpisodeResolution::Resolved(units))
+    }
+}
+
+fn episode_units_from_import_artifacts_for_source_file(
+    file: &Path,
+    completed: &CompletedDownload,
+    artifacts: &[crate::ImportArtifact],
+    allow_filename_fallback: bool,
+) -> Option<HashSet<String>> {
+    let relative_path = file
+        .strip_prefix(&completed.dest_dir)
+        .ok()
+        .map(path_to_stored_string)
+        .filter(|path| !path.is_empty());
+    if let Some(relative_path) = relative_path.as_deref() {
+        let relative_matches = artifacts.iter().filter(|artifact| {
+            artifact.relative_path.as_deref().map(str::trim) == Some(relative_path)
+        });
+        if let Some(units) = episode_units_from_artifact_rows(relative_matches) {
+            return Some(units);
+        }
+    }
+
+    if !allow_filename_fallback {
+        return None;
+    }
+
+    let normalized_file_name = normalized_source_file_name(file);
+    let file_name_matches = artifacts.iter().filter(|artifact| {
+        artifact
+            .normalized_file_name
+            .trim()
+            .eq_ignore_ascii_case(&normalized_file_name)
+    });
+    let file_name_matches = file_name_matches.collect::<Vec<_>>();
+    if !artifact_rows_have_unique_source_key(&file_name_matches) {
+        return None;
+    }
+
+    episode_units_from_artifact_rows(file_name_matches.into_iter())
+}
+
+fn episode_units_from_artifact_rows<'a>(
+    artifacts: impl Iterator<Item = &'a crate::ImportArtifact>,
+) -> Option<HashSet<String>> {
+    let mut units = HashSet::new();
+    for artifact in artifacts {
+        if let Some(episode_id) = artifact
+            .episode_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            units.insert(episode_id.to_string());
+        }
+    }
+
+    (!units.is_empty()).then_some(units)
+}
+
+fn import_artifact_source_key(artifact: &crate::ImportArtifact) -> Option<ImportArtifactSourceKey> {
+    if let Some(relative_path) = artifact
+        .relative_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(ImportArtifactSourceKey::RelativePath(
+            relative_path.to_string(),
+        ));
+    }
+
+    let normalized_file_name = artifact.normalized_file_name.trim();
+    if normalized_file_name.is_empty() {
+        None
+    } else {
+        Some(ImportArtifactSourceKey::NormalizedFileName(
+            normalized_file_name.to_ascii_lowercase(),
+        ))
+    }
+}
+
+fn artifact_rows_have_unique_source_key(artifacts: &[&crate::ImportArtifact]) -> bool {
+    let mut source_keys = artifacts
+        .iter()
+        .filter_map(|artifact| import_artifact_source_key(artifact))
+        .collect::<HashSet<_>>();
+    if source_keys.len() <= 1 {
+        return true;
+    }
+
+    source_keys.retain(|key| matches!(key, ImportArtifactSourceKey::RelativePath(_)));
+    source_keys.len() <= 1
+}
+
+fn normalized_source_file_name(file: &Path) -> String {
+    file.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase())
+        .unwrap_or_else(|| file.to_string_lossy().to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -1376,6 +2136,8 @@ mod tests {
         },
     };
     use tokio::sync::Mutex;
+
+    type ScopedRecentCompletedCalls = Vec<(Vec<String>, Vec<String>)>;
 
     #[derive(Default)]
     struct TestTitleRepo {
@@ -2247,6 +3009,7 @@ mod tests {
         completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
         completed_download_calls: Arc<AtomicUsize>,
         recent_completed_download_calls: Arc<AtomicUsize>,
+        scoped_recent_completed_calls: Arc<Mutex<ScopedRecentCompletedCalls>>,
     }
 
     #[async_trait]
@@ -2278,6 +3041,51 @@ mod tests {
                 .cloned()
                 .collect())
         }
+
+        async fn list_recent_completed_downloads_for_client_scope(
+            &self,
+            limit: usize,
+            client_ids: &[String],
+            client_types: &[String],
+            excluded_client_types: &[&str],
+        ) -> AppResult<Vec<CompletedDownload>> {
+            self.scoped_recent_completed_calls
+                .lock()
+                .await
+                .push((client_ids.to_vec(), client_types.to_vec()));
+            let mut items = self.list_recent_completed_downloads(limit).await?;
+            items.retain(|item| {
+                let item_type = item.client_type.trim();
+                if excluded_client_types
+                    .iter()
+                    .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()))
+                {
+                    return false;
+                }
+
+                let has_scope = !client_ids.is_empty() || !client_types.is_empty();
+                if !has_scope {
+                    return true;
+                }
+
+                let item_client_id = item.client_id.trim();
+                let id_matches = !item_client_id.is_empty()
+                    && client_ids
+                        .iter()
+                        .any(|client_id| item_client_id == client_id.trim());
+                let type_matches = !item_type.is_empty()
+                    && client_types
+                        .iter()
+                        .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()));
+
+                if !client_ids.is_empty() {
+                    id_matches && (client_types.is_empty() || type_matches)
+                } else {
+                    type_matches
+                }
+            });
+            Ok(items)
+        }
     }
 
     #[async_trait]
@@ -2292,7 +3100,9 @@ mod tests {
                 sequence,
                 event_id: event.event_id,
                 occurred_at: event.occurred_at,
+                actor_kind: event.actor_kind,
                 actor_user_id: event.actor_user_id,
+                actor_display_name: event.actor_display_name,
                 title_id: event.title_id,
                 facet: event.facet,
                 correlation_id: event.correlation_id,
@@ -2814,6 +3624,11 @@ mod tests {
                 client_type: "nzbget".to_string(),
                 state: DownloadQueueState::Completed,
                 progress_percent: 100,
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
                 size_bytes: None,
                 remaining_seconds: None,
                 queued_at: None,
@@ -2847,6 +3662,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         }
     }
@@ -2877,6 +3693,7 @@ mod tests {
             completed_downloads: Arc::new(Mutex::new(vec![completed])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
             recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -2975,7 +3792,8 @@ mod tests {
             build_completed_download("Paper.Lantern.2012.1080p", "/downloads/b", Some("movie"));
         second.client_id = "client-2".to_string();
 
-        let lookup = index_completed_downloads(vec![first, second]);
+        let lookup =
+            index_completed_downloads(vec![first, second], CompletedDownloadLookupCoverage::Recent);
 
         assert_eq!(lookup.by_source.len(), 2);
         assert!(
@@ -3407,7 +4225,10 @@ mod tests {
             "/downloads/Paper.Lantern.2012.1080p",
             Some("movie"),
         );
-        let lookup = index_completed_downloads(vec![remote_completed]);
+        let lookup = index_completed_downloads(
+            vec![remote_completed],
+            CompletedDownloadLookupCoverage::Recent,
+        );
         let download_client = Arc::new(TestDownloadClient::default());
         let app = build_app_with_download_client_and_configs(
             vec![title.clone()],
@@ -3498,7 +4319,8 @@ mod tests {
         completed.client_id = "client-1".to_string();
         completed.download_client_item_id = info_hash.to_string();
         completed.download_id = Some(info_hash.to_string());
-        let lookup = index_completed_downloads(vec![completed]);
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
 
         let app = build_app_with_download_client_configs_and_submissions(
             vec![title.clone()],
@@ -3525,6 +4347,92 @@ mod tests {
         assert!(td.status_messages.is_empty());
 
         std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_retries_scryer_origin_when_completed_history_is_missing() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo.clone(),
+        );
+        let lookup = index_completed_downloads(vec![], CompletedDownloadLookupCoverage::Recent);
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:client-1:qbittorrent:{download_id}");
+        td.client_type = "qbittorrent".to_string();
+        td.client_item.client_type = "qbittorrent".to_string();
+        td.client_item.client_name = "qBittorrent".to_string();
+        td.client_item.download_client_item_id = "2".to_string();
+        td.client_item.download_id = Some(download_id.to_string());
+        td.client_item.is_scryer_origin = true;
+        td.match_type = TitleMatchType::Submission;
+
+        check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(
+            td.status_messages
+                .iter()
+                .any(|message| message.contains("waiting for client history"))
+        );
+        assert!(
+            submission_repo
+                .identity_tracked_states
+                .lock()
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn check_with_recent_lookup_retries_local_identity_miss_without_manual_block() {
+        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let download_id = "10010";
+        let identity = DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+        let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app_with_download_client_configs_and_submissions(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            Arc::new(TestDownloadClient::default()),
+            Arc::new(NullDownloadClientConfigRepository),
+            submission_repo.clone(),
+        );
+        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+        td.id = format!("download:{download_id}");
+        td.client_item.download_id = Some(download_id.to_string());
+
+        check_with_lookup(
+            &app,
+            &mut td,
+            Some(&CompletedDownloadLookup::empty_recent()),
+        )
+        .await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(
+            td.status_messages
+                .iter()
+                .any(|message| message.contains("waiting for client history"))
+        );
+        let recorded_state = submission_repo
+            .get_identity_tracked_state(&identity, Some(&source_identity))
+            .await
+            .expect("identity state lookup");
+        assert!(recorded_state.is_none());
     }
 
     #[tokio::test]
@@ -3563,7 +4471,12 @@ mod tests {
         td.id = format!("download:{download_id}");
         td.client_item.download_id = Some(download_id.to_string());
 
-        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+        check_with_lookup(
+            &app,
+            &mut td,
+            Some(&CompletedDownloadLookup::empty_recent()),
+        )
+        .await;
 
         assert_eq!(td.state, TrackedDownloadState::Imported);
         assert_eq!(td.status, TrackedDownloadStatus::Ok);
@@ -3604,7 +4517,7 @@ mod tests {
         td.id = format!("download:{download_id}");
         td.client_item.download_id = Some(download_id.to_string());
 
-        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::default())).await;
+        check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::empty_full())).await;
 
         assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
         let current_client_state = submission_repo
@@ -3693,17 +4606,119 @@ mod tests {
             completed_downloads: Arc::new(Mutex::new(vec![completed.clone()])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
             recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
         let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
-        let lookup = index_completed_downloads(vec![completed]);
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
 
         check_with_lookup(&app, &mut td, Some(&lookup)).await;
 
         assert_eq!(
             download_client
                 .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn import_resolution_uses_snapshot_without_fetching_client_history() {
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed.clone());
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        td.state = TrackedDownloadState::ImportPending;
+        let lookup =
+            index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+
+        let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
+
+        assert!(resolved.is_some());
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn import_resolution_missing_snapshot_entry_stays_retryable_without_full_history() {
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed);
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        td.state = TrackedDownloadState::ImportPending;
+        let lookup = CompletedDownloadLookup::empty_recent();
+
+        let resolved = resolve_completed_download_for_import(&app, &mut td, Some(&lookup)).await;
+
+        assert!(resolved.is_none());
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn visible_file_count_reuses_resolved_completed_download() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("Paper.Lantern.2012.1080p.mkv"),
+            b"video",
+        )
+        .expect("write video");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        let download_client = test_download_client_with_completed(completed.clone());
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+
+        let count = current_visible_video_file_count(&app, &td, Some(&completed)).await;
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            download_client
+                .completed_download_calls
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
                 .load(Ordering::SeqCst),
             0
         );
@@ -3720,6 +4735,7 @@ mod tests {
             completed_downloads: Arc::new(Mutex::new(vec![completed.clone()])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
             recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
@@ -3750,6 +4766,160 @@ mod tests {
                 .load(Ordering::SeqCst),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn load_completed_download_lookup_for_items_scopes_to_completed_item_clients() {
+        let mut completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        completed.client_id = "qbit-client".to_string();
+        completed.client_type = "qbittorrent".to_string();
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![completed])),
+            completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        qbit.client_item.client_id = "qbit-client".to_string();
+        qbit.client_item.client_type = "qbittorrent".to_string();
+        let mut nzbget = build_tracked_download("title-2", "movie", "Other.Release.2012.1080p");
+        nzbget.client_item.client_id = "nzbget-client".to_string();
+        nzbget.client_item.client_type = "nzbget".to_string();
+        nzbget.client_item.state = DownloadQueueState::Downloading;
+
+        let lookup = load_completed_download_lookup_for_items(
+            &app,
+            &[qbit.client_item.clone(), nzbget.client_item.clone()],
+            100,
+        )
+        .await
+        .expect("completed lookup should load");
+
+        assert_eq!(lookup.by_source.len(), 1);
+        let calls = download_client.scoped_recent_completed_calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, vec!["qbit-client".to_string()]);
+        assert!(calls[0].1.is_empty());
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn load_completed_download_lookup_for_items_scopes_import_pending_items() {
+        let mut completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        completed.client_id = "qbit-client".to_string();
+        completed.client_type = "qbittorrent".to_string();
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![completed])),
+            completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        qbit.client_item.client_id = "qbit-client".to_string();
+        qbit.client_item.client_type = "qbittorrent".to_string();
+        qbit.client_item.state = DownloadQueueState::ImportPending;
+
+        let lookup =
+            load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+                .await
+                .expect("completed lookup should load");
+
+        assert_eq!(lookup.by_source.len(), 1);
+        let calls = download_client.scoped_recent_completed_calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, vec!["qbit-client".to_string()]);
+        assert!(calls[0].1.is_empty());
+        assert_eq!(
+            download_client
+                .recent_completed_download_calls
+                .load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn load_completed_download_lookup_for_items_uses_exact_id_when_client_id_is_present() {
+        let mut completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        completed.client_id = "default".to_string();
+        completed.client_type = "qbittorrent".to_string();
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![completed])),
+            completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        qbit.client_item.client_id = "default".to_string();
+        qbit.client_item.client_type = "qbittorrent".to_string();
+        qbit.client_item.state = DownloadQueueState::ImportPending;
+
+        let lookup =
+            load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+                .await
+                .expect("completed lookup should load");
+
+        assert_eq!(lookup.by_source.len(), 1);
+        let calls = download_client.scoped_recent_completed_calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, vec!["default".to_string()]);
+        assert!(calls[0].1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_completed_download_lookup_for_items_uses_type_scope_for_idless_items() {
+        let mut completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            std::env::temp_dir().to_string_lossy().as_ref(),
+            Some("movie"),
+        );
+        completed.client_id = String::new();
+        completed.client_type = "qbittorrent".to_string();
+        let download_client = Arc::new(TestDownloadClient {
+            completed_downloads: Arc::new(Mutex::new(vec![completed])),
+            completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let app =
+            build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+        let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        qbit.client_item.client_id = String::new();
+        qbit.client_item.client_type = "qbittorrent".to_string();
+        qbit.client_item.state = DownloadQueueState::ImportPending;
+
+        let lookup =
+            load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+                .await
+                .expect("completed lookup should load");
+
+        assert_eq!(lookup.by_source.len(), 1);
+        let calls = download_client.scoped_recent_completed_calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].0.is_empty());
+        assert_eq!(calls[0].1, vec!["qbittorrent".to_string()]);
     }
 
     #[tokio::test]
@@ -3786,6 +4956,273 @@ mod tests {
         }
 
         assert!(!verify_import(&app, &td, 0).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_accepts_resolved_season_pack_when_visible_source_units_are_imported() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let first_video =
+            std::fs::File::create(temp_dir.path().join("Star.Trek.Picard.S02E01.mkv"))
+                .expect("create first video");
+        first_video
+            .set_len(60 * 1024 * 1024)
+            .expect("size first video");
+        let second_video =
+            std::fs::File::create(temp_dir.path().join("Star.Trek.Picard.S02E02.mkv"))
+                .expect("create second video");
+        second_video
+            .set_len(60 * 1024 * 1024)
+            .expect("size second video");
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let artifacts = vec![
+            build_artifact("dl-1", "ep-201", "S02E01.mkv"),
+            build_artifact("dl-1", "ep-202", "S02E02.mkv"),
+        ];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import(&app, &td, 0).await);
+        assert!(verify_import_inner(&app, &td, 2, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_accepts_resolved_pack_when_move_removed_source_but_artifacts_cover_source_units()
+     {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
+        first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
+        let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
+        second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+        let app = build_app(vec![title], vec![collection], episodes, vec![first, second]);
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(verify_import_inner(&app, &td, 2, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_rejects_artifact_manifest_when_source_episode_lacks_successful_coverage()
+    {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
+        first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
+        let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
+        second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+        let mut third = build_artifact_with_result(
+            "dl-1",
+            Some("ep-203"),
+            "Star.Trek.Picard.S02E03.mkv",
+            "rejected",
+        );
+        third.relative_path = Some("Season 02/Star.Trek.Picard.S02E03.mkv".to_string());
+        let app = build_app(
+            vec![title],
+            vec![collection],
+            episodes,
+            vec![first, second, third],
+        );
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import_inner(&app, &td, 2, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_rejects_artifact_manifest_with_unmapped_source_group() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
+        first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
+        let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
+        second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+        let mut unmapped = build_artifact_with_result(
+            "dl-1",
+            None,
+            "Star.Trek.Picard.Special.Featurette.mkv",
+            "rejected",
+        );
+        unmapped.relative_path =
+            Some("Season 02/Star.Trek.Picard.Special.Featurette.mkv".to_string());
+        let app = build_app(
+            vec![title],
+            vec![collection],
+            episodes,
+            vec![first, second, unmapped],
+        );
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import_inner(&app, &td, 2, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_does_not_over_credit_duplicate_visible_basenames_from_filename_artifacts()
+     {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(temp_dir.path().join("disc-a")).expect("create first dir");
+        std::fs::create_dir_all(temp_dir.path().join("disc-b")).expect("create second dir");
+        for path in [
+            temp_dir.path().join("disc-a").join("video.mkv"),
+            temp_dir.path().join("disc-b").join("video.mkv"),
+        ] {
+            let video = std::fs::File::create(path).expect("create source video");
+            video.set_len(60 * 1024 * 1024).expect("size source video");
+        }
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+        ];
+        let artifacts = vec![build_artifact("dl-1", "ep-201", "video.mkv")];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import_inner(&app, &td, 1, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_rejects_resolved_pack_when_visible_source_episode_is_not_imported() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        for file_name in [
+            "Star.Trek.Picard.S02E01.mkv",
+            "Star.Trek.Picard.S02E02.mkv",
+            "Star.Trek.Picard.S02E03.mkv",
+        ] {
+            let video = std::fs::File::create(temp_dir.path().join(file_name))
+                .expect("create source video");
+            video.set_len(60 * 1024 * 1024).expect("size source video");
+        }
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let artifacts = vec![
+            build_artifact("dl-1", "ep-201", "S02E01.mkv"),
+            build_artifact("dl-1", "ep-202", "S02E02.mkv"),
+        ];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import_inner(&app, &td, 2, Some(&completed)).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_rejects_resolved_pack_with_unmapped_visible_source_video() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        for file_name in [
+            "Star.Trek.Picard.S02E01.mkv",
+            "Star.Trek.Picard.S02E02.mkv",
+            "Behind.The.Scenes.mkv",
+        ] {
+            let video = std::fs::File::create(temp_dir.path().join(file_name))
+                .expect("create source video");
+            video.set_len(60 * 1024 * 1024).expect("size source video");
+        }
+        let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+        let collection = build_collection("season-2", "title-1", "2");
+        let episodes = vec![
+            build_episode("ep-201", "title-1", "season-2", "2", "1", None),
+            build_episode("ep-202", "title-1", "season-2", "2", "2", None),
+            build_episode("ep-203", "title-1", "season-2", "2", "3", None),
+        ];
+        let artifacts = vec![
+            build_artifact("dl-1", "ep-201", "S02E01.mkv"),
+            build_artifact("dl-1", "ep-202", "S02E02.mkv"),
+        ];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download(
+            "title-1",
+            "series",
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        );
+        let completed = build_completed_download(
+            "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+            temp_dir.path().to_string_lossy().as_ref(),
+            Some("series"),
+        );
+
+        assert!(!verify_import_inner(&app, &td, 2, Some(&completed)).await);
     }
 
     #[tokio::test]
@@ -4141,7 +5578,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_result_keeps_retryable_no_video_import_pending() {
+    async fn apply_result_backs_off_no_video_import_before_blocking() {
         let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -4164,10 +5601,55 @@ mod tests {
             completed_at: Utc::now(),
         };
 
-        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
         assert_eq!(td.state, TrackedDownloadState::ImportPending);
         assert_eq!(td.status, TrackedDownloadStatus::Warning);
         assert!(td.status_messages[0].contains("Retrying automatically"));
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
+
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 2);
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(td.no_video_import_retry.is_none());
+        assert!(td.status_messages[0].contains("Manual review required"));
+    }
+
+    #[tokio::test]
+    async fn apply_result_resets_no_video_retry_when_source_signature_changes() {
+        let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason: Some(ImportSkipReason::NoVideoFiles),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("dl-1".to_string()),
+            source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+            source_path: temp_dir.path().to_string_lossy().into_owned(),
+            dest_path: None,
+            quality: None,
+            episode_ids: vec![],
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some("no eligible video files found".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
+        std::fs::write(temp_dir.path().join("sample.txt"), b"not video").expect("write sample");
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
     }
 
     #[tokio::test]
@@ -4187,6 +5669,7 @@ mod tests {
             }])),
             completed_download_calls: Arc::new(AtomicUsize::new(0)),
             recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+            scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
         });
         let app = build_app_with_download_client(vec![], vec![], vec![], vec![], download_client);
         let mut actor = User::new_admin("admin");
@@ -4197,6 +5680,7 @@ mod tests {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         };
@@ -4216,6 +5700,11 @@ mod tests {
                 client_type: "nzbget".to_string(),
                 state: DownloadQueueState::Completed,
                 progress_percent: 100,
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
                 size_bytes: None,
                 remaining_seconds: None,
                 queued_at: None,
@@ -4249,6 +5738,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 

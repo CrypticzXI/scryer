@@ -6,7 +6,7 @@ use scryer_application::{
     AppError, AppResult, DownloadSourceIdentity, DownloadSubmissionIdentity, ImportArtifact,
     ImportArtifactRepository, ImportRepository,
 };
-use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType};
+use scryer_domain::{Id, ImportRecord, ImportStatus, ImportTransferPhase, ImportType};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRuntime, StoreDatastore};
 
@@ -78,6 +78,7 @@ impl ImportRepository for ImportStore {
                     "UPDATE imports
                      SET status = {},
                          result_json = {},
+                         import_transfer_phase = CASE WHEN {} THEN NULL ELSE import_transfer_phase END,
                          started_at = CASE WHEN started_at IS NULL THEN {} ELSE started_at END,
                          finished_at = CASE WHEN {} THEN {} ELSE finished_at END,
                          updated_at = {}
@@ -85,6 +86,7 @@ impl ImportRepository for ImportStore {
                     &[
                         SqlArg::Text(status.as_str().to_string()),
                         result_arg,
+                        SqlArg::Bool(is_terminal),
                         SqlArg::Timestamp(now),
                         SqlArg::Bool(is_terminal),
                         SqlArg::Timestamp(now),
@@ -96,6 +98,55 @@ impl ImportRepository for ImportStore {
                 Ok(())
             })
         })
+        .await
+    }
+
+    async fn update_import_transfer_progress(
+        &self,
+        import_id: &str,
+        phase: ImportTransferPhase,
+        bytes: i64,
+        total_bytes: i64,
+    ) -> AppResult<()> {
+        let import_id = import_id.to_string();
+        let bytes = bytes.max(0);
+        let total_bytes = total_bytes.max(bytes);
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "update_import_transfer_progress",
+            move |tx| {
+                let import_id = import_id.clone();
+                Box::pin(async move {
+                    let now = Utc::now();
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE imports
+                     SET import_transfer_phase = {},
+                         import_transfer_bytes = {},
+                         import_transfer_total_bytes = {},
+                         import_transfer_started_at = CASE
+                             WHEN import_transfer_started_at IS NULL THEN {}
+                             ELSE import_transfer_started_at
+                         END,
+                         import_transfer_updated_at = {},
+                         updated_at = {}
+                     WHERE id = {}
+                       AND status IN ('pending', 'running', 'processing')",
+                        &[
+                            SqlArg::Text(phase.as_str().to_string()),
+                            SqlArg::I64(bytes),
+                            SqlArg::I64(total_bytes),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Text(import_id),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
         .await
     }
 

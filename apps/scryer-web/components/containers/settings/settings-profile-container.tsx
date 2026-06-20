@@ -7,6 +7,7 @@ import {
   deleteMyPasskeyMutation,
   linkJellyfinAccountMutation,
   linkPlexAccountMutation,
+  revokeMyOauthAppMutation,
   setUserPasswordMutation,
   totpDisableMutation,
   totpEnrollmentCompleteMutation,
@@ -18,9 +19,11 @@ import {
   externalAuthRuntimeSettingsQuery,
   linkedAccountsQuery,
   meQuery,
+  myOauthAppsQuery,
   myPasskeysQuery,
   myTotpQuery,
 } from "@/lib/graphql/queries";
+import { normalizeGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import {
   VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS,
   isVisibleExternalAccountProvider,
@@ -33,6 +36,7 @@ import type {
   ExternalAuthRuntimeConnection,
   ExternalAuthRuntimeSettings,
   LinkedAccount,
+  OAuthConnectedApp,
   PasskeySummary,
   TotpEnrollmentComplete,
   TotpEnrollmentStart,
@@ -61,6 +65,8 @@ const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
 };
 
 const TOTP_CODE_LENGTH = 6;
+const PASSKEY_FORM_LOGIN_DISABLED_ERROR =
+  "passkey authentication is unavailable while form login is disabled";
 
 function connectionsForProvider(
   settings: ExternalAuthRuntimeSettings,
@@ -73,6 +79,10 @@ function connectionLabelForDisplay(connection: ExternalAuthRuntimeConnection): s
   return connection.displayName;
 }
 
+function isPasskeyFormLoginDisabledError(message: string): boolean {
+  return normalizeGraphQlErrorMessage(message) === PASSKEY_FORM_LOGIN_DISABLED_ERROR;
+}
+
 export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -83,6 +93,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [oauthApps, setOauthApps] = useState<OAuthConnectedApp[]>([]);
   const [hasPassword, setHasPassword] = useState<boolean | null>(null);
   const [accountKind, setAccountKind] = useState<UserAccountKind | null>(null);
   const [totpStatus, setTotpStatus] = useState<TotpStatus | null>(null);
@@ -95,12 +106,14 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS,
   );
   const [loadingPasskeys, setLoadingPasskeys] = useState(false);
+  const [loadingOauthApps, setLoadingOauthApps] = useState(false);
   const [loadingTotp, setLoadingTotp] = useState(false);
   const [loadingLinkedAccounts, setLoadingLinkedAccounts] = useState(false);
   const [loadingLinkOptions, setLoadingLinkOptions] = useState(false);
   const [addingPasskey, setAddingPasskey] = useState(false);
   const [totpBusy, setTotpBusy] = useState(false);
   const [deletingPasskeyId, setDeletingPasskeyId] = useState<string | null>(null);
+  const [revokingOauthGrantId, setRevokingOauthGrantId] = useState<string | null>(null);
   const [unlinkingAccountId, setUnlinkingAccountId] = useState<string | null>(null);
   const [linkingProvider, setLinkingProvider] = useState<ExternalAccountProvider | null>(null);
   const [linkAccountDraft, setLinkAccountDraft] = useState<LinkAccountDraft>({
@@ -222,6 +235,11 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     try {
       const result = await client.query<{ myPasskeys?: PasskeySummary[] }>(myPasskeysQuery, {}).toPromise();
       if (result.error) {
+        if (isPasskeyFormLoginDisabledError(result.error.message)) {
+          setPasskeys([]);
+          return;
+        }
+
         setGlobalStatus(result.error.message);
         return;
       }
@@ -237,6 +255,34 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   useEffect(() => {
     void loadPasskeys();
   }, [loadPasskeys]);
+
+  const loadOauthApps = useCallback(async () => {
+    if (!userId) {
+      setOauthApps([]);
+      setLoadingOauthApps(false);
+      return;
+    }
+
+    setLoadingOauthApps(true);
+    try {
+      const result = await client
+        .query<{ myOauthApps?: OAuthConnectedApp[] }>(myOauthAppsQuery, {})
+        .toPromise();
+      if (result.error) {
+        setGlobalStatus(result.error.message);
+        return;
+      }
+      setOauthApps(result.data?.myOauthApps ?? []);
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : "Connected apps could not be loaded.");
+    } finally {
+      setLoadingOauthApps(false);
+    }
+  }, [client, setGlobalStatus, userId]);
+
+  useEffect(() => {
+    void loadOauthApps();
+  }, [loadOauthApps]);
 
   const loadTotp = useCallback(async () => {
     if (!userId) {
@@ -399,6 +445,29 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       setDeletingPasskeyId(null);
     }
   }, [client, setGlobalStatus, t]);
+
+  const handleRevokeOauthApp = useCallback(async (grantId: string) => {
+    setRevokingOauthGrantId(grantId);
+    try {
+      const result = await client
+        .mutation<{ revokeMyOauthApp?: boolean }, { grantId: string }>(
+          revokeMyOauthAppMutation,
+          { grantId },
+        )
+        .toPromise();
+      if (result.error || result.data?.revokeMyOauthApp !== true) {
+        setGlobalStatus(result.error?.message ?? "Connected app could not be revoked.");
+        return;
+      }
+
+      setOauthApps((current) => current.filter((app) => app.grantId !== grantId));
+      setGlobalStatus("Connected app revoked.");
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : "Connected app could not be revoked.");
+    } finally {
+      setRevokingOauthGrantId(null);
+    }
+  }, [client, setGlobalStatus]);
 
   const handleStartTotpEnrollment = useCallback(async () => {
     setTotpBusy(true);
@@ -672,6 +741,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       showPasskeys={Boolean(userId) && accountKind === "local"}
       canAddPasskey={accountKind === "local" && hasPassword === true}
       passkeys={passkeys}
+      oauthApps={oauthApps}
       totpStatus={totpStatus}
       totpEnrollment={totpEnrollment}
       totpEnrollmentCode={totpEnrollmentCode}
@@ -688,15 +758,18 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       linkAccountBusy={linkAccountBusy}
       linkAccountError={linkAccountError}
       loadingPasskeys={loadingPasskeys}
+      loadingOauthApps={loadingOauthApps}
       loadingTotp={loadingTotp}
       loadingLinkedAccounts={loadingLinkedAccounts}
       loadingLinkOptions={loadingLinkOptions}
       addingPasskey={addingPasskey}
       totpBusy={totpBusy}
       deletingPasskeyId={deletingPasskeyId}
+      revokingOauthGrantId={revokingOauthGrantId}
       unlinkingAccountId={unlinkingAccountId}
       onAddPasskey={handleAddPasskey}
       onDeletePasskey={handleDeletePasskey}
+      onRevokeOauthApp={handleRevokeOauthApp}
       onStartTotpEnrollment={handleStartTotpEnrollment}
       onTotpEnrollmentCodeChange={(value) => setTotpEnrollmentCode(sanitizeTotpCode(value))}
       onCompleteTotpEnrollment={handleCompleteTotpEnrollment}

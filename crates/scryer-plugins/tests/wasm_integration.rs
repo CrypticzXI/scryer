@@ -312,6 +312,110 @@ async fn newznab_builtin_rss_search_uses_category_only_request() {
 }
 
 #[tokio::test]
+async fn newznab_builtin_search_extracts_password_hints() {
+    let body = r#"{"channel":{"item":[{"title":"Protected.Release.1080p.WEB-DL","guid":"guid-1","link":"http://example.test/info","enclosure":{"@attributes":{"url":"http://example.test/download.nzb","length":"12345","type":"application/x-nzb"}},"attr":[{"@attributes":{"name":"password","value":" archive-password "}}]}]}}"#;
+    let (base_url, request_rx) = spawn_newznab_response_server_with_body(body);
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+
+    let mut config = test_config("newznab");
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": base_url,
+            "api_key": "test-key",
+        })
+        .to_string(),
+    );
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let response = client
+        .search(
+            "protected release".to_string(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            scryer_application::SearchMode::Interactive,
+            None,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(
+        response.results[0].password_hint.as_deref(),
+        Some("archive-password")
+    );
+    assert_eq!(
+        response.results[0]
+            .extra
+            .get("password")
+            .and_then(|value| value.as_str()),
+        Some("archive-password")
+    );
+
+    request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("mock Newznab server should receive a request");
+}
+
+#[tokio::test]
+async fn newznab_builtin_search_treats_password_flags_as_protected_only() {
+    let body = r#"{"channel":{"item":[{"title":"Flagged.Release.1080p.WEB-DL","guid":"guid-flag","link":"http://example.test/info","enclosure":{"@attributes":{"url":"http://example.test/download.nzb","length":"12345","type":"application/x-nzb"}},"attr":[{"@attributes":{"name":"password","value":"1"}}]}]}}"#;
+    let (base_url, request_rx) = spawn_newznab_response_server_with_body(body);
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+
+    let mut config = test_config("newznab");
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": base_url,
+            "api_key": "test-key",
+        })
+        .to_string(),
+    );
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let response = client
+        .search(
+            "flagged release".to_string(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            scryer_application::SearchMode::Interactive,
+            None,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].password_hint, None);
+    assert!(!response.results[0].extra.contains_key("password"));
+    assert_eq!(
+        response.results[0]
+            .extra
+            .get("password_protected")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("mock Newznab server should receive a request");
+}
+
+#[tokio::test]
 async fn newznab_builtin_full_search_trims_whitespace_padded_config_values() {
     let request = run_newznab_builtin_full_search(Some(" ?foo=bar baz&zap=1 ")).await;
 
@@ -552,6 +656,11 @@ fn request_query_value(request: &str, key: &str) -> Option<String> {
 }
 
 fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
+    let body = r#"{"channel":{"item":[{"title":"Example.Show.S01E01.1080p.WEB-DL","guid":"guid-1","link":"http://example.test/info","enclosure":{"@attributes":{"url":"http://example.test/download.nzb","length":"12345","type":"application/x-nzb"}},"attr":[{"@attributes":{"name":"grabs","value":"4"}}]}]}}"#;
+    spawn_newznab_response_server_with_body(body)
+}
+
+fn spawn_newznab_response_server_with_body(body: &'static str) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -571,7 +680,6 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
                     let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
                     let _ = request_tx.send(request);
 
-                    let body = r#"{"channel":{"item":[{"title":"Example.Show.S01E01.1080p.WEB-DL","guid":"guid-1","link":"http://example.test/info","enclosure":{"@attributes":{"url":"http://example.test/download.nzb","length":"12345","type":"application/x-nzb"}},"attr":[{"@attributes":{"name":"grabs","value":"4"}}]}]}}"#;
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),

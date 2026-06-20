@@ -196,6 +196,18 @@ mod catalog_artifact_selection_tests {
         }
     }
 
+    fn artifact_with_digests(
+        required_features: &[&str],
+        url: &str,
+        artifact_digest: &str,
+        wasm_digest: &str,
+    ) -> CatalogV3PluginArtifact {
+        let mut artifact = artifact(required_features, url);
+        artifact.digests = vec![artifact_digest.to_string()];
+        artifact.wasm_digests = vec![wasm_digest.to_string()];
+        artifact
+    }
+
     fn release(artifacts: Vec<CatalogV3PluginArtifact>) -> CatalogV3PluginRelease {
         CatalogV3PluginRelease {
             version: "1.0.0".to_string(),
@@ -222,6 +234,63 @@ mod catalog_artifact_selection_tests {
                 github_workflow: None,
             },
             releases,
+        }
+    }
+
+    fn installed_plugin(
+        version: &str,
+        wasm_digest: Option<&str>,
+        artifact_digest: Option<&str>,
+        source_url: Option<&str>,
+    ) -> PluginInstallation {
+        let now = Utc::now();
+        let (wasm_digest_algo, wasm_digest) = wasm_digest
+            .map(parse_digest_string)
+            .transpose()
+            .unwrap()
+            .map(|(algorithm, digest)| (Some(algorithm), Some(digest)))
+            .unwrap_or((None, None));
+        PluginInstallation {
+            id: "install-1".to_string(),
+            plugin_id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: "Alpha plugin".to_string(),
+            version: version.to_string(),
+            sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            scryer_constraint: None,
+            plugin_type: "indexer".to_string(),
+            provider_type: "alpha".to_string(),
+            source_kind: PluginSourceKind::Downloaded,
+            is_enabled: true,
+            is_builtin: false,
+            wasm_encoding: PluginWasmEncoding::Zstd,
+            wasm_digest_algo,
+            source_url: source_url.map(str::to_string),
+            support_tier: PluginSupportTier::Official,
+            publisher: None,
+            docs_url: None,
+            source_repo: None,
+            manifest_url: source_url.map(str::to_string),
+            wasm_digest,
+            artifact_digest: artifact_digest.map(str::to_string),
+            descriptor_json: None,
+            installed_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn resolution(
+        release: CatalogV3PluginRelease,
+        artifact: CatalogV3PluginArtifact,
+    ) -> CatalogPluginResolution {
+        CatalogPluginResolution {
+            catalog_entry: plugin(vec![release.clone()]),
+            release,
+            artifact,
+            source_kind: PluginSourceKind::Downloaded,
+            effective_support_tier: PluginSupportTier::Official,
+            github_repo: GitHubRepo::parse("https://github.com/scryer-media/alpha").unwrap(),
         }
     }
 
@@ -350,6 +419,100 @@ mod catalog_artifact_selection_tests {
     }
 
     #[test]
+    fn same_version_simd_artifact_counts_as_update_when_installed_artifact_differs() {
+        let selected = artifact_with_digests(
+            &["simd128"],
+            "https://example.invalid/plugin-simd.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin.zst"),
+        );
+        let resolved = resolution(release.clone(), selected.clone());
+
+        assert!(same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+        assert!(catalog_plugin_update_available(&installation, &resolved));
+    }
+
+    #[test]
+    fn same_version_selected_simd_artifact_does_not_count_as_update() {
+        let selected = artifact_with_digests(
+            &["simd128", "relaxed-simd"],
+            "https://example.invalid/plugin-relaxed.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:4444444444444444444444444444444444444444444444444444444444444444"),
+            None,
+            Some("https://example.invalid/plugin-relaxed.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn same_version_non_simd_artifact_does_not_count_as_update() {
+        let selected = artifact_with_digests(
+            &[],
+            "https://example.invalid/plugin.zst",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin-old.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+    }
+
+    #[test]
+    fn same_wasm_digest_does_not_count_encoding_only_change_as_update() {
+        let selected = artifact_with_digests(
+            &["simd128"],
+            "https://example.invalid/plugin-simd.br",
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        let release = release(vec![selected.clone()]);
+        let installation = installed_plugin(
+            "1.0.0",
+            Some("blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+            Some("blake3:2222222222222222222222222222222222222222222222222222222222222222"),
+            Some("https://example.invalid/plugin-simd.zst"),
+        );
+
+        assert!(!same_version_simd_artifact_update_available(
+            &installation,
+            &release,
+            &selected
+        ));
+    }
+
+    #[test]
     fn catalog_selection_skips_release_requiring_newer_scryer() {
         let compatible_release = release(vec![artifact(&[], "https://example.invalid/plugin.zst")]);
         let mut newer_release = release(vec![artifact(
@@ -413,6 +576,272 @@ mod signature_bundle_decode_tests {
         .expect("zstd bundle should decode");
 
         assert_eq!(decoded, bundle);
+    }
+}
+
+#[cfg(all(test, feature = "runtime-plugin-trust"))]
+mod bounded_decompression_tests {
+    use super::*;
+    use crate::AppError;
+    use std::io::Write;
+
+    fn compress_brotli_for_test(bytes: &[u8]) -> Vec<u8> {
+        let mut compressed = Vec::new();
+        {
+            let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 5, 22);
+            writer
+                .write_all(bytes)
+                .expect("test brotli compression should write");
+        }
+        compressed
+    }
+
+    fn assert_limit_error(error: AppError) {
+        assert!(
+            error.to_string().contains("exceeds maximum size"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn rule_pack_release(rule_pack_bytes: Option<u64>) -> CatalogV3RulePackRelease {
+        CatalogV3RulePackRelease {
+            version: "1.0.0".to_string(),
+            min_scryer_version: None,
+            rule_pack_digests: Vec::new(),
+            rule_pack_bytes,
+            artifacts: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn zstd_exact_size_succeeds_and_one_byte_over_fails() {
+        let payload = b"bounded zstd payload".to_vec();
+        let compressed = compress_zstd(payload.clone(), 3)
+            .await
+            .expect("zstd payload should compress");
+
+        let decoded = decompress_zstd(
+            compressed.clone(),
+            payload.len() as u64,
+            "zstd exact-size test",
+        )
+        .await
+        .expect("exact-size zstd payload should decode");
+        assert_eq!(decoded, payload);
+
+        let error = decompress_zstd(
+            compressed,
+            (payload.len() - 1) as u64,
+            "zstd one-byte-over test",
+        )
+        .await
+        .expect_err("one-byte-over zstd payload should fail");
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn brotli_exact_size_succeeds_and_one_byte_over_fails() {
+        let payload = b"bounded brotli payload".to_vec();
+        let compressed = compress_brotli_for_test(&payload);
+
+        let decoded = decompress_brotli(
+            compressed.clone(),
+            payload.len() as u64,
+            "brotli exact-size test",
+        )
+        .await
+        .expect("exact-size brotli payload should decode");
+        assert_eq!(decoded, payload);
+
+        let error = decompress_brotli(
+            compressed,
+            (payload.len() - 1) as u64,
+            "brotli one-byte-over test",
+        )
+        .await
+        .expect_err("one-byte-over brotli payload should fail");
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn zstd_and_brotli_bombs_stop_at_cap() {
+        let payload = vec![b'x'; 1024 * 1024];
+        let zstd = compress_zstd(payload.clone(), 3)
+            .await
+            .expect("zstd bomb payload should compress");
+        let brotli = compress_brotli_for_test(&payload);
+
+        let zstd_error = decompress_zstd(zstd, 1024, "zstd bomb test")
+            .await
+            .expect_err("zstd bomb should fail at cap");
+        assert_limit_error(zstd_error);
+
+        let brotli_error = decompress_brotli(brotli, 1024, "brotli bomb test")
+            .await
+            .expect_err("brotli bomb should fail at cap");
+        assert_limit_error(brotli_error);
+    }
+
+    #[tokio::test]
+    async fn catalog_artifact_uses_expected_bytes_as_cap() {
+        let payload = b"catalog wasm bytes".to_vec();
+        let compressed = compress_zstd(payload.clone(), 3)
+            .await
+            .expect("catalog artifact should compress");
+
+        let decoded = decode_catalog_wasm_artifact(
+            compressed.clone(),
+            PluginWasmEncoding::Zstd,
+            payload.len() as u64,
+            "cap-test",
+        )
+        .await
+        .expect("catalog artifact at expected bytes should decode");
+        assert_eq!(decoded, payload);
+
+        let error = decode_catalog_wasm_artifact(
+            compressed,
+            PluginWasmEncoding::Zstd,
+            (payload.len() - 1) as u64,
+            "cap-test",
+        )
+        .await
+        .expect_err("catalog artifact over expected bytes should fail");
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn catalog_artifact_rejects_declared_size_over_universal_wasm_cap() {
+        let error = decode_catalog_wasm_artifact(
+            Vec::new(),
+            PluginWasmEncoding::Zstd,
+            MANUAL_PLUGIN_WASM_OUTPUT_LIMIT + 1,
+            "cap-test",
+        )
+        .await
+        .expect_err("catalog artifact over universal WASM cap should fail before decompression");
+
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn manual_upload_decode_uses_fixed_wasm_cap_before_descriptor_parsing() {
+        let payload = b"manual upload wasm bytes".to_vec();
+        let compressed = compress_zstd(payload.clone(), 3)
+            .await
+            .expect("manual upload should compress");
+
+        let decoded = decode_uploaded_plugin_wasm_with_limit(
+            compressed.clone(),
+            true,
+            payload.len() as u64,
+        )
+        .await
+        .expect("manual upload at cap should decode");
+        assert_eq!(decoded, payload);
+
+        let compressed_error = decode_uploaded_plugin_wasm_with_limit(
+            compressed,
+            true,
+            (payload.len() - 1) as u64,
+        )
+        .await
+        .expect_err("compressed manual upload over cap should fail");
+        assert_limit_error(compressed_error);
+
+        let raw_error = decode_uploaded_plugin_wasm_with_limit(
+            vec![0; payload.len()],
+            false,
+            (payload.len() - 1) as u64,
+        )
+        .await
+        .expect_err("raw manual upload over cap should fail");
+        assert_limit_error(raw_error);
+    }
+
+    #[tokio::test]
+    async fn rule_pack_manifest_uses_expected_bytes_when_present() {
+        let payload = br#"{"schema_version":1,"id":"pack","rules":[]}"#.to_vec();
+        let compressed = compress_zstd(payload.clone(), 3)
+            .await
+            .expect("rule pack manifest should compress");
+        let release = rule_pack_release(Some(payload.len() as u64));
+
+        let decoded = decode_rule_pack_manifest_bytes(
+            compressed.clone(),
+            "https://example.test/rules.min.json.zst",
+            "pack",
+            &release,
+        )
+        .await
+        .expect("rule pack manifest at expected bytes should decode");
+        assert_eq!(decoded, payload);
+
+        let release = rule_pack_release(Some((payload.len() - 1) as u64));
+        let error = decode_rule_pack_manifest_bytes(
+            compressed,
+            "https://example.test/rules.min.json.zst",
+            "pack",
+            &release,
+        )
+        .await
+        .expect_err("rule pack manifest over expected bytes should fail");
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn rule_pack_manifest_falls_back_to_hard_cap_when_expected_bytes_absent() {
+        let payload = vec![0; (RULE_PACK_MANIFEST_FALLBACK_OUTPUT_LIMIT as usize) + 1];
+        let compressed = compress_zstd(payload, 3)
+            .await
+            .expect("fallback cap payload should compress");
+        let release = rule_pack_release(None);
+
+        let error = decode_rule_pack_manifest_bytes(
+            compressed,
+            "https://example.test/rules.min.json.zst",
+            "pack",
+            &release,
+        )
+        .await
+        .expect_err("rule pack manifest over fallback cap should fail");
+        assert_limit_error(error);
+    }
+
+    #[tokio::test]
+    async fn catalog_json_signature_bundle_and_redirect_caps_are_enforced() {
+        let catalog_payload = vec![0; (PLUGIN_CATALOG_JSON_OUTPUT_LIMIT as usize) + 1];
+        let catalog_compressed = compress_zstd(catalog_payload, 3)
+            .await
+            .expect("catalog payload should compress");
+        let catalog_error = decode_catalog_json(
+            catalog_compressed,
+            "https://example.test/catalog-v3.min.json.zst",
+            "plugin catalog",
+        )
+        .await
+        .expect_err("catalog JSON over cap should fail");
+        assert_limit_error(catalog_error);
+
+        let bundle_payload = vec![0; (PLUGIN_SIGNATURE_BUNDLE_OUTPUT_LIMIT as usize) + 1];
+        let bundle_compressed = compress_zstd(bundle_payload, 3)
+            .await
+            .expect("signature bundle payload should compress");
+        let bundle_error = decode_signature_bundle(
+            bundle_compressed,
+            "https://example.test/catalog-v3.min.json.zst.bundle.zst",
+        )
+        .await
+        .expect_err("signature bundle over cap should fail");
+        assert_limit_error(bundle_error);
+
+        let redirect_error = bound_uncompressed_bytes(
+            vec![0; (PLUGIN_CATALOG_REDIRECT_OUTPUT_LIMIT as usize) + 1],
+            PLUGIN_CATALOG_REDIRECT_OUTPUT_LIMIT,
+            "plugin catalog redirect",
+        )
+        .expect_err("redirect JSON over cap should fail");
+        assert_limit_error(redirect_error);
     }
 }
 

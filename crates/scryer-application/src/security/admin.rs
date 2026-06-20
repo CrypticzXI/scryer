@@ -4,6 +4,7 @@ use scryer_domain::ConfigurationChangeAction;
 
 const DEFAULT_ADMIN_USERNAME: &str = "admin";
 const RECOVERY_ADMIN_USERNAME: &str = "recovery-admin";
+const ANONYMOUS_AUDIT_USERNAME: &str = "anonymous";
 
 #[cfg(unix)]
 fn to_u64<T: Into<u64>>(value: T) -> u64 {
@@ -15,8 +16,24 @@ impl AppUseCase {
         scryer_domain::UserAuthorization::full_admin().app
     }
 
-    pub(crate) fn is_reserved_recovery_username(username: &str) -> bool {
+    pub fn is_reserved_recovery_username(username: &str) -> bool {
         Self::normalize_local_username(username).eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
+    }
+
+    pub(crate) fn is_reserved_local_username(username: &str) -> bool {
+        let normalized = Self::normalize_local_username(username);
+        normalized.eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
+            || normalized.eq_ignore_ascii_case(ANONYMOUS_AUDIT_USERNAME)
+    }
+
+    fn reserved_local_username_error(username: &str) -> AppError {
+        if Self::normalize_local_username(username).eq_ignore_ascii_case(ANONYMOUS_AUDIT_USERNAME) {
+            AppError::Validation("anonymous is reserved for authless audit attribution".into())
+        } else {
+            AppError::Validation(format!(
+                "{RECOVERY_ADMIN_USERNAME} is reserved for instance recovery"
+            ))
+        }
     }
 
     async fn ensure_user_admin_permission_masks(&self, user: &User) -> AppResult<()> {
@@ -212,6 +229,9 @@ impl AppUseCase {
         let username = Self::normalize_local_username(username);
         if username.is_empty() {
             return Err(AppError::Validation("admin username is required".into()));
+        }
+        if Self::is_reserved_local_username(username) {
+            return Err(Self::reserved_local_username_error(username));
         }
         if password.is_empty() {
             return Err(AppError::Validation("admin password is required".into()));
@@ -474,10 +494,8 @@ impl AppUseCase {
         if username.is_empty() {
             return Err(AppError::Validation("username is required".to_string()));
         }
-        if Self::is_reserved_recovery_username(&username) {
-            return Err(AppError::Validation(format!(
-                "{RECOVERY_ADMIN_USERNAME} is reserved for instance recovery"
-            )));
+        if Self::is_reserved_local_username(&username) {
+            return Err(Self::reserved_local_username_error(&username));
         }
         self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;
@@ -525,7 +543,7 @@ impl AppUseCase {
             .await?;
         self.cache_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user",
             Some(user.id.clone()),
             ConfigurationChangeAction::Saved,
@@ -543,6 +561,8 @@ impl AppUseCase {
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
         Ok(user)
     }
@@ -553,6 +573,8 @@ impl AppUseCase {
         password: String,
         current_password: String,
     ) -> AppResult<User> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
         }
@@ -590,6 +612,8 @@ impl AppUseCase {
         actor: &User,
         password: String,
     ) -> AppResult<User> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let existing = self
             .services
             .identity
@@ -662,9 +686,11 @@ impl AppUseCase {
             .users
             .update_password_hash(user_id, password_hash)
             .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_password",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -704,7 +730,7 @@ impl AppUseCase {
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_permissions",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -746,7 +772,7 @@ impl AppUseCase {
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_permissions",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
@@ -771,10 +797,12 @@ impl AppUseCase {
             return Err(AppError::Validation("cannot delete current user".into()));
         }
 
+        self.revoke_oauth_refresh_grants_for_user(user_id, "user_deleted")
+            .await?;
         self.services.identity.users.delete(user_id).await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user",
             Some(user.id),
             ConfigurationChangeAction::Deleted,
@@ -805,10 +833,12 @@ impl AppUseCase {
             .totp
             .reset_user_mfa_and_invalidate_sessions(user_id, &auth_session_version)
             .await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "auth_session_changed")
+            .await?;
         self.evict_cached_jwt_signing_key(user_id).await;
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "user_mfa",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,

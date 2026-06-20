@@ -31,7 +31,9 @@ fn title_scoped_domain_event(
         return NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: scryer_domain::DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title_id.to_string()),
             facet: None,
             correlation_id: None,

@@ -67,6 +67,10 @@ export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
   deleteMyPasskey(id: $id)
 }`;
 
+export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: String!) {
+  revokeMyOauthApp(grantId: $grantId)
+}`;
+
 export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
   totpEnrollmentStart {
     challengeId
@@ -638,7 +642,7 @@ export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
   clearTitleImageCache
 }`;
 
-export const createBackupMutation = `mutation CreateBackup($password: String) {
+export const createBackupMutation = `mutation CreateBackup($password: String!) {
   createBackup(password: $password) {${BACKUP_INFO_FIELDS}
   }
 }`;
@@ -655,12 +659,20 @@ export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
   deleteBackup(filename: $filename)
 }`;
 
-export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettings($input: UpdateAutoBackupSettingsInput!) {
-  updateAutoBackupSettings(input: $input) {
+const AUTO_BACKUP_SETTINGS_FIELDS = `
     enabled
     dailyTimeLocal
     autoBackupKeyPresent
-    nextRunAt
+    autoBackupDisabledMissingKeyNotice
+    nextRunAt`;
+
+export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettings($input: UpdateAutoBackupSettingsInput!) {
+  updateAutoBackupSettings(input: $input) {${AUTO_BACKUP_SETTINGS_FIELDS}
+  }
+}`;
+
+export const acknowledgeAutoBackupDisabledMissingKeyNoticeMutation = `mutation AcknowledgeAutoBackupDisabledMissingKeyNotice {
+  acknowledgeAutoBackupDisabledMissingKeyNotice {${AUTO_BACKUP_SETTINGS_FIELDS}
   }
 }`;
 
@@ -1747,7 +1759,7 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
     downloadClients {
       sources name implementation scryerClientType
       host port useSsl urlBase username apiKey
-      dedupKey supported
+      dedupKey supported requiresPasswordOverride
     }
     indexers {
       sources name implementation scryerProviderType

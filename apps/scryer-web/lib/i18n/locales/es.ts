@@ -105,6 +105,10 @@ const es: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -487,6 +491,12 @@ const es: LocaleDictionary = {
   "settings.renameTokenYear": "Año de lanzamiento",
   "settings.renameTokenQuality": "Calidad (ej. 1080p)",
   "settings.renameTokenEdition": "Edición (ej. Director's Cut)",
+  "settings.renameTokenImdbId": "ID de IMDb",
+  "settings.renameTokenTmdbId": "ID de TMDb",
+  "settings.renameTokenTvdbId": "ID de TVDb",
+  "settings.renameTokenAnidbId": "ID de AniDB",
+  "settings.renameTokenMalId": "ID de MAL",
+  "settings.renameTokenAnilistId": "ID de AniList",
   "settings.renameTokenSource": "Fuente (ej. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Códec de video (ej. x265)",
   "settings.renameTokenAudioCodec": "Códec de audio (ej. DTS)",
@@ -501,6 +511,8 @@ const es: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Llave de apertura '{' sin cerrar",
   "settings.renameValidationUnmatchedClose": "Llave de cierre '}' sin abrir",
   "settings.renameValidationUnknownToken": "Token desconocido: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "Las plantillas de carpeta admiten {title}, {year} y tokens de ID externos. Token no válido: {{token}}",
   "settings.renameValidationEmpty":
     "La plantilla de renombrado no puede estar vacía",
   "settings.renameComingSoon":
@@ -776,6 +788,7 @@ const es: LocaleDictionary = {
   "queue.state.postProcessing": "Post-procesamiento",
   "queue.state.paused": "Pausado",
   "queue.state.completed": "Completado",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Importación pendiente",
   "queue.state.importBlocked": "Importación bloqueada",
   "queue.state.failed": "Fallido",
@@ -788,6 +801,8 @@ const es: LocaleDictionary = {
     "{{downloading}} descargando, {{waiting}} esperando importación, {{attention}} requiere atención",
   "queue.manualImport": "Importar manualmente",
   "queue.manualImporting": "Añadiendo a la cola…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Importación manual en cola.",
   "queue.manualImportFailed": "Error en la importación manual.",
   "queue.removeFailed": "Error al eliminar",
@@ -1077,6 +1092,8 @@ const es: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Actualización: v{{version}}",
   "settings.pluginUpgrade": "Actualizar a v{{version}}",
+  "settings.pluginOptimizedBuildAvailable": "Build optimizada disponible",
+  "settings.pluginInstallOptimizedBuild": "Instalar build optimizada",
   "settings.pluginNoCompatibleRelease":
     "No hay una versión compatible para esta versión de Scryer",
   "settings.pluginNewerReleaseRequiresNewerScryer":

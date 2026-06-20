@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use common::TestContext;
@@ -11,15 +11,20 @@ use scryer_application::recycle_bin::{
 };
 use scryer_application::testing::{
     AppUseCaseTestExt, UpgradeForTestInput, execute_upgrade_for_test,
+    execute_upgrade_for_test_with_import_mode,
 };
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, AppError, AppResult, CutoffUnmetQualitySummary,
-    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository,
+    EpisodeScopedMediaFile, FileImporter, InsertMediaFileInput, MediaFileAnalysis,
+    MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary, TitleRepository,
 };
-use scryer_domain::{LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
+use scryer_domain::{
+    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventPayload, DomainEventType,
+    ImportMode, LibraryPermissionMask, MediaFacet, MediaFileDeletedReason, Title, User,
+    UserAuthorization,
+};
 use scryer_infrastructure::{FsFileImporter, MediaFileStore};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +36,14 @@ fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
         builder
             .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_file_importer(Arc::new(FsFileImporter))
+    })
+}
+
+fn app_with_cleanup_failing_importer(ctx: &TestContext) -> scryer_application::AppUseCase {
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_media_files(Arc::new(ctx.media_files.clone()))
+            .with_file_importer(Arc::new(CleanupFailingFileImporter))
     })
 }
 
@@ -46,6 +59,42 @@ fn app_with_failing_media_path_update(
             }))
             .with_file_importer(Arc::new(FsFileImporter))
     })
+}
+
+struct CleanupFailingFileImporter;
+
+#[async_trait]
+impl FileImporter for CleanupFailingFileImporter {
+    async fn snapshot_import_source(
+        &self,
+        source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot> {
+        let importer = FsFileImporter;
+        importer.snapshot_import_source(source).await
+    }
+
+    async fn import_file(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+    ) -> AppResult<scryer_domain::ImportFileResult> {
+        let importer = FsFileImporter;
+        importer
+            .import_file(source, dest, mode, expected_source)
+            .await
+    }
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        _guard: scryer_domain::ImportSourceCleanupGuard,
+        _final_dest_path: &Path,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "forced post-commit source cleanup failure".to_string(),
+        ))
+    }
 }
 
 struct FailingPathUpdateMediaFileRepo {
@@ -295,6 +344,68 @@ fn last_upgrade_event(
     events.iter().find(|e| e.kind == ActivityKind::FileUpgraded)
 }
 
+async fn upgrade_audit_events(
+    app: &scryer_application::AppUseCase,
+    actor: &User,
+    title_id: &str,
+) -> Vec<DomainEvent> {
+    app.list_domain_events(
+        actor,
+        &DomainEventFilter {
+            event_types: Some(vec![
+                DomainEventType::MediaFileUpgraded,
+                DomainEventType::MediaFileDeleted,
+            ]),
+            title_id: Some(title_id.to_string()),
+            after_sequence: Some(0),
+            limit: 10,
+            ..DomainEventFilter::default()
+        },
+    )
+    .await
+    .expect("list upgrade audit events")
+}
+
+fn assert_backend_actor_metadata(event: &DomainEvent, actor: &User) {
+    assert_eq!(event.actor_kind, DomainEventActorKind::User);
+    assert_eq!(event.actor_user_id.as_deref(), Some(actor.id.as_str()));
+    assert_eq!(event.actor_display_name, actor.username);
+}
+
+fn assert_upgrade_recycle_audit_trail(
+    events: &[DomainEvent],
+    actor: &User,
+    previous_file_id: &str,
+    current_file_id: Option<&str>,
+) {
+    assert_eq!(events.len(), 2, "upgrade should emit two audit events");
+    assert!(
+        events[0].sequence < events[1].sequence,
+        "audit events should be returned in append order"
+    );
+
+    assert_backend_actor_metadata(&events[0], actor);
+    assert_backend_actor_metadata(&events[1], actor);
+
+    match &events[0].payload {
+        DomainEventPayload::MediaFileUpgraded(data) => {
+            assert_eq!(data.previous_file_id.as_deref(), Some(previous_file_id));
+            if let Some(current_file_id) = current_file_id {
+                assert_eq!(data.current_file_id.as_deref(), Some(current_file_id));
+            }
+        }
+        other => panic!("expected MediaFileUpgraded first, got {other:?}"),
+    }
+
+    match &events[1].payload {
+        DomainEventPayload::MediaFileDeleted(data) => {
+            assert_eq!(data.file_id.as_deref(), Some(previous_file_id));
+            assert_eq!(data.reason, MediaFileDeletedReason::UpgradeCleanup);
+        }
+        other => panic!("expected MediaFileDeleted second, got {other:?}"),
+    }
+}
+
 fn test_actor() -> User {
     User {
         id: scryer_domain::Id::new().0,
@@ -302,6 +413,7 @@ fn test_actor() -> User {
         password_hash: None,
         account_kind: Default::default(),
         authorization: UserAuthorization {
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
@@ -320,7 +432,8 @@ async fn upgrade_replaces_old_file_with_new() {
     let ctx = TestContext::new().await;
     let app = app_with_real_fs(&ctx);
     let title = seed_title(&ctx, "title-1").await;
-    let actor = test_actor();
+    let mut actor = test_actor();
+    actor.username = "Upgrade Auditor".to_string();
 
     // Set up directories
     let media_dir = tempfile::tempdir().expect("media dir");
@@ -433,6 +546,67 @@ async fn upgrade_replaces_old_file_with_new() {
     assert!(upgrade_event.message.contains("400"));
     assert!(upgrade_event.message.contains("650"));
     assert!(upgrade_event.message.contains("Test Movie"));
+
+    let audit_events = upgrade_audit_events(&app, &actor, &title.id).await;
+    assert_upgrade_recycle_audit_trail(
+        &audit_events,
+        &actor,
+        existing.id.as_str(),
+        Some(outcome.new_file_id.as_str()),
+    );
+}
+
+#[tokio::test]
+async fn upgrade_audit_events_survive_move_source_cleanup_failure() {
+    let ctx = TestContext::new().await;
+    let app = app_with_cleanup_failing_importer(&ctx);
+    let title = seed_title(&ctx, "title-cleanup-failure").await;
+    let mut actor = test_actor();
+    actor.username = "Cleanup Failure Auditor".to_string();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old video content 720p").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new video content 1080p better quality").expect("write new");
+
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+    let existing = seed_media_file(&ctx, &title.id, &old_path, 22, 400).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
+    let recycle_config = make_recycle_config(recycle_dir.path());
+
+    let result = execute_upgrade_for_test_with_import_mode(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+        ImportMode::Move,
+    )
+    .await;
+
+    let Err(err) = result else {
+        panic!("expected post-commit source cleanup failure");
+    };
+    assert!(
+        format!("{err:?}").contains("forced post-commit source cleanup failure"),
+        "unexpected cleanup error: {err:?}"
+    );
+
+    let audit_events = upgrade_audit_events(&app, &actor, &title.id).await;
+    assert_upgrade_recycle_audit_trail(&audit_events, &actor, existing.id.as_str(), None);
 }
 
 // ---------------------------------------------------------------------------

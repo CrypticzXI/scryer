@@ -27,7 +27,7 @@ pub struct RegistryPlugin {
     pub is_installed: bool,
     pub is_enabled: bool,
     pub installed_version: Option<String>,
-    /// True when the registry version is newer than the installed version.
+    /// True when the catalog has a newer version or a compatible optimized artifact.
     pub update_available: bool,
     pub install_in_progress: bool,
     /// When set, installing this plugin auto-creates an IndexerConfig with this URL.

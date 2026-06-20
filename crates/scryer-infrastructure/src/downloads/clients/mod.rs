@@ -24,7 +24,7 @@ pub use nzbget::NzbgetDownloadClient;
 pub use router::PrioritizedDownloadClientRouter;
 pub use sabnzbd::SabnzbdDownloadClient;
 pub use weaver::WeaverDownloadClient;
-pub use weaver_subscription::start_weaver_subscription_bridge;
+pub use weaver_subscription::{WeaverSubscriptionBridgeClient, start_weaver_subscription_bridge};
 
 const MAX_NZB_BYTES: u64 = 32 * 1024 * 1024;
 const STAGED_NZB_ZSTD_LEVEL: i32 = 3;
@@ -402,23 +402,23 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             | Ok(Event::DocType(_)) => {}
             Ok(Event::Text(text)) if !saw_root => {
                 let text = text.decode().map_err(|err| {
-                    AppError::Repository(format!("nzb XML text decode failed: {err}"))
+                    AppError::Validation(format!("nzb XML text decode failed: {err}"))
                 })?;
                 let text = quick_xml::escape::unescape(&text).map_err(|err| {
-                    AppError::Repository(format!("nzb XML text decode failed: {err}"))
+                    AppError::Validation(format!("nzb XML text decode failed: {err}"))
                 })?;
                 if !text
                     .trim_matches(|ch: char| ch.is_whitespace() || ch == '\u{feff}')
                     .is_empty()
                 {
-                    return Err(AppError::Repository(
+                    return Err(AppError::Validation(
                         "nzb download payload did not look like xml".into(),
                     ));
                 }
             }
             Ok(Event::Start(start)) if !saw_root => {
                 if !is_nzb_root_name(start.name().as_ref()) {
-                    return Err(AppError::Repository(
+                    return Err(AppError::Validation(
                         "nzb download payload root element must be <nzb>".into(),
                     ));
                 }
@@ -427,7 +427,7 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             }
             Ok(Event::Empty(start)) if !saw_root => {
                 if !is_nzb_root_name(start.name().as_ref()) {
-                    return Err(AppError::Repository(
+                    return Err(AppError::Validation(
                         "nzb download payload root element must be <nzb>".into(),
                     ));
                 }
@@ -442,12 +442,12 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             }
             Ok(Event::Eof) => {
                 if !saw_root {
-                    return Err(AppError::Repository(
+                    return Err(AppError::Validation(
                         "nzb download payload root element must be <nzb>".into(),
                     ));
                 }
                 if depth != 0 {
-                    return Err(AppError::Repository(
+                    return Err(AppError::Validation(
                         "nzb download payload was not valid xml: unexpected end of file".into(),
                     ));
                 }
@@ -455,7 +455,7 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             }
             Ok(_) => {}
             Err(error) => {
-                return Err(AppError::Repository(format!(
+                return Err(AppError::Validation(format!(
                     "nzb download payload was not valid xml: {error}"
                 )));
             }

@@ -410,7 +410,7 @@ impl AppUseCase {
         }
 
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "quality_profiles".to_string(),
             None,
             scryer_domain::ConfigurationChangeAction::Updated,
@@ -472,7 +472,7 @@ impl AppUseCase {
         .await?;
 
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "quality_profile".to_string(),
             Some(profile_id.to_string()),
             scryer_domain::ConfigurationChangeAction::Deleted,
@@ -521,7 +521,7 @@ impl AppUseCase {
         .await?;
 
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "delay_profile",
             Some(profile.id.clone()),
             scryer_domain::ConfigurationChangeAction::Saved,
@@ -564,7 +564,7 @@ impl AppUseCase {
         .await?;
 
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "delay_profile",
             Some(profile_id.clone()),
             scryer_domain::ConfigurationChangeAction::Deleted,

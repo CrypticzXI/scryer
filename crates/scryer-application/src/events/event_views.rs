@@ -158,10 +158,14 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             },
             data.media_updates
                 .first()
-                .map(|update| {
-                    if matches!(data.reason, MediaFileDeletedReason::UpgradeCleanup) {
+                .map(|update| match data.reason {
+                    MediaFileDeletedReason::UpgradeCleanup => {
                         format!("Removed old media file during upgrade: {}", update.path)
-                    } else {
+                    }
+                    MediaFileDeletedReason::RecycleBinPurged => {
+                        format!("Permanently deleted recycled media file: {}", update.path)
+                    }
+                    MediaFileDeletedReason::Deleted | MediaFileDeletedReason::MissingOnDisk => {
                         format!("Deleted media file from disk: {}", update.path)
                     }
                 })
@@ -262,7 +266,9 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
         kind,
         severity,
         channels: default_activity_channels(),
+        actor_kind: event.actor_kind,
         actor_user_id: event.actor_user_id.clone(),
+        actor_display_name: event.actor_display_name.clone(),
         title_id: event.title_id.clone(),
         facet: event.facet.as_ref().map(|facet| facet.as_str().to_string()),
         message,
@@ -519,7 +525,10 @@ pub(crate) fn title_history_record_from_domain_event(
         DomainEventPayload::MediaFileDeleted(data) => (
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),
-            TitleHistoryEventType::FileDeleted,
+            match data.reason {
+                MediaFileDeletedReason::UpgradeCleanup => TitleHistoryEventType::FileRecycled,
+                _ => TitleHistoryEventType::FileDeleted,
+            },
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
@@ -545,6 +554,31 @@ pub(crate) fn title_history_record_from_domain_event(
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),
             TitleHistoryEventType::FileRenamed,
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
+        DomainEventPayload::MediaFileUpgraded(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
+            TitleHistoryEventType::FileUpgraded,
             (data.media_updates.len() == 1)
                 .then(|| data.media_updates.first().map(|update| update.path.clone()))
                 .flatten(),
@@ -613,6 +647,9 @@ pub(crate) fn title_history_record_from_domain_event(
         episode_ids,
         collection_id,
         event_type,
+        actor_kind: Some(event.actor_kind),
+        actor_user_id: event.actor_user_id.clone(),
+        actor_display_name: Some(event.actor_display_name.clone()),
         source_title,
         display_title,
         source_system,
@@ -1120,8 +1157,9 @@ mod tests {
     use scryer_domain::{
         DomainEventStream, DomainExternalIds, DownloadFailedEventData, DownloadQueueState,
         ImportCompletedEventData, JobRunStartedEventData, LibraryScanCompletedEventData,
-        LibraryScanProgressedEventData, MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate,
-        MediaUpdateType, TitleContextSnapshot,
+        LibraryScanProgressedEventData, MediaFacet, MediaFileAnalyzedEventData,
+        MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileUpgradedEventData,
+        MediaPathUpdate, MediaUpdateType, TitleContextSnapshot,
     };
 
     fn title_snapshot(name: &str, facet: MediaFacet) -> TitleContextSnapshot {
@@ -1143,7 +1181,9 @@ mod tests {
             sequence,
             event_id: format!("evt-{sequence}"),
             occurred_at,
+            actor_kind: scryer_domain::DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some("title-1".to_string()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -1216,6 +1256,72 @@ mod tests {
         assert!(!data_json.contains("super-secret"));
     }
 
+    #[test]
+    fn upgrade_recycle_and_purge_project_in_audit_order() {
+        let now = Utc::now();
+        let snapshot = title_snapshot("Example", MediaFacet::Movie);
+        let events = [
+            event(
+                1,
+                now,
+                DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
+                    title: snapshot.clone(),
+                    media_updates: vec![MediaPathUpdate {
+                        path: "/data/new.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    }],
+                    previous_file_id: Some("old-file".to_string()),
+                    current_file_id: Some("new-file".to_string()),
+                    old_score: Some(10),
+                    new_score: Some(20),
+                }),
+            ),
+            event(
+                2,
+                now + Duration::seconds(1),
+                DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
+                    title: snapshot.clone(),
+                    media_updates: vec![MediaPathUpdate {
+                        path: "/data/old.mkv".to_string(),
+                        update_type: MediaUpdateType::Deleted,
+                    }],
+                    file_id: Some("old-file".to_string()),
+                    reason: MediaFileDeletedReason::UpgradeCleanup,
+                    episode_ids: Vec::new(),
+                }),
+            ),
+            event(
+                3,
+                now + Duration::seconds(2),
+                DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
+                    title: snapshot,
+                    media_updates: vec![MediaPathUpdate {
+                        path: "/recycle/old.mkv".to_string(),
+                        update_type: MediaUpdateType::Deleted,
+                    }],
+                    file_id: Some("old-file".to_string()),
+                    reason: MediaFileDeletedReason::RecycleBinPurged,
+                    episode_ids: Vec::new(),
+                }),
+            ),
+        ];
+
+        let history = events
+            .iter()
+            .filter_map(title_history_record_from_domain_event)
+            .map(|record| record.event_type)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            history,
+            vec![
+                TitleHistoryEventType::FileUpgraded,
+                TitleHistoryEventType::FileRecycled,
+                TitleHistoryEventType::FileDeleted,
+            ]
+        );
+    }
+
     fn queue_item(
         id: &str,
         state: DownloadQueueState,
@@ -1235,6 +1341,11 @@ mod tests {
             client_type: "weaver".to_string(),
             state,
             progress_percent,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: Some(queued_at.to_string()),

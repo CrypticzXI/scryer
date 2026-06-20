@@ -249,7 +249,7 @@ impl AppUseCase {
             }
         };
         validate_indexer_connection_result(validation.clone())?;
-        let plan = client.plan_sync("preview-managed-sync").await?;
+        let plan = client.preview_sync_plan("preview-managed-sync").await?;
 
         Ok((validation, plan))
     }
@@ -703,6 +703,7 @@ mod tests {
         plan_sync_error: Option<String>,
         plan_sync_fail_on_call: Option<usize>,
         plan_sync_calls: Arc<std::sync::Mutex<usize>>,
+        preview_sync_plan_calls: Arc<std::sync::Mutex<usize>>,
         plan_sync_delay: Option<Duration>,
         active_plan_sync_calls: Arc<AtomicUsize>,
         max_concurrent_plan_sync_calls: Arc<AtomicUsize>,
@@ -733,6 +734,7 @@ mod tests {
                 plan_sync_error: None,
                 plan_sync_fail_on_call: None,
                 plan_sync_calls: Arc::new(std::sync::Mutex::new(0)),
+                preview_sync_plan_calls: Arc::new(std::sync::Mutex::new(0)),
                 plan_sync_delay: None,
                 active_plan_sync_calls: Arc::new(AtomicUsize::new(0)),
                 max_concurrent_plan_sync_calls: Arc::new(AtomicUsize::new(0)),
@@ -798,6 +800,7 @@ mod tests {
         plan_sync_error: Option<String>,
         plan_sync_fail_on_call: Option<usize>,
         plan_sync_calls: Arc<std::sync::Mutex<usize>>,
+        preview_sync_plan_calls: Arc<std::sync::Mutex<usize>>,
         plan_sync_delay: Option<Duration>,
         active_plan_sync_calls: Arc<AtomicUsize>,
         max_concurrent_plan_sync_calls: Arc<AtomicUsize>,
@@ -807,6 +810,15 @@ mod tests {
     impl IndexerManagementClient for RecordingIndexerManagementClient {
         async fn validate_connection(&self) -> AppResult<crate::IndexerValidationResult> {
             Ok(self.validate_result.clone())
+        }
+
+        async fn preview_sync_plan(
+            &self,
+            _parent_config_id: &str,
+        ) -> AppResult<crate::IndexerSyncPlan> {
+            let mut calls = self.preview_sync_plan_calls.lock().unwrap();
+            *calls += 1;
+            Ok(self.sync_plan.clone())
         }
 
         async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<crate::IndexerSyncPlan> {
@@ -855,6 +867,7 @@ mod tests {
                 plan_sync_error: self.plan_sync_error.clone(),
                 plan_sync_fail_on_call: self.plan_sync_fail_on_call,
                 plan_sync_calls: self.plan_sync_calls.clone(),
+                preview_sync_plan_calls: self.preview_sync_plan_calls.clone(),
                 plan_sync_delay: self.plan_sync_delay,
                 active_plan_sync_calls: self.active_plan_sync_calls.clone(),
                 max_concurrent_plan_sync_calls: self.max_concurrent_plan_sync_calls.clone(),
@@ -1039,6 +1052,7 @@ mod tests {
                 scryer_domain::AppPermission::ManageSystemSettings,
                 scryer_domain::AppPermission::ManageCatalogSettings,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         };
@@ -1862,6 +1876,43 @@ mod tests {
         let seen_management = provider.seen_management_configs.lock().unwrap();
         assert_eq!(seen_management.len(), 1);
         assert_eq!(seen_management[0].base_url, "https://ipt.beelyrics.net");
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn preview_managed_indexer_children_uses_preview_plan_without_full_sync() {
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![crate::ManagedIndexerChildPlan {
+                child_key: "preview-child".to_string(),
+                name: "Preview Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                config_json: r#"{"feed_url":"https://preview.example/rss"}"#.to_string(),
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                routing_scopes: Vec::new(),
+            }],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let (_validation, plan) = app
+            .preview_managed_indexer_children(
+                &test_admin(),
+                "manager",
+                Some(r#"{"base_url":"https://manager.example"}"#),
+            )
+            .await
+            .expect("preview plan");
+
+        assert_eq!(plan.children.len(), 1);
+        assert_eq!(*provider.preview_sync_plan_calls.lock().unwrap(), 1);
         assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 0);
     }
 

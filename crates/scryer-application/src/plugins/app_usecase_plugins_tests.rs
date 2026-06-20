@@ -1,5 +1,5 @@
 use super::*;
-use crate::plugins::catalog::RulePackCatalogEntry;
+use crate::plugins::catalog::{RulePackCatalogEntry, parse_digest_string};
 use async_trait::async_trait;
 use scryer_domain::{
     NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
@@ -844,6 +844,7 @@ fn admin() -> User {
             scryer_domain::LibraryPermission::Request,
             scryer_domain::LibraryPermission::AutoApproveRequests,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
@@ -860,6 +861,7 @@ fn viewer() -> User {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
                 scryer_domain::LibraryPermission::View,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         },
@@ -877,6 +879,7 @@ fn config_admin() -> User {
                 scryer_domain::AppPermission::ManageSystemSettings,
                 scryer_domain::AppPermission::ManageCatalogSettings,
             ]),
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
             ..Default::default()
         },
@@ -1122,6 +1125,107 @@ fn make_catalog_fixture_json(entries: &[serde_json::Value]) -> String {
     .to_string()
 }
 
+fn make_raw_catalog_v3_json(entries: &[serde_json::Value]) -> String {
+    serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
+        "plugins": entries,
+        "rule_packs": [],
+    })
+    .to_string()
+}
+
+fn catalog_v3_artifact(
+    url: &str,
+    required_features: &[&str],
+    artifact_digest: &str,
+    wasm_digest: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "runtime": "wasm32-wasip1",
+        "required_features": required_features,
+        "url": url,
+        "mirror_urls": [],
+        "signature_url": format!("{url}.bundle.json"),
+        "signature_mirror_urls": [],
+        "digests": [artifact_digest],
+        "wasm_digests": [wasm_digest],
+        "bytes": 4,
+    })
+}
+
+fn catalog_entry_with_artifacts(
+    id: &str,
+    version: &str,
+    artifacts: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": format!("{id} Plugin"),
+        "description": format!("Description for {id}"),
+        "plugin_type": "indexer",
+        "provider_type": id,
+        "publisher": "scryer",
+        "support_tier": "official",
+        "status": "active",
+        "docs_url": format!("https://example.com/{id}/docs"),
+        "source_repo": fixture_source_repo(id),
+        "required_signer": {
+            "github_repository": format!("scryer-media/test-plugin-{}", id.replace('_', "-"))
+        },
+        "releases": [{
+            "version": version,
+            "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+            "artifacts": artifacts,
+        }],
+    })
+}
+
+fn set_installation_catalog_artifact_identity(
+    installation: &mut PluginInstallation,
+    wasm_digest: &str,
+    artifact_digest: &str,
+    source_url: &str,
+) {
+    let (algorithm, digest) = parse_digest_string(wasm_digest).unwrap();
+    installation.wasm_digest_algo = Some(algorithm);
+    installation.wasm_digest = Some(digest);
+    installation.artifact_digest = Some(artifact_digest.to_string());
+    installation.source_url = Some(source_url.to_string());
+}
+
+const ALPHA_BASELINE_ARTIFACT_URL: &str = "https://example.com/alpha.wasm.zst";
+const ALPHA_SIMD_ARTIFACT_URL: &str = "https://example.com/alpha-simd.wasm.zst";
+const ALPHA_BASELINE_ARTIFACT_DIGEST: &str =
+    "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const ALPHA_BASELINE_WASM_DIGEST: &str =
+    "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const ALPHA_SIMD_ARTIFACT_DIGEST: &str =
+    "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const ALPHA_SIMD_WASM_DIGEST: &str =
+    "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+fn alpha_baseline_and_simd_catalog_json() -> String {
+    make_raw_catalog_v3_json(&[catalog_entry_with_artifacts(
+        "alpha",
+        "1.0.0",
+        vec![
+            catalog_v3_artifact(
+                ALPHA_BASELINE_ARTIFACT_URL,
+                &[],
+                ALPHA_BASELINE_ARTIFACT_DIGEST,
+                ALPHA_BASELINE_WASM_DIGEST,
+            ),
+            catalog_v3_artifact(
+                ALPHA_SIMD_ARTIFACT_URL,
+                &["simd128"],
+                ALPHA_SIMD_ARTIFACT_DIGEST,
+                ALPHA_SIMD_WASM_DIGEST,
+            ),
+        ],
+    )])
+}
+
 fn assert_not_available_from_catalog(err: AppError, plugin_id: &str) {
     assert!(matches!(err, AppError::NotFound(_)));
     match err {
@@ -1243,6 +1347,13 @@ struct TestHarness {
 }
 
 fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
+    bootstrap_plugins_with_supported_features(provider, &[])
+}
+
+fn bootstrap_plugins_with_supported_features(
+    provider: Option<MockPluginProvider>,
+    supported_features: &[&str],
+) -> TestHarness {
     use crate::null_repositories::NullSettingsRepository;
     use crate::null_repositories::test_nulls::*;
     use crate::types::JwtAuthConfig;
@@ -1265,7 +1376,8 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         String::new(),
     )
     .with_plugin_installations(plugin_repo.clone())
-    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone());
+    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone())
+    .with_supported_plugin_required_features(supported_features.iter().copied());
     let plugin_provider = provider.map(Arc::new);
     if let Some(provider) = &plugin_provider {
         services = services.with_plugin_provider(provider.clone());
@@ -2444,6 +2556,80 @@ async fn list_installed_at_latest() {
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert!(!result[0].update_available);
+}
+
+#[tokio::test]
+async fn list_installed_same_version_portable_updates_to_simd_artifact_on_simd_host() {
+    let h = bootstrap_plugins_with_supported_features(Some(MockPluginProvider::new()), &["simd128"]);
+    h.plugin_repo
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some(alpha_baseline_and_simd_catalog_json()),
+        )
+        .await;
+    let mut installation = make_installation("alpha", "1.0.0", false, true);
+    set_installation_catalog_artifact_identity(
+        &mut installation,
+        ALPHA_BASELINE_WASM_DIGEST,
+        ALPHA_BASELINE_ARTIFACT_DIGEST,
+        ALPHA_BASELINE_ARTIFACT_URL,
+    );
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert_eq!(result.len(), 1);
+    let plugin = &result[0];
+    assert_eq!(plugin.version, "1.0.0");
+    assert_eq!(plugin.installed_version.as_deref(), Some("1.0.0"));
+    assert_eq!(plugin.wasm_url.as_deref(), Some(ALPHA_SIMD_ARTIFACT_URL));
+    assert!(plugin.update_available);
+}
+
+#[tokio::test]
+async fn list_installed_same_version_portable_does_not_update_without_simd_support() {
+    let h = bootstrap_plugins_with_supported_features(Some(MockPluginProvider::new()), &[]);
+    h.plugin_repo
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some(alpha_baseline_and_simd_catalog_json()),
+        )
+        .await;
+    let mut installation = make_installation("alpha", "1.0.0", false, true);
+    set_installation_catalog_artifact_identity(
+        &mut installation,
+        ALPHA_BASELINE_WASM_DIGEST,
+        ALPHA_BASELINE_ARTIFACT_DIGEST,
+        ALPHA_BASELINE_ARTIFACT_URL,
+    );
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert_eq!(result[0].wasm_url.as_deref(), Some(ALPHA_BASELINE_ARTIFACT_URL));
+    assert!(!result[0].update_available);
+}
+
+#[tokio::test]
+async fn list_builtin_same_version_counts_as_portable_for_simd_artifact_update() {
+    let h = bootstrap_plugins_with_supported_features(Some(MockPluginProvider::new()), &["simd128"]);
+    h.plugin_repo
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some(alpha_baseline_and_simd_catalog_json()),
+        )
+        .await;
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("alpha", "1.0.0", true, true));
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert!(result[0].builtin);
+    assert_eq!(result[0].wasm_url.as_deref(), Some(ALPHA_SIMD_ARTIFACT_URL));
+    assert!(result[0].update_available);
 }
 
 #[tokio::test]

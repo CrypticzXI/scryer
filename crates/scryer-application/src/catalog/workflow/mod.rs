@@ -12,7 +12,9 @@ use crate::catalog_helpers::{
 use crate::contracts::{
     QueueDownloadOutcome, QueuedDownloadResult, SubmissionConflictPolicy, SubmissionScopeConflict,
 };
-use crate::domain_events::{deleted_media_update, new_title_domain_event, title_context_snapshot};
+use crate::domain_events::{
+    DomainEventActor, deleted_media_update, new_title_domain_event, title_context_snapshot,
+};
 use crate::settings::settings::root_folder_entries_from_library_roots;
 use scryer_domain::{
     DomainEventPayload, JobRunCompletedEventData, JobRunFailedEventData, JobRunStartedEventData,

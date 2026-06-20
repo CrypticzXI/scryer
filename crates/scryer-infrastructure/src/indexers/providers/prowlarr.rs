@@ -493,6 +493,82 @@ impl ProwlarrManagementClient {
         ))
     }
 
+    async fn build_sync_plan(&self, fetch_caps: bool) -> AppResult<IndexerSyncPlan> {
+        let config = self.config()?.clone();
+        let api = self
+            .ensure_supported_api_bucket()
+            .await
+            .map_err(ProwlarrRequestError::into_app_error)?;
+        let indexers: Vec<ProwlarrIndexerResource> =
+            self.get_json(api.bucket.indexer_path()).await?;
+        let app_profiles: Vec<ProwlarrAppProfile> =
+            self.get_json(api.bucket.app_profile_path()).await?;
+        let app_profiles_by_id = app_profiles
+            .into_iter()
+            .map(|profile| (profile.id, profile))
+            .collect::<HashMap<_, _>>();
+
+        if !fetch_caps {
+            let children = indexers
+                .into_iter()
+                .filter_map(|indexer| {
+                    build_managed_child_plan(&config, indexer, &app_profiles_by_id, None)
+                })
+                .collect();
+            return Ok(IndexerSyncPlan { children });
+        }
+
+        let mut planned_children = stream::iter(indexers.into_iter().enumerate())
+            .map(|(position, indexer)| {
+                let config = config.clone();
+                async move {
+                    let child_key = indexer.id.to_string();
+                    let caps_snapshot = if indexer.enable {
+                        match self.fetch_child_caps_snapshot(&config, indexer.id).await {
+                            Ok(snapshot) => {
+                                debug!(
+                                    child_key,
+                                    movie_params = ?snapshot.movie_search.supported_params,
+                                    tv_params = ?snapshot.tv_search.supported_params,
+                                    "fetched managed child caps snapshot"
+                                );
+                                Some(snapshot)
+                            }
+                            Err(error) => {
+                                warn!(
+                                    child_key,
+                                    error = ?error,
+                                    "failed to fetch managed child caps snapshot; child will fall back to query-only search"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        debug!(
+                            child_key,
+                            "skipping managed child caps fetch because the upstream Prowlarr indexer is disabled"
+                        );
+                        None
+                    };
+
+                    (position, indexer, caps_snapshot)
+                }
+            })
+            .buffer_unordered(PROWLARR_CHILD_CAPS_FETCH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        planned_children.sort_by_key(|(position, _, _)| *position);
+
+        let children = planned_children
+            .into_iter()
+            .filter_map(|(_, indexer, caps_snapshot)| {
+                build_managed_child_plan(&config, indexer, &app_profiles_by_id, caps_snapshot)
+            })
+            .collect();
+
+        Ok(IndexerSyncPlan { children })
+    }
+
     fn request_policy(&self, path: &str) -> RequestPolicy {
         let base_url = self
             .config
@@ -568,69 +644,11 @@ impl IndexerManagementClient for ProwlarrManagementClient {
     }
 
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
-        let config = self.config()?.clone();
-        let api = self
-            .ensure_supported_api_bucket()
-            .await
-            .map_err(ProwlarrRequestError::into_app_error)?;
-        let indexers: Vec<ProwlarrIndexerResource> =
-            self.get_json(api.bucket.indexer_path()).await?;
-        let app_profiles: Vec<ProwlarrAppProfile> =
-            self.get_json(api.bucket.app_profile_path()).await?;
-        let app_profiles_by_id = app_profiles
-            .into_iter()
-            .map(|profile| (profile.id, profile))
-            .collect::<HashMap<_, _>>();
+        self.build_sync_plan(true).await
+    }
 
-        let mut planned_children = stream::iter(indexers.into_iter().enumerate())
-            .map(|(position, indexer)| {
-                let config = config.clone();
-                async move {
-                    let child_key = indexer.id.to_string();
-                    let caps_snapshot = if indexer.enable {
-                        match self.fetch_child_caps_snapshot(&config, indexer.id).await {
-                            Ok(snapshot) => {
-                                debug!(
-                                    child_key,
-                                    movie_params = ?snapshot.movie_search.supported_params,
-                                    tv_params = ?snapshot.tv_search.supported_params,
-                                    "fetched managed child caps snapshot"
-                                );
-                                Some(snapshot)
-                            }
-                            Err(error) => {
-                                warn!(
-                                    child_key,
-                                    error = ?error,
-                                    "failed to fetch managed child caps snapshot; child will fall back to query-only search"
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        debug!(
-                            child_key,
-                            "skipping managed child caps fetch because the upstream Prowlarr indexer is disabled"
-                        );
-                        None
-                    };
-
-                    (position, indexer, caps_snapshot)
-                }
-            })
-            .buffer_unordered(PROWLARR_CHILD_CAPS_FETCH_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        planned_children.sort_by_key(|(position, _, _)| *position);
-
-        let children = planned_children
-            .into_iter()
-            .filter_map(|(_, indexer, caps_snapshot)| {
-                build_managed_child_plan(&config, indexer, &app_profiles_by_id, caps_snapshot)
-            })
-            .collect();
-
-        Ok(IndexerSyncPlan { children })
+    async fn preview_sync_plan(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
+        self.build_sync_plan(false).await
     }
 
     fn name(&self) -> &str {
@@ -1483,6 +1501,63 @@ mod tests {
         let plan = client.plan_sync("parent").await.expect("sync plan");
 
         assert!(plan.children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_sync_plan_lists_children_without_fetching_caps() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 7,
+                "name": "Fixture Indexer",
+                "enable": true,
+                "appProfileId": 1,
+                "protocol": "usenet",
+                "priority": 3,
+                "downloadClientId": 0,
+                "capabilities": { "categories": [] }
+            }])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "enableRss": true,
+                "enableAutomaticSearch": true,
+                "enableInteractiveSearch": true
+            }])))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let plan = client
+            .preview_sync_plan("parent")
+            .await
+            .expect("preview plan");
+        let child = plan.children.first().expect("child plan");
+        let metadata: ManagedChildMetadata =
+            serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
+
+        assert_eq!(metadata.indexer_id, 7);
+        assert!(metadata.caps_snapshot.is_none());
+        assert!(child.caps_snapshot_json.is_none());
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            !requests.iter().any(|request| request.url.path() == "/7/api"
+                && request.url.query().unwrap_or_default().contains("t=caps")),
+            "preview must not fetch child caps"
+        );
     }
 
     #[tokio::test]

@@ -103,6 +103,10 @@ const zh_CN: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -448,6 +452,12 @@ const zh_CN: LocaleDictionary = {
   "settings.renameTokenYear": "发行年份",
   "settings.renameTokenQuality": "质量（例如 1080p）",
   "settings.renameTokenEdition": "版本（例如 导演剪辑版）",
+  "settings.renameTokenImdbId": "IMDb ID",
+  "settings.renameTokenTmdbId": "TMDb ID",
+  "settings.renameTokenTvdbId": "TVDb ID",
+  "settings.renameTokenAnidbId": "AniDB ID",
+  "settings.renameTokenMalId": "MAL ID",
+  "settings.renameTokenAnilistId": "AniList ID",
   "settings.renameTokenSource": "来源（例如 BluRay、WEB-DL）",
   "settings.renameTokenVideoCodec": "视频编码器（例如 x265）",
   "settings.renameTokenAudioCodec": "音频编码器（例如 DTS）",
@@ -462,6 +472,8 @@ const zh_CN: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "未匹配的左括号 '{'",
   "settings.renameValidationUnmatchedClose": "未匹配的右括号 '}'",
   "settings.renameValidationUnknownToken": "未知标记：{{token}}",
+  "settings.folderValidationUnknownToken":
+    "文件夹模板支持 {title}、{year} 和外部 ID 标记。无效标记：{{token}}",
   "settings.renameValidationEmpty": "重命名模板不能为空",
   "settings.renameComingSoon": "重命名规则即将推出。",
   "settings.mediaSettingsSaved": "媒体设置已保存。",
@@ -713,6 +725,7 @@ const zh_CN: LocaleDictionary = {
   "queue.state.postProcessing": "后处理中",
   "queue.state.paused": "已暂停",
   "queue.state.completed": "已完成",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "待导入",
   "queue.state.importBlocked": "进口受阻",
   "queue.state.failed": "失败",
@@ -725,6 +738,8 @@ const zh_CN: LocaleDictionary = {
     "{{downloading}} 个下载中，{{waiting}} 个待导入，{{attention}} 个需关注",
   "queue.manualImport": "手动导入",
   "queue.manualImporting": "正在加入队列…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "手动导入已加入队列。",
   "queue.manualImportFailed": "手动导入失败。",
   "queue.removeFailed": "移除失败",
@@ -995,6 +1010,8 @@ const zh_CN: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "更新：v{{version}}",
   "settings.pluginUpgrade": "升级到 v{{version}}",
+  "settings.pluginOptimizedBuildAvailable": "优化构建可用",
+  "settings.pluginInstallOptimizedBuild": "安装优化构建",
   "settings.pluginNoCompatibleRelease":
     "当前 Scryer 版本没有兼容的发布版本",
   "settings.pluginNewerReleaseRequiresNewerScryer":

@@ -235,6 +235,11 @@ pub struct DownloadQueueItemPayload {
     pub state: DownloadQueueStateValue,
     pub display_state: DownloadDisplayStateValue,
     pub progress_percent: i32,
+    pub import_transfer_phase: Option<String>,
+    pub import_transfer_bytes: Option<String>,
+    pub import_transfer_total_bytes: Option<String>,
+    pub import_transfer_started_at: Option<String>,
+    pub import_transfer_updated_at: Option<String>,
     pub size_bytes: Option<String>,
     pub remaining_seconds: Option<i32>,
     pub queued_at: Option<String>,
@@ -318,6 +323,7 @@ pub struct DownloadQueueActionPayload {
 pub struct ManualImportPreviewPayload {
     pub files: Vec<ManualImportFilePreviewPayload>,
     pub available_episodes: Vec<EpisodePayload>,
+    pub available_series_movies: Vec<ManualImportSeriesMovieTargetPayload>,
 }
 
 #[derive(SimpleObject, Clone)]

@@ -181,6 +181,56 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.list_recent_completed_downloads(limit).await
     }
 
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_queue_excluding_client_types(excluded_client_types),
+        )
+        .await
+    }
+
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_excluding_client_types(limit, excluded_client_types),
+        )
+        .await
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.inner
+            .list_recent_completed_downloads_excluding_client_types(limit, excluded_client_types)
+            .await
+    }
+
+    async fn list_recent_completed_downloads_for_client_scope(
+        &self,
+        limit: usize,
+        client_ids: &[String],
+        client_types: &[String],
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.inner
+            .list_recent_completed_downloads_for_client_scope(
+                limit,
+                client_ids,
+                client_types,
+                excluded_client_types,
+            )
+            .await
+    }
+
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         self.inner.pause_queue_item(id).await
     }
@@ -445,6 +495,19 @@ impl PrioritizedDownloadClientRouter {
             .filter(|config| config.is_enabled)
             .collect::<Vec<_>>();
         clients.sort_by_key(|config| config.client_priority);
+        Ok(clients)
+    }
+
+    async fn list_enabled_clients_by_priority_excluding(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadClientConfig>> {
+        let mut clients = self.list_enabled_clients_by_priority().await?;
+        clients.retain(|config| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| config.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
         Ok(clients)
     }
 
@@ -1195,9 +1258,22 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
-        let clients = self.list_enabled_clients_by_priority().await?;
+        self.list_queue_excluding_client_types(&[]).await
+    }
+
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self.fallback_client.list_queue().await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client.list_queue().await
+            } else {
+                Ok(Vec::new())
+            };
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -1359,13 +1435,28 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     }
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_recent_activity_excluding_client_types(limit, &[])
+            .await
+    }
+
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let clients = self.list_enabled_clients_by_priority().await?;
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self.fallback_client.list_recent_activity(limit).await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client.list_recent_activity(limit).await
+            } else {
+                Ok(Vec::new())
+            };
         }
 
         let mut all_items = Vec::new();
@@ -1641,20 +1732,92 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         &self,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.list_recent_completed_downloads_excluding_client_types(limit, &[])
+            .await
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.list_recent_completed_downloads_for_client_scope(
+            limit,
+            &[],
+            &[],
+            excluded_client_types,
+        )
+        .await
+    }
+
+    async fn list_recent_completed_downloads_for_client_scope(
+        &self,
+        limit: usize,
+        client_ids: &[String],
+        client_types: &[String],
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
-        let clients = self.list_enabled_clients_by_priority().await?;
+        let clients = self
+            .list_enabled_clients_by_priority_excluding(excluded_client_types)
+            .await?;
         if clients.is_empty() {
-            return self
-                .fallback_client
-                .list_recent_completed_downloads(limit)
-                .await;
+            return if excluded_client_types.is_empty() {
+                self.fallback_client
+                    .list_recent_completed_downloads_for_client_scope(
+                        limit,
+                        client_ids,
+                        client_types,
+                        excluded_client_types,
+                    )
+                    .await
+            } else {
+                Ok(Vec::new())
+            };
         }
 
+        let scoped_client_ids = client_ids
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        let scoped_client_types = client_types
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        let has_scope = !scoped_client_ids.is_empty() || !scoped_client_types.is_empty();
         let mut all_items = Vec::new();
         for config in clients {
+            if has_scope {
+                let type_key = config.client_type.trim().to_ascii_lowercase();
+                let id_matches =
+                    !scoped_client_ids.is_empty() && scoped_client_ids.contains(config.id.trim());
+                let type_matches = !scoped_client_types.is_empty()
+                    && scoped_client_types.contains(type_key.as_str());
+                let matches_scope = id_matches || type_matches;
+                if !matches_scope {
+                    continue;
+                }
+            }
+            if let Some(remaining) = self.feedback_backoff_remaining(
+                &config.id,
+                DownloadFeedbackReadKind::RecentCompletedDownloads,
+            ) {
+                debug!(
+                    client_id = %config.id,
+                    client = %config.name,
+                    read_kind = Self::feedback_read_kind_label(
+                        DownloadFeedbackReadKind::RecentCompletedDownloads
+                    ),
+                    remaining_ms = remaining.as_millis(),
+                    "skipping download client feedback read during backoff"
+                );
+                continue;
+            }
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
@@ -1677,6 +1840,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
+                        recent_completed_strategy = recent_completed_strategy_label(&config.client_type),
                         count = items.len(),
                         "recent completed downloads from client"
                     );
@@ -1800,6 +1964,13 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             apply_remote_path_mappings_to_status(&mut status, mappings);
         }
         Ok(status)
+    }
+}
+
+fn recent_completed_strategy_label(client_type: &str) -> &'static str {
+    match client_type {
+        "sabnzbd" | "weaver" => "bounded",
+        _ => "full_fallback_or_client_default",
     }
 }
 
@@ -2025,6 +2196,86 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FailingCompletedDownloadClient {
+        recent_completed_calls: AtomicUsize,
+    }
+
+    impl FailingCompletedDownloadClient {
+        fn recent_completed_call_count(&self) -> usize {
+            self.recent_completed_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl DownloadClient for FailingCompletedDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_recent_completed_downloads(
+            &self,
+            _limit: usize,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.recent_completed_calls.fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Repository(
+                "completed history unavailable".to_string(),
+            ))
+        }
+    }
+
+    #[derive(Default)]
+    struct ScopedRecentCompletedDownloadClient {
+        scoped_calls: Mutex<Vec<(Vec<String>, Vec<String>)>>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for ScopedRecentCompletedDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_recent_completed_downloads(
+            &self,
+            _limit: usize,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            Err(AppError::Repository(
+                "unscoped completed history should not be used".to_string(),
+            ))
+        }
+
+        async fn list_recent_completed_downloads_for_client_scope(
+            &self,
+            _limit: usize,
+            client_ids: &[String],
+            client_types: &[String],
+            _excluded_client_types: &[&str],
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.scoped_calls
+                .lock()
+                .unwrap()
+                .push((client_ids.to_vec(), client_types.to_vec()));
+            Ok(vec![scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: "default".to_string(),
+                download_client_item_id: "qbit-1".to_string(),
+                download_id: None,
+                name: "Qbit Complete".to_string(),
+                dest_dir: "/downloads/qbit".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            }])
+        }
+    }
+
     struct MockDownloadClientPluginProvider {
         accepted_inputs: Vec<String>,
         clients: Vec<(String, Arc<dyn DownloadClient>)>,
@@ -2208,6 +2459,11 @@ mod tests {
             client_type: "mock".to_string(),
             state: scryer_domain::DownloadQueueState::Queued,
             progress_percent: 0,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,
@@ -3316,6 +3572,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_queue_excluding_weaver_keeps_non_weaver_clients() {
+        let qbit_client = Arc::new(MockDownloadClient::default());
+        qbit_client
+            .queue_items
+            .lock()
+            .unwrap()
+            .push(test_queue_item("qbit-1"));
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("qbit-client".to_string(), qbit_client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("weaver-client", "Weaver", "weaver", 0),
+                    test_config("qbit-client", "qBittorrent", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_queue_excluding_client_types(&["weaver"])
+            .await
+            .expect("queue listing should succeed");
+
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["qbit-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_excluding_only_weaver_does_not_use_fallback_client() {
+        let fallback = Arc::new(MockDownloadClient::default());
+        fallback
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "fallback".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "fallback-1".to_string(),
+                download_id: None,
+                name: "Fallback".to_string(),
+                dest_dir: "/downloads/fallback".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("weaver-client", "Weaver", "weaver", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            fallback,
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            None,
+        );
+
+        let items = router
+            .list_recent_completed_downloads_excluding_client_types(10, &["weaver"])
+            .await
+            .expect("recent completed listing should succeed");
+
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
     async fn list_recent_completed_downloads_merges_clients_before_truncating() {
         let client_a = Arc::new(MockDownloadClient::default());
         let client_b = Arc::new(MockDownloadClient::default());
@@ -3406,6 +3742,160 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_downloads_for_client_scope_skips_unrelated_clients() {
+        let qbit_client = Arc::new(MockDownloadClient::default());
+        qbit_client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "qbit-1".to_string(),
+                download_id: None,
+                name: "Qbit Complete".to_string(),
+                dest_dir: "/downloads/qbit".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+        let nzbget_client = Arc::new(FailingCompletedDownloadClient::default());
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string(), "nzb_file".to_string()],
+                clients: vec![
+                    ("qbit-client".to_string(), qbit_client.clone()),
+                    ("nzbget-client".to_string(), nzbget_client.clone()),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("qbit-client", "qBittorrent", "qbittorrent", 0),
+                    test_config("nzbget-client", "NZBGet", "nzbget", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_recent_completed_downloads_for_client_scope(
+                10,
+                &["qbit-client".to_string()],
+                &[],
+                &[],
+            )
+            .await
+            .expect("scoped completed downloads should succeed");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].download_client_item_id, "qbit-1");
+        assert_eq!(items[0].client_id, "qbit-client");
+        assert_eq!(nzbget_client.recent_completed_call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_downloads_for_client_scope_matches_exact_id_with_stale_type() {
+        let qbit_client = Arc::new(MockDownloadClient::default());
+        qbit_client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "qbit-1".to_string(),
+                download_id: None,
+                name: "Qbit Complete".to_string(),
+                dest_dir: "/downloads/qbit".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+        let nzbget_client = Arc::new(FailingCompletedDownloadClient::default());
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string(), "nzb_file".to_string()],
+                clients: vec![
+                    ("qbit-client".to_string(), qbit_client.clone()),
+                    ("nzbget-client".to_string(), nzbget_client.clone()),
+                ],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("qbit-client", "qBittorrent", "stale-type", 0),
+                    test_config("nzbget-client", "NZBGet", "nzbget", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_recent_completed_downloads_for_client_scope(
+                10,
+                &["qbit-client".to_string()],
+                &[],
+                &[],
+            )
+            .await
+            .expect("exact-id scoped completed downloads should succeed");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].download_client_item_id, "qbit-1");
+        assert_eq!(items[0].client_id, "qbit-client");
+        assert_eq!(nzbget_client.recent_completed_call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_recent_completed_downloads_backs_off_failing_clients() {
+        let failing_client = Arc::new(FailingCompletedDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_file".to_string()],
+                clients: vec![("nzbget-client".to_string(), failing_client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("nzbget-client", "NZBGet", "nzbget", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let first = router
+            .list_recent_completed_downloads(10)
+            .await
+            .expect("failed client should produce partial empty results");
+        let second = router
+            .list_recent_completed_downloads(10)
+            .await
+            .expect("client in backoff should still produce partial empty results");
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert_eq!(failing_client.recent_completed_call_count(), 1);
     }
 
     #[tokio::test]
@@ -3520,6 +4010,26 @@ mod tests {
             AppError::DownloadFeedbackTimeout(ref message)
                 if message == DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE
         ));
+    }
+
+    #[tokio::test]
+    async fn download_client_timeout_wrapper_forwards_scoped_recent_completed_reads() {
+        let inner = Arc::new(ScopedRecentCompletedDownloadClient::default());
+        let wrapped = FeedbackTimeoutDownloadClient::new(inner.clone(), Duration::from_millis(100));
+        let client_ids = vec!["default".to_string()];
+        let client_types = vec!["qbittorrent".to_string()];
+
+        let items = wrapped
+            .list_recent_completed_downloads_for_client_scope(10, &client_ids, &client_types, &[])
+            .await
+            .expect("scoped recent completed reads should forward to the wrapped client");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].download_client_item_id, "qbit-1");
+        let calls = inner.scoped_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, client_ids);
+        assert_eq!(calls[0].1, client_types);
     }
 
     #[tokio::test]

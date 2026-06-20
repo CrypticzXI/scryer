@@ -1,6 +1,8 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
+use scryer_domain::{
+    ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
+};
 use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -481,6 +483,64 @@ pub trait UserRepository: Send + Sync {
     async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait OAuthRepository: Send + Sync {
+    async fn create_authorization_code(
+        &self,
+        record: OAuthAuthorizationCodeRecord,
+    ) -> AppResult<OAuthAuthorizationCodeRecord>;
+    async fn get_authorization_code(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<OAuthAuthorizationCodeRecord>>;
+    async fn consume_authorization_code(
+        &self,
+        id: &str,
+        consumed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
+    async fn create_refresh_grant(
+        &self,
+        grant: OAuthRefreshGrantRecord,
+        token: OAuthRefreshTokenRecord,
+    ) -> AppResult<OAuthRefreshGrantRecord>;
+    async fn get_refresh_token(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<(OAuthRefreshTokenRecord, OAuthRefreshGrantRecord)>>;
+    async fn rotate_refresh_token(
+        &self,
+        token_id: &str,
+        consumed_at: chrono::DateTime<chrono::Utc>,
+        next_token: OAuthRefreshTokenRecord,
+    ) -> AppResult<OAuthRefreshRotationOutcome>;
+    async fn revoke_refresh_grant(
+        &self,
+        grant_id: &str,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<bool>;
+    async fn revoke_refresh_family(
+        &self,
+        family_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
+    async fn revoke_user_refresh_grants(
+        &self,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
+    async fn touch_refresh_grant_last_used(
+        &self,
+        grant_id: &str,
+        client_id: &str,
+        used_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
+    async fn list_connected_apps(&self, user_id: &str) -> AppResult<Vec<OAuthConnectedAppRecord>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1013,6 +1073,21 @@ pub trait DownloadSubmissionRepository: Send + Sync {
             .await
     }
 
+    async fn record_submission_actor_snapshot(
+        &self,
+        _identity: &DownloadSourceIdentity,
+        _actor: DownloadSubmissionActorSnapshot,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_submission_actor_snapshot(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
+        Ok(None)
+    }
+
     async fn find_by_client_item_id(
         &self,
         identity: &DownloadSourceIdentity,
@@ -1234,6 +1309,14 @@ pub trait ImportRepository: Send + Sync {
         result_json: Option<String>,
     ) -> AppResult<()>;
 
+    async fn update_import_transfer_progress(
+        &self,
+        import_id: &str,
+        phase: ImportTransferPhase,
+        bytes: i64,
+        total_bytes: i64,
+    ) -> AppResult<()>;
+
     async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64>;
 
     async fn recover_stale_processing_imports_for_type(
@@ -1346,14 +1429,42 @@ pub trait WorkflowOperationRepository: Send + Sync {
     ) -> AppResult<WorkflowOperationInfo>;
 }
 
+#[derive(Clone, Debug)]
+pub struct ImportFileTransferProgress {
+    pub phase: ImportTransferPhase,
+    pub bytes: u64,
+    pub total_bytes: u64,
+}
+
+pub type ImportFileTransferProgressSender =
+    tokio::sync::mpsc::UnboundedSender<ImportFileTransferProgress>;
+
 #[async_trait]
 pub trait FileImporter: Send + Sync {
+    async fn snapshot_import_source(
+        &self,
+        source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot>;
+
     async fn import_file(
         &self,
         source: &Path,
         dest: &Path,
         mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     ) -> AppResult<ImportFileResult>;
+
+    async fn import_file_with_progress(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
+    ) -> AppResult<ImportFileResult> {
+        let _ = progress;
+        self.import_file(source, dest, mode, expected_source).await
+    }
 
     async fn remove_import_source_after_verified_import(
         &self,
@@ -1997,6 +2108,9 @@ pub trait IndexerPluginProvider: Send + Sync {
 #[async_trait]
 pub trait IndexerManagementClient: Send + Sync {
     async fn validate_connection(&self) -> AppResult<IndexerValidationResult>;
+    async fn preview_sync_plan(&self, parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
+        self.plan_sync(parent_config_id).await
+    }
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
         Err(AppError::Repository(
             "managed child sync is not supported for this provider".to_string(),
@@ -2562,6 +2676,25 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn list_queue_excluding_client_types(
+        &self,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if !excluded_client_types.is_empty() {
+            return Err(AppError::Repository(
+                "download client type exclusion requires a router-backed download client"
+                    .to_string(),
+            ));
+        }
+        let mut items = self.list_queue().await?;
+        items.retain(|item| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
+    }
+
     async fn list_queue_for_title(&self, _title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         self.list_queue().await
     }
@@ -2587,6 +2720,26 @@ pub trait DownloadClient: Send + Sync {
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.list_history_page(0, limit).await
+    }
+
+    async fn list_recent_activity_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if !excluded_client_types.is_empty() {
+            return Err(AppError::Repository(
+                "download client type exclusion requires a router-backed download client"
+                    .to_string(),
+            ));
+        }
+        let mut items = self.list_recent_activity(limit).await?;
+        items.retain(|item| {
+            !excluded_client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
     }
 
     async fn list_recent_activity_for_title(
@@ -2615,6 +2768,61 @@ pub trait DownloadClient: Send + Sync {
         items.sort_by_key(|item| std::cmp::Reverse(item.completed_at));
         items.truncate(limit);
         Ok(items)
+    }
+
+    async fn list_recent_completed_downloads_for_client_scope(
+        &self,
+        limit: usize,
+        client_ids: &[String],
+        client_types: &[String],
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<CompletedDownload>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut items = self.list_recent_completed_downloads(limit).await?;
+        items.retain(|item| {
+            let item_type = item.client_type.trim();
+            if excluded_client_types
+                .iter()
+                .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()))
+            {
+                return false;
+            }
+
+            let has_scope = !client_ids.is_empty() || !client_types.is_empty();
+            if !has_scope {
+                return true;
+            }
+
+            let item_client_id = item.client_id.trim();
+            let id_matches = !item_client_id.is_empty()
+                && client_ids
+                    .iter()
+                    .any(|client_id| item_client_id == client_id.trim());
+            let type_matches = !item_type.is_empty()
+                && client_types
+                    .iter()
+                    .any(|client_type| item_type.eq_ignore_ascii_case(client_type.trim()));
+
+            id_matches || type_matches
+        });
+        Ok(items)
+    }
+
+    async fn list_recent_completed_downloads_excluding_client_types(
+        &self,
+        limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<CompletedDownload>> {
+        self.list_recent_completed_downloads_for_client_scope(
+            limit,
+            &[],
+            &[],
+            excluded_client_types,
+        )
+        .await
     }
 
     async fn pause_queue_item(&self, _id: &str) -> AppResult<()> {

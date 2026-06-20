@@ -2,6 +2,7 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { useClient } from "urql";
 import { SystemView } from "@/components/views/system-view";
+import { SystemAuditContainer } from "@/components/containers/system-audit-container";
 import { SystemJobsContainer } from "@/components/containers/system-jobs-container";
 import { systemHealthQuery } from "@/lib/graphql/queries";
 import type { SystemHealth } from "@/components/root/types";
@@ -43,6 +44,9 @@ export const SystemContainer = memo(function SystemContainer({
 
   if (systemSection === "jobs") {
     return <SystemJobsContainer />;
+  }
+  if (systemSection === "audit") {
+    return <SystemAuditContainer />;
   }
 
   return (

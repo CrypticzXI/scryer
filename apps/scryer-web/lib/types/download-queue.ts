@@ -107,6 +107,11 @@ export type DownloadQueueItem = {
   state: DownloadQueueState;
   displayState: DownloadDisplayState;
   progressPercent: number;
+  importTransferPhase: "copying" | "finalizing" | null;
+  importTransferBytes: string | null;
+  importTransferTotalBytes: string | null;
+  importTransferStartedAt: string | null;
+  importTransferUpdatedAt: string | null;
   sizeBytes: string | null;
   remainingSeconds: number | null;
   queuedAt: string | null;

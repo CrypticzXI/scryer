@@ -248,10 +248,13 @@ pub(crate) fn build_search_rule_input(
             published_at: result.published_at.as_deref(),
             thumbs_up: result.thumbs_up,
             thumbs_down: result.thumbs_down,
-            is_password_protected: crate::normalize_release_password(
-                result.password_hint.as_deref(),
-            )
-            .map(|_| true),
+            is_password_protected: result
+                .extra
+                .get("password_protected")
+                .and_then(|value| value.as_bool())
+                .or_else(|| {
+                    crate::release_password_protection_hint(result.password_hint.as_deref())
+                }),
             extra: Some(&result.extra),
             indexer_languages: result.indexer_languages.as_deref(),
         },
@@ -436,7 +439,15 @@ mod tests {
 
     #[test]
     fn build_search_rule_input_normalizes_password_placeholders() {
-        for password_hint in [Some("0".to_string()), Some("   ".to_string())] {
+        for (password_hint, expected) in [
+            (Some("0".to_string()), Some(false)),
+            (Some("false".to_string()), Some(false)),
+            (Some("no".to_string()), Some(false)),
+            (Some("1".to_string()), Some(true)),
+            (Some("true".to_string()), Some(true)),
+            (Some("protected".to_string()), Some(true)),
+            (Some("   ".to_string()), None),
+        ] {
             let input = build_search_rule_input(
                 &test_parsed(),
                 &test_profile(),
@@ -476,11 +487,65 @@ mod tests {
             );
 
             let value = serde_json::to_value(input).unwrap();
-            assert!(
-                value["release"]["is_password_protected"].is_null(),
-                "placeholder password hints should normalize away"
-            );
+            match expected {
+                Some(value_expected) => {
+                    assert_eq!(value["release"]["is_password_protected"], value_expected);
+                }
+                None => {
+                    assert!(
+                        value["release"]["is_password_protected"].is_null(),
+                        "empty password hints should normalize away"
+                    );
+                }
+            }
         }
+    }
+
+    #[test]
+    fn build_search_rule_input_preserves_protection_hint_from_extra() {
+        let input = build_search_rule_input(
+            &test_parsed(),
+            &test_profile(),
+            &IndexerSearchResult {
+                source: "test-indexer".to_string(),
+                title: "Test Movie".to_string(),
+                link: None,
+                download_url: None,
+                source_kind: None,
+                size_bytes: Some(8_000_000_000),
+                published_at: Some("2026-03-10T12:00:00Z".to_string()),
+                thumbs_up: Some(5),
+                thumbs_down: Some(1),
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: Some("1".to_string()),
+                parsed_release_metadata: None,
+                quality_profile_decision: None,
+                extra: HashMap::from([(
+                    "password_protected".to_string(),
+                    serde_json::Value::from(true),
+                )]),
+                guid: None,
+                info_url: None,
+                provenance: None,
+                candidate_token: None,
+                queue_scope: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+            },
+            &test_decision(),
+            SearchRuleInputContext {
+                category: Some("movie"),
+                library_name: Some("Movies"),
+                title_tags: &[],
+                runtime_minutes: Some(120),
+            },
+        );
+
+        let value = serde_json::to_value(input).unwrap();
+        assert_eq!(value["release"]["is_password_protected"], true);
     }
 
     #[cfg(feature = "runtime-media-analysis")]

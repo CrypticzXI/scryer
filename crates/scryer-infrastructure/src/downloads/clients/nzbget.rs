@@ -688,6 +688,11 @@ impl NzbgetDownloadClient {
                     } else {
                         queue_progress
                     },
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes: size_to_bytes(size_mb),
                     remaining_seconds,
                     queued_at: extract_i64_value(
@@ -852,6 +857,11 @@ impl NzbgetDownloadClient {
                     client_type: "nzbget".to_string(),
                     state,
                     progress_percent,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes: size_to_bytes(size_mb),
                     remaining_seconds,
                     queued_at: None,
@@ -970,6 +980,11 @@ impl NzbgetDownloadClient {
                     } else {
                         0
                     },
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     size_bytes: size_to_bytes(size_mb),
                     remaining_seconds: None,
                     queued_at: None,
@@ -2108,6 +2123,11 @@ mod tests {
             client_type: "nzbget".to_string(),
             state: DownloadQueueState::Queued,
             progress_percent: 0,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,

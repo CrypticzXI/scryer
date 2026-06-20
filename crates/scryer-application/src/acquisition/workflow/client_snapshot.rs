@@ -1036,6 +1036,17 @@ async fn recover_from_standby_candidates(
         .list_standby_pending_releases_for_wanted_item(&item.id)
         .await
         .unwrap_or_default();
+    let db_blocklist: std::collections::HashSet<String> = app
+        .services
+        .workflow
+        .release_attempts
+        .list_failed_release_signatures_for_title(&item.title_id, 200)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| entry.source_title)
+        .map(|title| title.to_ascii_lowercase())
+        .collect();
 
     for standby in standby_releases {
         let mut effective_wanted = item.clone();
@@ -1055,6 +1066,16 @@ async fn recover_from_standby_candidates(
             .await
             .unwrap_or(false);
         if !claimed {
+            continue;
+        }
+
+        if db_blocklist.contains(&standby.release_title.to_ascii_lowercase()) {
+            let _ = app
+                .services
+                .workflow
+                .pending_releases
+                .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
+                .await;
             continue;
         }
 
@@ -1164,6 +1185,11 @@ async fn recover_from_standby_candidates(
 
     StandbyRecoveryOutcome::Exhausted
 }
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "standby candidate persistence carries the search context explicitly"
+)]
 async fn persist_standby_candidates(
     app: &AppUseCase,
     item: &WantedItem,
@@ -1172,6 +1198,7 @@ async fn persist_standby_candidates(
     start_index: usize,
     now: &DateTime<Utc>,
     failed_source_kinds: &[DownloadSourceKind],
+    db_blocklist: &std::collections::HashSet<String>,
 ) {
     let _ = app
         .services
@@ -1188,7 +1215,7 @@ async fn persist_standby_candidates(
             break;
         }
 
-        let decision_code = effective_auto_decision_code(candidate, failed_source_kinds);
+        let decision_code = effective_auto_decision_code(candidate, failed_source_kinds, db_blocklist);
         if !decision_code.is_eligible() {
             if matches!(
                 decision_code,
@@ -1247,7 +1274,7 @@ async fn persist_standby_candidates(
             delay_until: now.to_rfc3339(),
             status: PendingReleaseStatus::Standby,
             grabbed_at: None,
-            source_password: candidate.password_hint.clone(),
+            source_password: crate::normalize_release_password(candidate.password_hint.as_deref()),
             published_at: candidate.published_at.clone(),
             info_hash: candidate
                 .extra

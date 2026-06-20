@@ -18,11 +18,12 @@ use scryer_application::{
     start_background_download_delete_poller,
 };
 use scryer_domain::{
-    AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
-    DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id,
-    ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask, MediaFacet,
-    MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType, NewDomainEvent,
-    ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User, UserAuthorization,
+    AppPermissionMask, Collection, CollectionType, DomainEventActorKind, DomainEventPayload,
+    DomainEventStream, DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType,
+    ExternalId, Id, ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask,
+    MediaFacet, MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType,
+    NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User,
+    UserAuthorization,
 };
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
@@ -137,7 +138,7 @@ fn first_graphql_error_message_and_code(body: &Value) -> (String, String) {
         .to_string();
     let code = first["extensions"]["code"]
         .as_str()
-        .expect("graphql error code")
+        .unwrap_or_else(|| panic!("graphql error code missing: {body}"))
         .to_string();
     (message, code)
 }
@@ -147,6 +148,18 @@ fn assert_mfa_step_up_required(body: &Value) {
     assert_eq!(
         code, "MFA_STEP_UP_REQUIRED",
         "expected MFA_STEP_UP_REQUIRED GraphQL error: {body}"
+    );
+}
+
+fn assert_graphql_field_denied(body: &Value, field_key: &str) {
+    let errors = body["errors"].as_array().expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected GraphQL field {field_key} to be denied: {body}"
+    );
+    assert!(
+        body["data"].is_null() || body["data"][field_key].is_null(),
+        "denied GraphQL field {field_key} should not return data: {body}"
     );
 }
 
@@ -160,6 +173,7 @@ fn manage_users_actor(username: &str) -> User {
             app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     }
@@ -277,6 +291,15 @@ fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]
         serde_json::to_vec(&info).expect("serialize backup metadata"),
     )
     .expect("write backup metadata");
+}
+
+fn backup_dir_is_empty(ctx: &TestContext) -> bool {
+    let backup_dir = ctx.app.backup_dir();
+    !backup_dir.exists()
+        || std::fs::read_dir(backup_dir)
+            .expect("read backup dir")
+            .next()
+            .is_none()
 }
 
 async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &str) {
@@ -4155,6 +4178,7 @@ async fn graphql_auth_runtime_state_exposes_config_step_up_without_manage_users(
             ]),
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };
@@ -4327,6 +4351,76 @@ async fn graphql_my_passkeys_requires_authentication() {
 }
 
 #[tokio::test]
+async fn create_backup_requires_password_argument() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation CreateBackup {
+          createBackup {
+            filename
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    assert!(
+        errors
+            .first()
+            .and_then(|error| error["message"].as_str())
+            .is_some_and(|message| message.contains("password")),
+        "expected missing password error: {body}"
+    );
+    assert!(backup_dir_is_empty(&ctx));
+}
+
+#[tokio::test]
+async fn create_backup_rejects_blank_passwords_without_queuing_backup() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+
+    for password_literal in ["\"\"", "\"   \""] {
+        let body = schema_exec(
+            &ctx,
+            &format!(
+                r#"
+                mutation CreateBackup {{
+                  createBackup(password: {password_literal}) {{
+                    filename
+                  }}
+                }}
+                "#
+            ),
+            Some(admin.clone()),
+        )
+        .await;
+
+        let errors = body["errors"].as_array().expect("graphql errors");
+        assert!(
+            errors
+                .first()
+                .and_then(|error| error["message"].as_str())
+                .is_some_and(|message| message.contains("backup password is required")),
+            "expected blank password validation error: {body}"
+        );
+        assert!(backup_dir_is_empty(&ctx));
+    }
+}
+
+#[tokio::test]
 async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
     let ctx = TestContext::new().await;
     let admin = ctx
@@ -4379,7 +4473,7 @@ async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
         .expect("download url should be present");
     assert_eq!(
         download_url,
-        "/admin/backups/backup_20260515_abcd1234.tar.zst/download"
+        "/backups/backup_20260515_abcd1234.tar.zst/download"
     );
     let token = body["data"]["prepareBackupDownload"]["downloadAuthorizationToken"]
         .as_str()
@@ -4445,7 +4539,7 @@ async fn prepare_backup_download_percent_encodes_reserved_filename_characters() 
         .as_str()
         .expect("download url should be present");
     assert_eq!(
-        download_url, "/admin/backups/backup%202026%20%23%25%3F.tar.zst/download",
+        download_url, "/backups/backup%202026%20%23%25%3F.tar.zst/download",
         "expected percent-encoded path segment without query ticket"
     );
     assert!(
@@ -5731,10 +5825,13 @@ async fn graphql_traverses_core_graph_relationships() {
         published_at: None,
         info_hash: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .insert_pending_release(&pending_release)
-        .await
-        .expect("seed pending release");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&pending_release)
+    .await
+    .expect("seed pending release");
 
     let body = gql(
         &ctx,
@@ -10110,29 +10207,32 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed wanted item");
-    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-        .insert_pending_release(&PendingRelease {
-            id: Id::new().0,
-            wanted_item_id: "wanted-delete".to_string(),
-            title_id: id.clone(),
-            release_title: "Delete With Cleanup 2026".to_string(),
-            release_url: Some("https://example.invalid/release.nzb".to_string()),
-            source_kind: None,
-            release_size_bytes: Some(1_024),
-            release_score: 100,
-            scoring_log_json: None,
-            indexer_source: Some("test-indexer".to_string()),
-            release_guid: Some("guid-delete".to_string()),
-            added_at: "2026-03-12T00:00:00Z".to_string(),
-            delay_until: "2026-03-13T00:00:00Z".to_string(),
-            status: scryer_application::PendingReleaseStatus::Waiting,
-            grabbed_at: None,
-            source_password: None,
-            published_at: None,
-            info_hash: None,
-        })
-        .await
-        .expect("seed pending release");
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: "wanted-delete".to_string(),
+        title_id: id.clone(),
+        release_title: "Delete With Cleanup 2026".to_string(),
+        release_url: Some("https://example.invalid/release.nzb".to_string()),
+        source_kind: None,
+        release_size_bytes: Some(1_024),
+        release_score: 100,
+        scoring_log_json: None,
+        indexer_source: Some("test-indexer".to_string()),
+        release_guid: Some("guid-delete".to_string()),
+        added_at: "2026-03-12T00:00:00Z".to_string(),
+        delay_until: "2026-03-13T00:00:00Z".to_string(),
+        status: scryer_application::PendingReleaseStatus::Waiting,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+    })
+    .await
+    .expect("seed pending release");
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
@@ -10172,12 +10272,15 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             .is_empty()
     );
     assert!(
-        scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
-            .list_waiting_pending_releases()
-            .await
-            .expect("pending releases")
-            .iter()
-            .all(|entry| entry.title_id != id)
+        scryer_infrastructure::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        )
+        .list_waiting_pending_releases()
+        .await
+        .expect("pending releases")
+        .iter()
+        .all(|entry| entry.title_id != id)
     );
     assert!(
         workflow_store
@@ -10344,6 +10447,181 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 }
 
 #[tokio::test]
+async fn graphql_oauth_admin_token_cannot_use_app_permission_surfaces() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_permission_target".to_string(),
+            "target-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create permission target");
+    let oauth_admin = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_app_admin".to_string(),
+            "oauth-pass1".to_string(),
+            AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageUsers,
+                scryer_domain::AppPermission::ManagePermissions,
+                scryer_domain::AppPermission::ManageSystemSettings,
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            vec![],
+        )
+        .await
+        .expect("create OAuth admin");
+    let token = ctx
+        .app
+        .issue_oauth_access_token(&oauth_admin, "generic-native", "graphql-oauth-admin-deny")
+        .await
+        .expect("issue OAuth token");
+
+    let cases = vec![
+        (
+            "ManageSystemSettings",
+            "createBackup",
+            r#"mutation { createBackup(password: "oauth-denied-backup-pass") { filename } }"#,
+            json!({}),
+        ),
+        (
+            "ManageCatalogSettings",
+            "createRuleSet",
+            r#"mutation($input: CreateRuleSetInput!) { createRuleSet(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "name": "OAuth denied rule",
+                    "description": "oauth should not manage catalog settings",
+                    "regoSource": "package scryer\nallow := true",
+                    "appliedFacets": ["movie"]
+                }
+            }),
+        ),
+        (
+            "ManageUsers",
+            "createUser",
+            r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "username": "oauth_blocked_new_user",
+                    "password": "blocked-pass1",
+                    "appPermissions": [],
+                    "libraryPermissions": []
+                }
+            }),
+        ),
+        (
+            "ManagePermissions",
+            "setUserAppPermissions",
+            r#"mutation($input: SetUserAppPermissionsInput!) { setUserAppPermissions(input: $input) { id } }"#,
+            json!({
+                "input": {
+                    "userId": target.id,
+                    "permissions": []
+                }
+            }),
+        ),
+    ];
+
+    for (permission, field_key, query, variables) in cases {
+        let body = gql_with_token(&ctx, query, variables, &token).await;
+        assert_graphql_field_denied(&body, field_key);
+        assert!(
+            body["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("permission")),
+            "OAuth admin token should fail {permission} through permission checks: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_oauth_token_cannot_use_own_account_surfaces() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let user = ctx
+        .app
+        .create_user(
+            &admin,
+            "oauth_own_account_user".to_string(),
+            "oauth-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create OAuth user");
+    let oauth_token = ctx
+        .app
+        .issue_oauth_access_token(&user, "generic-native", "graphql-oauth-own-account-deny")
+        .await
+        .expect("issue OAuth token");
+    let session_token = ctx
+        .app
+        .issue_access_token(&user)
+        .await
+        .expect("issue full session token");
+
+    let denied_cases = vec![
+        (
+            "myOauthApps",
+            r#"query { myOauthApps { grantId clientName lastUsedAt } }"#,
+            json!({}),
+        ),
+        (
+            "revokeMyOauthApp",
+            r#"mutation { revokeMyOauthApp(grantId: "missing-grant") }"#,
+            json!({}),
+        ),
+        (
+            "myPasskeys",
+            r#"query { myPasskeys { id friendlyName } }"#,
+            json!({}),
+        ),
+        (
+            "webauthnRegisterStart",
+            r#"mutation { webauthnRegisterStart { challengeId } }"#,
+            json!({}),
+        ),
+        (
+            "myTotp",
+            r#"query { myTotp { enabled recoveryCodesRemaining } }"#,
+            json!({}),
+        ),
+        (
+            "totpEnrollmentStart",
+            r#"mutation { totpEnrollmentStart { challengeId otpauthUrl } }"#,
+            json!({}),
+        ),
+    ];
+
+    for (field_key, query, variables) in denied_cases {
+        let body = gql_with_token(&ctx, query, variables, &oauth_token).await;
+        assert_graphql_field_denied(&body, field_key);
+    }
+
+    let full_session = gql_with_token(
+        &ctx,
+        r#"query {
+          myOauthApps { grantId }
+          myTotp { enabled }
+        }"#,
+        json!({}),
+        &session_token,
+    )
+    .await;
+    assert_no_errors(&full_session);
+    assert!(full_session["data"]["myOauthApps"].is_array());
+    assert!(full_session["data"]["myTotp"]["enabled"].is_boolean());
+}
+
+#[tokio::test]
 async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -10387,7 +10665,7 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
 }
 
 #[tokio::test]
-async fn graphql_totp_enrollment_code_can_immediately_step_up() {
+async fn graphql_totp_enrollment_code_cannot_immediately_step_up() {
     let ctx = TestContext::new().await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let enrollment = ctx
@@ -10401,10 +10679,21 @@ async fn graphql_totp_enrollment_code_can_immediately_step_up() {
         .await
         .expect("complete TOTP enrollment");
 
-    ctx.app
+    let error = ctx
+        .app
         .mfa_verify_step_up(&admin, &code)
         .await
-        .expect("enrollment code should still be accepted for immediate step-up");
+        .expect_err("enrollment code should not be accepted for immediate step-up");
+    assert!(
+        error.to_string().contains("invalid TOTP code"),
+        "unexpected replay rejection: {error}"
+    );
+
+    let next_code = test_totp_code_for_step_offset(&enrollment.secret_base32, 1);
+    ctx.app
+        .mfa_verify_step_up(&admin, &next_code)
+        .await
+        .expect("later TOTP step should still verify");
 }
 
 #[tokio::test]
@@ -10433,6 +10722,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
     let cases = vec![
         (
             "createRuleSet",
+            "createRuleSet",
             r#"mutation($input: CreateRuleSetInput!) { createRuleSet(input: $input) { id } }"#,
             json!({
                 "input": {
@@ -10445,10 +10735,12 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "validateRuleSet",
+            "validateRuleSet",
             r#"mutation($input: ValidateRuleSetInput!) { validateRuleSet(input: $input) { valid } }"#,
             json!({ "input": { "regoSource": "package scryer\nallow := true" } }),
         ),
         (
+            "createIndexerConfig",
             "createIndexerConfig",
             r#"mutation($input: CreateIndexerConfigInput!) { createIndexerConfig(input: $input) { id } }"#,
             json!({
@@ -10460,6 +10752,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
             }),
         ),
         (
+            "createUser",
             "createUser",
             r#"mutation($input: CreateUserInput!) { createUser(input: $input) { id } }"#,
             json!({
@@ -10473,6 +10766,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "setUserPassword for another user",
+            "setUserPassword",
             r#"mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) { id } }"#,
             json!({
                 "input": {
@@ -10483,15 +10777,30 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
         (
             "createBackup",
-            r#"mutation { createBackup { filename } }"#,
+            "createBackup",
+            r#"mutation { createBackup(password: "step-up-backup-pass") { filename } }"#,
             json!({}),
         ),
         (
+            "acknowledgeAutoBackupDisabledMissingKeyNotice",
+            "acknowledgeAutoBackupDisabledMissingKeyNotice",
+            r#"mutation { acknowledgeAutoBackupDisabledMissingKeyNotice { enabled autoBackupDisabledMissingKeyNotice } }"#,
+            json!({}),
+        ),
+        (
+            "completeSetup",
+            "completeSetup",
+            r#"mutation { completeSetup }"#,
+            json!({}),
+        ),
+        (
+            "beginInstallPlugin",
             "beginInstallPlugin",
             r#"mutation($input: InstallPluginInput!) { beginInstallPlugin(input: $input) { pluginId } }"#,
             json!({ "input": { "pluginId": "missing-plugin" } }),
         ),
         (
+            "createNotificationChannel",
             "createNotificationChannel",
             r#"mutation($input: CreateNotificationChannelInput!) { createNotificationChannel(input: $input) { id } }"#,
             json!({
@@ -10503,11 +10812,27 @@ async fn graphql_settings_mutations_require_config_step_up() {
             }),
         ),
         (
-            "restoreRecycledItem",
-            r#"mutation($id: String!) { restoreRecycledItem(id: $id) }"#,
-            json!({ "id": "missing-recycled-item" }),
+            "executeExternalImport",
+            "executeExternalImport",
+            r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved } }"#,
+            json!({
+                "input": {
+                    "sonarr": null,
+                    "radarr": null,
+                    "prowlarr": null,
+                    "selectedMoviesPaths": [],
+                    "selectedSeriesPaths": [],
+                    "selectedAnimePaths": [],
+                    "selectedDownloadClientDedupKeys": [],
+                    "selectedIndexerDedupKeys": [],
+                    "downloadClientApiKeyOverrides": [],
+                    "downloadClientPasswordOverrides": [],
+                    "indexerApiKeyOverrides": []
+                }
+            }),
         ),
         (
+            "createLibrary",
             "createLibrary",
             r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
             json!({
@@ -10520,11 +10845,15 @@ async fn graphql_settings_mutations_require_config_step_up() {
         ),
     ];
 
-    for (name, query, variables) in cases {
+    for (name, field_key, query, variables) in cases {
         let body = gql_with_token(&ctx, query, variables, &token).await;
+        assert!(
+            body.get("errors").is_some(),
+            "expected {name} to require MFA step-up: {body}"
+        );
         assert_mfa_step_up_required(&body);
         assert!(
-            body["data"].is_null() || body["data"][name].is_null(),
+            body["data"].is_null() || body["data"][field_key].is_null(),
             "blocked mutation should not return data for {name}: {body}"
         );
     }
@@ -10563,6 +10892,35 @@ async fn graphql_config_step_up_token_satisfies_protected_settings_mutation() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createUser"]["username"], "stepped_up_user");
+
+    let external_import = gql_with_token(
+        &ctx,
+        r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved errors } }"#,
+        json!({
+            "input": {
+                "sonarr": null,
+                "radarr": null,
+                "prowlarr": null,
+                "selectedMoviesPaths": [],
+                "selectedSeriesPaths": [],
+                "selectedAnimePaths": [],
+                "selectedDownloadClientDedupKeys": [],
+                "selectedIndexerDedupKeys": [],
+                "downloadClientApiKeyOverrides": [],
+                "downloadClientPasswordOverrides": [],
+                "indexerApiKeyOverrides": []
+            }
+        }),
+        step_up_token,
+    )
+    .await;
+    assert_no_errors(&external_import);
+    assert!(
+        external_import["data"]["executeExternalImport"]["errors"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "stepped-up external import should reach normal execution: {external_import}"
+    );
 }
 
 #[tokio::test]
@@ -10853,6 +11211,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }),
@@ -10871,6 +11230,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
         app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
         libraries: HashMap::new(),
         default_library: LibraryPermissionMask::NONE,
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
     };
     let self_reset = schema_exec(&ctx, &mutation, Some(self_actor)).await;
@@ -11002,6 +11362,7 @@ async fn graphql_external_account_invites_expose_last_login() {
             app: AppPermissionMask::NONE,
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };
@@ -11049,6 +11410,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Broken.NZB.Movie.2024".to_string()),
+                source_password: None,
             },
         )
         .await
@@ -11143,6 +11505,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
+                source_password: None,
             },
         )
         .await
@@ -11264,7 +11627,8 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title()
         .await
         .expect("seed blocklist entry");
 
-    let release_store = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore());
+    let release_store =
+        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
     scryer_application::ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         Some(title_id.clone()),
@@ -12221,7 +12585,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12253,7 +12619,9 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12426,7 +12794,9 @@ async fn graphql_title_history_filters_by_episode_id() {
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12554,7 +12924,9 @@ async fn graphql_title_history_filters_skipped_import_by_episode_id() {
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -12708,7 +13080,9 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
         .append_domain_event(NewDomainEvent {
             event_id: Id::new().0,
             occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
             actor_user_id: None,
+            actor_display_name: "System".to_string(),
             title_id: Some(title.id.clone()),
             facet: Some(MediaFacet::Series),
             correlation_id: None,
@@ -13781,6 +14155,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 LibraryPermissionMask::from_permission(LibraryPermission::ManageTitles),
             )]),
             default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
             loaded: true,
         },
     };

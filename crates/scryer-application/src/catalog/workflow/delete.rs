@@ -129,7 +129,7 @@ impl AppUseCase {
 
         self.delete_title_logical_cleanup(
             &title,
-            Some(actor.id.clone()),
+            actor,
             TitleLogicalDeleteOptions {
                 purge_recycle_bin_entries: true,
                 append_title_deleted_event: true,
@@ -246,9 +246,10 @@ impl AppUseCase {
             .job_run_tracker
             .upsert_active_run(run_payload.clone())
             .await;
+        let actor_event = DomainEventActor::from(actor);
         let _ = self
             .append_domain_event(crate::domain_events::new_job_run_domain_event(
-                Some(actor.id.clone()),
+                actor_event.clone(),
                 run.id.clone(),
                 DomainEventPayload::JobRunStarted(JobRunStartedEventData {
                     run_id: run.id.clone(),
@@ -260,9 +261,8 @@ impl AppUseCase {
             .await;
 
         let app = self.clone();
-        let actor_user_id = actor.id.clone();
         tokio::spawn(async move {
-            app.run_delete_titles_job(run, actor_user_id, request, deletion_guard)
+            app.run_delete_titles_job(run, actor_event, request, deletion_guard)
                 .await;
         });
 
@@ -276,7 +276,7 @@ impl AppUseCase {
     async fn run_delete_titles_job(
         &self,
         mut run: JobRunRecord,
-        actor_user_id: String,
+        actor: DomainEventActor,
         request: DeleteTitlesJobRequest,
         _deletion_guard: tokio::sync::OwnedMutexGuard<()>,
     ) {
@@ -306,7 +306,12 @@ impl AppUseCase {
                 .await;
 
             let result = self
-                .delete_title_job_item(&actor_user_id, &item, request.delete_files_on_disk, request.typed_confirmation.as_deref())
+                .delete_title_job_item(
+                    actor.clone(),
+                    &item,
+                    request.delete_files_on_disk,
+                    request.typed_confirmation.as_deref(),
+                )
                 .await;
             match result {
                 Ok(()) => succeeded_title_ids.push(item.title_id),
@@ -356,7 +361,7 @@ impl AppUseCase {
             _ => "Title deletion finished".to_string(),
         };
         if let Err(error) = self
-            .finish_title_deletion_job(run, status, summary_text, summary)
+            .finish_title_deletion_job(run, actor, status, summary_text, summary)
             .await
         {
             warn!(error = %error, "failed to finish title deletion job");
@@ -365,7 +370,7 @@ impl AppUseCase {
 
     async fn delete_title_job_item(
         &self,
-        actor_user_id: &str,
+        actor: DomainEventActor,
         item: &DeleteTitlesJobItem,
         delete_files_on_disk: bool,
         typed_confirmation: Option<&str>,
@@ -400,7 +405,7 @@ impl AppUseCase {
 
         self.delete_title_logical_cleanup(
             &title,
-            Some(actor_user_id.to_string()),
+            actor,
             TitleLogicalDeleteOptions {
                 purge_recycle_bin_entries: true,
                 append_title_deleted_event: true,
@@ -429,6 +434,7 @@ impl AppUseCase {
     async fn finish_title_deletion_job(
         &self,
         mut run: JobRunRecord,
+        actor: DomainEventActor,
         status: JobRunStatus,
         summary_text: String,
         summary: TitleDeletionSummary,
@@ -474,7 +480,7 @@ impl AppUseCase {
         };
         let _ = self
             .append_domain_event(crate::domain_events::new_job_run_domain_event(
-                updated.actor_user_id.clone(),
+                actor,
                 updated.id.clone(),
                 payload,
             ))
@@ -485,16 +491,17 @@ impl AppUseCase {
     pub(crate) async fn delete_title_logical_cleanup(
         &self,
         title: &scryer_domain::Title,
-        actor_user_id: Option<String>,
+        actor: impl Into<DomainEventActor>,
         options: TitleLogicalDeleteOptions,
     ) -> AppResult<()> {
+        let actor = actor.into();
         self.purge_title_logical_dependents(
             title,
             options.purge_recycle_bin_entries,
-            actor_user_id.as_deref(),
+            actor.clone(),
         )
         .await?;
-        self.delete_title_row(title, actor_user_id, options.append_title_deleted_event)
+        self.delete_title_row(title, actor, options.append_title_deleted_event)
             .await
     }
 }
@@ -502,7 +509,7 @@ impl AppUseCase {
     pub(crate) async fn delete_title_row(
         &self,
         title: &scryer_domain::Title,
-        actor_user_id: Option<String>,
+        actor: DomainEventActor,
         append_title_deleted_event: bool,
     ) -> AppResult<()> {
         let title_id = title.id.as_str();
@@ -512,7 +519,7 @@ impl AppUseCase {
         if append_title_deleted_event {
             let _ = self
                 .append_domain_event(new_title_domain_event(
-                    actor_user_id,
+                    actor,
                     title,
                     DomainEventPayload::TitleDeleted(TitleDeletedEventData {
                         title: title_context_snapshot(title),
@@ -628,7 +635,7 @@ impl AppUseCase {
         {
             let _ = self
                 .append_domain_event(new_title_domain_event(
-                    Some(actor.id.clone()),
+                    actor,
                     &title,
                     DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
                         title: title_context_snapshot(&title),

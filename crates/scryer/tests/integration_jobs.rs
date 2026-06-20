@@ -8,8 +8,8 @@ use tokio::time::{Duration, timeout};
 
 use common::TestContext;
 use scryer_application::{
-    JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository, LibraryRootDraft,
-    MediaFileRepository, TitleRepository, UserRepository,
+    BackupService, JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository,
+    LibraryRootDraft, MediaFileRepository, TitleRepository, UserRepository,
 };
 use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
@@ -434,6 +434,69 @@ async fn automatic_backup_job_cannot_be_triggered_manually() {
         error
             .to_string()
             .contains("Automatic Backup can only run on its configured schedule"),
+    );
+}
+
+#[tokio::test]
+async fn automatic_backup_job_skips_stale_enabled_config_without_key() {
+    let ctx = TestContext::new().await;
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "backup.auto.enabled".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "backup.auto.daily_time_local".into(),
+                data_type: "string".into(),
+                default_value_json: "\"03:00\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "backup.auto.key".into(),
+                data_type: "string".into(),
+                default_value_json: "null".into(),
+                is_sensitive: true,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("seed automatic backup settings");
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "backup.auto.enabled",
+            None,
+            "true",
+            "integration_test",
+            None,
+        )
+        .await
+        .expect("enable automatic backup setting");
+
+    ctx.app
+        .run_scheduled_job_now(JobKey::AutoBackup, JobTriggerSource::ScheduledDaily)
+        .await
+        .expect("stale automatic backup config should skip without error");
+
+    let backup_dir = ctx.app.backup_dir();
+    assert!(
+        !backup_dir.exists()
+            || std::fs::read_dir(backup_dir)
+                .expect("read backup dir")
+                .next()
+                .is_none(),
+        "automatic backup should not create files without a key",
     );
 }
 

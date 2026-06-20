@@ -1030,6 +1030,15 @@ pub struct PasskeySummaryPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct OAuthConnectedAppPayload {
+    pub grant_id: String,
+    pub client_id: String,
+    pub client_name: String,
+    pub authorized_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct ExternalIdPayload {
     pub source: String,
     pub value: String,
@@ -1189,7 +1198,9 @@ pub struct UserLibraryPermissionGrantPayload {
 pub struct EventPayload {
     pub id: String,
     pub event_type: String,
+    pub actor_kind: String,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub message: String,
     pub occurred_at: String,
@@ -1201,7 +1212,9 @@ pub struct ActivityEventPayload {
     pub kind: ActivityKindValue,
     pub severity: ActivitySeverityValue,
     pub channels: Vec<ActivityChannelValue>,
+    pub actor_kind: String,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub facet: Option<MediaFacetValue>,
     pub message: String,
@@ -1213,7 +1226,9 @@ pub struct DomainEventEnvelopePayload {
     pub sequence: i64,
     pub event_id: String,
     pub occurred_at: String,
+    pub actor_kind: String,
     pub actor_user_id: Option<String>,
+    pub actor_display_name: String,
     pub title_id: Option<String>,
     pub facet: Option<MediaFacetValue>,
     pub event_type: DomainEventTypeValue,
@@ -1935,6 +1950,7 @@ pub struct AutoBackupSettingsPayload {
     pub enabled: bool,
     pub daily_time_local: String,
     pub auto_backup_key_present: bool,
+    pub auto_backup_disabled_missing_key_notice: bool,
     pub next_run_at: Option<String>,
 }
 
@@ -3041,10 +3057,19 @@ pub struct ManualImportFilePreviewPayload {
     pub suggested_episode_label: Option<String>,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct ManualImportSeriesMovieTargetPayload {
+    pub series_movie_link_id: String,
+    pub movie_title: String,
+    pub year: Option<i32>,
+    pub runtime_minutes: Option<i32>,
+}
+
 #[derive(InputObject)]
 pub struct ManualImportFileMappingInput {
     pub file_path: String,
-    pub episode_id: String,
+    pub episode_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
     pub quality: Option<String>,
 }
 
@@ -3936,6 +3961,9 @@ pub struct TitleHistoryEventPayload {
     pub episode_ids: Vec<String>,
     pub collection_id: Option<String>,
     pub event_type: String,
+    pub actor_kind: Option<String>,
+    pub actor_user_id: Option<String>,
+    pub actor_display_name: Option<String>,
     pub source_title: Option<String>,
     pub display_title: Option<String>,
     pub source_system: Option<String>,

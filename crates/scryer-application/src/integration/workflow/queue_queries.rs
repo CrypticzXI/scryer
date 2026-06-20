@@ -1,5 +1,4 @@
 const DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT: usize = 100;
-const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackedDownloadBackgroundWorkKind {
     Import,
@@ -260,13 +259,21 @@ fn extract_url_origin(raw: &str) -> Option<String> {
 
     Some(format!("{scheme}://{authority}"))
 }
-fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+fn apply_import_record_overlay_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
     item.import_status = Some(record.status);
+    item.import_transfer_phase = record.import_transfer_phase;
+    item.import_transfer_bytes = record.import_transfer_bytes;
+    item.import_transfer_total_bytes = record.import_transfer_total_bytes;
+    item.import_transfer_started_at = record.import_transfer_started_at.clone();
+    item.import_transfer_updated_at = record.import_transfer_updated_at.clone();
     item.imported_at = record
         .finished_at
         .clone()
         .or(Some(record.updated_at.clone()));
+}
 
+fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
+    apply_import_record_overlay_to_queue_item(item, record);
     if let Some(result_json) = record.result_json.as_deref()
         && let Ok(result) = serde_json::from_str::<scryer_domain::ImportResult>(result_json)
         && let Some(error_msg) = result.error_message
@@ -372,11 +379,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
     let mut seen_client_items = HashSet::new();
     for (index, item) in items.iter().enumerate() {
         let current = download_queue_item_source_identity(item);
-        push_source_identity_candidate(
-            &mut client_items,
-            &mut seen_client_items,
-            current.clone(),
-        );
+        push_source_identity_candidate(&mut client_items, &mut seen_client_items, current.clone());
         if current.client_id.is_none() {
             push_source_identity_candidate(
                 &mut client_items,
@@ -385,7 +388,8 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             );
         }
 
-        if let Some(original) = original_source_identities.and_then(|identities| identities.get(index))
+        if let Some(original) =
+            original_source_identities.and_then(|identities| identities.get(index))
         {
             push_source_identity_candidate(
                 &mut client_items,
@@ -497,7 +501,10 @@ async fn find_submission_for_queue_item_by_download_id(
         if client_type.is_empty() {
             return;
         }
-        let key = (normalized_download_client_id(client_id), client_type.to_string());
+        let key = (
+            normalized_download_client_id(client_id),
+            client_type.to_string(),
+        );
         if seen.insert(key.clone()) {
             candidates.push(key);
         }
@@ -562,13 +569,17 @@ fn config_value_to_string(value: &serde_json::Value) -> Option<String> {
     }
     .filter(|value| !value.is_empty())
 }
-fn synthetic_terminal_download_queue_item(
+fn synthetic_tracked_snapshot_queue_item(
     tracked: &TrackedDownloadQueueMetadata,
     primary_client: Option<&DownloadClientConfig>,
 ) -> Option<DownloadQueueItem> {
     let state = match tracked.state {
         TrackedDownloadState::Imported => DownloadQueueState::Completed,
         TrackedDownloadState::Failed => DownloadQueueState::Failed,
+        TrackedDownloadState::ImportPending => DownloadQueueState::ImportPending,
+        TrackedDownloadState::Importing | TrackedDownloadState::ImportBlocked => {
+            DownloadQueueState::Completed
+        }
         _ => return None,
     };
 
@@ -576,15 +587,32 @@ fn synthetic_terminal_download_queue_item(
     item.state = state;
     item.progress_percent = 100;
     item.remaining_seconds = Some(0);
-    item.attention_required = matches!(tracked.state, TrackedDownloadState::Failed);
+    item.attention_required = matches!(
+        tracked.state,
+        TrackedDownloadState::Failed | TrackedDownloadState::ImportBlocked
+    );
 
-    if matches!(tracked.state, TrackedDownloadState::Imported) {
-        item.import_status = Some(ImportStatus::Completed);
-        if item.imported_at.is_none() {
-            item.imported_at = item.last_updated_at.clone();
+    match tracked.state {
+        TrackedDownloadState::Imported => {
+            item.import_status = Some(ImportStatus::Completed);
+            if item.imported_at.is_none() {
+                item.imported_at = item.last_updated_at.clone();
+            }
         }
-    } else if item.import_status.is_none() {
-        item.import_status = Some(ImportStatus::Failed);
+        TrackedDownloadState::Failed if item.import_status.is_none() => {
+            item.import_status = Some(ImportStatus::Failed);
+        }
+        TrackedDownloadState::ImportPending => {}
+        TrackedDownloadState::Importing => {
+            item.import_status = Some(match item.import_status {
+                Some(ImportStatus::Processing) => ImportStatus::Processing,
+                _ => ImportStatus::Running,
+            });
+        }
+        TrackedDownloadState::ImportBlocked => {
+            item.import_status = None;
+        }
+        _ => {}
     }
 
     if item.client_id.trim().is_empty() && !tracked.client_id.trim().is_empty() {
@@ -650,7 +678,7 @@ impl AppUseCase {
                         if existing_ids.contains(tracked_id) {
                             return None;
                         }
-                        synthetic_terminal_download_queue_item(metadata, primary_client).map(
+                        synthetic_tracked_snapshot_queue_item(metadata, primary_client).map(
                             |mut item| {
                                 if item.download_client_item_id.trim().is_empty() {
                                     item.download_client_item_id = tracked_id.to_string();
@@ -672,6 +700,7 @@ impl AppUseCase {
         }
 
         canonicalize_download_queue_item_clients(&mut items, enabled_clients);
+        enrich_download_queue_items_from_submissions(self, &mut items).await;
 
         let mut items = dedupe_download_queue_items(items)
             .into_iter()
@@ -707,6 +736,22 @@ impl AppUseCase {
         include_recent_history: bool,
         use_tracked_runtime_snapshot: bool,
     ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.collect_download_snapshot_items_excluding_client_types(
+            include_queue,
+            include_recent_history,
+            use_tracked_runtime_snapshot,
+            &[],
+        )
+        .await
+    }
+
+    pub(crate) async fn collect_download_snapshot_items_excluding_client_types(
+        &self,
+        include_queue: bool,
+        include_recent_history: bool,
+        use_tracked_runtime_snapshot: bool,
+        excluded_client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
         let enabled_clients = self.enabled_download_clients_by_priority().await?;
         if enabled_clients.is_empty() {
             return Ok(Vec::new());
@@ -716,7 +761,7 @@ impl AppUseCase {
             self.services
                 .integrations
                 .download_client
-                .list_queue()
+                .list_queue_excluding_client_types(excluded_client_types)
                 .await?
         } else {
             Vec::new()
@@ -729,7 +774,10 @@ impl AppUseCase {
             self.services
                 .integrations
                 .download_client
-                .list_recent_activity(DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT)
+                .list_recent_activity_excluding_client_types(
+                    DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT,
+                    excluded_client_types,
+                )
                 .await?
         } else {
             Vec::new()
@@ -1185,6 +1233,53 @@ impl AppUseCase {
             .await?;
         Ok(visible.into_iter().next())
     }
+
+    pub async fn update_import_transfer_progress_and_notify(
+        &self,
+        import_id: &str,
+        phase: scryer_domain::ImportTransferPhase,
+        bytes: u64,
+        total_bytes: u64,
+    ) -> AppResult<()> {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        let total_bytes = i64::try_from(total_bytes).unwrap_or(i64::MAX);
+        self.services
+            .workflow
+            .imports
+            .update_import_transfer_progress(import_id, phase, bytes, total_bytes)
+            .await?;
+
+        let Some(record) = self
+            .services
+            .workflow
+            .imports
+            .get_import_by_id(import_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(item) = self
+            .find_download_queue_item_raw(
+                record.source_client_id.as_deref(),
+                Some(record.source_system.as_str()),
+                record.source_ref.as_str(),
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let key = download_queue_projection_key(&item);
+        let event = new_download_queue_domain_event(
+            None,
+            key,
+            DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
+                item,
+            }),
+        );
+        let _ = self.append_domain_event(event).await;
+        Ok(())
+    }
 }
 impl AppUseCase {
     pub async fn find_download_queue_scope(
@@ -1208,6 +1303,9 @@ impl AppUseCase {
             ))
             .await?;
         if let Some(submission) = submission.as_ref() {
+            if matches!(submission.scope, SubmissionScope::Orphan) {
+                return Ok(Some(SubmissionScope::Orphan));
+            }
             let Some(title) = self
                 .services
                 .catalog
@@ -1322,6 +1420,11 @@ fn merge_download_queue_item(existing: &mut DownloadQueueItem, incoming: Downloa
     }
     if incoming.import_status.is_some() {
         existing.import_status = incoming.import_status;
+        existing.import_transfer_phase = incoming.import_transfer_phase;
+        existing.import_transfer_bytes = incoming.import_transfer_bytes;
+        existing.import_transfer_total_bytes = incoming.import_transfer_total_bytes;
+        existing.import_transfer_started_at = incoming.import_transfer_started_at.clone();
+        existing.import_transfer_updated_at = incoming.import_transfer_updated_at.clone();
     }
     if incoming.import_error_message.is_some() {
         existing.import_error_message = incoming.import_error_message.clone();

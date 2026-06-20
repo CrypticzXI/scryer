@@ -982,16 +982,5 @@ fn merge_tracked_download_background_work_state(
     tracked: &mut crate::tracked_downloads::TrackedDownload,
     finished: crate::tracked_downloads::TrackedDownload,
 ) {
-    tracked.state = finished.state;
-    tracked.status = finished.status;
-    tracked.status_messages = finished.status_messages;
-    tracked.title_id = finished.title_id;
-    tracked.facet = finished.facet;
-    tracked.source_title = finished.source_title;
-    tracked.indexer = finished.indexer;
-    tracked.added_at = finished.added_at;
-    tracked.notified_manual_interaction = finished.notified_manual_interaction;
-    tracked.match_type = finished.match_type;
-    tracked.import_attempted = finished.import_attempted;
-    tracked.path_missing_since = finished.path_missing_since;
+    tracked.merge_background_work_state_from(finished);
 }

@@ -61,6 +61,7 @@ windows-native-keyring-store = { workspace = true }
 [dev-dependencies]
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
 
 [build-dependencies]

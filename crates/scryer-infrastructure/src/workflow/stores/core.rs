@@ -5,15 +5,17 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ImportArtifact, ImportArtifactRepository,
-    ImportRepository, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, PendingReleaseStatus,
-    SubmissionScope, SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo,
+    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionRepository,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord, JobRunStatus,
+    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    WorkflowOperationInfo,
 };
 use scryer_domain::{
-    DomainEvent, DomainEventFilter, DomainEventStream, DomainEventType, DownloadQueueCommandAction,
-    DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus, ImportType, MediaFacet,
-    NewDomainEvent, TitleHistoryEventType,
+    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventStream, DomainEventType,
+    DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
+    ImportTransferPhase, ImportType, MediaFacet, MediaFileDeletedReason, NewDomainEvent,
+    TitleHistoryEventType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
@@ -23,9 +25,9 @@ use crate::queries::sql_runtime::{
 };
 use crate::types::WorkflowOperationRecord;
 
-pub(crate) const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
+pub(crate) const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
 pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
-pub(crate) const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, started_at, finished_at, created_at, updated_at";
+pub(crate) const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
 pub(crate) const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
 #[derive(Clone)]
@@ -56,15 +58,20 @@ pub(crate) async fn append_domain_events(
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO domain_events (
-                        event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id,
-                        schema_version, stream_kind, stream_id, event_type, payload_json
-                     ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                        event_id, occurred_at, actor_kind, actor_user_id, actor_display_name,
+                        title_id, facet, correlation_id, causation_id, schema_version,
+                        stream_kind, stream_id, event_type, payload_json
+                     ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                     &[
                         SqlArg::Text(event.event_id.clone()),
                         SqlArg::Timestamp(event.occurred_at),
+                        SqlArg::Text(event.actor_kind.as_str().to_string()),
                         SqlArg::OptText(event.actor_user_id.clone()),
+                        SqlArg::Text(event.actor_display_name.clone()),
                         SqlArg::OptText(event.title_id.clone()),
-                        SqlArg::OptText(event.facet.as_ref().map(|facet| facet.as_str().to_string())),
+                        SqlArg::OptText(
+                            event.facet.as_ref().map(|facet| facet.as_str().to_string()),
+                        ),
                         SqlArg::OptText(event.correlation_id.clone()),
                         SqlArg::OptText(event.causation_id.clone()),
                         SqlArg::I32(event.schema_version),
@@ -96,13 +103,16 @@ pub(crate) async fn append_domain_event_tx(
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO domain_events (
-            event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id,
-            schema_version, stream_kind, stream_id, event_type, payload_json
-         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            event_id, occurred_at, actor_kind, actor_user_id, actor_display_name,
+            title_id, facet, correlation_id, causation_id, schema_version,
+            stream_kind, stream_id, event_type, payload_json
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(event.event_id.clone()),
             SqlArg::Timestamp(event.occurred_at),
+            SqlArg::Text(event.actor_kind.as_str().to_string()),
             SqlArg::OptText(event.actor_user_id.clone()),
+            SqlArg::Text(event.actor_display_name.clone()),
             SqlArg::OptText(event.title_id.clone()),
             SqlArg::OptText(event.facet.as_ref().map(|facet| facet.as_str().to_string())),
             SqlArg::OptText(event.correlation_id.clone()),
@@ -125,8 +135,11 @@ pub(crate) async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
-    record_download_submission_tx(tx, &commit.download_submission).await?;
-    if let Some(submission_identity) = commit.download_submission_identity.as_ref() {
+    let submission_recorded =
+        record_download_submission_tx(tx, &commit.download_submission).await?;
+    if submission_recorded
+        && let Some(submission_identity) = commit.download_submission_identity.as_ref()
+    {
         let identity = DownloadSourceIdentity::from_submission(&commit.download_submission);
         record_download_submission_identity_tx(tx, &identity, submission_identity).await?;
     }
@@ -210,16 +223,16 @@ pub(crate) async fn commit_successful_grab_tx(
 pub(crate) async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let (episode_id, collection_id, series_movie_link_id) =
         persisted_submission_scope(&submission.scope);
     let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+    let is_orphan = matches!(&submission.scope, SubmissionScope::Orphan)
+        && submission.title_id.trim().is_empty();
+    let conflict_clause = if is_orphan {
+        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO NOTHING"
+    } else {
+        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
          SET title_id = excluded.title_id,
              facet = excluded.facet,
              source_hint = excluded.source_hint,
@@ -229,7 +242,18 @@ pub(crate) async fn record_download_submission_tx(
              purpose = excluded.purpose,
              episode_id = excluded.episode_id,
              collection_id = excluded.collection_id,
-             series_movie_link_id = excluded.series_movie_link_id",
+             series_movie_link_id = excluded.series_movie_link_id"
+    };
+    let sql = [
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        conflict_clause,
+    ]
+    .join(" ");
+    let rows_affected = SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &sql,
         &[
             SqlArg::Text(Id::new().0),
             SqlArg::Text(submission.title_id.clone()),
@@ -238,7 +262,11 @@ pub(crate) async fn record_download_submission_tx(
             SqlArg::Text(submission.download_client_type.clone()),
             SqlArg::Text(submission.download_client_item_id.clone()),
             SqlArg::OptText(submission.source_hint.clone()),
-            SqlArg::OptText(submission.source_kind.map(|value| value.as_str().to_string())),
+            SqlArg::OptText(
+                submission
+                    .source_kind
+                    .map(|value| value.as_str().to_string()),
+            ),
             SqlArg::OptText(submission.source_title.clone()),
             SqlArg::OptText(submission.request_signature.clone()),
             SqlArg::Text(submission.purpose.as_str().to_string()),
@@ -248,6 +276,9 @@ pub(crate) async fn record_download_submission_tx(
         ],
     )
     .await?;
+    if rows_affected == 0 {
+        return Ok(false);
+    }
     replace_download_submission_episode_links_tx(
         tx,
         &download_client_id,
@@ -255,7 +286,8 @@ pub(crate) async fn record_download_submission_tx(
         &submission.download_client_item_id,
         persisted_episode_set_ids(&submission.scope),
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 pub(crate) async fn record_download_submission_identity_tx(
@@ -299,7 +331,9 @@ pub(crate) async fn record_download_submission_with_identity_tx(
     submission: &DownloadSubmission,
     submission_identity: &DownloadSubmissionIdentity,
 ) -> AppResult<()> {
-    record_download_submission_tx(tx, submission).await?;
+    if !record_download_submission_tx(tx, submission).await? {
+        return Ok(());
+    }
     let identity = DownloadSourceIdentity::from_submission(submission);
     record_download_submission_identity_tx(tx, &identity, submission_identity).await
 }
@@ -535,6 +569,11 @@ pub(crate) fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
             rename_plan_json = excluded.rename_plan_json,
             result_json = NULL,
             download_id = excluded.download_id,
+            import_transfer_phase = NULL,
+            import_transfer_bytes = NULL,
+            import_transfer_total_bytes = NULL,
+            import_transfer_started_at = NULL,
+            import_transfer_updated_at = NULL,
             started_at = NULL,
             finished_at = NULL,
             updated_at = excluded.updated_at",
@@ -769,10 +808,35 @@ pub(crate) fn build_title_history_filter_sql(
                         ));
                         args.push(SqlArg::Text(ImportStatus::Skipped.as_str().into()));
                     }
-                    TitleHistoryEventType::FileDeleted => {
+                    TitleHistoryEventType::FileUpgraded => {
                         parts.push("event_type = {}".to_string());
                         args.push(SqlArg::Text(
+                            DomainEventType::MediaFileUpgraded.as_str().into(),
+                        ));
+                    }
+                    TitleHistoryEventType::FileRecycled => {
+                        parts.push(format!(
+                            "(event_type = {{}} AND {} = {{}})",
+                            json_extract(datastore, "payload_json", "data", "reason")
+                        ));
+                        args.push(SqlArg::Text(
                             DomainEventType::MediaFileDeleted.as_str().into(),
+                        ));
+                        args.push(SqlArg::Text(
+                            MediaFileDeletedReason::UpgradeCleanup.as_str().into(),
+                        ));
+                    }
+                    TitleHistoryEventType::FileDeleted => {
+                        let reason = json_extract(datastore, "payload_json", "data", "reason");
+                        parts.push(format!(
+                            "(event_type = {{}} AND ({} IS NULL OR {} <> {{}}))",
+                            reason, reason
+                        ));
+                        args.push(SqlArg::Text(
+                            DomainEventType::MediaFileDeleted.as_str().into(),
+                        ));
+                        args.push(SqlArg::Text(
+                            MediaFileDeletedReason::UpgradeCleanup.as_str().into(),
                         ));
                     }
                     TitleHistoryEventType::FileRenamed => {
@@ -822,6 +886,7 @@ pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::ImportRejected,
     DomainEventType::DownloadFailed,
     DomainEventType::ReleaseBlocklisted,
+    DomainEventType::MediaFileUpgraded,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
 ];
@@ -975,7 +1040,10 @@ pub(crate) fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
         sequence: row.i64("sequence")?,
         event_id: row.text("event_id")?,
         occurred_at: row.timestamp("occurred_at")?,
+        actor_kind: DomainEventActorKind::parse(row.text("actor_kind")?.as_str())
+            .unwrap_or(DomainEventActorKind::System),
         actor_user_id: row.opt_text("actor_user_id")?,
+        actor_display_name: row.text("actor_display_name")?,
         title_id: row.opt_text("title_id")?,
         facet: row
             .opt_text("facet")?
@@ -1060,6 +1128,29 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
     })
 }
 
+pub(crate) fn download_submission_actor_snapshot_from_row(
+    row: &SqlRow,
+) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
+    let Some(kind_raw) = row.opt_text("actor_kind")? else {
+        return Ok(None);
+    };
+    let kind = DomainEventActorKind::parse(kind_raw.as_str()).unwrap_or(DomainEventActorKind::User);
+    let display_name = row
+        .opt_text("actor_display_name")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            row.opt_text("actor_user_id")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| kind.as_str().to_string())
+        });
+    Ok(Some(DownloadSubmissionActorSnapshot {
+        kind,
+        user_id: row.opt_text("actor_user_id")?,
+        display_name,
+    }))
+}
+
 pub(crate) fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {
     let import_type_raw = row.text("import_type")?;
     let status_raw = row.text("status")?;
@@ -1077,6 +1168,14 @@ pub(crate) fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {
         payload_json: json_text_from_row(row, "payload_json")?.unwrap_or_default(),
         result_json: json_text_from_row(row, "result_json")?,
         download_id: row.opt_text("download_id")?,
+        import_transfer_phase: row
+            .opt_text("import_transfer_phase")?
+            .as_deref()
+            .and_then(ImportTransferPhase::parse),
+        import_transfer_bytes: row.opt_i64("import_transfer_bytes")?,
+        import_transfer_total_bytes: row.opt_i64("import_transfer_total_bytes")?,
+        import_transfer_started_at: opt_timestamp_string(row, "import_transfer_started_at")?,
+        import_transfer_updated_at: opt_timestamp_string(row, "import_transfer_updated_at")?,
         started_at: opt_timestamp_string(row, "started_at")?,
         finished_at: opt_timestamp_string(row, "finished_at")?,
         created_at: timestamp_string(row, "created_at")?,

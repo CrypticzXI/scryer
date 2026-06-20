@@ -377,6 +377,7 @@ impl AppUseCase {
             source_hint,
             source_kind,
             source_title,
+            source_password,
         } = queued_release;
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
@@ -385,7 +386,7 @@ impl AppUseCase {
             source_title_for_attempt.as_deref(),
             source_kind,
         );
-        let source_password: Option<String> = None;
+        let source_password = normalize_release_password(source_password.as_deref());
         let scope_guard = self.lock_download_submission_scope(&title.id, &scope).await;
         let dedupe_guard = self
             .lock_download_submission_signature(&title.id, request_signature.as_deref())
@@ -414,6 +415,7 @@ impl AppUseCase {
                         source_hint,
                         source_kind,
                         source_title,
+                        source_password,
                     },
                     reused_existing: true,
                 }));
@@ -570,6 +572,28 @@ impl AppUseCase {
                         .await;
                     return Err(error);
                 }
+                let submission_identity = DownloadSourceIdentity::new(
+                    grab.client_id.as_deref(),
+                    &grab.client_type,
+                    &grab.job_id,
+                );
+                let submission_actor = crate::domain_events::DomainEventActor::from(actor)
+                    .into_download_submission_actor_snapshot();
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .download_submissions
+                    .record_submission_actor_snapshot(&submission_identity, submission_actor)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        client_id = ?grab.client_id,
+                        client_type = %grab.client_type,
+                        download_client_item_id = %grab.job_id,
+                        "download_submission_actor_snapshot_persistence_failed"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow
@@ -670,7 +694,7 @@ impl AppUseCase {
         let grabbed_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
 
         self.append_domain_event(new_title_domain_event(
-            Some(actor.id.clone()),
+            actor,
             title,
             DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
                 title: title_context_snapshot(title),
@@ -688,6 +712,7 @@ impl AppUseCase {
                 source_hint: source_hint_for_attempt,
                 source_kind,
                 source_title: source_title_for_attempt,
+                source_password,
             },
             reused_existing: false,
         }))
@@ -995,6 +1020,7 @@ impl AppUseCase {
                 source_hint: best.download_url.clone().or(best.link.clone()),
                 source_kind: best.source_kind,
                 source_title: Some(best.title.clone()),
+                source_password: best.password_hint.clone(),
             },
             queue_scope,
             conflict_policy,

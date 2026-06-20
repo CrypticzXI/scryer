@@ -6,11 +6,13 @@ use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
 };
-use scryer_domain::{AppPermission, LibraryPermission, User};
+use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
 const AUTHENTICATION_REQUIRED_MESSAGE: &str = "authentication required";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
+const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";
+const INTERNAL_ERROR_CODE: &str = "INTERNAL_ERROR";
 pub const LOGIN_FAILED_MESSAGE: &str = "Sign-in failed. Check your sign-in details and try again.";
 
 /// Opaque handle to a log snapshot provider and subscription source.
@@ -276,8 +278,23 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "TOTP_RECOVERY_CODE_USED");
             })
         }
+        AppError::Repository(message) => repository_gql_error(message),
         _ => Error::new(err.to_string()),
     }
+}
+
+fn repository_gql_error(message: String) -> Error {
+    let error_id = Id::new().0;
+    tracing::error!(
+        error_id = %error_id,
+        error_kind = "Repository",
+        error = %message,
+        "masked internal repository error"
+    );
+    Error::new(INTERNAL_SERVER_ERROR_MESSAGE).extend_with(|_, extensions| {
+        extensions.set("code", INTERNAL_ERROR_CODE);
+        extensions.set("errorId", error_id);
+    })
 }
 
 fn login_progression_error(err: &AppError) -> bool {
@@ -315,14 +332,15 @@ pub fn to_login_gql_error(method: &'static str, err: AppError) -> Error {
     }
 
     let error_kind = app_error_kind(&err);
-    if matches!(err, AppError::Repository(_)) {
-        tracing::warn!(login_method = method, error_kind, "masked login failure");
-    } else {
-        tracing::debug!(login_method = method, error_kind, "masked login failure");
+    match err {
+        AppError::Repository(message) => repository_gql_error(message),
+        _ => {
+            tracing::debug!(login_method = method, error_kind, "masked login failure");
+            Error::new(LOGIN_FAILED_MESSAGE).extend_with(|_, extensions| {
+                extensions.set("code", "LOGIN_FAILED");
+            })
+        }
     }
-    Error::new(LOGIN_FAILED_MESSAGE).extend_with(|_, extensions| {
-        extensions.set("code", "LOGIN_FAILED");
-    })
 }
 
 pub async fn to_login_gql_error_after_timing(
@@ -346,6 +364,16 @@ pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
         )));
     }
     current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthActorSession {
+    pub client_id: String,
+    pub grant_id: String,
+}
+
+pub fn oauth_actor_session_from_ctx(ctx: &Context<'_>) -> Option<OAuthActorSession> {
+    ctx.data_opt::<OAuthActorSession>().cloned()
 }
 
 pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
@@ -375,20 +403,31 @@ pub async fn require_app_permission(
     Ok(actor)
 }
 
-pub async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<User> {
+pub async fn require_config_app_permission(
+    ctx: &Context<'_>,
+    permission: AppPermission,
+) -> GqlResult<User> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.require_app_permission(&actor, permission)
+        .await
+        .map_err(to_gql_error)?;
     if !auth_runtime_from_ctx(ctx)
         .snapshot()
         .effective_form_login_enabled
     {
-        return actor_from_ctx(ctx);
+        return Ok(actor);
     }
-
-    let app = app_from_ctx(ctx)?;
-    let actor = actor_from_ctx(ctx)?;
-    let mfa = mfa_verification_from_ctx(ctx);
-    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
-        .await
-        .map_err(to_gql_error)?;
+    if actor
+        .authorization
+        .actor_capabilities
+        .contains(ActorCapabilityMask::MANAGE_OWN_ACCOUNT)
+    {
+        let mfa = mfa_verification_from_ctx(ctx);
+        app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+            .await
+            .map_err(to_gql_error)?;
+    }
     Ok(actor)
 }
 
@@ -441,15 +480,19 @@ pub fn mfa_verification_from_ctx(ctx: &Context<'_>) -> MfaVerification {
 mod tests {
     use super::*;
 
-    fn graphql_error_code(error: &Error) -> Option<&str> {
+    fn graphql_error_extension_string<'a>(error: &'a Error, key: &str) -> Option<&'a str> {
         error
             .extensions
             .as_ref()
-            .and_then(|extensions| extensions.get("code"))
+            .and_then(|extensions| extensions.get(key))
             .and_then(|value| match value {
                 async_graphql::Value::String(value) => Some(value.as_str()),
                 _ => None,
             })
+    }
+
+    fn graphql_error_code(error: &Error) -> Option<&str> {
+        graphql_error_extension_string(error, "code")
     }
 
     #[test]
@@ -473,6 +516,39 @@ mod tests {
         );
         assert_eq!(error.message, "MFA code is required for password login");
         assert_eq!(graphql_error_code(&error), Some("MFA_STEP_UP_REQUIRED"));
+    }
+
+    #[test]
+    fn repository_errors_are_masked_with_internal_error_code() {
+        let error = to_gql_error(AppError::Repository(
+            "metadata gateway request failed (502): <html>bad gateway</html>".into(),
+        ));
+
+        assert_eq!(error.message, INTERNAL_SERVER_ERROR_MESSAGE);
+        assert_eq!(graphql_error_code(&error), Some(INTERNAL_ERROR_CODE));
+        assert!(
+            graphql_error_extension_string(&error, "errorId")
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(!error.message.contains("metadata gateway"));
+        assert!(!error.message.contains("<html>"));
+    }
+
+    #[test]
+    fn login_repository_errors_use_internal_error_masking() {
+        let error = to_login_gql_error(
+            "local",
+            AppError::Repository("login datastore unavailable: sqlite:///secret.db".into()),
+        );
+
+        assert_eq!(error.message, INTERNAL_SERVER_ERROR_MESSAGE);
+        assert_eq!(graphql_error_code(&error), Some(INTERNAL_ERROR_CODE));
+        assert!(
+            graphql_error_extension_string(&error, "errorId")
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(!error.message.contains("sqlite"));
+        assert!(!error.message.contains("secret.db"));
     }
 
     #[test]

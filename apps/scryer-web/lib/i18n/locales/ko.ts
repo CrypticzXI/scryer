@@ -105,6 +105,10 @@ const ko: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -462,6 +466,12 @@ const ko: LocaleDictionary = {
   "settings.renameTokenYear": "출시 연도",
   "settings.renameTokenQuality": "품질 (예: 1080p)",
   "settings.renameTokenEdition": "에디션 (예: 감독판)",
+  "settings.renameTokenImdbId": "IMDb ID",
+  "settings.renameTokenTmdbId": "TMDb ID",
+  "settings.renameTokenTvdbId": "TVDb ID",
+  "settings.renameTokenAnidbId": "AniDB ID",
+  "settings.renameTokenMalId": "MAL ID",
+  "settings.renameTokenAnilistId": "AniList ID",
   "settings.renameTokenSource": "소스 (예: BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "비디오 코덱 (예: x265)",
   "settings.renameTokenAudioCodec": "오디오 코덱 (예: DTS)",
@@ -476,6 +486,8 @@ const ko: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "일치하지 않는 여는 괄호 '{'",
   "settings.renameValidationUnmatchedClose": "일치하지 않는 닫는 괄호 '}'",
   "settings.renameValidationUnknownToken": "알 수 없는 토큰: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "폴더 템플릿은 {title}, {year} 및 외부 ID 토큰을 지원합니다. 잘못된 토큰: {{token}}",
   "settings.renameValidationEmpty": "이름 변경 템플릿은 비워둘 수 없습니다",
   "settings.renameComingSoon": "이름 변경 규칙은 곧 제공됩니다.",
   "settings.mediaSettingsSaved": "미디어 설정이 저장되었습니다.",
@@ -734,6 +746,7 @@ const ko: LocaleDictionary = {
   "queue.state.postProcessing": "후처리 중",
   "queue.state.paused": "일시 중지",
   "queue.state.completed": "완료됨",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "가져오기 대기 중",
   "queue.state.importBlocked": "가져오기가 차단되었습니다.",
   "queue.state.failed": "실패",
@@ -746,6 +759,8 @@ const ko: LocaleDictionary = {
     "{{downloading}}개 다운로드 중, {{waiting}}개 가져오기 대기, {{attention}}개 주의 필요",
   "queue.manualImport": "수동 가져오기",
   "queue.manualImporting": "대기열에 추가 중…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "수동 가져오기가 대기열에 추가되었습니다.",
   "queue.manualImportFailed": "수동 가져오기에 실패했습니다.",
   "queue.removeFailed": "제거 실패",
@@ -1025,6 +1040,8 @@ const ko: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "업데이트: v{{version}}",
   "settings.pluginUpgrade": "v{{version}}으로 업그레이드",
+  "settings.pluginOptimizedBuildAvailable": "최적화된 빌드 사용 가능",
+  "settings.pluginInstallOptimizedBuild": "최적화된 빌드 설치",
   "settings.pluginNoCompatibleRelease":
     "이 Scryer 버전과 호환되는 릴리스가 없습니다",
   "settings.pluginNewerReleaseRequiresNewerScryer":

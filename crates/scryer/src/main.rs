@@ -1,15 +1,17 @@
 // async-graphql schema expansion exceeded the default macro recursion depth.
 #![recursion_limit = "256"]
 
-mod admin_routes;
 mod backup_routes;
 mod base_path;
+mod http_error;
 mod init;
 mod log_buffer;
 mod middleware;
+mod oauth_routes;
 mod rate_limit;
 mod settings_bootstrap;
 mod splash;
+mod startup_auth;
 mod startup_migrations;
 mod ui_assets;
 
@@ -25,29 +27,29 @@ use std::sync::{
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
-    MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
-    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
-    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AppUseCase, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
+    IndexerPluginProvider, MovieFacetHandler, NotificationPluginProvider,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
+    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
+    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_background_title_image_loop, start_download_queue_poller, start_notification_dispatcher,
-    tracked_downloads::TrackedDownloadHandle,
+    start_background_title_image_loop, start_download_queue_poller_with_options,
+    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter, SettingsStore,
-    SmgEnrollmentConfig, WeaverDownloadClient, resolve_datastore_config_from_env,
+    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -63,18 +65,17 @@ use tower_http::compression::CompressionLayer;
 use url::Url;
 use webauthn_rs::WebauthnBuilder;
 
-use admin_routes::{
-    AdminSettingsQuery, admin_migrations_handler, admin_settings_list,
-    ensure_admin_password_configured,
-};
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, CorsConfig, WebSocketOriginPolicy, cors_handler, graphql_handler,
-    graphql_ws_handler, health_handler, rate_limit_http_api,
+    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofRouteState,
+    AuthlessWebClientProofState, CorsConfig, WebSocketOriginPolicy,
+    authless_web_client_proof_handler, cors_handler, enforce_authless_access_guard,
+    graphql_handler, graphql_ws_handler, health_handler, rate_limit_http_api,
 };
+use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
@@ -84,6 +85,7 @@ use settings_bootstrap::{
     seed_service_settings_from_environment,
 };
 use splash::{BootstrapStatus, SplashState, build_splash_router};
+use startup_auth::ensure_admin_password_configured;
 use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
@@ -91,6 +93,7 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
+const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -191,6 +194,7 @@ struct AuthModeConfig {
     env_override_description: Option<String>,
     used_legacy_dev_auto_login: bool,
     recovery_admin_password_set: bool,
+    allow_unauthenticated_public_access: bool,
 }
 
 impl AuthModeConfig {
@@ -542,6 +546,7 @@ async fn main() {
     let addr: SocketAddr = bind.parse().expect("invalid bind address");
     let shutdown_token = CancellationToken::new();
     let startup_base_path = base_path.clone();
+    let bootstrap_base_path = base_path.clone();
 
     // Spawn the full application bootstrap in the background.
     let bootstrap_shutdown = shutdown_token.clone();
@@ -563,6 +568,7 @@ async fn main() {
                     log_ring_buffer,
                     metrics_handle,
                     data_dir,
+                    bootstrap_base_path,
                 )
                 .await
                 {
@@ -647,12 +653,13 @@ async fn bootstrap_application(
     finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
-    bind: String,
+    _bind: String,
     cors: CorsConfig,
     shutdown_token: CancellationToken,
     log_ring_buffer: log_buffer::LogRingBuffer,
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     data_dir: PathBuf,
+    base_path: BasePath,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
@@ -682,14 +689,23 @@ async fn bootstrap_application(
 
     // Bootstrap encryption master key (env > keystore > legacy DB migration > auto-generate).
     let t = std::time::Instant::now();
-    let migrated_indexers = datastore
+    let encryption_bootstrap = datastore
         .bootstrap_encryption()
         .await
         .map_err(|e| format!("failed to bootstrap datastore encryption: {e}"))?;
-    if migrated_indexers > 0 {
+    if encryption_bootstrap.migrated_indexer_configs > 0 {
         tracing::info!(
-            migrated = migrated_indexers,
+            migrated = encryption_bootstrap.migrated_indexer_configs,
             "migrated legacy indexer base/api fields into config_json"
+        );
+    }
+    if encryption_bootstrap.encrypted_release_attempt_source_passwords > 0
+        || encryption_bootstrap.encrypted_pending_release_source_passwords > 0
+    {
+        tracing::info!(
+            release_attempts = encryption_bootstrap.encrypted_release_attempt_source_passwords,
+            pending_releases = encryption_bootstrap.encrypted_pending_release_source_passwords,
+            "encrypted legacy release source passwords"
         );
     }
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
@@ -1083,6 +1099,10 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0004_auto_backup_missing_key_disable::disable_auto_backups_without_key(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     if let Err(error) = app_use_case
         .repair_legacy_jellyfin_external_account_invites()
         .await
@@ -1137,7 +1157,7 @@ async fn bootstrap_application(
     let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
         .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
 
-    let auth_mode = resolve_auth_mode_from_env();
+    let auth_mode = resolve_auth_mode_from_env()?;
     app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
     if auth_mode.recovery_active() {
         let recovery_password = normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV)
@@ -1203,36 +1223,52 @@ async fn bootstrap_application(
             .map_err(|error| {
                 format!("failed to ensure default admin for disabled-auth mode: {error}")
             })?;
-        let addr: SocketAddr = bind.parse().expect("invalid bind address");
-        if !addr.ip().is_loopback() && !addr.ip().is_unspecified() {
+        if auth_mode.recovery_active() {
             tracing::warn!(
-                bind = %bind,
-                "authentication is disabled on a non-loopback bind address; all requests will act as admin"
+                env = RECOVERY_ADMIN_PASSWORD_ENV,
+                "running in recovery mode with authentication disabled; only private/local clients are allowed"
+            );
+        } else if auth_mode.allow_unauthenticated_public_access {
+            tracing::warn!(
+                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
+            );
+        } else {
+            tracing::warn!(
+                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                "running with authentication disabled; private/local clients act as admin and public clients are rejected unless explicitly allowed"
             );
         }
-        tracing::warn!("running with authentication disabled; all requests act as admin");
     }
-    // Always run the download queue poller — it queries ALL enabled download
-    // clients (NZBGet, SABnzbd, Weaver, plugins) and triggers imports for
-    // completed downloads from any of them.
-    tokio::spawn(start_download_queue_poller(
+    let weaver_bridge_client = resolve_weaver_subscription_bridge_client(&app_use_case).await;
+    let poller_options = DownloadQueuePollerOptions {
+        excluded_client_types: weaver_bridge_client
+            .as_ref()
+            .map(|_| vec!["weaver".to_string()])
+            .unwrap_or_default(),
+        ..DownloadQueuePollerOptions::default()
+    };
+
+    // Run the generic download queue poller for polling-based clients. Weaver
+    // is excluded when its self-contained subscription bridge is active.
+    tokio::spawn(start_download_queue_poller_with_options(
         app_use_case.clone(),
         shutdown_token.child_token(),
         tracked_download_rx,
+        poller_options,
     ));
-    // Additionally start the Weaver WebSocket subscription bridge for
-    // real-time UI updates (progress, state changes) when Weaver is
-    // configured. The poller still handles import detection for all clients.
-    if let Some((ws_url, api_key)) = resolve_weaver_ws_url(&app_use_case).await {
+    // Start the Weaver WebSocket subscription bridge when Weaver is primary.
+    // The bridge owns both subscription updates and its Weaver-only fallback
+    // polling when the socket is unavailable.
+    if let Some(bridge_client) = weaver_bridge_client {
         tracing::info!(
-            url = ws_url.as_str(),
+            client_type = "weaver",
             "using weaver subscription bridge for real-time download queue updates"
         );
         tokio::spawn(start_weaver_subscription_bridge(
             app_use_case.clone(),
             shutdown_token.child_token(),
-            ws_url,
-            api_key,
+            bridge_client,
         ));
     }
     tokio::spawn(start_background_acquisition_poller(
@@ -1274,21 +1310,36 @@ async fn bootstrap_application(
     app_use_case.wake_title_image_loops();
 
     let rate_limiter = ScryerRateLimiter::from_env();
+    let authless_access_policy = AuthlessAccessPolicy {
+        allow_unauthenticated_public_access: auth_mode.allow_unauthenticated_public_access,
+        recovery_mode: auth_mode.recovery_active(),
+    };
+    let authless_web_client_proof = AuthlessWebClientProofState::new();
     let auth_state = AuthState {
         app: app_use_case.clone(),
         schema: schema.clone(),
         auth_runtime: auth_runtime.clone(),
         rate_limiter: rate_limiter.clone(),
         ws_origin_policy: WebSocketOriginPolicy::from_env(&cors),
+        authless_web_client_proof: authless_web_client_proof.clone(),
+    };
+    let authless_access_guard_state = AuthlessAccessGuardState {
+        auth_runtime: auth_runtime.clone(),
+        policy: authless_access_policy,
+    };
+    let authless_web_client_proof_route_state = AuthlessWebClientProofRouteState {
+        auth_runtime: auth_runtime.clone(),
+        policy: authless_access_policy,
+        proof: authless_web_client_proof.clone(),
     };
 
     let cors_for_layer = cors.clone();
-    let admin_migrations_db = bootstrap_settings_store.clone();
-    let admin_settings_db = bootstrap_settings_store.clone();
-    let admin_settings_app = app_use_case.clone();
-    let admin_settings_auth_runtime = auth_runtime.clone();
     let backup_route_state = BackupRouteState {
         app: app_use_case.clone(),
+    };
+    let oauth_route_state = OAuthRouteState {
+        app: app_use_case.clone(),
+        base_path: base_path.clone(),
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1303,6 +1354,13 @@ async fn bootstrap_application(
     let mut compressed_router = Router::new()
         .route("/health", get(health_handler))
         .route(
+            "/authless-client",
+            get(authless_web_client_proof_handler)
+                .with_state(authless_web_client_proof_route_state),
+        )
+        .merge(oauth_router(oauth_route_state))
+        .route("/oauth/authorize", get(ui_fallback))
+        .route(
             "/graphql",
             post(graphql_handler).with_state(auth_state.clone()),
         )
@@ -1311,28 +1369,7 @@ async fn bootstrap_application(
             get(title_image_handler).with_state(title_images_for_route),
         )
         .route(
-            "/admin/migrations",
-            get(move || admin_migrations_handler(admin_migrations_db.clone())),
-        )
-        .route(
-            "/admin/settings",
-            get(
-                move |headers: HeaderMap,
-                      ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
-                      Query(query): Query<AdminSettingsQuery>| {
-                    admin_settings_list(
-                        admin_settings_db.clone(),
-                        admin_settings_app.clone(),
-                        admin_settings_auth_runtime.clone(),
-                        headers,
-                        remote_addr,
-                        query,
-                    )
-                },
-            ),
-        )
-        .route(
-            "/admin/backups/{filename}/download",
+            "/backups/{filename}/download",
             get(download_backup_handler).with_state(backup_route_state),
         )
         .fallback(get(ui_fallback))
@@ -1355,6 +1392,10 @@ async fn bootstrap_application(
 
     let app = ws_router
         .merge(compressed_router)
+        .layer(axum::middleware::from_fn_with_state(
+            authless_access_guard_state,
+            enforce_authless_access_guard,
+        ))
         .layer(axum::middleware::from_fn(move |request, next| {
             cors_handler(request, next, cors_for_layer.clone())
         }));
@@ -1746,9 +1787,14 @@ fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
     recovery_admin_password_raw: Option<&str>,
-) -> AuthModeConfig {
+    allow_unauthenticated_public_access_raw: Option<&str>,
+) -> Result<AuthModeConfig, String> {
     let used_legacy_dev_auto_login = matches!(
         legacy_dev_auto_login_raw.and_then(parse_env_bool_value),
+        Some(true)
+    );
+    let allow_unauthenticated_public_access = matches!(
+        allow_unauthenticated_public_access_raw.and_then(parse_env_bool_value),
         Some(true)
     );
 
@@ -1756,37 +1802,46 @@ fn resolve_auth_mode(
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
     {
-        return AuthModeConfig {
+        if allow_unauthenticated_public_access {
+            return Err(format!(
+                "{ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV}=true cannot be used with {RECOVERY_ADMIN_PASSWORD_ENV}; recovery mode is private/local only"
+            ));
+        }
+        return Ok(AuthModeConfig {
             env_override_form_login_enabled: Some(false),
             env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
             used_legacy_dev_auto_login,
             recovery_admin_password_set: true,
-        };
+            allow_unauthenticated_public_access: false,
+        });
     }
 
     if let Some(auth_enabled) = auth_enabled_raw.and_then(parse_env_bool_value) {
-        return AuthModeConfig {
+        return Ok(AuthModeConfig {
             env_override_form_login_enabled: Some(auth_enabled),
             env_override_description: Some(format!("SCRYER_AUTH_ENABLED={auth_enabled}")),
             used_legacy_dev_auto_login: false,
             recovery_admin_password_set: false,
-        };
+            allow_unauthenticated_public_access,
+        });
     }
 
-    AuthModeConfig {
+    Ok(AuthModeConfig {
         env_override_form_login_enabled: used_legacy_dev_auto_login.then_some(false),
         env_override_description: used_legacy_dev_auto_login
             .then_some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
         used_legacy_dev_auto_login,
         recovery_admin_password_set: false,
-    }
+        allow_unauthenticated_public_access,
+    })
 }
 
-fn resolve_auth_mode_from_env() -> AuthModeConfig {
+fn resolve_auth_mode_from_env() -> Result<AuthModeConfig, String> {
     resolve_auth_mode(
         normalize_env_option("SCRYER_AUTH_ENABLED").as_deref(),
         normalize_env_option("SCRYER_DEV_AUTO_LOGIN").as_deref(),
         normalize_env_option(RECOVERY_ADMIN_PASSWORD_ENV).as_deref(),
+        normalize_env_option(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV).as_deref(),
     )
 }
 
@@ -1854,16 +1909,17 @@ pub(crate) fn normalize_env_option_with_legacy<'a>(
     None
 }
 
-/// Check if the primary download client is weaver and return its WebSocket URL and API key.
-async fn resolve_weaver_ws_url(app: &AppUseCase) -> Option<(String, Option<String>)> {
+/// Check if the primary download client is Weaver and build its bridge client.
+async fn resolve_weaver_subscription_bridge_client(
+    app: &AppUseCase,
+) -> Option<WeaverSubscriptionBridgeClient> {
     let primary = app.primary_enabled_download_client_config().await.ok()??;
 
     if primary.client_type != "weaver" {
         return None;
     }
 
-    let client = WeaverDownloadClient::from_config(&primary).ok()?;
-    Some((client.ws_url(), client.api_key().map(str::to_string)))
+    WeaverSubscriptionBridgeClient::from_config(&primary).ok()
 }
 
 fn runtime_normalized_constraint(raw: Option<&str>) -> Option<String> {
@@ -2275,9 +2331,10 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV, SelfRestartController,
-        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
-        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts, title_image_handler,
+        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
+        SelfRestartController, bootstrap_plugin_installations,
+        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2386,12 +2443,13 @@ mod tests {
     #[test]
     fn auth_defaults_to_disabled() {
         assert_eq!(
-            resolve_auth_mode(None, None, None),
+            resolve_auth_mode(None, None, None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2399,12 +2457,13 @@ mod tests {
     #[test]
     fn explicit_auth_enabled_wins() {
         assert_eq!(
-            resolve_auth_mode(Some("true"), Some("true"), None),
+            resolve_auth_mode(Some("true"), Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(true),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2742,12 +2801,13 @@ mod tests {
     #[test]
     fn explicit_auth_disabled_wins_over_legacy_alias() {
         assert_eq!(
-            resolve_auth_mode(Some("false"), Some("true"), None),
+            resolve_auth_mode(Some("false"), Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_AUTH_ENABLED=false".to_string()),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2755,12 +2815,13 @@ mod tests {
     #[test]
     fn legacy_dev_auto_login_disables_auth_when_new_flag_absent() {
         assert_eq!(
-            resolve_auth_mode(None, Some("true"), None),
+            resolve_auth_mode(None, Some("true"), None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some("SCRYER_DEV_AUTO_LOGIN=true".to_string()),
                 used_legacy_dev_auto_login: true,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2768,12 +2829,13 @@ mod tests {
     #[test]
     fn invalid_auth_flag_falls_back_to_default_disabled() {
         assert_eq!(
-            resolve_auth_mode(Some("garbage"), None, None),
+            resolve_auth_mode(Some("garbage"), None, None, None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: None,
                 env_override_description: None,
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: false,
             }
         );
     }
@@ -2781,14 +2843,38 @@ mod tests {
     #[test]
     fn recovery_admin_password_implies_auth_disabled_and_wins_over_auth_enabled() {
         assert_eq!(
-            resolve_auth_mode(Some("true"), None, Some("new-password")),
+            resolve_auth_mode(Some("true"), None, Some("new-password"), None).expect("auth mode"),
             AuthModeConfig {
                 env_override_form_login_enabled: Some(false),
                 env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
                 used_legacy_dev_auto_login: false,
                 recovery_admin_password_set: true,
+                allow_unauthenticated_public_access: false,
             }
         );
+    }
+
+    #[test]
+    fn unauthenticated_public_access_override_is_recorded_without_recovery() {
+        assert_eq!(
+            resolve_auth_mode(None, None, None, Some("true")).expect("auth mode"),
+            AuthModeConfig {
+                env_override_form_login_enabled: None,
+                env_override_description: None,
+                used_legacy_dev_auto_login: false,
+                recovery_admin_password_set: false,
+                allow_unauthenticated_public_access: true,
+            }
+        );
+    }
+
+    #[test]
+    fn unauthenticated_public_access_override_is_rejected_with_recovery() {
+        let error = resolve_auth_mode(None, None, Some("new-password"), Some("true"))
+            .expect_err("recovery and public unauthenticated access conflict");
+
+        assert!(error.contains(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV));
+        assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
     }
 
     #[tokio::test]

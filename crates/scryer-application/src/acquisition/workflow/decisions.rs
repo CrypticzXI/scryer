@@ -16,7 +16,12 @@ fn annotated_auto_decision_code(candidate: &IndexerSearchResult) -> ReleaseAutoD
 fn effective_auto_decision_code(
     candidate: &IndexerSearchResult,
     failed_source_kinds: &[DownloadSourceKind],
+    db_blocklist: &std::collections::HashSet<String>,
 ) -> ReleaseAutoDecisionCode {
+    if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
+        return ReleaseAutoDecisionCode::DbBlocklisted;
+    }
+
     if let Some(source_kind) = candidate.source_kind
         && failed_source_kinds.contains(&source_kind)
     {

@@ -15,9 +15,57 @@ pub struct UpgradeForTestInput<'a> {
     pub recycle_config: &'a crate::recycle_bin::RecycleBinConfig,
 }
 
+fn import_source_snapshot_for_test(
+    path: &Path,
+) -> crate::AppResult<scryer_domain::ImportSourceSnapshot> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        crate::AppError::Repository(format!(
+            "failed to stat test import source {}: {err}",
+            path.display()
+        ))
+    })?;
+    let bytes = std::fs::read(path).map_err(|err| {
+        crate::AppError::Repository(format!(
+            "failed to read test import source {}: {err}",
+            path.display()
+        ))
+    })?;
+
+    Ok(scryer_domain::ImportSourceSnapshot {
+        identity: scryer_domain::ImportSourceIdentity {
+            file: scryer_domain::ImportFileIdentity {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                #[cfg(unix)]
+                dev: metadata.dev(),
+                #[cfg(unix)]
+                ino: metadata.ino(),
+            },
+            kind: scryer_domain::ImportSourceIdentityKind::Regular,
+        },
+        proof: scryer_domain::ImportContentProof {
+            size_bytes: metadata.len(),
+            sample_bytes: bytes.len() as u64,
+            sample_blake3: blake3::hash(&bytes).to_hex().to_string(),
+        },
+    })
+}
+
 pub async fn execute_upgrade_for_test(
     app: &AppUseCase,
     input: UpgradeForTestInput<'_>,
+) -> crate::AppResult<crate::upgrade::UpgradeResult> {
+    execute_upgrade_for_test_with_import_mode(app, input, scryer_domain::ImportMode::HardlinkOrCopy)
+        .await
+}
+
+pub async fn execute_upgrade_for_test_with_import_mode(
+    app: &AppUseCase,
+    input: UpgradeForTestInput<'_>,
+    import_mode: scryer_domain::ImportMode,
 ) -> crate::AppResult<crate::upgrade::UpgradeResult> {
     let UpgradeForTestInput {
         actor,
@@ -36,8 +84,10 @@ pub async fn execute_upgrade_for_test(
         accepted: Box::new(crate::post_download_gate::ImportedFileAcceptance {
             analysis: None,
             scan_error: None,
+            rule_file_doc: None,
         }),
         rescore_changes: Vec::new(),
+        source_snapshot: import_source_snapshot_for_test(source_path)?,
     };
     let old_score = existing_file.acquisition_score.unwrap_or(0);
 
@@ -52,10 +102,11 @@ pub async fn execute_upgrade_for_test(
         prepared.parsed.quality.as_deref(),
         final_score,
         old_score,
+        None,
         target_episode_ids,
         media_root,
         recycle_config,
-        scryer_domain::ImportMode::HardlinkOrCopy,
+        import_mode,
     )
     .await
 }

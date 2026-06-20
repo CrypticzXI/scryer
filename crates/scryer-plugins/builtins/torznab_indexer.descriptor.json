@@ -24,7 +24,7 @@
         "api_quota_supported": true,
         "grab_quota_supported": true,
         "max_page_size": 100,
-        "max_pages": 10,
+        "max_pages": 30,
         "page_size": 100,
         "rate_limit_hint_seconds": 2
       },
@@ -103,7 +103,7 @@
         "help_text": "Indexer API key",
         "key": "api_key",
         "label": "API Key",
-        "required": true,
+        "required": false,
         "value_source": "user"
       },
       {
@@ -134,5 +134,5 @@
   },
   "sdk_constraint": ">=3.0.0, <4.0.0",
   "sdk_version": "3.0.0",
-  "version": "0.1.10"
+  "version": "0.1.15"
 }

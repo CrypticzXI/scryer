@@ -17,9 +17,9 @@ use scryer_application::{
 };
 use scryer_domain::{
     AppPermissionMask, ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource,
-    DomainEventPayload, DomainEventStream, DomainEventType, DomainExternalIds, ExternalId,
-    ImportCompletedEventData, LibraryScanProgressedEventData, MediaFacet,
-    MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
+    DomainEventActorKind, DomainEventPayload, DomainEventStream, DomainEventType,
+    DomainExternalIds, ExternalId, ImportCompletedEventData, LibraryScanProgressedEventData,
+    MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
     MediaFileUpgradedEventData, MediaPathUpdate, MediaServerConnection, MediaServerPathMapping,
     MediaServerProvider, MediaUpdateType, NewDomainEvent, NewTitle, NotificationChannelConfig,
     NotificationEventType, TitleContextSnapshot,
@@ -648,7 +648,9 @@ fn new_event(
     NewDomainEvent {
         event_id: event_id.to_string(),
         occurred_at: Utc::now(),
+        actor_kind: DomainEventActorKind::User,
         actor_user_id: Some("user-1".to_string()),
+        actor_display_name: "user-1".to_string(),
         title_id: Some(title_id.to_string()),
         facet: MediaFacet::parse(facet),
         correlation_id: None,

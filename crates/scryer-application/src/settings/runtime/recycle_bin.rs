@@ -215,7 +215,7 @@ impl AppUseCase {
         .await?;
 
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "recycle_bin_settings",
             None,
             scryer_domain::ConfigurationChangeAction::Updated,

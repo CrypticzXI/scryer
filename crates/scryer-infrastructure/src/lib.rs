@@ -6,6 +6,7 @@ mod indexers;
 mod media;
 mod metadata;
 mod notifications;
+mod oauth;
 pub mod security;
 mod settings;
 pub mod storage;
@@ -37,7 +38,8 @@ pub(crate) mod download_clients {
     pub use crate::downloads::clients::{
         BuiltinDownloadClientConnectionTester, NzbgetDownloadClient,
         PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
-        resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+        WeaverSubscriptionBridgeClient, resolve_base_url_from_config_json,
+        start_weaver_subscription_bridge,
     };
     pub use crate::indexers::search_client::MultiIndexerSearchClient;
 }
@@ -252,6 +254,7 @@ pub mod sqlite {
     pub use crate::media::shows::store::ShowStore;
     pub use crate::media::titles::store::TitleStore;
     pub use crate::notifications::store::NotificationStore;
+    pub use crate::oauth::store::OAuthStore;
     pub use crate::settings::quality_profile_store::QualityProfileStore;
     pub use crate::settings::settings_store::SettingsStore;
     pub use crate::settings::subtitle_provider_config_store::SubtitleProviderConfigStore;
@@ -270,8 +273,8 @@ pub use customization::post_processing_script_store::PostProcessingScriptStore;
 pub use customization::rule_set_store::RuleSetStore;
 pub use downloads::clients::{
     BuiltinDownloadClientConnectionTester, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
-    start_weaver_subscription_bridge,
+    SabnzbdDownloadClient, WeaverDownloadClient, WeaverSubscriptionBridgeClient,
+    resolve_base_url_from_config_json, start_weaver_subscription_bridge,
 };
 pub use downloads::config_store::DownloadClientConfigStore;
 pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
@@ -297,15 +300,17 @@ pub use media::shows::store::ShowStore;
 pub use media::titles::store::TitleStore;
 pub use metadata::gateway::client::{MetadataGatewayClient, SmgEnrollmentConfig};
 pub use notifications::store::NotificationStore;
+pub use oauth::store::OAuthStore;
 pub use security::encryption::EncryptionKey;
 pub use settings::quality_profile_store::QualityProfileStore;
 pub use settings::settings_store::SettingsStore;
 pub use settings::subtitle_provider_config_store::SubtitleProviderConfigStore;
 pub use storage::assembly::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
-    DatastoreEngine, datastore_file_path, resolve_datastore_config_from_env,
-    restore_backup_bundle_to_datastore, restore_backup_bundle_to_datastore_path,
-    restore_prepared_backup_directory_to_datastore, validate_datastore,
+    DatastoreEncryptionBootstrapReport, DatastoreEngine, datastore_file_path,
+    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore,
+    restore_backup_bundle_to_datastore_path, restore_prepared_backup_directory_to_datastore,
+    validate_datastore,
 };
 pub use storage::migrations::{list_embedded_migration_keys, list_embedded_migrations};
 pub use storage::postgres::{PostgresLogicalBackupExporter, PostgresServices};

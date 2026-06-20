@@ -1,35 +1,25 @@
-import { useCallback, useRef } from "react";
+import { createElement, useCallback, useRef } from "react";
 import { toast } from "sonner";
 
+import type { GlobalStatusOptions, SetGlobalStatus } from "@/lib/context/global-status-context";
 import { normalizeGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { classifyStatusToastLevel } from "@/lib/utils/status-toast";
 
-type SetGlobalStatus = (status: string) => void;
-
 type UseGlobalStatusToastOptions = {
   dedupeMs?: number;
-  onServiceRestarting?: () => void;
 };
 
 const DEFAULT_DEDUPE_MS = 1200;
 
 export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
   dedupeMs = DEFAULT_DEDUPE_MS,
-  onServiceRestarting,
 }: UseGlobalStatusToastOptions = {}) {
   const lastToastRef = useRef({
     key: "",
     at: 0,
   });
 
-  return useCallback((rawStatus: string) => {
-    // When the backend is restarting, the splash page returns HTML instead of
-    // JSON.  Show a full-screen overlay instead of dumping raw HTML.
-    if (/<!doctype\s+html/i.test(rawStatus)) {
-      onServiceRestarting?.();
-      return;
-    }
-
+  return useCallback((rawStatus: string, options?: GlobalStatusOptions) => {
     setGlobalStatus(rawStatus);
 
     const toastLevel = classifyStatusToastLevel(rawStatus);
@@ -45,14 +35,19 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
       return;
     }
 
+    const content = options?.toastId
+      ? createElement("span", { id: options.toastId }, displayStatus)
+      : displayStatus;
+    const toastOptions = options?.toastId ? { id: options.toastId } : undefined;
+
     if (toastLevel === "success") {
-      toast.success(displayStatus);
+      toast.success(content, toastOptions);
     } else if (toastLevel === "error") {
-      toast.error(displayStatus);
+      toast.error(content, toastOptions);
     } else {
-      toast.warning(displayStatus);
+      toast.warning(content, toastOptions);
     }
 
     lastToastRef.current = { key, at: now };
-  }, [dedupeMs, onServiceRestarting, setGlobalStatus]);
+  }, [dedupeMs, setGlobalStatus]);
 }

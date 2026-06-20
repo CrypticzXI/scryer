@@ -5,6 +5,8 @@ mod contracts;
 mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
+
+pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
 pub use download_identity::{
     AcceptedDownloadIdentityInput, DOWNLOAD_ID_PARAMETER, ObservedDownloadIdentityInput,
     accepted_download_submission_identity, download_id_from_info_hash,
@@ -37,6 +39,7 @@ mod media_requests;
 mod media_servers;
 mod notifications;
 mod null_repositories;
+mod oauth;
 pub mod persisted_records;
 mod plugins;
 mod polling_worker;
@@ -103,6 +106,10 @@ pub use library::recycle_bin;
 pub use notifications::runtime::{
     NotificationSubscriptionTargetCreate, NotificationSubscriptionTargetUpdate,
 };
+pub use oauth::{
+    OAUTH_E2E_CLIENT_ENV, OAUTH_E2E_CLIENT_ID, OAUTH_GENERIC_NATIVE_CLIENT_ID, OAUTH_LIBRARY_SCOPE,
+    OAuthClientInfo, OAuthConnectedAppSummary, OAuthIssuedCode, OAuthTokenPair,
+};
 pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
 pub use plugins::catalog::decompress_zstd as plugin_wasm_decompress_zstd;
 pub use plugins::catalog::verify_split_digest as plugin_wasm_verify_split_digest;
@@ -151,7 +158,10 @@ pub use app_usecase_integration::derive_download_queue_display_state;
 pub use app_usecase_integration::enrich_download_queue_items_from_submissions;
 pub use app_usecase_integration::matches_download_activity_filter;
 pub use app_usecase_integration::matches_download_queue_filter;
-pub use app_usecase_integration::start_download_queue_poller;
+pub use app_usecase_integration::{
+    DownloadQueuePollerOptions, start_download_queue_poller,
+    start_download_queue_poller_with_options,
+};
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
 #[cfg(any(test, feature = "runtime-media-analysis"))]
@@ -172,10 +182,10 @@ pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, Delete
 pub use contracts::{
     AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation, DownloadClientAddRequest,
     DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult,
-    IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan,
-    IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
+    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerRoutingEntry, IndexerRoutingPlan,
+    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
     ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
     NewBlocklistEntry, NotificationScopeIdUpdate, PendingStagedNzb, QueueDownloadOutcome,
     QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, SearchMode, StagedNzbRef,
@@ -184,6 +194,7 @@ pub use contracts::{
     SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedItemsQuery,
     WantedSearchOutcome,
 };
+pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
     DownloadClientRemotePathMapping, apply_remote_path_mappings_to_completed_download,
     apply_remote_path_mappings_to_status, has_download_client_remote_path_mappings,
@@ -206,7 +217,8 @@ pub use import_workflow::{
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
     execute_queued_manual_import, import_completed_download, preview_manual_import,
     preview_manual_import_path, retry_failed_import, start_background_manual_import_poller,
-    try_import_completed_downloads,
+    try_import_completed_downloads, try_import_provided_completed_downloads,
+    try_import_recent_completed_downloads,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub(crate) use integration::integration::ManualImportSourceResolution;
@@ -270,10 +282,11 @@ pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
     await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
-    normalize_release_password, normalize_release_selection_signature, normalize_show_text_opt,
-    normalize_tags, parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
+    normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
+    parsed_episode_lookup_season, release_password_protection_hint, sanitize_ids, sha256_hex,
+    to_hex,
 };
-pub use helpers::{accepted_inputs_for_client, nice_thread};
+pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -301,7 +314,7 @@ pub use null_repositories::{
     NullJobRunRepository, NullLibraryProbeRepository, NullLibraryRepository,
     NullLibraryScanUnmatchedItemRepository, NullLogicalBackupExporter, NullMediaFileRepository,
     NullMediaRequestRepository, NullMediaServerConnectionRepository,
-    NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
+    NullNotificationChannelRepository, NullNotificationSubscriptionRepository, NullOAuthRepository,
     NullPendingReleaseRepository, NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime,
     NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
     NullSettingsRepository, NullStagedNzbStore, NullSubtitleDownloadRepository,
@@ -313,12 +326,13 @@ pub use ports::{
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
-    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
-    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
-    IndexerPluginProvider, IndexerStatsTracker, JellyfinServerUser, JobRunRepository,
-    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
-    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportFileTransferProgress,
+    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
+    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
+    IndexerStatsTracker, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
+    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
+    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
+    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
@@ -327,15 +341,15 @@ pub use ports::{
     NotificationMediaFilePayload, NotificationMediaUpdatePayload,
     NotificationMediaUpdateTypePayload, NotificationPayload, NotificationPluginProvider,
     NotificationReleasePayload, NotificationSeverityPayload, NotificationSubscriptionRepository,
-    NotificationTitlePayload, PendingReleaseRepository, PlexServerDiscovery, PlexServerUser,
-    PluginDescriptorLoader, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
-    RuleSetRepository, RuntimePluginLoad, SettingsRepository, ShowRepository, StagedNzbStore,
-    SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    NotificationTitlePayload, OAuthRepository, PendingReleaseRepository, PlexServerDiscovery,
+    PlexServerUser, PluginDescriptorLoader, PluginHttpTrustConfigRuntime,
+    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
+    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
+    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
+    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    UserExternalAccountRepository, UserRepository, VerifiedExternalIdentity, WantedItemRepository,
+    WebauthnRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -367,25 +381,25 @@ pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
-    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_ANIME_LIBRARY_PATH,
-    DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY, DEFAULT_FOLDER_TEMPLATE_ANIME,
-    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_MOVIE_LIBRARY_PATH,
-    DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
-    DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
-    DEFAULT_SERIES_LIBRARY_PATH, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
-    MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_PATH_KEY,
-    MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
-    NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
-    NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY, PASSWORD_MIN_LENGTH_MIN,
-    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
-    POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
-    POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY,
-    RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
+    AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
+    DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY,
+    DEFAULT_FOLDER_TEMPLATE_ANIME, DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES,
+    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
+    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
+    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
+    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
+    HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY,
+    NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
+    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
+    PASSWORD_MIN_LENGTH_MIN, PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY,
+    RECYCLE_BIN_PATH_KEY, RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
     RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
     RENAME_ENABLED_KEY, RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,
@@ -399,6 +413,8 @@ pub use settings::keys::{
     TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
+#[cfg(test)]
+pub(crate) use types::ReleaseCandidateTokenClaims;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
@@ -409,7 +425,9 @@ pub use types::{
     DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
     HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
     JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass, MediaRequestCounts, PasskeySummary,
+    LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass, MediaRequestCounts,
+    OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
+    OAuthRefreshRotation, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
     PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
     PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
     PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,

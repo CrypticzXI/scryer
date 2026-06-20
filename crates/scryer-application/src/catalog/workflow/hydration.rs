@@ -141,7 +141,7 @@ impl AppUseCase {
             .await?;
         if !created.reused_existing {
             self.append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
+                actor,
                 &created.title,
                 DomainEventPayload::TitleAdded(TitleAddedEventData {
                     title: title_context_snapshot(&created.title),

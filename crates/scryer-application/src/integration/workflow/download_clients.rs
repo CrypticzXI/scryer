@@ -278,7 +278,7 @@ impl AppUseCase {
             .create(config)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "download_client",
             Some(created.id.clone()),
             scryer_domain::ConfigurationChangeAction::Saved,
@@ -341,7 +341,7 @@ impl AppUseCase {
             })
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "download_client",
             Some(updated.id.clone()),
             scryer_domain::ConfigurationChangeAction::Updated,
@@ -370,7 +370,7 @@ impl AppUseCase {
             .delete(client_id)
             .await?;
         self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
+            actor,
             "download_client",
             Some(client_id.to_string()),
             scryer_domain::ConfigurationChangeAction::Deleted,

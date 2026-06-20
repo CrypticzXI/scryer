@@ -80,10 +80,45 @@ pub(crate) fn normalize_release_attempt_title(raw: Option<&str>) -> Option<Strin
         .map(|value| value.to_ascii_lowercase())
 }
 
-pub(crate) fn normalize_release_password(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty() && *value != "0")
-        .map(str::to_string)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReleasePasswordClassification {
+    Real(String),
+    ProtectedFlag,
+    UnprotectedFlag,
+    Empty,
+}
+
+pub(crate) fn classify_release_password(raw: Option<&str>) -> ReleasePasswordClassification {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return ReleasePasswordClassification::Empty;
+    };
+
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "passworded" | "protected" => {
+            ReleasePasswordClassification::ProtectedFlag
+        }
+        "0" | "false" | "no" => ReleasePasswordClassification::UnprotectedFlag,
+        _ => ReleasePasswordClassification::Real(value.to_string()),
+    }
+}
+
+pub fn normalize_release_password(raw: Option<&str>) -> Option<String> {
+    match classify_release_password(raw) {
+        ReleasePasswordClassification::Real(value) => Some(value),
+        ReleasePasswordClassification::ProtectedFlag
+        | ReleasePasswordClassification::UnprotectedFlag
+        | ReleasePasswordClassification::Empty => None,
+    }
+}
+
+pub(crate) fn release_password_protection_hint(raw: Option<&str>) -> Option<bool> {
+    match classify_release_password(raw) {
+        ReleasePasswordClassification::Real(_) | ReleasePasswordClassification::ProtectedFlag => {
+            Some(true)
+        }
+        ReleasePasswordClassification::UnprotectedFlag => Some(false),
+        ReleasePasswordClassification::Empty => None,
+    }
 }
 
 pub(crate) fn is_obfuscated_release_name(parsed: &ParsedReleaseMetadata) -> bool {
@@ -295,6 +330,55 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_release_password_rejects_provider_flags() {
+        for raw in [None, Some(""), Some("  ")] {
+            assert_eq!(
+                classify_release_password(raw),
+                ReleasePasswordClassification::Empty
+            );
+            assert_eq!(release_password_protection_hint(raw), None);
+            assert_eq!(normalize_release_password(raw), None);
+        }
+
+        for raw in [
+            Some("1"),
+            Some("true"),
+            Some("yes"),
+            Some("passworded"),
+            Some("protected"),
+        ] {
+            assert_eq!(
+                classify_release_password(raw),
+                ReleasePasswordClassification::ProtectedFlag
+            );
+            assert_eq!(release_password_protection_hint(raw), Some(true));
+            assert_eq!(normalize_release_password(raw), None);
+        }
+
+        for raw in [Some("0"), Some("FALSE"), Some("no")] {
+            assert_eq!(
+                classify_release_password(raw),
+                ReleasePasswordClassification::UnprotectedFlag
+            );
+            assert_eq!(release_password_protection_hint(raw), Some(false));
+            assert_eq!(normalize_release_password(raw), None);
+        }
+
+        assert_eq!(
+            classify_release_password(Some("  real-password  ")),
+            ReleasePasswordClassification::Real("real-password".to_string())
+        );
+        assert_eq!(
+            release_password_protection_hint(Some("  real-password  ")),
+            Some(true)
+        );
+        assert_eq!(
+            normalize_release_password(Some("  real-password  ")),
+            Some("real-password".to_string())
+        );
+    }
 
     struct StubDownloadClientPluginProvider {
         available_types: Vec<String>,

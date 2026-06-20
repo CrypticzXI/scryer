@@ -1,4 +1,7 @@
 use super::*;
+use crate::domain_events::{
+    DomainEventActor, deleted_media_update, new_title_domain_event, title_context_snapshot,
+};
 use crate::events::retention::{
     OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS, operational_domain_event_types,
     user_facing_domain_event_types,
@@ -196,6 +199,7 @@ impl AppUseCase {
                     config,
                     &entry.entry_dir,
                     &entry.manifest,
+                    DomainEventActor::system(),
                 )
                 .await?
             {
@@ -211,7 +215,9 @@ impl AppUseCase {
         config: &crate::recycle_bin::RecycleBinConfig,
         entry_dir: &std::path::Path,
         manifest: &crate::recycle_bin::RecycleManifest,
+        actor: impl Into<DomainEventActor>,
     ) -> AppResult<bool> {
+        let actor = actor.into();
         if let Err(reason) = self
             .validate_recycle_entry_before_permanent_delete(manifest)
             .await
@@ -235,7 +241,54 @@ impl AppUseCase {
             return Ok(false);
         }
 
-        crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await
+        let purged = crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await?;
+        if purged {
+            self.record_recycle_entry_purged_event(actor, manifest)
+                .await;
+        }
+        Ok(purged)
+    }
+
+    async fn record_recycle_entry_purged_event(
+        &self,
+        actor: DomainEventActor,
+        manifest: &crate::recycle_bin::RecycleManifest,
+    ) {
+        let Some(title_id) = manifest.title_id.as_deref() else {
+            return;
+        };
+        let title = match self.services.catalog.titles.get_by_id(title_id).await {
+            Ok(Some(title)) => title,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(
+                    title_id = %title_id,
+                    error = %error,
+                    "recycle entry purged but title could not be loaded for audit event"
+                );
+                return;
+            }
+        };
+        let event = new_title_domain_event(
+            actor,
+            &title,
+            scryer_domain::DomainEventPayload::MediaFileDeleted(
+                scryer_domain::MediaFileDeletedEventData {
+                    title: title_context_snapshot(&title),
+                    media_updates: vec![deleted_media_update(manifest.original_path.clone())],
+                    file_id: manifest.original_file_id.clone(),
+                    reason: scryer_domain::MediaFileDeletedReason::RecycleBinPurged,
+                    episode_ids: Vec::new(),
+                },
+            ),
+        );
+        if let Err(error) = self.append_domain_event(event).await {
+            warn!(
+                title_id = %title_id,
+                error = %error,
+                "recycle entry purged but audit event could not be recorded"
+            );
+        }
     }
 
     async fn validate_recycle_entry_before_permanent_delete(
@@ -650,6 +703,7 @@ impl AppUseCase {
                         &config,
                         &entry_dir,
                         &manifest,
+                        actor,
                     )
                     .await;
             }
@@ -704,6 +758,7 @@ impl AppUseCase {
                                 &config,
                                 &entry.entry_dir,
                                 &entry.manifest,
+                                actor,
                             )
                             .await
                         {

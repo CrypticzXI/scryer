@@ -3,8 +3,8 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    DownloadSubmissionRepository,
+    AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository,
 };
 use scryer_domain::Id;
 
@@ -64,7 +64,10 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         SqlRuntime::run_in_transaction(&self.datastore, "record_download_submission", move |tx| {
             let submission = submission.clone();
-            Box::pin(async move { record_download_submission_tx(tx, &submission).await })
+            Box::pin(async move {
+                record_download_submission_tx(tx, &submission).await?;
+                Ok(())
+            })
         })
         .await
     }
@@ -86,7 +89,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &submission,
                         &submission_identity,
                     )
-                    .await
+                    .await?;
+                    Ok(())
                 })
             },
         )
@@ -113,6 +117,71 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             },
         )
         .await
+    }
+
+    async fn record_submission_actor_snapshot(
+        &self,
+        identity: &DownloadSourceIdentity,
+        actor: DownloadSubmissionActorSnapshot,
+    ) -> AppResult<()> {
+        let identity = identity.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_download_submission_actor_snapshot",
+            move |tx| {
+                let identity = identity.clone();
+                let actor = actor.clone();
+                Box::pin(async move {
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE download_submissions
+                         SET actor_kind = {},
+                             actor_user_id = {},
+                             actor_display_name = {}
+                         WHERE download_client_type = {}
+                           AND download_client_item_id = {}
+                           AND download_client_id = {}",
+                        &[
+                            SqlArg::Text(actor.kind.as_str().to_string()),
+                            SqlArg::OptText(actor.user_id),
+                            SqlArg::Text(actor.display_name),
+                            SqlArg::Text(identity.client_type),
+                            SqlArg::Text(identity.item_id),
+                            SqlArg::Text(normalize_download_client_id(
+                                identity.client_id.as_deref(),
+                            )),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
+    async fn get_submission_actor_snapshot(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT actor_kind, actor_user_id, actor_display_name
+             FROM download_submissions
+             WHERE download_client_type = {}
+               AND download_client_item_id = {}
+               AND download_client_id = {}
+             LIMIT 1",
+            &[
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+            ],
+        )
+        .await?;
+        row.map(|row| download_submission_actor_snapshot_from_row(&row))
+            .transpose()
+            .map(Option::flatten)
     }
 
     async fn find_by_client_item_id(

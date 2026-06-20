@@ -106,6 +106,10 @@ const de: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -478,6 +482,12 @@ const de: LocaleDictionary = {
   "settings.renameTokenYear": "Erscheinungsjahr",
   "settings.renameTokenQuality": "Qualität (z.B. 1080p)",
   "settings.renameTokenEdition": "Ausgabe (z.B. Director's Cut)",
+  "settings.renameTokenImdbId": "IMDb-ID",
+  "settings.renameTokenTmdbId": "TMDb-ID",
+  "settings.renameTokenTvdbId": "TVDb-ID",
+  "settings.renameTokenAnidbId": "AniDB-ID",
+  "settings.renameTokenMalId": "MAL-ID",
+  "settings.renameTokenAnilistId": "AniList-ID",
   "settings.renameTokenSource": "Quelle (z.B. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Video-Codec (z.B. x265)",
   "settings.renameTokenAudioCodec": "Audio-Codec (z.B. DTS)",
@@ -494,6 +504,8 @@ const de: LocaleDictionary = {
   "settings.renameValidationUnmatchedClose":
     "Nicht geöffnete schließende Klammer '}'",
   "settings.renameValidationUnknownToken": "Unbekanntes Token: {{token}}",
+  "settings.folderValidationUnknownToken":
+    "Ordnervorlagen unterstützen {title}, {year} und externe ID-Token. Ungültiges Token: {{token}}",
   "settings.renameValidationEmpty": "Umbenennungsvorlage darf nicht leer sein",
   "settings.renameComingSoon": "Umbenennungsregeln kommen bald.",
   "settings.mediaSettingsSaved": "Medien-Einstellungen gespeichert.",
@@ -763,6 +775,7 @@ const de: LocaleDictionary = {
   "queue.state.postProcessing": "Nachbearbeitung",
   "queue.state.paused": "Pausiert",
   "queue.state.completed": "Abgeschlossen",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Import ausstehend",
   "queue.state.importBlocked": "Import blockiert",
   "queue.state.failed": "Fehlgeschlagen",
@@ -775,6 +788,8 @@ const de: LocaleDictionary = {
     "{{downloading}} wird heruntergeladen, {{waiting}} wartet auf Import, {{attention}} benötigt Aufmerksamkeit",
   "queue.manualImport": "Manueller Import",
   "queue.manualImporting": "Wird zur Warteschlange hinzugefügt…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Manueller Import eingereiht.",
   "queue.manualImportFailed": "Manueller Import fehlgeschlagen.",
   "queue.removeFailed": "Entfernen fehlgeschlagen",
@@ -1065,6 +1080,8 @@ const de: LocaleDictionary = {
   "settings.pluginVersion": "v{{version}}",
   "settings.pluginUpdateAvailable": "Update: v{{version}}",
   "settings.pluginUpgrade": "Auf v{{version}} aktualisieren",
+  "settings.pluginOptimizedBuildAvailable": "Optimierter Build verfügbar",
+  "settings.pluginInstallOptimizedBuild": "Optimierten Build installieren",
   "settings.pluginNoCompatibleRelease":
     "Keine kompatible Version für diese Scryer-Version",
   "settings.pluginNewerReleaseRequiresNewerScryer":

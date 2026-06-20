@@ -10,10 +10,12 @@ use std::sync::Arc;
 
 use common::{disable_platform_keystore_for_tests, load_fixture};
 use scryer_application::{
-    AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
-    MovieFacetHandler, SeriesFacetHandler,
+    AppServices, AppUseCase, FacetRegistry, INDEXER_ROUTING_SETTINGS_KEY, IndexerPluginProvider,
+    IndexerRoutingSettingsEntry, JwtAuthConfig, MovieFacetHandler, SETTINGS_SCOPE_SYSTEM,
+    SeriesFacetHandler,
 };
-use scryer_domain::{ExternalId, MediaFacet, NewTitle, User};
+use scryer_domain::{ExternalId, IndexerConfig, MediaFacet, NewTitle, User};
+use scryer_infrastructure::SettingDefinitionSeed;
 use scryer_infrastructure::sqlite::{
     PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore, SettingsStore,
     ShowStore, TitleStore, UserStore,
@@ -39,6 +41,32 @@ async fn setup() -> (
     MockServer, // newznab
     MockServer, // torznab
 ) {
+    setup_with_indexer_configs(|newznab_server, torznab_server, now| {
+        vec![
+            newznab_indexer_config("newznab-1", "Newznab", newznab_server, now),
+            indexer_config(
+                "torznab-1",
+                "Torznab",
+                "torznab",
+                format!("{}/api", torznab_server.uri()),
+                now,
+            ),
+        ]
+    })
+    .await
+}
+
+async fn setup_with_indexer_configs<F>(
+    build_indexer_configs: F,
+) -> (
+    AppUseCase,
+    User,
+    MockServer, // newznab
+    MockServer, // torznab
+)
+where
+    F: FnOnce(&MockServer, &MockServer, chrono::DateTime<chrono::Utc>) -> Vec<IndexerConfig>,
+{
     disable_platform_keystore_for_tests();
 
     let newznab_server = MockServer::start().await;
@@ -67,11 +95,26 @@ async fn setup() -> (
         datastore.clone(),
         encryption_key_state.clone(),
     ));
-    let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+    let release_store = Arc::new(ReleaseStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
     let settings_store = Arc::new(SettingsStore::new(
         datastore.clone(),
         encryption_key_state.clone(),
     ));
+    settings_store
+        .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
+            category: "media".into(),
+            scope: SETTINGS_SCOPE_SYSTEM.into(),
+            key_name: INDEXER_ROUTING_SETTINGS_KEY.into(),
+            data_type: "string".into(),
+            default_value_json: "{}".into(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("seed indexer routing setting definition");
     let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
     let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
     let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
@@ -97,64 +140,7 @@ async fn setup() -> (
     // Create indexer configs in SQLite so the multi-indexer finds them
     use scryer_application::IndexerConfigRepository;
     let now = chrono::Utc::now();
-    for config in [
-        scryer_domain::IndexerConfig {
-            id: "newznab-1".into(),
-            name: "Newznab".into(),
-            provider_type: "newznab".into(),
-            base_url: format!("{}/api", newznab_server.uri()),
-            api_key_encrypted: Some("test-api-key".into()),
-            is_enabled: true,
-            enable_interactive_search: true,
-            enable_auto_search: true,
-            managed_parent_config_id: None,
-            managed_child_key: None,
-            managed_metadata_json: None,
-            caps_snapshot_json: None,
-            rate_limit_seconds: Some(0),
-            rate_limit_burst: None,
-            disabled_until: None,
-            last_health_status: None,
-            last_error_at: None,
-            config_json: Some(
-                serde_json::json!({
-                    "base_url": format!("{}/api", newznab_server.uri()),
-                    "api_key": "test-api-key",
-                })
-                .to_string(),
-            ),
-            created_at: now,
-            updated_at: now,
-        },
-        scryer_domain::IndexerConfig {
-            id: "torznab-1".into(),
-            name: "Torznab".into(),
-            provider_type: "torznab".into(),
-            base_url: format!("{}/api", torznab_server.uri()),
-            api_key_encrypted: Some("test-api-key".into()),
-            is_enabled: true,
-            enable_interactive_search: true,
-            enable_auto_search: true,
-            managed_parent_config_id: None,
-            managed_child_key: None,
-            managed_metadata_json: None,
-            caps_snapshot_json: None,
-            rate_limit_seconds: Some(0),
-            rate_limit_burst: None,
-            disabled_until: None,
-            last_health_status: None,
-            last_error_at: None,
-            config_json: Some(
-                serde_json::json!({
-                    "base_url": format!("{}/api", torznab_server.uri()),
-                    "api_key": "test-api-key",
-                })
-                .to_string(),
-            ),
-            created_at: now,
-            updated_at: now,
-        },
-    ] {
+    for config in build_indexer_configs(&newznab_server, &torznab_server, now) {
         indexer_config_store
             .create(config)
             .await
@@ -224,7 +210,10 @@ async fn setup() -> (
 
     let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
     let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
-    let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+    let pending_release_store = Arc::new(PendingReleaseStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
     let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
         datastore.clone(),
     ));
@@ -305,15 +294,65 @@ async fn setup() -> (
     };
 
     user.authorization = scryer_domain::UserAuthorization {
+        app: scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]),
         default_library: scryer_domain::LibraryPermissionMask::from_permissions([
             scryer_domain::LibraryPermission::View,
             scryer_domain::LibraryPermission::ManageTitles,
         ]),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
         loaded: true,
         ..Default::default()
     };
 
     (app, user, newznab_server, torznab_server)
+}
+
+fn newznab_indexer_config(
+    id: &str,
+    name: &str,
+    server: &MockServer,
+    now: chrono::DateTime<chrono::Utc>,
+) -> IndexerConfig {
+    indexer_config(id, name, "newznab", format!("{}/api", server.uri()), now)
+}
+
+fn indexer_config(
+    id: &str,
+    name: &str,
+    provider_type: &str,
+    base_url: String,
+    now: chrono::DateTime<chrono::Utc>,
+) -> IndexerConfig {
+    IndexerConfig {
+        id: id.into(),
+        name: name.into(),
+        provider_type: provider_type.into(),
+        base_url: base_url.clone(),
+        api_key_encrypted: Some("test-api-key".into()),
+        is_enabled: true,
+        enable_interactive_search: true,
+        enable_auto_search: true,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
+        rate_limit_seconds: Some(0),
+        rate_limit_burst: None,
+        disabled_until: None,
+        last_health_status: None,
+        last_error_at: None,
+        config_json: Some(
+            serde_json::json!({
+                "base_url": base_url,
+                "api_key": "test-api-key",
+            })
+            .to_string(),
+        ),
+        created_at: now,
+        updated_at: now,
+    }
 }
 
 async fn add_search_title(
@@ -395,6 +434,187 @@ fn assert_id_only_then_fallback(urls: &[String], id_fragment: &str, fallback_que
             .any(|url| url.contains(fallback_query_fragment)),
         "expected a later freetext fallback request containing {fallback_query_fragment}: {:?}",
         urls
+    );
+}
+
+fn newznab_response_with_title(title: &str, guid: &str) -> String {
+    serde_json::json!({
+        "channel": {
+            "title": "api.nzbgeek.info",
+            "item": [{
+                "title": title,
+                "link": format!("https://api.nzbgeek.info/details/{guid}"),
+                "pubDate": "Wed, 15 Jan 2025 12:00:00 +0000",
+                "enclosure": {
+                    "@attributes": {
+                        "url": format!("https://api.nzbgeek.info/api?t=get&id={guid}&apikey=testkey"),
+                        "length": "1073741824",
+                        "type": "application/x-nzb"
+                    }
+                },
+                "attr": [
+                    { "@attributes": { "name": "size", "value": "1073741824" } },
+                    { "@attributes": { "name": "guid", "value": guid } },
+                    { "@attributes": { "name": "grabs", "value": "42" } },
+                    { "@attributes": { "name": "password", "value": "1" } }
+                ]
+            }]
+        }
+    })
+    .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Protected RAR routing — two Newznab configs sharing one endpoint
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn protected_rar_routing_flip_uses_fresh_enabled_shared_newznab_source() {
+    let (app, user, newznab, _torznab) =
+        setup_with_indexer_configs(|newznab_server, _torznab_server, now| {
+            vec![
+                newznab_indexer_config(
+                    "newznab-nzb-password",
+                    "E2E Protected RAR NZB Password",
+                    newznab_server,
+                    now,
+                ),
+                newznab_indexer_config(
+                    "newznab-indexer-password",
+                    "E2E Protected RAR Indexer Password",
+                    newznab_server,
+                    now,
+                ),
+            ]
+        })
+        .await;
+
+    let nzb_title = "Paperman.2012.Protected.RAR.NZB.Password.1080p.WEB-DL-GROUP";
+    let indexer_title = "Paperman.2012.Protected.RAR.Indexer.Password.1080p.WEB-DL-GROUP";
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("cat", "2000"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(newznab_response_with_title(
+                nzb_title,
+                "protected-rar-nzb-password",
+            )),
+        )
+        .with_priority(1)
+        .mount(&newznab)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("cat", "2040"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(newznab_response_with_title(
+                indexer_title,
+                "protected-rar-indexer-password",
+            )),
+        )
+        .with_priority(1)
+        .mount(&newznab)
+        .await;
+
+    let title_id = add_search_title(
+        &app,
+        &user,
+        "Paperman",
+        MediaFacet::Movie,
+        vec![external_id("imdb", "tt2388725")],
+    )
+    .await;
+
+    app.update_indexer_routing(
+        &user,
+        "movie",
+        vec![
+            IndexerRoutingSettingsEntry {
+                indexer_id: "newznab-nzb-password".to_string(),
+                enabled: true,
+                categories: vec!["2000".to_string()],
+                priority: 1,
+            },
+            IndexerRoutingSettingsEntry {
+                indexer_id: "newznab-indexer-password".to_string(),
+                enabled: false,
+                categories: vec!["2040".to_string()],
+                priority: 2,
+            },
+        ],
+    )
+    .await
+    .expect("write first routing state");
+
+    let first_results = app
+        .search_indexers_for_title(&user, title_id.clone())
+        .await
+        .expect("first search should succeed");
+    let urls_after_first_search = captured_urls(&newznab).await;
+    assert!(
+        first_results.iter().any(|result| {
+            result.title == nzb_title && result.source.contains("E2E Protected RAR NZB Password")
+        }),
+        "first search should attribute the NZB-password release to the enabled indexer: {first_results:?}; urls: {urls_after_first_search:?}"
+    );
+    assert!(
+        first_results
+            .iter()
+            .all(|result| !result.source.contains("E2E Protected RAR Indexer Password")),
+        "disabled indexer should not contribute first-search results: {first_results:?}"
+    );
+    app.update_indexer_routing(
+        &user,
+        "movie",
+        vec![
+            IndexerRoutingSettingsEntry {
+                indexer_id: "newznab-nzb-password".to_string(),
+                enabled: false,
+                categories: vec!["2000".to_string()],
+                priority: 1,
+            },
+            IndexerRoutingSettingsEntry {
+                indexer_id: "newznab-indexer-password".to_string(),
+                enabled: true,
+                categories: vec!["2040".to_string()],
+                priority: 2,
+            },
+        ],
+    )
+    .await
+    .expect("write second routing state");
+
+    let second_results = app
+        .search_indexers_for_title(&user, title_id)
+        .await
+        .expect("second search should succeed");
+    assert!(
+        second_results.iter().any(|result| {
+            result.title == indexer_title
+                && result.source.contains("E2E Protected RAR Indexer Password")
+        }),
+        "second search should attribute the indexer-password release to the newly enabled indexer: {second_results:?}"
+    );
+    assert!(
+        second_results
+            .iter()
+            .all(|result| !result.source.contains("E2E Protected RAR NZB Password")),
+        "previously enabled indexer should not contribute second-search results: {second_results:?}"
+    );
+
+    let urls_after_second_search = captured_urls(&newznab).await;
+    let second_search_urls = &urls_after_second_search[urls_after_first_search.len()..];
+    assert!(
+        second_search_urls
+            .iter()
+            .any(|url| url.contains("cat=2040")),
+        "second search should query the newly enabled category: {second_search_urls:?}"
+    );
+    assert!(
+        second_search_urls
+            .iter()
+            .all(|url| !url.contains("cat=2000")),
+        "second search should not query the disabled category: {second_search_urls:?}"
     );
 }
 

@@ -54,8 +54,25 @@ pub struct TrackedDownload {
     pub import_attempted: bool,
     /// When a completed download path first became unavailable.
     pub path_missing_since: Option<DateTime<Utc>>,
+    /// Runtime-only retry state for completed imports that temporarily contain no videos.
+    pub no_video_import_retry: Option<NoVideoImportRetryState>,
     /// Manual failure actions can record the failure without reacquiring.
     pub skip_reacquire_on_failure: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoVideoImportRetryState {
+    pub signature: NoVideoImportSourceSignature,
+    pub attempts: u8,
+    pub next_retry_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoVideoImportSourceSignature {
+    pub source_path: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    pub latest_mtime: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +120,60 @@ impl TrackedDownload {
     pub fn fail(&mut self) {
         self.status = TrackedDownloadStatus::Error;
         self.state = TrackedDownloadState::FailedPending;
+    }
+
+    pub(crate) fn merge_background_work_state_from(&mut self, finished: TrackedDownload) {
+        self.state = finished.state;
+        self.status = finished.status;
+        self.status_messages = finished.status_messages;
+        self.title_id = finished.title_id;
+        self.facet = finished.facet;
+        self.source_title = finished.source_title;
+        self.indexer = finished.indexer;
+        self.added_at = finished.added_at;
+        self.notified_manual_interaction = finished.notified_manual_interaction;
+        self.match_type = finished.match_type;
+        self.import_attempted = finished.import_attempted;
+        self.path_missing_since = finished.path_missing_since;
+        self.no_video_import_retry = finished.no_video_import_retry;
+    }
+
+    pub(crate) fn reset_for_import_retry(&mut self) {
+        self.state = TrackedDownloadState::ImportPending;
+        self.status = TrackedDownloadStatus::Ok;
+        self.status_messages.clear();
+        self.import_attempted = false;
+        self.path_missing_since = None;
+        self.no_video_import_retry = None;
+        self.skip_reacquire_on_failure = false;
+    }
+
+    pub(crate) fn schedule_no_video_import_retry(
+        &mut self,
+        signature: NoVideoImportSourceSignature,
+        attempts: u8,
+        next_retry_at: DateTime<Utc>,
+        message: impl Into<String>,
+    ) {
+        self.no_video_import_retry = Some(NoVideoImportRetryState {
+            signature,
+            attempts,
+            next_retry_at,
+        });
+        self.state = TrackedDownloadState::ImportPending;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message.into()];
+    }
+
+    pub(crate) fn block_no_video_import_after_retries(&mut self, message: impl Into<String>) {
+        self.no_video_import_retry = None;
+        self.state = TrackedDownloadState::ImportBlocked;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message.into()];
+    }
+
+    pub(crate) fn clear_no_video_import_retry(&mut self) {
+        self.no_video_import_retry = None;
     }
 }
 
@@ -181,6 +252,7 @@ impl TrackedDownloadService {
             client_item,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -191,6 +263,13 @@ impl TrackedDownloadService {
 
     pub fn find(&self, id: &str) -> Option<&TrackedDownload> {
         self.cache.get(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_for_tests(&mut self, tracked: TrackedDownload) {
+        let id = tracked.id.clone();
+        self.last_seen_at.insert(id.clone(), Utc::now());
+        self.cache.insert(id, tracked);
     }
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut TrackedDownload> {
@@ -233,6 +312,7 @@ impl TrackedDownloadService {
                 td.state,
                 TrackedDownloadState::ImportPending
                     | TrackedDownloadState::Importing
+                    | TrackedDownloadState::ImportBlocked
                     | TrackedDownloadState::FailedPending
             );
             if !seen_ids.contains(&td.id) && !should_preserve_tracking {
@@ -362,7 +442,8 @@ impl TrackedDownloadService {
     // ── Title Resolution ─────────────────────────────────────────────────
 
     async fn resolve_title(app: &AppUseCase, td: &mut TrackedDownload) {
-        let existing_submission = app
+        let can_clear_stale_unmatched_state = should_clear_stale_unmatched_state_on_submission(td);
+        let mut existing_submission = app
             .services
             .workflow
             .download_submissions
@@ -374,6 +455,16 @@ impl TrackedDownloadService {
             .await
             .ok()
             .flatten();
+        let should_try_download_id_lookup = existing_submission
+            .as_ref()
+            .is_none_or(|submission| !title_id_present(Some(submission.title_id.as_str())));
+        if should_try_download_id_lookup
+            && let Some(download_id_submission) =
+                download_id_submission_for_tracked_download(app, td).await
+            && title_id_present(Some(download_id_submission.title_id.as_str()))
+        {
+            existing_submission = Some(download_id_submission);
+        }
 
         // 1. download_submissions lookup (highest confidence).
         if let Some(sub) = existing_submission.as_ref()
@@ -383,6 +474,16 @@ impl TrackedDownloadService {
             td.facet = Some(sub.facet.clone());
             td.source_title = sub.source_title.clone();
             td.match_type = TitleMatchType::Submission;
+            if can_clear_stale_unmatched_state {
+                td.status = TrackedDownloadStatus::Ok;
+                td.status_messages.clear();
+                if td.state == TrackedDownloadState::ImportBlocked
+                    && !td.import_attempted
+                    && td.path_missing_since.is_none()
+                {
+                    td.state = TrackedDownloadState::Downloading;
+                }
+            }
             return;
         }
 
@@ -568,6 +669,14 @@ fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) 
         .is_none_or(str::is_empty)
 }
 
+fn should_clear_stale_unmatched_state_on_submission(td: &TrackedDownload) -> bool {
+    !title_id_present(td.title_id.as_deref())
+        && matches!(
+            td.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        )
+}
+
 pub(crate) async fn publish_runtime_tracked_download_snapshot(
     app: &AppUseCase,
     tracked: &TrackedDownload,
@@ -652,6 +761,10 @@ fn should_reresolve_title(
         return true;
     }
 
+    if should_retry_late_submission_resolution(existing, incoming) {
+        return true;
+    }
+
     if !title_id_present(existing.client_item.title_id.as_deref())
         && title_id_present(incoming.title_id.as_deref())
     {
@@ -681,6 +794,18 @@ fn should_reresolve_title(
     }
 
     false
+}
+
+fn should_retry_late_submission_resolution(
+    existing: &TrackedDownload,
+    incoming: &DownloadQueueItem,
+) -> bool {
+    !title_id_present(existing.title_id.as_deref())
+        && matches!(
+            existing.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        )
+        && !download_submission_identity_is_empty(&observed_queue_item_identity(incoming))
 }
 
 pub(crate) async fn assign_title_to_tracked_download(
@@ -977,7 +1102,7 @@ mod tests {
         JwtAuthConfig, PendingTitleHydration, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use scryer_domain::{
         CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
         ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, User,
@@ -989,9 +1114,13 @@ mod tests {
     struct TestDownloadSubmissionRepo {
         submission: Option<crate::DownloadSubmission>,
         submission_identity: Option<crate::DownloadSubmissionIdentity>,
+        mutable_submission: Option<Arc<Mutex<Option<crate::DownloadSubmission>>>>,
+        mutable_submission_identity: Option<Arc<Mutex<Option<crate::DownloadSubmissionIdentity>>>>,
         tracked_state: Option<String>,
         tracked_state_updates: Arc<Mutex<Vec<String>>>,
         recorded_submissions: Arc<Mutex<Vec<crate::DownloadSubmission>>>,
+        download_id_submissions:
+            Arc<Mutex<Vec<(crate::DownloadSubmission, crate::DownloadSubmissionIdentity)>>>,
         identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
     }
 
@@ -1029,6 +1158,24 @@ mod tests {
         ))
     }
 
+    impl TestDownloadSubmissionRepo {
+        async fn current_submission(&self) -> Option<crate::DownloadSubmission> {
+            if let Some(submission) = self.mutable_submission.as_ref() {
+                return submission.lock().await.clone();
+            }
+
+            self.submission.clone()
+        }
+
+        async fn current_submission_identity(&self) -> Option<crate::DownloadSubmissionIdentity> {
+            if let Some(identity) = self.mutable_submission_identity.as_ref() {
+                return identity.lock().await.clone();
+            }
+
+            self.submission_identity.clone()
+        }
+    }
+
     #[async_trait]
     impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         async fn record_submission(&self, submission: crate::DownloadSubmission) -> AppResult<()> {
@@ -1038,9 +1185,11 @@ mod tests {
 
         async fn find_by_client_item_id(
             &self,
-            _: &DownloadSourceIdentity,
+            identity: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
-            Ok(self.submission.clone())
+            Ok(self.current_submission().await.filter(|submission| {
+                DownloadSourceIdentity::from_submission(submission) == *identity
+            }))
         }
 
         async fn list_by_download_id(
@@ -1049,7 +1198,26 @@ mod tests {
             client_type: &str,
             download_id: &str,
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
-            let Some(submission) = self.submission.as_ref() else {
+            let explicit_matches = self
+                .download_id_submissions
+                .lock()
+                .await
+                .iter()
+                .filter(|(submission, identity)| {
+                    submission.download_client_id.as_deref().unwrap_or("")
+                        == client_id.unwrap_or("")
+                        && submission
+                            .download_client_type
+                            .eq_ignore_ascii_case(client_type)
+                        && identity.download_id.as_deref() == Some(download_id)
+                })
+                .map(|(submission, _)| submission.clone())
+                .collect::<Vec<_>>();
+            if !explicit_matches.is_empty() {
+                return Ok(explicit_matches);
+            }
+
+            let Some(submission) = self.current_submission().await else {
                 return Ok(vec![]);
             };
             let matches_submission = submission.download_client_id.as_deref().unwrap_or("")
@@ -1058,7 +1226,8 @@ mod tests {
                     .download_client_type
                     .eq_ignore_ascii_case(client_type);
             let matches_identity = self
-                .submission_identity
+                .current_submission_identity()
+                .await
                 .as_ref()
                 .and_then(|identity| identity.download_id.as_deref())
                 == Some(download_id);
@@ -1072,14 +1241,14 @@ mod tests {
             &self,
             _: &DownloadSourceIdentity,
         ) -> AppResult<Option<crate::DownloadSubmissionIdentity>> {
-            Ok(self.submission_identity.clone())
+            Ok(self.current_submission_identity().await)
         }
 
         async fn list_for_client_items(
             &self,
             _: &[DownloadSourceIdentity],
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
-            Ok(self.submission.clone().into_iter().collect())
+            Ok(self.current_submission().await.into_iter().collect())
         }
 
         async fn list_for_title(&self, _: &str) -> AppResult<Vec<crate::DownloadSubmission>> {
@@ -1277,6 +1446,16 @@ mod tests {
             Ok(())
         }
 
+        async fn update_import_transfer_progress(
+            &self,
+            _: &str,
+            _: scryer_domain::ImportTransferPhase,
+            _: i64,
+            _: i64,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn recover_stale_processing_imports(&self, _: i64) -> AppResult<u64> {
             Ok(0)
         }
@@ -1367,7 +1546,9 @@ mod tests {
                 sequence,
                 event_id: event.event_id,
                 occurred_at: event.occurred_at,
+                actor_kind: event.actor_kind,
                 actor_user_id: event.actor_user_id,
+                actor_display_name: event.actor_display_name,
                 title_id: event.title_id,
                 facet: event.facet,
                 correlation_id: event.correlation_id,
@@ -1941,6 +2122,7 @@ mod tests {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,
                 default_library: permissions,
+                actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
                 loaded: true,
             },
         }
@@ -1959,6 +2141,11 @@ mod tests {
             client_type: "nzbget".to_string(),
             state: DownloadQueueState::Completed,
             progress_percent: 100,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
             size_bytes: None,
             remaining_seconds: None,
             queued_at: None,
@@ -2008,8 +2195,75 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         }
+    }
+
+    fn no_video_retry_state(
+        attempts: u8,
+        next_retry_at: chrono::DateTime<Utc>,
+    ) -> NoVideoImportRetryState {
+        NoVideoImportRetryState {
+            signature: NoVideoImportSourceSignature {
+                source_path: "/tmp/download".to_string(),
+                file_count: 3,
+                total_bytes: 1234,
+                latest_mtime: Some(Utc::now()),
+            },
+            attempts,
+            next_retry_at,
+        }
+    }
+
+    #[test]
+    fn merge_background_work_state_preserves_no_video_retry_state() {
+        let mut tracked = build_tracked_download("dl-1");
+        let mut finished = build_tracked_download("dl-1");
+        let retry = no_video_retry_state(2, Utc::now() + Duration::seconds(120));
+
+        finished.state = TrackedDownloadState::ImportPending;
+        finished.status = TrackedDownloadStatus::Warning;
+        finished.status_messages = vec!["retry later".to_string()];
+        finished.title_id = Some("title-1".to_string());
+        finished.match_type = TitleMatchType::Submission;
+        finished.import_attempted = true;
+        finished.path_missing_since = Some(Utc::now());
+        finished.no_video_import_retry = Some(retry.clone());
+
+        tracked.merge_background_work_state_from(finished);
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert_eq!(tracked.status_messages, vec!["retry later"]);
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert!(tracked.import_attempted);
+        assert!(tracked.path_missing_since.is_some());
+        assert_eq!(tracked.no_video_import_retry, Some(retry));
+    }
+
+    #[test]
+    fn reset_for_import_retry_clears_stale_no_video_retry_state() {
+        let mut tracked = build_tracked_download("dl-1");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        tracked.status = TrackedDownloadStatus::Warning;
+        tracked.status_messages = vec!["blocked".to_string()];
+        tracked.import_attempted = true;
+        tracked.path_missing_since = Some(Utc::now());
+        tracked.no_video_import_retry =
+            Some(no_video_retry_state(1, Utc::now() + Duration::seconds(30)));
+        tracked.skip_reacquire_on_failure = true;
+
+        tracked.reset_for_import_retry();
+
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+        assert!(tracked.status_messages.is_empty());
+        assert!(!tracked.import_attempted);
+        assert!(tracked.path_missing_since.is_none());
+        assert!(tracked.no_video_import_retry.is_none());
+        assert!(!tracked.skip_reacquire_on_failure);
     }
 
     #[test]
@@ -2057,6 +2311,196 @@ mod tests {
 
         tracker.update_trackable(&HashSet::from([durable_id.clone()]));
         assert!(tracker.find(&durable_id).is_some_and(|td| td.is_trackable));
+    }
+
+    #[tokio::test]
+    async fn resolves_submission_by_download_id_when_client_item_id_differs() {
+        let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            submission: Some(crate::DownloadSubmission {
+                title_id: "title-1".to_string(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "movie".to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: download_id.to_string(),
+                source_hint: None,
+                source_kind: None,
+                source_title: Some("Paperman.2012.720p.WEB-DL".to_string()),
+                request_signature: None,
+                scope: crate::SubmissionScope::Title,
+            }),
+            submission_identity: Some(crate::DownloadSubmissionIdentity {
+                download_id: Some(download_id.to_string()),
+            }),
+            ..Default::default()
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app(download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "nzbget".to_string();
+        item.download_client_item_id = "2".to_string();
+        item.download_id = Some(download_id.to_string());
+        item.title_name = "Paperman.2012.720p.WEB-DL".to_string();
+        item.facet = None;
+
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.facet.as_deref(), Some("movie"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert_eq!(
+            tracked.source_title.as_deref(),
+            Some("Paperman.2012.720p.WEB-DL")
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_orphan_submission_does_not_block_download_id_promotion() {
+        let download_id = "e9527810bc94e83401584069306f1064ca28762a";
+        let orphan = crate::DownloadSubmission {
+            title_id: String::new(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: String::new(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: download_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string()),
+            request_signature: None,
+            scope: crate::SubmissionScope::Orphan,
+        };
+        let managed = crate::DownloadSubmission {
+            title_id: "title-1".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: download_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            request_signature: None,
+            scope: crate::SubmissionScope::Title,
+        };
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            submission: Some(orphan),
+            download_id_submissions: Arc::new(Mutex::new(vec![(
+                managed,
+                crate::DownloadSubmissionIdentity {
+                    download_id: Some(download_id.to_string()),
+                },
+            )])),
+            ..Default::default()
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(
+            Arc::new(TestTitleRepo::default()),
+            download_submissions,
+            imports,
+        );
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "qbittorrent".to_string();
+        item.client_name = "qbittorrent".to_string();
+        item.download_client_item_id = download_id.to_string();
+        item.download_id = Some(download_id.to_string());
+        item.title_id = None;
+        item.title_name = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string();
+        item.facet = None;
+        item.is_scryer_origin = true;
+
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.facet.as_deref(), Some("movie"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert_eq!(
+            tracked.source_title.as_deref(),
+            Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb")
+        );
+    }
+
+    #[tokio::test]
+    async fn late_submission_promotes_titleless_unmatched_download_and_clears_stale_import_block() {
+        let download_id = "e9527810bc94e83401584069306f1064ca28762a";
+        let mutable_submission = Arc::new(Mutex::new(None));
+        let mutable_submission_identity = Arc::new(Mutex::new(None));
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            mutable_submission: Some(mutable_submission.clone()),
+            mutable_submission_identity: Some(mutable_submission_identity.clone()),
+            ..Default::default()
+        });
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app_with_title_repo(
+            Arc::new(TestTitleRepo::default()),
+            download_submissions,
+            imports,
+        );
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut item = build_client_item();
+        item.client_type = "qbittorrent".to_string();
+        item.client_name = "qbittorrent".to_string();
+        item.download_client_item_id = download_id.to_string();
+        item.download_id = Some(download_id.to_string());
+        item.title_id = None;
+        item.title_name = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string();
+        item.facet = None;
+        item.is_scryer_origin = true;
+
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item.clone()).await;
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert!(tracked.title_id.is_none());
+        assert!(matches!(
+            tracked.match_type,
+            TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
+        ));
+
+        let tracked = tracker.find_mut(&tracked_id).expect("tracked download mut");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        tracked.warn("Unable to resolve title from completed download");
+
+        *mutable_submission.lock().await = Some(crate::DownloadSubmission {
+            title_id: "title-1".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: download_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            request_signature: None,
+            scope: crate::SubmissionScope::Title,
+        });
+        *mutable_submission_identity.lock().await = Some(crate::DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        });
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.title_id.as_deref(), Some("title-1"));
+        assert_eq!(tracked.facet.as_deref(), Some("movie"));
+        assert_eq!(tracked.match_type, TitleMatchType::Submission);
+        assert_eq!(
+            tracked.source_title.as_deref(),
+            Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb")
+        );
+        assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+        assert!(tracked.status_messages.is_empty());
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(!tracked.import_attempted);
     }
 
     fn build_completed_download(
@@ -2138,9 +2582,12 @@ mod tests {
             submission_identity: Some(crate::DownloadSubmissionIdentity {
                 download_id: Some(download_id.to_string()),
             }),
+            mutable_submission: None,
+            mutable_submission_identity: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
@@ -2154,6 +2601,11 @@ mod tests {
                 payload_json: "{}".to_string(),
                 result_json: None,
                 download_id: Some(download_id.to_string()),
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
                 started_at: None,
                 finished_at: None,
                 created_at: "now".to_string(),
@@ -2225,6 +2677,11 @@ mod tests {
                 payload_json: "{}".to_string(),
                 result_json: None,
                 download_id: None,
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
                 started_at: None,
                 finished_at: None,
                 created_at: "now".to_string(),
@@ -2370,9 +2827,12 @@ mod tests {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: None,
             submission_identity: None,
+            mutable_submission: None,
+            mutable_submission_identity: None,
             tracked_state: None,
             tracked_state_updates: Arc::new(Mutex::new(vec![])),
             recorded_submissions: Arc::new(Mutex::new(vec![])),
+            download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
@@ -2754,6 +3214,7 @@ mod tests {
         for (suffix, state) in [
             ("pending", TrackedDownloadState::ImportPending),
             ("importing", TrackedDownloadState::Importing),
+            ("blocked", TrackedDownloadState::ImportBlocked),
             ("failed", TrackedDownloadState::FailedPending),
         ] {
             tracker.cache.insert(
@@ -2776,6 +3237,7 @@ mod tests {
                     is_trackable: true,
                     import_attempted: false,
                     path_missing_since: None,
+                    no_video_import_retry: None,
                     skip_reacquire_on_failure: false,
                 },
             );
@@ -2791,6 +3253,11 @@ mod tests {
         assert!(
             tracker
                 .find("client-1:importing")
+                .is_some_and(|td| td.is_trackable)
+        );
+        assert!(
+            tracker
+                .find("client-1:blocked")
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(
@@ -2879,6 +3346,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -2912,6 +3380,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -3025,6 +3494,11 @@ mod tests {
                 payload_json: serde_json::to_string(&payload).expect("serialize payload"),
                 result_json: None,
                 download_id: None,
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
                 started_at: None,
                 finished_at: None,
                 created_at: Utc::now().to_rfc3339(),
@@ -3057,6 +3531,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 
@@ -3101,6 +3576,11 @@ mod tests {
                         .expect("serialize other payload"),
                     result_json: None,
                     download_id: None,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -3117,6 +3597,11 @@ mod tests {
                         .expect("serialize matching payload"),
                     result_json: None,
                     download_id: None,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -3186,6 +3671,11 @@ mod tests {
                         .expect("serialize other payload"),
                     result_json: None,
                     download_id: None,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -3202,6 +3692,11 @@ mod tests {
                         .expect("serialize matching payload"),
                     result_json: None,
                     download_id: None,
+                    import_transfer_phase: None,
+                    import_transfer_bytes: None,
+                    import_transfer_total_bytes: None,
+                    import_transfer_started_at: None,
+                    import_transfer_updated_at: None,
                     started_at: None,
                     finished_at: None,
                     created_at: Utc::now().to_rfc3339(),
@@ -3238,6 +3733,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            no_video_import_retry: None,
             skip_reacquire_on_failure: false,
         };
 

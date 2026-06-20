@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::{
@@ -12,6 +14,8 @@ use scryer_domain::{
     SubtitleBlocklistEntry, SubtitleDownload,
 };
 
+use crate::config_store::{current_encryption_key, decrypt_optional_value, encrypt_optional_value};
+use crate::encryption::{EncryptionKey, is_encrypted};
 use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::repo_err;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
@@ -94,6 +98,7 @@ fn wanted_due_order_sql(datastore: &StoreDatastore) -> String {
 #[derive(Clone)]
 pub struct PendingReleaseStore {
     datastore: StoreDatastore,
+    encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
 }
 
 #[derive(Clone)]
@@ -123,10 +128,75 @@ macro_rules! impl_store_new {
 
 impl_store_new!(LibraryProbeStore);
 impl_store_new!(WantedStore);
-impl_store_new!(PendingReleaseStore);
 impl_store_new!(BlocklistStore);
 impl_store_new!(SubtitleDownloadStore);
 impl_store_new!(HousekeepingStore);
+
+impl PendingReleaseStore {
+    pub fn new(
+        datastore: StoreDatastore,
+        encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
+    ) -> Self {
+        Self {
+            datastore,
+            encryption_key,
+        }
+    }
+
+    pub async fn backfill_source_passwords(&self) -> AppResult<u64> {
+        let encryption_key = self.encryption_key()?;
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, source_password FROM pending_releases WHERE source_password IS NOT NULL",
+            &[],
+        )
+        .await?;
+
+        let mut updates = Vec::new();
+        for row in rows {
+            let stored = row.text("source_password")?;
+            if is_encrypted(&stored) {
+                continue;
+            }
+
+            let encrypted =
+                encrypt_pending_release_source_password(encryption_key.as_ref(), Some(&stored))?
+                    .expect("non-null source_password should encrypt to non-null value");
+            updates.push((row.text("id")?, encrypted));
+        }
+
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let update_count = updates.len() as u64;
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "backfill_pending_release_source_passwords",
+            move |tx| {
+                let updates = updates.clone();
+                Box::pin(async move {
+                    for (id, encrypted) in updates {
+                        SqlRuntime::execute(
+                            SqlExec::Tx(tx),
+                            "UPDATE pending_releases
+                             SET source_password = {}
+                             WHERE id = {}",
+                            &[SqlArg::Text(encrypted), SqlArg::Text(id)],
+                        )
+                        .await?;
+                    }
+                    Ok(update_count)
+                })
+            },
+        )
+        .await
+    }
+
+    fn encryption_key(&self) -> AppResult<Option<EncryptionKey>> {
+        current_encryption_key(&self.encryption_key)
+    }
+}
 
 #[async_trait]
 impl LibraryProbeRepository for LibraryProbeStore {
@@ -1345,7 +1415,10 @@ const PENDING_RELEASE_COLUMNS: &str =
     source_kind, release_score, scoring_log_json, indexer_source, release_guid,
     added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash";
 
-fn pending_release_row_to_item(row: &SqlRow) -> AppResult<PendingRelease> {
+fn pending_release_row_to_item(
+    row: &SqlRow,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<PendingRelease> {
     let status = row.text("status")?;
     Ok(PendingRelease {
         id: row.text("id")?,
@@ -1367,7 +1440,10 @@ fn pending_release_row_to_item(row: &SqlRow) -> AppResult<PendingRelease> {
             scryer_application::AppError::Repository("invalid pending release status".into())
         })?,
         grabbed_at: opt_timestamp_text(row, "grabbed_at")?,
-        source_password: row.opt_text("source_password")?,
+        source_password: decrypt_pending_release_source_password(
+            encryption_key,
+            row.opt_text("source_password")?,
+        )?,
         published_at: opt_timestamp_text(row, "published_at")?,
         info_hash: row.opt_text("info_hash")?,
     })
@@ -1377,17 +1453,19 @@ async fn fetch_pending_releases(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
+    encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<Vec<PendingRelease>> {
     SqlRuntime::fetch_all(exec, sql, args)
         .await?
         .iter()
-        .map(pending_release_row_to_item)
+        .map(|row| pending_release_row_to_item(row, encryption_key))
         .collect()
 }
 
 fn pending_release_insert_args(
     datastore: &StoreDatastore,
     release: &PendingRelease,
+    encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<Vec<SqlArg>> {
     Ok(vec![
         SqlArg::Text(release.id.clone()),
@@ -1405,15 +1483,33 @@ fn pending_release_insert_args(
         timestamp_arg_for_datastore(datastore, &release.delay_until)?,
         SqlArg::Text(release.status.as_str().to_string()),
         opt_timestamp_arg_for_datastore(datastore, release.grabbed_at.as_deref())?,
-        SqlArg::OptText(release.source_password.clone()),
+        SqlArg::OptText(encrypt_pending_release_source_password(
+            encryption_key,
+            release.source_password.as_ref(),
+        )?),
         opt_timestamp_arg_for_datastore(datastore, release.published_at.as_deref())?,
         SqlArg::OptText(release.info_hash.clone()),
     ])
 }
 
+fn encrypt_pending_release_source_password(
+    key: Option<&EncryptionKey>,
+    value: Option<&String>,
+) -> AppResult<Option<String>> {
+    encrypt_optional_value(key, value, "pending release source_password", true)
+}
+
+fn decrypt_pending_release_source_password(
+    key: Option<&EncryptionKey>,
+    value: Option<String>,
+) -> AppResult<Option<String>> {
+    decrypt_optional_value(key, value, "pending release source_password", true)
+}
+
 #[async_trait]
 impl PendingReleaseRepository for PendingReleaseStore {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String> {
+        let encryption_key = self.encryption_key()?;
         execute_datastore_write(
             &self.datastore,
             "insert_pending_release",
@@ -1422,7 +1518,7 @@ impl PendingReleaseRepository for PendingReleaseStore {
               source_kind, release_score, scoring_log_json, indexer_source, release_guid,
               added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            pending_release_insert_args(&self.datastore, release)?,
+            pending_release_insert_args(&self.datastore, release, encryption_key.as_ref())?,
         )
         .await?;
         Ok(release.id.clone())
@@ -1435,10 +1531,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE status = 'waiting' AND delay_until <= {{}}
               ORDER BY delay_until ASC"
         );
+        let encryption_key = self.encryption_key()?;
         fetch_pending_releases(
             self.datastore.read_exec(),
             &sql,
             &[timestamp_arg_for_datastore(&self.datastore, now)?],
+            encryption_key.as_ref(),
         )
         .await
     }
@@ -1450,11 +1548,19 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE status = 'waiting'
               ORDER BY delay_until ASC"
         );
-        fetch_pending_releases(self.datastore.read_exec(), &sql, &[]).await
+        let encryption_key = self.encryption_key()?;
+        fetch_pending_releases(
+            self.datastore.read_exec(),
+            &sql,
+            &[],
+            encryption_key.as_ref(),
+        )
+        .await
     }
 
     async fn get_pending_release(&self, id: &str) -> AppResult<Option<PendingRelease>> {
         let sql = format!("SELECT {PENDING_RELEASE_COLUMNS} FROM pending_releases WHERE id = {{}}");
+        let encryption_key = self.encryption_key()?;
         SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             &sql,
@@ -1462,7 +1568,7 @@ impl PendingReleaseRepository for PendingReleaseStore {
         )
         .await?
         .as_ref()
-        .map(pending_release_row_to_item)
+        .map(|row| pending_release_row_to_item(row, encryption_key.as_ref()))
         .transpose()
     }
 
@@ -1476,10 +1582,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE wanted_item_id = {{}} AND status = 'waiting'
               ORDER BY release_score DESC"
         );
+        let encryption_key = self.encryption_key()?;
         fetch_pending_releases(
             self.datastore.read_exec(),
             &sql,
             &[SqlArg::Text(wanted_item_id.to_string())],
+            encryption_key.as_ref(),
         )
         .await
     }
@@ -1494,10 +1602,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE title_id = {{}}
               ORDER BY added_at DESC"
         );
+        let encryption_key = self.encryption_key()?;
         fetch_pending_releases(
             self.datastore.read_exec(),
             &sql,
             &[SqlArg::Text(title_id.to_string())],
+            encryption_key.as_ref(),
         )
         .await
     }
@@ -1534,10 +1644,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE wanted_item_id = {{}} AND status = 'standby'
               ORDER BY release_score DESC, added_at ASC"
         );
+        let encryption_key = self.encryption_key()?;
         fetch_pending_releases(
             self.datastore.read_exec(),
             &sql,
             &[SqlArg::Text(wanted_item_id.to_string())],
+            encryption_key.as_ref(),
         )
         .await
     }
@@ -1564,7 +1676,14 @@ impl PendingReleaseRepository for PendingReleaseStore {
               WHERE status = 'standby'
               ORDER BY wanted_item_id ASC, release_score DESC, added_at ASC"
         );
-        fetch_pending_releases(self.datastore.read_exec(), &sql, &[]).await
+        let encryption_key = self.encryption_key()?;
+        fetch_pending_releases(
+            self.datastore.read_exec(),
+            &sql,
+            &[],
+            encryption_key.as_ref(),
+        )
+        .await
     }
 
     async fn compare_and_set_pending_release_status(

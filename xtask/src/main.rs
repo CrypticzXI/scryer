@@ -18,6 +18,7 @@ use std::thread;
 use xtask_support::{TaskContext, ok, run_status, step, warn};
 
 mod media_fixtures;
+mod oauth_dev_flow;
 mod profile;
 mod seed;
 
@@ -89,6 +90,8 @@ enum Commands {
     TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
     MediaFixtures(media_fixtures::MediaFixturesArgs),
+    #[command(name = "oauth")]
+    OAuth(OAuthArgs),
     Sdk(SdkArgs),
     Ci(CiArgs),
     Stack(StackArgs),
@@ -155,6 +158,17 @@ struct RebaselineArgs {
 struct SdkArgs {
     #[command(subcommand)]
     command: SdkCommand,
+}
+
+#[derive(Args)]
+struct OAuthArgs {
+    #[command(subcommand)]
+    command: OAuthCommand,
+}
+
+#[derive(Subcommand)]
+enum OAuthCommand {
+    DevFlow(oauth_dev_flow::OAuthDevFlowArgs),
 }
 
 #[derive(Subcommand)]
@@ -327,6 +341,9 @@ fn main() -> Result<()> {
             media_fixtures::MediaFixturesCommand::Generate(args) => {
                 media_fixtures::generate(&ctx, &args)
             }
+        },
+        Commands::OAuth(args) => match args.command {
+            OAuthCommand::DevFlow(args) => oauth_dev_flow::run(&ctx, args),
         },
         Commands::Sdk(args) => delegate_sdk(&ctx, &args),
         Commands::Ci(args) => delegate_ci(&ctx, &args),
@@ -555,12 +572,17 @@ fn backend_health_looks_ok(port: u16) -> bool {
 }
 
 fn backend_graphql_looks_ready(port: u16) -> bool {
+    let Some((cookie, proof)) = authless_web_client_proof(port) else {
+        return false;
+    };
     let body = r#"{"query":"query { authRuntimeState { effectiveFormLoginEnabled skipLoginForLocalIps } }"}"#;
     let request = format!(
         "POST /graphql HTTP/1.1\r\n\
 Host: 127.0.0.1:{port}\r\n\
 Accept: application/json\r\n\
 Content-Type: application/json\r\n\
+Cookie: {cookie}\r\n\
+x-scryer-web-client: {proof}\r\n\
 Content-Length: {content_length}\r\n\
 Connection: close\r\n\r\n\
 {body}",
@@ -583,7 +605,45 @@ Connection: close\r\n\r\n\
         .is_some()
 }
 
+fn authless_web_client_proof(port: u16) -> Option<(String, String)> {
+    let request = format!(
+        "GET /authless-client HTTP/1.1\r\n\
+Host: 127.0.0.1:{port}\r\n\
+Accept: application/json\r\n\
+Connection: close\r\n\r\n"
+    );
+    let (_, headers, body) = http_request_parts(port, &request)?;
+    let cookie = authless_client_cookie(&headers)?;
+    let proof = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()?
+        .get("proof")
+        .and_then(serde_json::Value::as_str)?
+        .to_string();
+    Some((cookie, proof))
+}
+
+fn authless_client_cookie(headers: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("set-cookie")
+            .then(|| {
+                value
+                    .trim()
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .filter(|cookie| !cookie.is_empty())
+    })
+}
+
 fn http_request(port: u16, request: &str) -> Option<(String, String)> {
+    let (status_line, _, body) = http_request_parts(port, request)?;
+    Some((status_line, body))
+}
+
+fn http_request_parts(port: u16, request: &str) -> Option<(String, String, String)> {
     let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
         return None;
     };
@@ -613,7 +673,7 @@ fn http_request(port: u16, request: &str) -> Option<(String, String)> {
         body.to_string()
     };
 
-    Some((status_line.to_string(), body))
+    Some((status_line.to_string(), headers.to_string(), body))
 }
 
 fn decode_chunked_http_body(body: &str) -> Option<String> {

@@ -136,6 +136,10 @@ const en: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -631,7 +635,7 @@ const en: LocaleDictionary = {
   "settings.folderAvailableTokens": "Folder tokens",
   "settings.folderRenameSectionTitle": "Folder Renaming",
   "settings.folderValidationUnknownToken":
-    "Folder templates only support {title} and {year}. Invalid token: {{token}}",
+    "Folder templates support {title}, {year}, and external ID tokens. Invalid token: {{token}}",
   "settings.folderValidationEmpty": "Folder template cannot be empty",
   "settings.renameTemplateLabel": "Rename template",
   "settings.renameTemplatePlaceholder": "Placeholder",
@@ -649,10 +653,18 @@ const en: LocaleDictionary = {
     "These settings are saved per media category scope.",
   "settings.renameSectionTitle": "File Renaming",
   "settings.renameAvailableTokens": "Available tokens",
+  "settings.renameLiteralBracesLabel": "Literal braces",
+  "settings.renameSpaceFilterLabel": "Replace spaces",
   "settings.renameTokenTitle": "Title name",
   "settings.renameTokenYear": "Release year",
   "settings.renameTokenQuality": "Quality (e.g. 1080p)",
   "settings.renameTokenEdition": "Edition (e.g. Director's Cut)",
+  "settings.renameTokenImdbId": "IMDb ID",
+  "settings.renameTokenTmdbId": "TMDb ID",
+  "settings.renameTokenTvdbId": "TVDb ID",
+  "settings.renameTokenAnidbId": "AniDB ID",
+  "settings.renameTokenMalId": "MAL ID",
+  "settings.renameTokenAnilistId": "AniList ID",
   "settings.renameTokenSource": "Source (e.g. BluRay, WEB-DL)",
   "settings.renameTokenVideoCodec": "Video codec (e.g. x265)",
   "settings.renameTokenAudioCodec": "Audio codec (e.g. DTS)",
@@ -667,6 +679,7 @@ const en: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Unmatched opening bracket '{'",
   "settings.renameValidationUnmatchedClose": "Unmatched closing bracket '}'",
   "settings.renameValidationUnknownToken": "Unknown token: {{token}}",
+  "settings.renameValidationInvalidFilter": "Invalid token filter: {{filter}}",
   "settings.renameValidationEmpty": "Rename template cannot be empty",
   "settings.renameComingSoon": "Renaming rules are coming soon.",
   "settings.mediaSettingsSaved": "Media settings saved.",
@@ -1015,6 +1028,7 @@ const en: LocaleDictionary = {
   "queue.state.postProcessing": "Post-Processing",
   "queue.state.paused": "Paused",
   "queue.state.completed": "Completed",
+  "queue.state.importing": "Importing",
   "queue.state.importPending": "Import Pending",
   "queue.state.importBlocked": "Import Blocked",
   "queue.state.failed": "Failed",
@@ -1027,6 +1041,8 @@ const en: LocaleDictionary = {
     "{{downloading}} downloading, {{waiting}} waiting import, {{attention}} needs attention",
   "queue.manualImport": "Manual Import",
   "queue.manualImporting": "Queueing…",
+  "queue.transfer.copying": "Copying",
+  "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Manual import queued.",
   "queue.manualImportFailed": "Manual import failed.",
   "queue.removeFailed": "Remove Failed",
@@ -1103,6 +1119,11 @@ const en: LocaleDictionary = {
 
   "system.title": "System Health",
   "system.jobsTitle": "Jobs",
+  "system.auditTitle": "Audit",
+  "system.auditLoaded": "Audit log loaded.",
+  "system.auditEmpty": "No audit events found.",
+  "system.auditTarget": "Target",
+  "system.auditStream": "Stream",
   "system.notLoaded": "System health not loaded.",
   "system.refreshing": "Refreshing",
   "system.loaded": "System state loaded.",
@@ -1678,6 +1699,8 @@ const en: LocaleDictionary = {
   "settings.pluginBytes": "WASM {{bytes}}",
   "settings.pluginUpdateAvailable": "Update: v{{version}}",
   "settings.pluginUpgrade": "Upgrade to v{{version}}",
+  "settings.pluginOptimizedBuildAvailable": "Optimized build available",
+  "settings.pluginInstallOptimizedBuild": "Install optimized build",
   "settings.pluginNoCompatibleRelease":
     "No compatible release for this Scryer version",
   "settings.pluginNewerReleaseRequiresNewerScryer":
@@ -2668,6 +2691,7 @@ const en: LocaleDictionary = {
   "history.sourceTitle": "Source Title",
   "history.quality": "Quality",
   "history.date": "Date",
+  "history.actor": "Actor",
   "history.filterByEventType": "Filter by event type",
   "history.allEvents": "All Events",
   "history.grabbed": "Grabbed",
@@ -2677,6 +2701,8 @@ const en: LocaleDictionary = {
   "history.importFailed": "Import Failed",
   "history.importSkipped": "Import Skipped",
   "history.downloadCompleted": "Downloaded",
+  "history.fileUpgraded": "Upgraded",
+  "history.fileRecycled": "Recycled",
   "history.fileDeleted": "Deleted",
   "history.fileRenamed": "Renamed",
   "history.rematched": "Rematched",
@@ -2702,6 +2728,11 @@ const en: LocaleDictionary = {
   "settings.autoBackupsTitle": "Automatic backups",
   "settings.autoBackupsDescription":
     "Opt in to one system backup per day at a server-local time. Automatic backups time out after 30 minutes, and Scryer keeps the last 5 successful automatic backups.",
+  "settings.autoBackupsDisabledMissingKeyToastTitle":
+    "Automatic backups were disabled",
+  "settings.autoBackupsDisabledMissingKeyToastDescription":
+    "Automatic backups now require a saved backup key. Open Backups to set a key and re-enable them.",
+  "settings.autoBackupsDisabledMissingKeyToastAction": "Open Backups",
   "settings.autoBackupsEnabledHelp":
     "This scheduler is system-wide and runs once per day at the saved time.",
   "settings.autoBackupsTime": "Daily backup time",
@@ -2719,13 +2750,17 @@ const en: LocaleDictionary = {
   "settings.autoBackupsKeyPresent":
     "A saved automatic backup key is currently configured.",
   "settings.autoBackupsKeyAbsent":
-    "No automatic backup key is saved. Automatic backups will be plaintext.",
+    "No automatic backup key is saved. Automatic backups require a key before they can run.",
   "settings.autoBackupsClearKey": "Clear saved automatic backup key",
   "settings.autoBackupsClearKeyHelp":
-    "Removes the stored key after you save. Future automatic backups will be plaintext unless you set a new key.",
-  "settings.autoBackupsKeySummary": "Optional automatic backup encryption",
+    "Removes the stored key after you save. Disable automatic backups before clearing the key.",
+  "settings.autoBackupsKeySummary": "Required automatic backup encryption",
   "settings.autoBackupsKeyHelp":
-    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. If no key is stored, automatic backups are created as plaintext.",
+    "Leave the field blank to keep the existing saved key. Enter a new value of at least {{count}} non-whitespace characters to replace it.",
+  "settings.autoBackupsKeyRequired":
+    "Automatic backups require a saved backup key of at least {{count}} non-whitespace characters.",
+  "settings.autoBackupsKeyTooShort":
+    "Automatic backup keys must be at least {{count}} non-whitespace characters.",
   "settings.autoBackupsShowKey": "Show automatic backup key",
   "settings.autoBackupsHideKey": "Hide automatic backup key",
   "settings.autoBackupsSaved": "Automatic backup settings saved.",
@@ -2735,12 +2770,12 @@ const en: LocaleDictionary = {
   "settings.backupsCreate": "Create backup",
   "settings.backupsCreateTitle": "Create backup bundle",
   "settings.backupsCreateDescription":
-    "Optionally protect this backup with a password. Password-protected bundles require the same password during restore.",
-  "settings.backupsOptionalPassword": "Optional password protection",
+    "Protect this backup with a password. The same password is required during restore.",
+  "settings.backupsRequiredPassword": "Required password protection",
   "settings.backupsConfirmPassword": "Confirm password",
   "settings.backupsPasswordMismatch": "Passwords do not match",
   "settings.backupsPasswordHelp":
-    "Leave this blank to create a plaintext bundle. Automatic backups use the saved automatic backup key when one is configured.",
+    "Full backup bundles include instance secrets and must be encrypted.",
   "settings.backupsQueued": "Backup creation started in the background.",
   "settings.backupsDeleted": "Backup deleted.",
   "settings.backupsCreating": "Creating",

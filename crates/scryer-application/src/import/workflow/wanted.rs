@@ -33,6 +33,7 @@ async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
+    import_id: &str,
     rename_enabled: bool,
     rename_template: &str,
     title_folder_path: &Path,
@@ -84,9 +85,7 @@ async fn execute_resolved_episode_import(
             });
         }
 
-        let ext = source_video
-            .extension()
-            .and_then(|extension| extension.to_str())
+        let ext = scryer_domain::canonical_video_extension(source_video)
             .unwrap_or("mkv")
             .to_string();
         let effective_quality_label = quality_override
@@ -131,12 +130,15 @@ async fn execute_resolved_episode_import(
         let import_mode = app
             .resolve_import_mode(Some(&title.library_id), &title.facet)
             .await?;
-        let file_result = app
-            .services
-            .workflow
-            .file_importer
-            .import_file(source_video, &dest_path, import_mode)
-            .await?;
+        let file_result = import_file_with_record_progress(
+            app,
+            import_id,
+            source_video,
+            &dest_path,
+            import_mode,
+            None,
+        )
+        .await?;
         let media_file_input = crate::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
@@ -234,9 +236,7 @@ async fn execute_resolved_episode_import(
             )
         }
     };
-    let precheck_ext = source_video
-        .extension()
-        .and_then(|extension| extension.to_str())
+    let precheck_ext = scryer_domain::canonical_video_extension(source_video)
         .unwrap_or("mkv")
         .to_string();
     let precheck_quality_label = quality_override
@@ -360,18 +360,22 @@ async fn execute_resolved_episode_import(
         .await?;
 
     if !existing_incumbents.is_empty() {
-        let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
-        let new_decision = crate::post_download_gate::build_import_profile_decision(
-            quality_profile,
-            &required_audio_languages,
-            &persona,
-            &effective_parsed,
-            crate::post_download_gate::facet_to_category_hint(&title.facet),
-            title.runtime_minutes,
-            Some(source_size),
-            true,
-        );
-        let new_score = new_decision.preference_score;
+        let post_download_score =
+            crate::post_download_gate::compute_post_download_acquisition_decision(
+                app,
+                &effective_parsed,
+                prepared.accepted.as_ref(),
+                quality_profile,
+                title,
+                title.runtime_minutes,
+                source_size,
+                true,
+                existing_score,
+                &prepared.rescore_changes,
+                is_filler,
+            )
+            .await;
+        let new_score = post_download_score.score;
         let upgrade_plan = match build_episode_upgrade_plan(
             &existing_incumbents,
             &target_episode_ids,
@@ -398,9 +402,10 @@ async fn execute_resolved_episode_import(
             source_video,
             &dest_path,
             &prepared,
-            effective_quality_label.as_deref(),
+            post_download_score.parsed.quality.as_deref(),
             new_score,
             upgrade_plan.previous_best_score,
+            post_download_score.scoring_log.clone(),
             &target_episode_ids,
             recycle_root,
             &recycle_config,
@@ -463,41 +468,54 @@ async fn execute_resolved_episode_import(
         }
     }
 
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(source_video, &dest_path, import_mode)
-        .await?;
+    let file_result = import_file_with_record_progress(
+        app,
+        import_id,
+        source_video,
+        &dest_path,
+        import_mode,
+        Some(&prepared.source_snapshot),
+    )
+    .await?;
 
     let has_existing = existing_files
         .iter()
         .any(|file| file.file_path == path_to_stored_string(&dest_path));
-    let acq_score = crate::post_download_gate::compute_acquisition_score(
+    let post_download_score = crate::post_download_gate::compute_post_download_acquisition_decision(
         app,
         &effective_parsed,
         prepared.accepted.as_ref(),
         quality_profile,
         title,
+        title.runtime_minutes,
         file_result.size_bytes as i64,
         has_existing,
+        existing_score,
+        &prepared.rescore_changes,
+        is_filler,
     )
     .await;
+    let acq_score = post_download_score.score;
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
-        quality_label: effective_quality_label.clone(),
+        quality_label: post_download_score.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
-        release_group: prepared.parsed.release_group.clone(),
-        source_type: crate::release_parser::parsed_release_source_type(&prepared.parsed),
-        resolution: effective_quality_label,
-        video_codec_parsed: prepared.parsed.video_codec,
-        audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
-        audio_channels_parsed: prepared.parsed.audio_channels.clone(),
+        release_group: post_download_score.parsed.release_group.clone(),
+        source_type: crate::release_parser::parsed_release_source_type(&post_download_score.parsed),
+        resolution: post_download_score.parsed.quality.clone(),
+        video_codec_parsed: post_download_score.parsed.video_codec,
+        audio_codec_parsed: post_download_score
+            .parsed
+            .audio
+            .as_ref()
+            .map(ToString::to_string),
+        audio_channels_parsed: post_download_score.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video)),
         acquisition_score: Some(acq_score),
+        scoring_log: post_download_score.scoring_log.clone(),
         ..Default::default()
     };
     let media_file_id = app

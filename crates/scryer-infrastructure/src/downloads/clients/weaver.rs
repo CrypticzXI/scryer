@@ -153,6 +153,13 @@ struct HistoryItemsPayload {
     history_items: Vec<WeaverQueueItem>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryItemPayload {
+    history_item: Option<WeaverQueueItem>,
+}
+
+const TARGETED_HISTORY_FALLBACK_LIMIT: usize = 100;
 const SCRYER_TITLE_ID_ATTRIBUTE_KEY: &str = "*scryer_title_id";
 
 #[derive(Debug, Deserialize)]
@@ -630,6 +637,47 @@ impl WeaverDownloadClient {
         }
     }
 
+    async fn query_history_item(&self, id: i32) -> AppResult<Option<WeaverQueueItem>> {
+        self.graphql_request::<HistoryItemPayload>(
+            graphql_docs::HISTORY_ITEM_QUERY,
+            json!({ "id": id }),
+        )
+        .await
+        .map(|data| data.history_item)
+    }
+
+    async fn query_completed_download_recent_fallback(
+        &self,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        let downloads = self
+            .list_recent_completed_downloads(TARGETED_HISTORY_FALLBACK_LIMIT)
+            .await?;
+        Ok(downloads
+            .into_iter()
+            .find(|download| download.download_client_item_id == download_client_item_id))
+    }
+
+    pub(crate) async fn get_completed_download(
+        &self,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        let trimmed = download_client_item_id.trim();
+        let Ok(job_id) = trimmed.parse::<i32>() else {
+            return Ok(None);
+        };
+
+        let item = match self.query_history_item(job_id).await {
+            Ok(item) => item,
+            Err(error) if is_weaver_schema_error(&error, "historyItem") => {
+                return self.query_completed_download_recent_fallback(trimmed).await;
+            }
+            Err(error) => return Err(error),
+        };
+
+        Ok(item.as_ref().and_then(weaver_item_to_completed_download))
+    }
+
     async fn query_jobs_compat(
         &self,
         statuses: Option<&[&str]>,
@@ -780,6 +828,11 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         } else {
             job.progress_percent.round().clamp(0.0, 100.0) as u8
         },
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
         size_bytes: Some(job.total_bytes as i64),
         remaining_seconds: None,
         queued_at: Some(job.created_at.to_rfc3339()),
@@ -1721,6 +1774,106 @@ mod tests {
 
         assert_eq!(downloads.len(), 1);
         assert_eq!(downloads[0].download_client_item_id, "10002");
+    }
+
+    #[tokio::test]
+    async fn get_completed_download_uses_direct_history_item_query() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("historyItem(id"))
+            .and(body_string_contains("\"id\":10002"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItem": {
+                        "id": 10002,
+                        "name": "8f1d2c3b4a59687766554433221100ff",
+                        "state": "COMPLETE",
+                        "error": null,
+                        "progressPercent": 100.0,
+                        "totalBytes": 123456789_u64,
+                        "category": "2000",
+                        "attributes": [],
+                        "clientRequestId": null,
+                        "outputDir": "/data/complete/8f1d2c3b4a59687766554433221100ff.#10002",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "completedAt": "2024-01-01T00:10:00Z",
+                        "attention": null
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let download = client
+            .get_completed_download("10002")
+            .await
+            .expect("completed download lookup should load")
+            .expect("completed download should exist");
+
+        assert_eq!(download.download_client_item_id, "10002");
+        assert_eq!(download.name, "8f1d2c3b4a59687766554433221100ff");
+    }
+
+    #[tokio::test]
+    async fn get_completed_download_falls_back_to_bounded_recent_history_when_direct_query_missing()
+    {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("historyItem(id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errors": [
+                    { "message": "Cannot query field \"historyItem\" on type \"Query\"." }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("\"first\":100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItems": [
+                        {
+                            "id": 10002,
+                            "name": "8f1d2c3b4a59687766554433221100ff",
+                            "state": "COMPLETE",
+                            "error": null,
+                            "progressPercent": 100.0,
+                            "totalBytes": 123456789_u64,
+                            "category": "2000",
+                            "attributes": [],
+                            "clientRequestId": null,
+                            "outputDir": "/data/complete/8f1d2c3b4a59687766554433221100ff.#10002",
+                            "createdAt": "2024-01-01T00:00:00Z",
+                            "completedAt": "2024-01-01T00:10:00Z",
+                            "attention": null
+                        }
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let download = client
+            .get_completed_download("10002")
+            .await
+            .expect("completed download fallback should load")
+            .expect("completed download should exist");
+
+        assert_eq!(download.download_client_item_id, "10002");
     }
 
     #[tokio::test]

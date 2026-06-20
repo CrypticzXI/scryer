@@ -1209,6 +1209,7 @@ fn expand_state(
         return Vec::new();
     };
     let mut next = Vec::new();
+    let protected_context_hits = protected_context_hits_at_cursor(state, alias_oracle, annotations);
 
     if let Some(hits) = alias_oracle.hits_at.get(state.cursor) {
         for hit in hits {
@@ -1218,7 +1219,17 @@ fn expand_state(
         }
     }
 
+    if state.phase == ParsePhase::Metadata {
+        for hit in &protected_context_hits {
+            next.push(branch_context_phrase(state, hit, alias_oracle, tokens));
+        }
+    }
+
     for unit in units {
+        let unit_overlaps_protected_context =
+            unit_overlaps_protected_context(unit, protected_context_hits.as_slice())
+                || unit_overlaps_accepted_title_tokens(state, unit);
+
         if !has_identity(&state.identity)
             && identity_branch_allowed(state)
             && let Some(identity_state) = branch_identity(state, unit, tokens, annotations, context)
@@ -1236,7 +1247,9 @@ fn expand_state(
             next.push(branch_title(state, unit, context));
         }
 
-        if unit_is_metadata_like(unit) || state.phase == ParsePhase::Metadata {
+        if (unit_is_metadata_like(unit) || state.phase == ParsePhase::Metadata)
+            && !unit_overlaps_protected_context
+        {
             next.push(branch_metadata(state, unit, tokens, annotations));
         }
 
@@ -1287,6 +1300,9 @@ fn alias_hit_allowed(state: &ParseState, hit: &AliasHit, annotations: &[TokenAnn
     if state.phase == ParsePhase::Metadata {
         return false;
     }
+    if context_hit_is_protected(hit, state, annotations) {
+        return true;
+    }
     !(hit.token_range.start_token..hit.token_range.end_token).any(|index| {
         annotations.get(index).is_some_and(|annotation| {
             matches!(
@@ -1300,6 +1316,74 @@ fn alias_hit_allowed(state: &ParseState, hit: &AliasHit, annotations: &[TokenAnn
             )
         })
     })
+}
+
+fn protected_context_hits_at_cursor(
+    state: &ParseState,
+    alias_oracle: &AliasOracle,
+    annotations: &[TokenAnnotations],
+) -> Vec<AliasHit> {
+    alias_oracle
+        .hits_at
+        .get(state.cursor)
+        .into_iter()
+        .flat_map(|hits| hits.iter())
+        .filter(|hit| context_hit_is_protected(hit, state, annotations))
+        .cloned()
+        .collect()
+}
+
+fn context_hit_is_protected(
+    hit: &AliasHit,
+    state: &ParseState,
+    annotations: &[TokenAnnotations],
+) -> bool {
+    if hit.token_range.len() > 1 || range_is_accepted_title_span(state, hit.token_range) {
+        return true;
+    }
+    !(hit.token_range.start_token..hit.token_range.end_token).any(|index| {
+        annotations
+            .get(index)
+            .is_some_and(annotation_has_source_quality_or_codec_role)
+    })
+}
+
+fn annotation_has_source_quality_or_codec_role(annotation: &TokenAnnotations) -> bool {
+    source_quality_or_codec_role(annotation.primary_role)
+        || annotation
+            .alternate_roles
+            .iter()
+            .any(|role| source_quality_or_codec_role(*role))
+}
+
+fn source_quality_or_codec_role(role: TokenRole) -> bool {
+    matches!(
+        role,
+        TokenRole::Quality
+            | TokenRole::Source
+            | TokenRole::VideoCodec
+            | TokenRole::AudioCodec
+            | TokenRole::AudioChannels
+    )
+}
+
+fn range_is_accepted_title_span(state: &ParseState, range: TokenRange) -> bool {
+    (range.start_token..range.end_token).all(|index| state.title_token_mask.contains(index))
+}
+
+fn unit_overlaps_accepted_title_tokens(state: &ParseState, unit: &ParseUnit) -> bool {
+    (unit.token_range.start_token..unit.token_range.end_token)
+        .any(|index| state.title_token_mask.contains(index))
+}
+
+fn unit_overlaps_protected_context(unit: &ParseUnit, protected_hits: &[AliasHit]) -> bool {
+    protected_hits
+        .iter()
+        .any(|hit| token_ranges_overlap(unit.token_range, hit.token_range))
+}
+
+fn token_ranges_overlap(left: TokenRange, right: TokenRange) -> bool {
+    left.start_token < right.end_token && right.start_token < left.end_token
 }
 
 fn branch_alias_hit(
@@ -1333,6 +1417,36 @@ fn branch_alias_hit(
     next.context_evidence.push(hit.evidence.code().to_string());
     next.reasons
         .push(reason("beam:alias_hit", delta, Some(detail)));
+    next
+}
+
+fn branch_context_phrase(
+    state: &ParseState,
+    hit: &AliasHit,
+    alias_oracle: &AliasOracle,
+    tokens: &[Token],
+) -> ParseState {
+    let mut next = state.clone();
+    next.phase = ParsePhase::Metadata;
+    next.cursor = hit.token_range.end_token;
+    for token_index in hit.token_range.start_token..hit.token_range.end_token {
+        next.consumed_tokens.insert(token_index);
+    }
+    let detail = alias_oracle
+        .patterns
+        .get(hit.pattern_id)
+        .map(|pattern| pattern.raw.clone())
+        .unwrap_or_else(|| {
+            render_token_indices(
+                tokens,
+                &(hit.token_range.start_token..hit.token_range.end_token).collect::<Vec<_>>(),
+            )
+        });
+    let delta = hit.score_weight;
+    next.score += delta;
+    next.context_evidence.push(hit.evidence.code().to_string());
+    next.reasons
+        .push(reason(hit.evidence.code(), delta, Some(detail)));
     next
 }
 

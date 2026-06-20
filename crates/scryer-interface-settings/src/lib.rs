@@ -53,6 +53,18 @@ fn from_recycle_bin_settings(
     }
 }
 
+fn from_oauth_connected_app(
+    app: scryer_application::OAuthConnectedAppSummary,
+) -> OAuthConnectedAppPayload {
+    OAuthConnectedAppPayload {
+        grant_id: app.grant_id,
+        client_id: app.client_id,
+        client_name: app.client_name,
+        authorized_at: app.authorized_at.to_rfc3339(),
+        last_used_at: app.last_used_at.map(|value| value.to_rfc3339()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +151,7 @@ fn from_auto_backup_settings(
         enabled: settings.enabled,
         daily_time_local: settings.daily_time_local,
         auto_backup_key_present: settings.auto_backup_key_present,
+        auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
         next_run_at: settings.next_run_at,
     }
 }
@@ -423,6 +436,15 @@ impl SettingsQueries {
         app.totp_status(&actor)
             .await
             .map(from_totp_status)
+            .map_err(to_gql_error)
+    }
+
+    async fn my_oauth_apps(&self, ctx: &Context<'_>) -> GqlResult<Vec<OAuthConnectedAppPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_oauth_connected_apps(&actor)
+            .await
+            .map(|apps| apps.into_iter().map(from_oauth_connected_app).collect())
             .map_err(to_gql_error)
     }
 

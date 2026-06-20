@@ -161,19 +161,27 @@ fn graphql_request(
         "query": query,
         "variables": variables,
     }))?;
+    let authless_proof = authless_web_client_proof(ctx, graphql_url)?;
 
-    let output = ctx
-        .command("curl")
-        .args([
-            "-fsS",
-            "-X",
-            "POST",
-            graphql_url,
+    let mut command = ctx.command("curl");
+    command.args([
+        "-fsS",
+        "-X",
+        "POST",
+        graphql_url,
+        "-H",
+        "Content-Type: application/json",
+    ]);
+    if let Some((cookie, proof)) = authless_proof {
+        command.args([
             "-H",
-            "Content-Type: application/json",
-            "--data-binary",
-            &payload,
-        ])
+            &format!("x-scryer-web-client: {proof}"),
+            "-H",
+            &format!("Cookie: {cookie}"),
+        ]);
+    }
+    let output = command
+        .args(["--data-binary", &payload])
         .output()
         .context("GraphQL request failed")?;
 
@@ -197,6 +205,55 @@ fn graphql_request(
     }
 
     Ok(response)
+}
+
+fn authless_web_client_proof(
+    ctx: &TaskContext,
+    graphql_url: &str,
+) -> Result<Option<(String, String)>> {
+    let Some(base_url) = graphql_url.strip_suffix("/graphql") else {
+        return Ok(None);
+    };
+    let output = ctx
+        .command("curl")
+        .args(["-fsS", "-D", "-", &format!("{base_url}/authless-client")])
+        .output()
+        .context("authless web-client proof request failed")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let Some((headers, body)) = raw
+        .split_once("\r\n\r\n")
+        .or_else(|| raw.split_once("\n\n"))
+    else {
+        return Ok(None);
+    };
+    let cookie = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("set-cookie") {
+            return None;
+        }
+        value
+            .trim()
+            .split(';')
+            .next()
+            .map(str::trim)
+            .filter(|cookie| cookie.starts_with("scryer_authless_client="))
+            .map(str::to_string)
+    });
+    let proof = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("proof")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|value| !value.trim().is_empty());
+
+    Ok(cookie.zip(proof))
 }
 
 fn seed_indexers(

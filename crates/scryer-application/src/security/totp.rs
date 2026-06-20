@@ -100,6 +100,8 @@ impl TotpProfile {
 
 impl AppUseCase {
     pub async fn totp_status(&self, actor: &User) -> AppResult<TotpStatus> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         let credential = self
             .services
             .identity
@@ -110,6 +112,16 @@ impl AppUseCase {
     }
 
     pub async fn totp_enrollment_start(&self, actor: &User) -> AppResult<TotpEnrollmentStart> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
+        self.totp_enrollment_start_inner(actor).await
+    }
+
+    pub async fn start_login_mfa_enrollment(&self, actor: &User) -> AppResult<TotpEnrollmentStart> {
+        self.totp_enrollment_start_inner(actor).await
+    }
+
+    async fn totp_enrollment_start_inner(&self, actor: &User) -> AppResult<TotpEnrollmentStart> {
         self.cleanup_expired_totp_enrollment_challenges().await?;
 
         if self
@@ -156,6 +168,28 @@ impl AppUseCase {
         challenge_id: &str,
         code: &str,
     ) -> AppResult<TotpEnrollmentComplete> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
+        self.totp_enrollment_complete_inner(actor, challenge_id, code)
+            .await
+    }
+
+    pub async fn complete_login_mfa_enrollment(
+        &self,
+        actor: &User,
+        challenge_id: &str,
+        code: &str,
+    ) -> AppResult<TotpEnrollmentComplete> {
+        self.totp_enrollment_complete_inner(actor, challenge_id, code)
+            .await
+    }
+
+    async fn totp_enrollment_complete_inner(
+        &self,
+        actor: &User,
+        challenge_id: &str,
+        code: &str,
+    ) -> AppResult<TotpEnrollmentComplete> {
         self.cleanup_expired_totp_enrollment_challenges().await?;
 
         let challenge = self
@@ -181,7 +215,7 @@ impl AppUseCase {
         let normalized_code = normalize_totp_code(code, profile.digits)?;
         let secret = base32_decode(&challenge.secret_base32)?;
         let now = Utc::now();
-        let Some(_step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
+        let Some(step) = matching_totp_step(&secret, &normalized_code, now, profile)? else {
             return Err(AppError::TotpInvalidCode(
                 "TOTP code did not match the enrollment secret".into(),
             ));
@@ -194,7 +228,7 @@ impl AppUseCase {
             algorithm: profile.algorithm.storage_value().to_string(),
             digits: profile.digits,
             period_seconds: profile.period_seconds,
-            last_accepted_step: None,
+            last_accepted_step: Some(step),
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
             last_used_at: None,
@@ -221,10 +255,14 @@ impl AppUseCase {
     }
 
     pub async fn mfa_verify_step_up(&self, actor: &User, code: &str) -> AppResult<DateTime<Utc>> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.verify_totp_for_user(actor, code).await
     }
 
     pub async fn totp_disable(&self, actor: &User, code: &str) -> AppResult<TotpStatus> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.verify_totp_for_user(actor, code).await?;
         self.services
             .identity
@@ -249,6 +287,8 @@ impl AppUseCase {
         actor: &User,
         code: &str,
     ) -> AppResult<TotpEnrollmentComplete> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
         self.verify_totp_for_user(actor, code).await?;
         let recovery_codes = self.replace_totp_recovery_codes(actor).await?;
         let status = self.totp_status(actor).await?;

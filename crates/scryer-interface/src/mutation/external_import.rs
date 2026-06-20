@@ -21,7 +21,9 @@ use serde::Serialize;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::context::{actor_from_ctx, app_from_ctx, require_app_permission};
+use crate::context::{
+    actor_from_ctx, app_from_ctx, require_app_permission, require_config_app_permission,
+};
 use crate::mappers::from_external_import_monitor_warmup_progress;
 use crate::types::*;
 
@@ -415,6 +417,17 @@ impl ExternalImportMutations {
             } else {
                 ExternalArrClient::for_radarr_v6(conn.base_url.clone(), conn.api_key.clone())
             };
+            let client = match client {
+                Ok(client) => client,
+                Err(error) => {
+                    if source == "sonarr" {
+                        payload.sonarr_error = Some(error.to_string());
+                    } else {
+                        payload.radarr_error = Some(error.to_string());
+                    }
+                    continue;
+                }
+            };
             match client.test_connection().await {
                 Ok((_app_name, version)) => {
                     if source == "sonarr" {
@@ -599,7 +612,7 @@ impl ExternalImportMutations {
         ctx: &Context<'_>,
         input: ExecuteExternalImportInput,
     ) -> GqlResult<ExternalImportResultPayload> {
-        let actor = require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
 
         let selected_dc_keys: HashSet<String> = input
@@ -677,9 +690,20 @@ impl ExternalImportMutations {
             } else {
                 ExternalArrClient::for_radarr_v6(conn.base_url.clone(), conn.api_key.clone())
             };
+            let client = match client {
+                Ok(client) => client,
+                Err(error) => {
+                    result
+                        .errors
+                        .push(format!("failed to connect to {source}: {error}"));
+                    continue;
+                }
+            };
 
-            if client.test_connection().await.is_err() {
-                result.errors.push(format!("failed to connect to {source}"));
+            if let Err(error) = client.test_connection().await {
+                result
+                    .errors
+                    .push(format!("failed to connect to {source}: {error}"));
                 continue;
             }
 
@@ -1297,7 +1321,7 @@ async fn capture_external_import_monitor_warmup(
 
     if let Some(radarr) = connections.radarr.as_ref() {
         let client =
-            ExternalArrClient::for_radarr_v6(radarr.base_url.clone(), radarr.api_key.clone());
+            ExternalArrClient::for_radarr_v6(radarr.base_url.clone(), radarr.api_key.clone())?;
         let movies = client.list_movies().await?;
         let movie_total = i32::try_from(movies.len()).unwrap_or(i32::MAX);
         snapshot.movies_total_known = true;
@@ -1338,7 +1362,7 @@ async fn capture_external_import_monitor_warmup(
 
     if let Some(sonarr) = connections.sonarr.as_ref() {
         let client =
-            ExternalArrClient::for_sonarr_v4(sonarr.base_url.clone(), sonarr.api_key.clone());
+            ExternalArrClient::for_sonarr_v4(sonarr.base_url.clone(), sonarr.api_key.clone())?;
         let all_series = client.list_series().await?;
         let series_total = i32::try_from(all_series.len()).unwrap_or(i32::MAX);
         snapshot.series_total_known = true;

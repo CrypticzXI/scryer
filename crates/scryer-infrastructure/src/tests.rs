@@ -1,19 +1,19 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
+    AppError, AppResult, CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
     MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingImportStatus, PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
-    SubmissionScope, SubtitleDownloadRepository, SubtitleProviderConfigRepository,
-    SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
-    WantedStatus,
+    PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
+    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
+    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
+    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
+    TitleImageBlob, TitleImageKind, TitleImageRepository, TitleImageSourceResult,
+    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem,
+    WantedItemRepository, WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -665,7 +665,12 @@ async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, I
             started_at TEXT,
             finished_at TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            import_transfer_phase TEXT,
+            import_transfer_bytes INTEGER,
+            import_transfer_total_bytes INTEGER,
+            import_transfer_started_at TEXT,
+            import_transfer_updated_at TEXT
         )",
     )
     .execute(&pool)
@@ -1033,6 +1038,181 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     }));
 
     let _ = std::fs::remove_file(db);
+}
+
+fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmission {
+    DownloadSubmission {
+        title_id: String::new(),
+        purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+        facet: String::new(),
+        download_client_id: Some("client-a".to_string()),
+        download_client_type: "qbittorrent".to_string(),
+        download_client_item_id: item_id.to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some(source_title.to_string()),
+        request_signature: None,
+        scope: SubmissionScope::Orphan,
+    }
+}
+
+fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
+    DownloadSubmission {
+        title_id: "title-managed".to_string(),
+        purpose: scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+        facet: "anime".to_string(),
+        download_client_id: Some("client-a".to_string()),
+        download_client_type: "qbittorrent".to_string(),
+        download_client_item_id: item_id.to_string(),
+        source_hint: Some("magnet:?xt=urn:btih:feedface".to_string()),
+        source_kind: Some(scryer_application::DownloadSourceKind::TorrentFile),
+        source_title: Some("Managed.Release.S01".to_string()),
+        request_signature: Some("request-signature-1".to_string()),
+        scope: SubmissionScope::EpisodeSet {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+        },
+    }
+}
+
+async fn assert_download_submission_orphan_precedence(
+    workflow: &DownloadSubmissionStore,
+) -> AppResult<()> {
+    let item_id = "feedfacefeedfacefeedfacefeedfacefeedface";
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "qbittorrent", item_id);
+
+    workflow
+        .record_submission(orphan_test_submission(item_id, "Foreign.Observation"))
+        .await?;
+    let orphan = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("orphan row should insert");
+    assert!(orphan.title_id.is_empty());
+    assert!(matches!(orphan.scope, SubmissionScope::Orphan));
+
+    workflow
+        .record_submission_with_identity(
+            managed_episode_set_test_submission(item_id),
+            DownloadSubmissionIdentity {
+                download_id: Some("download-feedface".to_string()),
+            },
+        )
+        .await?;
+
+    let managed = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("managed row should replace orphan");
+    assert_eq!(managed.title_id, "title-managed");
+    assert_eq!(managed.facet, "anime");
+    assert_eq!(managed.source_title.as_deref(), Some("Managed.Release.S01"));
+    assert_eq!(
+        managed.source_kind.map(|kind| kind.as_str()),
+        Some("torrent_file")
+    );
+    assert_eq!(
+        managed.request_signature.as_deref(),
+        Some("request-signature-1")
+    );
+    assert_eq!(managed.purpose.as_str(), "additional_file");
+    assert_eq!(
+        managed.scope.episode_ids().unwrap_or(&[]),
+        &["episode-1".to_string(), "episode-2".to_string()]
+    );
+
+    let submission_identity = workflow
+        .get_submission_identity(&source_identity)
+        .await?
+        .expect("managed row should keep accepted identity");
+    assert_eq!(
+        submission_identity.download_id.as_deref(),
+        Some("download-feedface")
+    );
+    let by_download_id = workflow
+        .list_by_download_id(Some("client-a"), "qbittorrent", "download-feedface")
+        .await?;
+    assert_eq!(by_download_id.len(), 1);
+    assert_eq!(by_download_id[0].title_id, "title-managed");
+
+    workflow
+        .record_submission(orphan_test_submission(item_id, "Late.Foreign.Observation"))
+        .await?;
+
+    let still_managed = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("managed row should survive late orphan");
+    assert_eq!(still_managed.title_id, "title-managed");
+    assert_eq!(still_managed.facet, "anime");
+    assert_eq!(
+        still_managed.source_title.as_deref(),
+        Some("Managed.Release.S01")
+    );
+    assert_eq!(
+        still_managed.scope.episode_ids().unwrap_or(&[]),
+        &["episode-1".to_string(), "episode-2".to_string()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_submission_orphan_precedence_sqlite() -> AppResult<()> {
+    let (services, db) = temp_services("scryer_download_submission_orphan_precedence").await;
+    let workflow = DownloadSubmissionStore::new(services.datastore());
+    let result = assert_download_submission_orphan_precedence(&workflow).await;
+    drop(services);
+    let _ = std::fs::remove_file(db);
+    result
+}
+
+#[tokio::test]
+async fn download_submission_orphan_precedence_postgres() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "skipping PostgreSQL download submission orphan precedence test; SCRYER_TEST_POSTGRES_URL is not set"
+        );
+        return Ok(());
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to create schema: {error}")))?;
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await?;
+        let workflow = DownloadSubmissionStore::new(services.datastore());
+        let result = assert_download_submission_orphan_precedence(&workflow).await;
+        services.pool().close().await;
+        result
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.map_err(|error| AppError::Repository(format!("failed to drop schema: {error}")))?;
+    result
 }
 
 #[tokio::test]
@@ -1781,7 +1961,11 @@ async fn serialized_writer_handles_download_client_reorder() {
 #[tokio::test]
 async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
     let (services, db) = temp_services("scryer_release_writer").await;
-    let release_store = ReleaseStore::new(services.datastore());
+    services
+        .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([17; 32]))
+        .await
+        .expect("encryption key should configure");
+    let release_store = ReleaseStore::new(services.datastore(), services.encryption_key_state());
 
     ReleaseAttemptRepository::record_release_attempt(
         &release_store,
@@ -1811,6 +1995,14 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
     .expect("latest password should load");
     assert_eq!(latest_password.as_deref(), Some("secret"));
 
+    let stored_password: String =
+        sqlx::query_scalar("SELECT source_password FROM release_download_attempts LIMIT 1")
+            .fetch_one(services.pool())
+            .await
+            .expect("stored password should load");
+    assert!(crate::encryption::is_encrypted(&stored_password));
+    assert_ne!(stored_password, "secret");
+
     let vacuum_dest = std::env::temp_dir().join(format!(
         "scryer_release_writer_copy_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -1826,9 +2018,358 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
 }
 
 #[tokio::test]
+async fn source_password_writes_are_encrypted_at_rest_sqlite() {
+    let (services, db) = temp_services("scryer_source_password_write").await;
+    services
+        .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([20; 32]))
+        .await
+        .expect("encryption key should configure");
+
+    let release_store = ReleaseStore::new(services.datastore(), services.encryption_key_state());
+    ReleaseAttemptRepository::record_release_attempt(
+        &release_store,
+        None,
+        Some("weaver".to_string()),
+        Some("Encrypted.Release".to_string()),
+        ReleaseDownloadAttemptOutcome::Success,
+        None,
+        Some("release-secret".to_string()),
+    )
+    .await
+    .expect("release attempt should record");
+
+    let now = Utc::now().to_rfc3339();
+    let pending_store =
+        PendingReleaseStore::new(services.datastore(), services.encryption_key_state());
+    let pending_release = scryer_application::PendingRelease {
+        id: "pending-encrypted".to_string(),
+        wanted_item_id: "wanted-encrypted".to_string(),
+        title_id: "title-encrypted".to_string(),
+        release_title: "Encrypted Pending".to_string(),
+        release_url: Some("https://example.invalid/encrypted.nzb".to_string()),
+        source_kind: None,
+        release_size_bytes: Some(42),
+        release_score: 100,
+        scoring_log_json: None,
+        indexer_source: Some("weaver".to_string()),
+        release_guid: Some("guid-encrypted".to_string()),
+        added_at: now.clone(),
+        delay_until: now,
+        status: scryer_application::PendingReleaseStatus::Waiting,
+        grabbed_at: None,
+        source_password: Some("pending-secret".to_string()),
+        published_at: None,
+        info_hash: None,
+    };
+    PendingReleaseRepository::insert_pending_release(&pending_store, &pending_release)
+        .await
+        .expect("pending release should insert");
+
+    let stored_release_password: String =
+        sqlx::query_scalar("SELECT source_password FROM release_download_attempts LIMIT 1")
+            .fetch_one(services.pool())
+            .await
+            .expect("stored release password should load");
+    let stored_pending_password: String = sqlx::query_scalar(
+        "SELECT source_password FROM pending_releases WHERE id = 'pending-encrypted'",
+    )
+    .fetch_one(services.pool())
+    .await
+    .expect("stored pending password should load");
+    assert!(crate::encryption::is_encrypted(&stored_release_password));
+    assert!(crate::encryption::is_encrypted(&stored_pending_password));
+    assert_ne!(stored_release_password, "release-secret");
+    assert_ne!(stored_pending_password, "pending-secret");
+
+    let latest_password = ReleaseAttemptRepository::get_latest_source_password(
+        &release_store,
+        None,
+        Some("weaver"),
+        Some("Encrypted.Release"),
+    )
+    .await
+    .expect("latest password should load");
+    assert_eq!(latest_password.as_deref(), Some("release-secret"));
+
+    let loaded_pending =
+        PendingReleaseRepository::get_pending_release(&pending_store, "pending-encrypted")
+            .await
+            .expect("pending release should load")
+            .expect("pending release should exist");
+    assert_eq!(
+        loaded_pending.source_password.as_deref(),
+        Some("pending-secret")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn source_password_backfill_encrypts_legacy_sqlite_rows() {
+    let (services, db) = temp_services("scryer_source_password_backfill").await;
+    services
+        .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([18; 32]))
+        .await
+        .expect("encryption key should configure");
+
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO release_download_attempts
+         (id, title_id, source_hint, source_title, outcome, error_message, source_password,
+          attempted_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("legacy-attempt")
+    .bind(None::<String>)
+    .bind("weaver")
+    .bind("Legacy.Release")
+    .bind("success")
+    .bind(None::<String>)
+    .bind("legacy-secret")
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .execute(services.pool())
+    .await
+    .expect("legacy release attempt should insert");
+
+    sqlx::query(
+        "INSERT INTO pending_releases
+         (id, wanted_item_id, title_id, release_title, release_score, added_at, delay_until,
+          status, source_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("legacy-pending")
+    .bind("wanted-1")
+    .bind("title-1")
+    .bind("Legacy.Pending")
+    .bind(100_i64)
+    .bind(&now)
+    .bind(&now)
+    .bind("waiting")
+    .bind("pending-secret")
+    .execute(services.pool())
+    .await
+    .expect("legacy pending release should insert");
+
+    let release_store = ReleaseStore::new(services.datastore(), services.encryption_key_state());
+    let pending_store =
+        PendingReleaseStore::new(services.datastore(), services.encryption_key_state());
+
+    let release_updates = release_store
+        .backfill_source_passwords()
+        .await
+        .expect("release source passwords should backfill");
+    let pending_updates = pending_store
+        .backfill_source_passwords()
+        .await
+        .expect("pending source passwords should backfill");
+    assert_eq!(release_updates, 1);
+    assert_eq!(pending_updates, 1);
+
+    let stored_release_password: String = sqlx::query_scalar(
+        "SELECT source_password FROM release_download_attempts WHERE id = 'legacy-attempt'",
+    )
+    .fetch_one(services.pool())
+    .await
+    .expect("stored release password should load");
+    let stored_pending_password: String = sqlx::query_scalar(
+        "SELECT source_password FROM pending_releases WHERE id = 'legacy-pending'",
+    )
+    .fetch_one(services.pool())
+    .await
+    .expect("stored pending password should load");
+    assert!(crate::encryption::is_encrypted(&stored_release_password));
+    assert!(crate::encryption::is_encrypted(&stored_pending_password));
+    assert_ne!(stored_release_password, "legacy-secret");
+    assert_ne!(stored_pending_password, "pending-secret");
+
+    let latest_password = ReleaseAttemptRepository::get_latest_source_password(
+        &release_store,
+        None,
+        Some("weaver"),
+        Some("Legacy.Release"),
+    )
+    .await
+    .expect("latest password should load");
+    assert_eq!(latest_password.as_deref(), Some("legacy-secret"));
+
+    let pending_release =
+        PendingReleaseRepository::get_pending_release(&pending_store, "legacy-pending")
+            .await
+            .expect("pending release should load")
+            .expect("pending release should exist");
+    assert_eq!(
+        pending_release.source_password.as_deref(),
+        Some("pending-secret")
+    );
+
+    assert_eq!(
+        release_store
+            .backfill_source_passwords()
+            .await
+            .expect("release source password backfill should be idempotent"),
+        0
+    );
+    assert_eq!(
+        pending_store
+            .backfill_source_passwords()
+            .await
+            .expect("pending source password backfill should be idempotent"),
+        0
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn source_password_backfill_encrypts_legacy_postgres_rows() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "skipping PostgreSQL source password backfill test; SCRYER_TEST_POSTGRES_URL is not set"
+        );
+        return Ok(());
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to create schema: {error}")))?;
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await?;
+        services
+            .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([19; 32]))
+            .await?;
+
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO release_download_attempts
+             (id, title_id, source_hint, source_title, outcome, error_message, source_password,
+              attempted_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind("legacy-attempt-pg")
+        .bind(None::<String>)
+        .bind("weaver")
+        .bind("Legacy.Release.Pg")
+        .bind("success")
+        .bind(None::<String>)
+        .bind("legacy-pg-secret")
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(services.pool())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to insert release attempt: {error}"))
+        })?;
+
+        sqlx::query(
+            "INSERT INTO pending_releases
+             (id, wanted_item_id, title_id, release_title, release_score, added_at, delay_until,
+              status, source_password)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind("legacy-pending-pg")
+        .bind("wanted-pg")
+        .bind("title-pg")
+        .bind("Legacy.Pending.Pg")
+        .bind(100_i32)
+        .bind(now)
+        .bind(now)
+        .bind("waiting")
+        .bind("pending-pg-secret")
+        .execute(services.pool())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to insert pending release: {error}"))
+        })?;
+
+        let release_store =
+            ReleaseStore::new(services.datastore(), services.encryption_key_state());
+        let pending_store =
+            PendingReleaseStore::new(services.datastore(), services.encryption_key_state());
+
+        assert_eq!(release_store.backfill_source_passwords().await?, 1);
+        assert_eq!(pending_store.backfill_source_passwords().await?, 1);
+
+        let stored_release_password: String = sqlx::query_scalar(
+            "SELECT source_password FROM release_download_attempts WHERE id = $1",
+        )
+        .bind("legacy-attempt-pg")
+        .fetch_one(services.pool())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to load release password: {error}"))
+        })?;
+        let stored_pending_password: String =
+            sqlx::query_scalar("SELECT source_password FROM pending_releases WHERE id = $1")
+                .bind("legacy-pending-pg")
+                .fetch_one(services.pool())
+                .await
+                .map_err(|error| {
+                    AppError::Repository(format!("failed to load pending password: {error}"))
+                })?;
+        assert!(crate::encryption::is_encrypted(&stored_release_password));
+        assert!(crate::encryption::is_encrypted(&stored_pending_password));
+        assert_ne!(stored_release_password, "legacy-pg-secret");
+        assert_ne!(stored_pending_password, "pending-pg-secret");
+
+        let latest_password = ReleaseAttemptRepository::get_latest_source_password(
+            &release_store,
+            None,
+            Some("weaver"),
+            Some("Legacy.Release.Pg"),
+        )
+        .await?;
+        assert_eq!(latest_password.as_deref(), Some("legacy-pg-secret"));
+
+        let pending_release =
+            PendingReleaseRepository::get_pending_release(&pending_store, "legacy-pending-pg")
+                .await?
+                .expect("pending release should exist");
+        assert_eq!(
+            pending_release.source_password.as_deref(),
+            Some("pending-pg-secret")
+        );
+
+        services.pool().close().await;
+        Ok(())
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.map_err(|error| AppError::Repository(format!("failed to drop schema: {error}")))?;
+    result
+}
+
+#[tokio::test]
 async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_title() {
     let (services, db) = temp_services("scryer_release_dedupe").await;
-    let release_store = ReleaseStore::new(services.datastore());
+    let release_store = ReleaseStore::new(services.datastore(), services.encryption_key_state());
     let catalog = title_store(&services);
 
     catalog
@@ -1879,7 +2420,7 @@ async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_t
 #[tokio::test]
 async fn release_attempt_queries_exclude_pending_attempts_from_failed_signatures() {
     let (services, db) = temp_services("scryer_release_pending_excluded").await;
-    let release_store = ReleaseStore::new(services.datastore());
+    let release_store = ReleaseStore::new(services.datastore(), services.encryption_key_state());
     let catalog = title_store(&services);
 
     catalog
@@ -4314,7 +4855,9 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
     let event = NewDomainEvent {
         event_id: Id::new().0,
         occurred_at: Utc::now(),
+        actor_kind: scryer_domain::DomainEventActorKind::System,
         actor_user_id: None,
+        actor_display_name: "System".to_string(),
         title_id: Some(title.id.clone()),
         facet: Some(title.facet.clone()),
         correlation_id: None,

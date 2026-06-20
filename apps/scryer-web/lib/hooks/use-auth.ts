@@ -26,7 +26,45 @@ type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequ
 let currentToken: string | null = null;
 
 export function getAuthToken(): string | null {
-  return currentToken;
+  if (currentToken && userFromToken(currentToken)) {
+    return currentToken;
+  }
+
+  currentToken = null;
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  if (!userFromToken(stored)) {
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    return null;
+  }
+
+  currentToken = stored;
+  return stored;
+}
+
+export function getMfaEnrollmentToken(): string | null {
+  if (currentToken && isMfaEnrollmentToken(currentToken)) {
+    return currentToken;
+  }
+
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (!stored || !isMfaEnrollmentToken(stored)) {
+    return null;
+  }
+
+  currentToken = stored;
+  return stored;
 }
 
 export function clearClientAuthSession() {
@@ -116,7 +154,7 @@ function userFromToken(token: string): AuthUser | null {
 
 function isMfaEnrollmentToken(token: string): boolean {
   const payload = decodeJwtPayload(token);
-  return payload?.authScope === "mfa_enrollment";
+  return Boolean(payload && !isTokenExpired(payload) && payload.authScope === "mfa_enrollment");
 }
 
 export function useAuth(): AuthState {

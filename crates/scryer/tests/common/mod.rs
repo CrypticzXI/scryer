@@ -609,7 +609,10 @@ impl TestContext {
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
         let datastore = db.datastore();
-        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -678,7 +681,8 @@ impl TestContext {
 
         let library_probe_store = LibraryProbeStore::new(datastore.clone());
         let wanted_store = WantedStore::new(datastore.clone());
-        let pending_release_store = PendingReleaseStore::new(datastore.clone());
+        let pending_release_store =
+            PendingReleaseStore::new(datastore.clone(), db.encryption_key_state());
         let blocklist_store = scryer_infrastructure::BlocklistStore::new(datastore.clone());
         let housekeeping_store = HousekeepingStore::new(datastore.clone());
         let subtitle_download_store = SubtitleDownloadStore::new(datastore.clone());
@@ -1095,10 +1099,18 @@ async fn test_graphql_handler(
     req: GraphQLRequest,
 ) -> Response {
     let snapshot = auth_runtime.snapshot();
-    let actor = if snapshot.effective_form_login_enabled {
-        if let Some(token) = authorization_token_from_headers(&headers) {
-            app.authenticate_token_with_claims(token).await.ok()
-        } else if snapshot.skip_login_for_local_ips {
+    let authenticated_actor = if let Some(token) = authorization_token_from_headers(&headers) {
+        app.authenticate_token_with_claims(token)
+            .await
+            .ok()
+            .map(|(user, claims)| (user, claims, true))
+    } else {
+        None
+    };
+    let actor = if authenticated_actor.is_some() {
+        authenticated_actor
+    } else if snapshot.effective_form_login_enabled {
+        if snapshot.skip_login_for_local_ips {
             app.find_or_create_default_user().await.ok().map(|user| {
                 (
                     user,
@@ -1107,6 +1119,7 @@ async fn test_graphql_handler(
                         mfa_step_up_verified_until: Some(i64::MAX),
                         ..AuthenticatedTokenClaims::default()
                     },
+                    false,
                 )
             })
         } else {
@@ -1116,16 +1129,29 @@ async fn test_graphql_handler(
         app.find_or_create_default_user()
             .await
             .ok()
-            .map(|user| (user, AuthenticatedTokenClaims::default()))
+            .map(|user| (user, AuthenticatedTokenClaims::default(), false))
     };
     let mut request = req.into_inner();
     let response_status = graphql_response_status(&mut request);
-    if let Some((user, claims)) = actor {
+    if let Some((user, claims, authenticated_token)) = actor {
         request = request.data(MfaVerification {
             verified_until: claims.mfa_verified_until,
             step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.session_scope,
         });
+        let mut user = app
+            .attach_user_authorization(user.clone())
+            .await
+            .unwrap_or(user);
+        user.authorization.actor_capabilities = if authenticated_token {
+            claims.actor_capabilities
+        } else {
+            scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT
+        };
+        if claims.is_oauth_access_token() {
+            user.authorization.app = scryer_domain::AppPermissionMask::NONE;
+            user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::NONE;
+        }
         request = request.data(user);
     }
     let mut response =

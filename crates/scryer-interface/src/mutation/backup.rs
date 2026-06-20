@@ -4,8 +4,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::{
-    app_from_ctx, require_app_permission, require_config_step_up, restore_context_from_ctx,
-    to_gql_error,
+    app_from_ctx, require_config_app_permission, restore_context_from_ctx, to_gql_error,
 };
 use crate::mappers::from_backup_info;
 use crate::types::{BackupInfoPayload, BackupRowCountPayload};
@@ -67,13 +66,12 @@ impl BackupMutations {
     async fn create_backup(
         &self,
         ctx: &Context<'_>,
-        password: Option<String>,
+        password: String,
     ) -> GqlResult<BackupInfoPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let info = app
-            .create_backup(&actor, password.as_deref())
+            .create_backup(&actor, &password)
             .await
             .map_err(to_gql_error)?;
         Ok(from_backup_info(info))
@@ -84,8 +82,7 @@ impl BackupMutations {
         ctx: &Context<'_>,
         filename: String,
     ) -> GqlResult<BackupDownloadUrlPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         let ticket = app
             .prepare_backup_download(&actor, &filename)
@@ -94,16 +91,15 @@ impl BackupMutations {
         let encoded_filename = encode_path_segment(&filename);
 
         Ok(BackupDownloadUrlPayload {
-            download_url: format!("/admin/backups/{encoded_filename}/download"),
+            download_url: format!("/backups/{encoded_filename}/download"),
             download_authorization_token: ticket.token,
             expires_at: ticket.expires_at,
         })
     }
 
     async fn delete_backup(&self, ctx: &Context<'_>, filename: String) -> GqlResult<bool> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
-        let actor = require_config_step_up(ctx).await?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         app.delete_backup(&actor, &filename)
             .await
             .map_err(to_gql_error)
@@ -115,7 +111,7 @@ impl BackupMutations {
         bundle_upload: Upload,
         password: Option<String>,
     ) -> GqlResult<RestoreInspectPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         ensure_setup_mode(&app).await.map_err(to_gql_error)?;
 
@@ -181,7 +177,7 @@ impl BackupMutations {
         upload_id: String,
         password: Option<String>,
     ) -> GqlResult<RestoreApplyPayload> {
-        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         ensure_setup_mode(&app).await.map_err(to_gql_error)?;
 
