@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-16";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-06-20";
 
 pub static GROUP_RULES: &[GroupRule] = &[
     GroupRule {
@@ -34628,7 +34628,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         cf_name: "2.0 Stereo",
         spec_name: "Stereo",
         implementation: "ReleaseTitleSpecification",
-        value: "(?<!repac)[^0-9]2[ .]0\\b|\\bStereo\\b",
+        value: "(?<=\\b[12]\\d{3}\\b.*?)(?<!repac)[^0-9]2[ .]0\\b|\\bStereo\\b",
         reason: "existing_parser_or_scoring_signal",
         source_path: "docs/json/radarr/cf/20-stereo.json",
     },
@@ -34916,7 +34916,7 @@ pub static IGNORED_GROUP_RULES: &[MetadataRuleRecord] = &[
         cf_name: "7.1 Surround",
         spec_name: "Not Low Channel Count",
         implementation: "ReleaseTitleSpecification",
-        value: "(?<!repac)[^0-9][1-4][ .][0-1]\\b|\\b(Stereo|Mono)\\b",
+        value: "(?<=\\b[12]\\d{3}\\b.*?)(?<!repac)[^0-9][1-4][ .][0-1]\\b|\\b(Stereo|Mono)\\b",
         reason: "unmapped_v1",
         source_path: "docs/json/radarr/cf/71-surround.json",
     },
