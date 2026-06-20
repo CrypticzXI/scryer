@@ -168,6 +168,24 @@ function titleCatalogSortInput(sort: TitleCatalogSortState) {
   };
 }
 
+type ActiveCatalogListFilters = {
+  facet: TitleRecord["facet"];
+  query: string;
+  libraryIds: readonly string[];
+};
+
+function sortCatalogTitles(titles: TitleRecord[]): TitleRecord[] {
+  return [...titles].sort((left, right) => {
+    const nameCompare = left.name.toLocaleLowerCase().localeCompare(
+      right.name.toLocaleLowerCase(),
+    );
+    if (nameCompare !== 0) {
+      return nameCompare;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
 function mergePreferLoadedImageFields(
   current: TitleRecord,
   incoming: TitleRecord,
@@ -230,12 +248,55 @@ function appendCatalogTitlesPreservingImages(
   return next;
 }
 
+function buildActiveCatalogListFilters(
+  facet: TitleRecord["facet"],
+  query: string,
+  libraryIds: readonly string[],
+): ActiveCatalogListFilters {
+  return {
+    facet,
+    query: query.trim().toLocaleLowerCase(),
+    libraryIds: [...libraryIds],
+  };
+}
+
+function catalogTitleMatchesActiveListFilters(
+  title: TitleRecord,
+  filters: ActiveCatalogListFilters,
+): boolean {
+  if (title.facet !== filters.facet) {
+    return false;
+  }
+
+  if (
+    filters.libraryIds.length > 0 &&
+    !filters.libraryIds.includes(title.libraryId)
+  ) {
+    return false;
+  }
+
+  return (
+    filters.query.length === 0 ||
+    title.name.toLocaleLowerCase().includes(filters.query)
+  );
+}
+
 function upsertCatalogTitleRecord(
   titles: TitleRecord[],
   title: TitleRecord,
+  filters?: ActiveCatalogListFilters,
 ): TitleRecord[] {
+  const existingIndex = titles.findIndex((item) => item.id === title.id);
+  if (filters && !catalogTitleMatchesActiveListFilters(title, filters)) {
+    if (existingIndex === -1) {
+      return titles;
+    }
+    const next = [...titles];
+    next.splice(existingIndex, 1);
+    return next;
+  }
+
   const next = [...titles];
-  const existingIndex = next.findIndex((item) => item.id === title.id);
   if (existingIndex === -1) {
     next.push(title);
   } else {
@@ -607,6 +668,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
+  const activeCatalogListFiltersRef = React.useRef<ActiveCatalogListFilters>({
+    facet: activeFacet,
+    query: "",
+    libraryIds: [],
+  });
   const catalogTitleRequestSeqRef = React.useRef(0);
   const catalogBootstrapRequestSeqRef = React.useRef(0);
   const catalogPageLoadInFlightRef = React.useRef(false);
@@ -1089,6 +1155,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         filters: effectiveTitleQuickFilters,
         sort: effectiveTitleCatalogSort,
       });
+      activeCatalogListFiltersRef.current = buildActiveCatalogListFilters(
+        activeFacet,
+        query,
+        libraryIds,
+      );
       const requestSeq = ++catalogTitleRequestSeqRef.current;
       catalogPageLoadInFlightRef.current = false;
       catalogQueryKeyRef.current = queryKey;
@@ -1419,23 +1490,36 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           if (existingIndex !== -1) {
             next.splice(existingIndex, 1);
           }
-          setTitleStatus(t("title.statusTemplate", { count: catalogPaginationState.totalCount }));
+          setTitleStatus(t("title.statusTemplate", { count: next.length }));
+          return next;
+        }
+
+        if (!catalogTitleMatchesActiveListFilters(
+          title,
+          activeCatalogListFiltersRef.current,
+        )) {
+          if (existingIndex === -1) {
+            return current;
+          }
+          next.splice(existingIndex, 1);
+          setTitleStatus(t("title.statusTemplate", { count: next.length }));
           return next;
         }
 
         if (existingIndex === -1) {
-          return current;
+          next.push(title);
         } else {
           next[existingIndex] = mergePreferLoadedImageFields(
             next[existingIndex],
             title,
           );
         }
-        setTitleStatus(t("title.statusTemplate", { count: catalogPaginationState.totalCount }));
-        return next;
+        const sorted = sortCatalogTitles(next);
+        setTitleStatus(t("title.statusTemplate", { count: next.length }));
+        return sorted;
       });
     },
-    [catalogPaginationState.totalCount, setMonitoredTitles, setTitleStatus, t],
+    [setMonitoredTitles, setTitleStatus, t],
   );
 
   const pendingHydrationPosterTitleIds = React.useMemo(() => {
@@ -1563,11 +1647,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
         if (shouldLoadCatalogTitles && data?.addTitle?.title) {
           setMonitoredTitles((current) => {
+            const title = data.addTitle.title as TitleRecord;
             const next = upsertCatalogTitleRecord(
               current,
-              data.addTitle.title as TitleRecord,
+              title,
+              activeCatalogListFiltersRef.current,
             );
-            setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            if (next !== current) {
+              setTitleStatus(t("title.statusTemplate", { count: next.length }));
+            }
             return next;
           });
         }

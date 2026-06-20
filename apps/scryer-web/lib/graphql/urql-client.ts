@@ -4,7 +4,11 @@ import {
   subscriptionExchange,
 } from "@urql/core";
 import { getAuthlessWebClientProof } from "@/lib/authless-web-client";
-import { clearClientAuthSession, getAuthToken } from "@/lib/hooks/use-auth";
+import {
+  clearClientAuthSession,
+  getAuthToken,
+  getMfaEnrollmentToken,
+} from "@/lib/hooks/use-auth";
 import { getRuntimeBasePath, getRuntimeGraphqlUrl } from "@/lib/runtime-config";
 import { wsClient } from "@/lib/graphql/ws-client";
 
@@ -121,7 +125,11 @@ function inputPath(input: RequestInfo | URL): string | null {
 }
 
 async function withAuthlessProof(input: RequestInfo | URL, init?: RequestInit) {
-  if (typeof window === "undefined" || getAuthToken()) {
+  if (
+    typeof window === "undefined" ||
+    headersHaveAuthorization(init?.headers) ||
+    getAuthToken()
+  ) {
     return init;
   }
   const graphqlPath = new URL(getRuntimeGraphqlUrl(), window.location.origin).pathname;
@@ -135,6 +143,13 @@ async function withAuthlessProof(input: RequestInfo | URL, init?: RequestInit) {
   const headers = new Headers(init?.headers);
   headers.set("x-scryer-web-client", proof);
   return { ...init, credentials: "include" as RequestCredentials, headers };
+}
+
+function headersHaveAuthorization(headersInit?: HeadersInit): boolean {
+  if (!headersInit) {
+    return false;
+  }
+  return new Headers(headersInit).has("authorization");
 }
 
 export const scryerFetch: typeof fetch = async (input, init) => {
@@ -218,6 +233,24 @@ export const backendClient = new Client({
       "x-scryer-language": currentLanguage,
     };
     const token = getAuthToken();
+    if (token) {
+      headers["authorization"] = `Bearer ${token}`;
+    }
+    return { headers };
+  },
+});
+
+export const mfaEnrollmentClient = new Client({
+  url: getRuntimeGraphqlUrl(),
+  preferGetMethod: false,
+  requestPolicy: "network-only",
+  fetch: scryerFetch,
+  exchanges: [fetchExchange],
+  fetchOptions: () => {
+    const headers: Record<string, string> = {
+      "x-scryer-language": currentLanguage,
+    };
+    const token = getMfaEnrollmentToken();
     if (token) {
       headers["authorization"] = `Bearer ${token}`;
     }

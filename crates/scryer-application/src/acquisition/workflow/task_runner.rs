@@ -255,11 +255,8 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             tokio::task::yield_now().await;
         }
 
-        // Re-read the wanted item status after processing.  If the item was
-        // successfully grabbed inside process_single_wanted_item (status changed
-        // to "grabbed"), we must NOT overwrite it with a search schedule — doing
-        // so would reset it to "wanted" and prevent check_grabbed_for_failures
-        // from ever detecting download failures.
+        // Re-read the wanted item after processing. If processing changed the
+        // row to another state, do not overwrite it with a stale search schedule.
         let current = app
             .services
             .workflow
@@ -269,20 +266,16 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             .ok()
             .flatten();
 
-        if let Some(ref wi) = current
-            && wi.status == WantedStatus::Grabbed
-        {
-            // Item was grabbed — don't touch it.  The download failure
-            // detector will handle re-queuing if the download fails.
+        let Some(scheduling_item) = wanted_item_for_search_reschedule(current.as_ref()) else {
             continue;
-        }
+        };
 
         // Item is still "wanted" (no grab succeeded, or all candidates were
         // exhausted).  Update the search schedule with backoff.
         let schedule = compute_search_schedule(
-            &item.media_type,
-            item.baseline_date.as_deref(),
-            &item.search_phase,
+            &scheduling_item.media_type,
+            scheduling_item.baseline_date.as_deref(),
+            &scheduling_item.search_phase,
             &now,
         );
 
@@ -291,15 +284,21 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             .workflow
             .wanted_items
             .schedule_wanted_item_search(&WantedSearchTransition {
-                id: item.id.clone(),
+                id: scheduling_item.id.clone(),
                 next_search_at: Some(schedule.next_search_at),
                 last_search_at: Some(now.to_rfc3339()),
-                search_count: item.search_count + 1,
-                current_score: item.current_score,
-                grabbed_release: item.grabbed_release.clone(),
+                search_count: scheduling_item.search_count + 1,
+                current_score: scheduling_item.current_score,
+                grabbed_release: scheduling_item.grabbed_release.clone(),
             })
             .await;
     }
+}
+fn wanted_item_for_search_reschedule(item: Option<&WantedItem>) -> Option<&WantedItem> {
+    item.filter(|item| {
+        item.status == WantedStatus::Wanted
+            || (item.status == WantedStatus::Completed && item.current_score.is_some())
+    })
 }
 fn submission_blocks_search_for_wanted_item(
     submission: &DownloadSubmission,
@@ -1970,6 +1969,46 @@ mod task_runner_tests {
         assert!(submission_blocks_search_for_wanted_item(
             &submission, &item, None, &snapshot,
         ));
+    }
+
+    #[test]
+    fn completed_item_with_negative_score_uses_fresh_state_for_reschedule_after_processing() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.status = WantedStatus::Completed;
+        item.current_score = Some(-15);
+        item.grabbed_release = None;
+
+        let scheduling_item = wanted_item_for_search_reschedule(Some(&item))
+            .expect("scored completed item should re-enter upgrade search");
+
+        assert_eq!(scheduling_item.current_score, Some(-15));
+        assert_eq!(scheduling_item.grabbed_release, None);
+    }
+
+    #[test]
+    fn completed_item_without_score_is_not_rescheduled_after_processing() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.status = WantedStatus::Completed;
+        item.current_score = None;
+        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+
+        assert!(wanted_item_for_search_reschedule(Some(&item)).is_none());
+    }
+
+    #[test]
+    fn wanted_item_uses_fresh_state_for_reschedule_after_processing() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(-15);
+        item.grabbed_release = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+
+        let scheduling_item =
+            wanted_item_for_search_reschedule(Some(&item)).expect("wanted item should reschedule");
+
+        assert_eq!(scheduling_item.current_score, Some(-15));
+        assert_eq!(
+            scheduling_item.grabbed_release.as_deref(),
+            Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb")
+        );
     }
 
     #[test]

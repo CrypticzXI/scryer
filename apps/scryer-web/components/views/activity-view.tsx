@@ -409,6 +409,21 @@ function deriveQueueRowPresentation(
   };
 }
 
+function downloadQueueItemRowSelectorKey(
+  queueItem: DownloadQueueItem,
+  fallbackKey: string,
+): string {
+  if (queueItem.downloadId?.trim()) {
+    return queueItem.downloadId.trim();
+  }
+
+  const ownerKey = queueItem.clientId.trim() || queueItem.clientType.trim();
+  const itemKey = queueItem.downloadClientItemId.trim() || queueItem.id.trim();
+  const queuedAt = queueItem.queuedAt?.trim();
+  const selectorParts = [ownerKey, itemKey, queuedAt].filter(Boolean);
+  return selectorParts.length >= 2 ? selectorParts.join("::") : fallbackKey;
+}
+
 function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const displayStateKey = normalizeQueueState(queueItem.displayState);
@@ -1237,8 +1252,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
         const rowSelectorKey = selectorId(
-          row.displayTitle || row.releaseTitle || rowId,
-          queueItem.clientName || queueItem.clientType,
+          downloadQueueItemRowSelectorKey(queueItem, rowId),
         );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy = rowActionBusy[rowId] ?? false;
@@ -1260,6 +1274,15 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           <div
             key={rowId}
             id={selectorId("activity", activeTab, "row", rowSelectorKey)}
+            data-ui="activity-row"
+            data-activity-tab={activeTab}
+            data-activity-row-id={rowId}
+            data-activity-download-id={queueItem.id}
+            data-activity-client-item-id={queueItem.downloadClientItemId}
+            data-activity-title-id={queueItem.titleId ?? ""}
+            data-activity-client-id={queueItem.clientId}
+            data-activity-client-name={queueItem.clientName ?? ""}
+            data-activity-client-type={queueItem.clientType}
             className="rounded-xl border border-border bg-card/40 p-3"
           >
             <div className="flex items-start justify-between gap-3">
@@ -1556,8 +1579,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
         const rowSelectorKey = selectorId(
-          row.displayTitle || row.releaseTitle || rowId,
-          queueItem.clientName || queueItem.clientType,
+          downloadQueueItemRowSelectorKey(queueItem, rowId),
         );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy = rowActionBusy[rowId] ?? false;
@@ -1576,7 +1598,18 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
         return (
           <Fragment key={rowId}>
-            <TableRow id={selectorId("activity", activeTab, "row", rowSelectorKey)}>
+            <TableRow
+              id={selectorId("activity", activeTab, "row", rowSelectorKey)}
+              data-ui="activity-row"
+              data-activity-tab={activeTab}
+              data-activity-row-id={rowId}
+              data-activity-download-id={queueItem.id}
+              data-activity-client-item-id={queueItem.downloadClientItemId}
+              data-activity-title-id={queueItem.titleId ?? ""}
+              data-activity-client-id={queueItem.clientId}
+              data-activity-client-name={queueItem.clientName ?? ""}
+              data-activity-client-type={queueItem.clientType}
+            >
               {activeTab === "import" ? (
                 <TableCell className="w-12 min-w-12 align-middle">
                   <Checkbox

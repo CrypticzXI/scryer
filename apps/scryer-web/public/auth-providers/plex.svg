@@ -1,5 +1,1 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="252.9 31.2 67.7 92.9" role="img" aria-labelledby="plex-title">
-  <title id="plex-title">Plex</title>
-  <polygon fill="#E5A00D" points="286.4 77.8 252.9 31.2 287.3 31.2 320.6 77.8 287.3 124.1 252.9 124.1 286.4 77.8"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#282a2d" rx="15%"/><path fill="#e5a00d" d="M256 70H148l108 186-108 186h108l108-186z"/></svg>

@@ -365,6 +365,7 @@ pub struct DownloadQueueActionPayload {
 pub struct ManualImportPreviewPayload {
     pub files: Vec<ManualImportFilePreviewPayload>,
     pub available_episodes: Vec<EpisodePayload>,
+    pub available_series_movies: Vec<ManualImportSeriesMovieTargetPayload>,
 }
 
 #[derive(SimpleObject, Clone)]

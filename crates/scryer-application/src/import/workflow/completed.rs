@@ -33,12 +33,14 @@ async fn analyze_and_persist_imported_media_file(
             crate::post_download_gate::ImportedFileAcceptance {
                 analysis: Some(*analysis),
                 scan_error: None,
+                rule_file_doc: None,
             }
         }
         Ok(crate::MediaAnalysisOutcome::Invalid(error)) => {
             crate::post_download_gate::ImportedFileAcceptance {
                 analysis: None,
                 scan_error: Some(error),
+                rule_file_doc: None,
             }
         }
         Err(error) => {
@@ -52,6 +54,7 @@ async fn analyze_and_persist_imported_media_file(
             crate::post_download_gate::ImportedFileAcceptance {
                 analysis: None,
                 scan_error: Some(error.to_string()),
+                rule_file_doc: None,
             }
         }
     };
@@ -541,26 +544,6 @@ async fn resolve_import_quality_profile(
             crate::default_quality_profile_for_search()
         }
     }
-}
-async fn resolve_import_audio_persona(
-    app: &AppUseCase,
-    title: &scryer_domain::Title,
-) -> (Vec<String>, crate::ScoringPersona) {
-    let category_hint = crate::post_download_gate::facet_to_category_hint(&title.facet);
-    let required_audio_languages = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(title.library_id.as_str()),
-            Some(category_hint),
-        )
-        .await
-        .unwrap_or_default();
-    let persona = app
-        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
-        .await
-        .unwrap_or_default();
-
-    (required_audio_languages, persona)
 }
 const SAMPLE_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024;
 fn non_empty_string(value: Option<String>) -> Option<String> {

@@ -51,6 +51,7 @@ pub(crate) async fn execute_upgrade(
     stored_quality_label: Option<&str>,
     final_score: i32,
     old_score: i32,
+    post_download_scoring_log: Option<String>,
     target_episode_ids: &[String],
     media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
@@ -63,16 +64,11 @@ pub(crate) async fn execute_upgrade(
     let dest_path_string = path_to_stored_string(dest_path);
     let source_path_string = path_to_stored_string(source_path);
 
-    let scoring_log = format!(
-        "upgrade {} → {} (delta {}){}",
+    let scoring_log = upgrade_scoring_log(
         old_score,
         final_score,
-        final_score - old_score,
-        if prepared.rescore_changes.is_empty() {
-            String::new()
-        } else {
-            format!("; rescore: {}", prepared.rescore_changes.join(", "))
-        }
+        post_download_scoring_log,
+        &prepared.rescore_changes,
     );
 
     let same_final_path = old_path == dest_path;
@@ -161,6 +157,45 @@ fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppRe
         )));
     }
     Ok(())
+}
+
+fn upgrade_scoring_log(
+    old_score: i32,
+    final_score: i32,
+    post_download_scoring_log: Option<String>,
+    rescore_changes: &[String],
+) -> String {
+    if let Some(log) = post_download_scoring_log {
+        let post_download = serde_json::from_str::<serde_json::Value>(&log)
+            .unwrap_or_else(|_| serde_json::Value::String(log));
+        return serde_json::to_string(&serde_json::json!({
+            "kind": "post_download_upgrade_score",
+            "old_score": old_score,
+            "new_score": final_score,
+            "delta": final_score - old_score,
+            "post_download": post_download,
+        }))
+        .unwrap_or_else(|_| {
+            format!(
+                "upgrade {} -> {} (delta {})",
+                old_score,
+                final_score,
+                final_score - old_score
+            )
+        });
+    }
+
+    format!(
+        "upgrade {} -> {} (delta {}){}",
+        old_score,
+        final_score,
+        final_score - old_score,
+        if rescore_changes.is_empty() {
+            String::new()
+        } else {
+            format!("; rescore: {}", rescore_changes.join(", "))
+        }
+    )
 }
 
 #[expect(

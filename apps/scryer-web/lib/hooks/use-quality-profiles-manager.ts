@@ -88,6 +88,8 @@ function resolveGlobalQualityProfileId(
 
 type UseQualityProfilesManagerArgs = Record<string, never>;
 
+const QUALITY_PROFILES_SAVED_TOAST_ID = "settings-quality-profiles-saved-toast";
+
 export type UseQualityProfilesManagerResult = {
   mediaSettingsLoading: boolean;
   initialLoadComplete: boolean;
@@ -369,7 +371,9 @@ export function useQualityProfilesManager(
         if (error) throw error;
 
         applyQualityProfileSettingsPayload(data.deleteQualityProfile);
-        setGlobalStatus(t("settings.qualitySettingsSaved"));
+        setGlobalStatus(t("settings.qualitySettingsSaved"), {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
       } finally {
@@ -605,7 +609,9 @@ export function useQualityProfilesManager(
           globalData.saveQualityProfileSettings,
           committed.draftEntry.id,
         );
-        setGlobalStatus(t("settings.qualitySettingsSaved"));
+        setGlobalStatus(t("settings.qualitySettingsSaved"), {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
         return true;
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
@@ -664,7 +670,9 @@ export function useQualityProfilesManager(
         );
         setGlobalQualityProfileId(persisted);
         const message = t("settings.qualitySettingsSaved");
-        setGlobalStatus(message);
+        setGlobalStatus(message, {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : t("status.failedToUpdate");
         setGlobalStatus(message);
@@ -701,7 +709,9 @@ export function useQualityProfilesManager(
         if (error) throw error;
 
         applyQualityProfileSettingsPayload(data?.saveQualityProfileSettings);
-        setGlobalStatus(t("settings.qualitySettingsSaved"));
+        setGlobalStatus(t("settings.qualitySettingsSaved"), {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
       } catch (error) {
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.failedToUpdate"),
@@ -772,7 +782,9 @@ export function useQualityProfilesManager(
           [normalizedScope]: persisted || QUALITY_PROFILE_INHERIT_VALUE,
         }));
         const message = t("settings.qualitySettingsSaved");
-        setGlobalStatus(message);
+        setGlobalStatus(message, {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : t("status.failedToUpdate");
         setGlobalStatus(message);
@@ -827,7 +839,9 @@ export function useQualityProfilesManager(
         if (error) throw error;
 
         applyQualityProfileSettingsPayload(data?.saveQualityProfileSettings);
-        setGlobalStatus(t("settings.qualitySettingsSaved"));
+        setGlobalStatus(t("settings.qualitySettingsSaved"), {
+          toastId: QUALITY_PROFILES_SAVED_TOAST_ID,
+        });
       } catch (error) {
         setGlobalStatus(
           error instanceof Error ? error.message : t("status.failedToUpdate"),

@@ -1,5 +1,7 @@
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
+const AUTO_BACKUP_KEY_MIN_LENGTH: usize = 8;
+
 fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
     let value = value.trim();
     let (hour, minute) = value
@@ -18,13 +20,32 @@ fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
     }
     Ok(format!("{hour:02}:{minute:02}"))
 }
+
+fn auto_backup_key_non_whitespace_len(value: &str) -> usize {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .count()
+}
+
 fn validate_auto_backup_key_update(
     enabled: bool,
     existing_auto_backup_key_present: bool,
     set_auto_backup_key: Option<&str>,
     clear_auto_backup_key: bool,
 ) -> AppResult<()> {
-    let replacement_key_present = set_auto_backup_key.is_some_and(|value| !value.trim().is_empty());
+    let replacement_key = set_auto_backup_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let replacement_key_present = replacement_key.is_some();
+    if let Some(replacement_key) = replacement_key
+        && auto_backup_key_non_whitespace_len(replacement_key) < AUTO_BACKUP_KEY_MIN_LENGTH
+    {
+        return Err(AppError::Validation(format!(
+            "automatic backup key must be at least {AUTO_BACKUP_KEY_MIN_LENGTH} non-whitespace characters"
+        )));
+    }
     if clear_auto_backup_key && replacement_key_present {
         return Err(AppError::Validation(
             "automatic backup key cannot be replaced and cleared in the same request".to_string(),
@@ -463,7 +484,7 @@ mod tests {
 
     #[test]
     fn validate_auto_backup_key_update_rejects_replace_and_clear_together() {
-        let error = validate_auto_backup_key_update(false, true, Some("secret"), true)
+        let error = validate_auto_backup_key_update(false, true, Some("secret12"), true)
             .expect_err("set and clear should be rejected");
 
         assert!(
@@ -486,6 +507,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_auto_backup_key_update_rejects_short_replacement_key() {
+        let error = validate_auto_backup_key_update(true, false, Some("  1234567  "), false)
+            .expect_err("short replacement key should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("at least 8 non-whitespace characters"),
+        );
+    }
+
+    #[test]
     fn validate_auto_backup_key_update_rejects_clearing_key_while_enabled() {
         let error = validate_auto_backup_key_update(true, true, None, true)
             .expect_err("enabled clear should be rejected");
@@ -499,8 +532,14 @@ mod tests {
 
     #[test]
     fn validate_auto_backup_key_update_accepts_enabled_with_replacement_key() {
-        validate_auto_backup_key_update(true, false, Some("secret"), false)
+        validate_auto_backup_key_update(true, false, Some("  secret12  "), false)
             .expect("replacement key should allow enabling");
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_accepts_existing_key_without_replacement() {
+        validate_auto_backup_key_update(true, true, None, false)
+            .expect("existing saved key should allow enabling");
     }
 
     #[test]

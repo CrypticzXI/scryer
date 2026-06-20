@@ -64,7 +64,10 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         SqlRuntime::run_in_transaction(&self.datastore, "record_download_submission", move |tx| {
             let submission = submission.clone();
-            Box::pin(async move { record_download_submission_tx(tx, &submission).await })
+            Box::pin(async move {
+                record_download_submission_tx(tx, &submission).await?;
+                Ok(())
+            })
         })
         .await
     }

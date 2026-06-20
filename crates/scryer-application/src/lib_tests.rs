@@ -18335,6 +18335,42 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
 }
 
 #[tokio::test]
+async fn find_download_queue_scope_returns_orphan_without_title_lookup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: String::new(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "anime".to_string(),
+            download_client_id: Some("weaver-primary".to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "foreign-10000".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Foreign Weaver Download".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Orphan,
+        })
+        .await
+        .expect("record orphan submission");
+
+    let scope = app
+        .find_download_queue_scope(&user, Some("weaver-primary"), "weaver", "foreign-10000")
+        .await
+        .expect("orphan scope lookup should not require a title");
+
+    assert!(matches!(scope, Some(SubmissionScope::Orphan)));
+}
+
+#[tokio::test]
 async fn list_download_import_page_returns_promptly_when_tracked_snapshot_handle_never_replies() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -19839,6 +19875,149 @@ async fn try_import_completed_downloads_imports_additional_series_movie_file_fro
         Some(linked_episode.id.as_str())
     );
     assert_eq!(additional_file.series_movie_link_ids, vec![link.id]);
+}
+
+#[tokio::test]
+async fn path_manual_import_can_target_series_movie_link() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_imports(import_repo.clone())
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+    });
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("seed manual import actor");
+
+    let library_dir = tempfile::tempdir().expect("library tempdir");
+    let title_folder = library_dir.path().join("Manual Series Movie Import");
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Series Movie Import".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![format!(
+                    "scryer:root-folder:{}",
+                    library_dir.path().display()
+                )],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &title_folder.to_string_lossy())
+        .await
+        .expect("set title folder path");
+
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Manual Series Movie Import: Case 3",
+            Some(2026),
+            None,
+            Some("manual-series-movie-import-case-3"),
+        ))
+        .await
+        .expect("create series movie link");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = source_dir
+        .path()
+        .join("Manual.Series.Movie.Import.Case.3.2026.1080p.WEB-DL.mkv");
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(51 * 1024 * 1024)
+        .expect("size source video above sample threshold");
+
+    let preview = crate::import_workflow::preview_manual_import_path(
+        &app,
+        &user,
+        &source_dir.path().to_string_lossy(),
+        &title.id,
+    )
+    .await
+    .expect("preview manual import path");
+    assert!(
+        preview
+            .files
+            .iter()
+            .any(|file| file.file_path == source_file.to_string_lossy())
+    );
+    assert!(preview.available_series_movies.iter().any(|target| {
+        target.series_movie_link_id == link.id
+            && target.movie_title == "Manual Series Movie Import: Case 3"
+            && target.year == Some(2026)
+            && target.runtime_minutes == Some(110)
+    }));
+
+    let import_id = app
+        .queue_path_manual_import(
+            &user,
+            title.id.clone(),
+            source_dir.path().to_string_lossy().into_owned(),
+            vec![ManualImportFileMapping {
+                file_path: source_file.to_string_lossy().into_owned(),
+                episode_id: None,
+                series_movie_link_id: Some(link.id.clone()),
+                quality: Some("1080p".to_string()),
+            }],
+        )
+        .await
+        .expect("queue path manual import");
+    let record = import_repo
+        .records
+        .lock()
+        .await
+        .iter()
+        .find(|record| record.id == import_id)
+        .cloned()
+        .expect("queued import record");
+    let payload: ManualImportRequestPayload =
+        serde_json::from_str(&record.payload_json).expect("manual import payload");
+    assert_eq!(
+        payload.files[0].series_movie_link_id.as_deref(),
+        Some(link.id.as_str())
+    );
+
+    let (status, result_json) =
+        crate::import_workflow::execute_queued_manual_import(&app, &import_id, &payload)
+            .await
+            .expect("execute queued manual import");
+    assert_eq!(status, ImportStatus::Completed, "result: {result_json:?}");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    let imported = files
+        .iter()
+        .find(|file| file.series_movie_link_ids.contains(&link.id))
+        .expect("manual import linked media file to series movie");
+    assert_eq!(imported.role, MediaFileRole::Primary);
+    assert_eq!(imported.episode_id, None);
 }
 
 #[tokio::test]

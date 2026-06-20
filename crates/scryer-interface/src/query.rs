@@ -1388,6 +1388,16 @@ impl SystemQueries {
                 .into_iter()
                 .map(from_episode)
                 .collect(),
+            available_series_movies: preview
+                .available_series_movies
+                .into_iter()
+                .map(|target| ManualImportSeriesMovieTargetPayload {
+                    series_movie_link_id: target.series_movie_link_id,
+                    movie_title: target.movie_title,
+                    year: target.year,
+                    runtime_minutes: target.runtime_minutes,
+                })
+                .collect(),
         })
     }
 
@@ -1427,6 +1437,16 @@ impl SystemQueries {
                 .available_episodes
                 .into_iter()
                 .map(from_episode)
+                .collect(),
+            available_series_movies: preview
+                .available_series_movies
+                .into_iter()
+                .map(|target| ManualImportSeriesMovieTargetPayload {
+                    series_movie_link_id: target.series_movie_link_id,
+                    movie_title: target.movie_title,
+                    year: target.year,
+                    runtime_minutes: target.runtime_minutes,
+                })
                 .collect(),
         })
     }

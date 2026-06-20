@@ -201,7 +201,8 @@ impl DownloadMutations {
                         .into_iter()
                         .map(|file| scryer_application::ManualImportFileMapping {
                             file_path: file.file_path,
-                            episode_id: file.episode_id.to_string(),
+                            episode_id: file.episode_id,
+                            series_movie_link_id: file.series_movie_link_id,
                             quality: file.quality,
                         })
                         .collect()
@@ -249,7 +250,8 @@ impl DownloadMutations {
                     .into_iter()
                     .map(|file| scryer_application::ManualImportFileMapping {
                         file_path: file.file_path,
-                        episode_id: file.episode_id.to_string(),
+                        episode_id: file.episode_id,
+                        series_movie_link_id: file.series_movie_link_id,
                         quality: file.quality,
                     })
                     .collect(),

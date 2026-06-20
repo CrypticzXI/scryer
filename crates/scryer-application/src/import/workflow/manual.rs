@@ -184,10 +184,62 @@ pub struct ManualImportFilePreview {
     pub suggested_episode_id: Option<String>,
     pub suggested_episode_label: Option<String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct ManualImportSeriesMovieTarget {
+    pub series_movie_link_id: String,
+    pub movie_title: String,
+    pub year: Option<i32>,
+    pub runtime_minutes: Option<i32>,
+}
+
 /// Result of previewing a manual import: file list + available episodes for matching.
 pub struct ManualImportPreview {
     pub files: Vec<ManualImportFilePreview>,
     pub available_episodes: Vec<scryer_domain::Episode>,
+    pub available_series_movies: Vec<ManualImportSeriesMovieTarget>,
+}
+
+async fn manual_import_preview_targets(
+    app: &AppUseCase,
+    title_id: &str,
+) -> AppResult<(
+    Vec<scryer_domain::Episode>,
+    Vec<ManualImportSeriesMovieTarget>,
+)> {
+    let collections = app
+        .services
+        .catalog
+        .shows
+        .list_collections_for_title(title_id)
+        .await?;
+    let mut all_episodes = Vec::new();
+    for collection in &collections {
+        let episodes = app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(&collection.id)
+            .await?;
+        all_episodes.extend(episodes);
+    }
+
+    let series_movies = app
+        .services
+        .catalog
+        .shows
+        .list_series_movie_links_for_title(title_id)
+        .await?
+        .into_iter()
+        .map(|link| ManualImportSeriesMovieTarget {
+            series_movie_link_id: link.id,
+            movie_title: link.movie.title,
+            year: link.movie.year,
+            runtime_minutes: link.movie.runtime_minutes,
+        })
+        .collect();
+
+    Ok((all_episodes, series_movies))
 }
 
 fn configured_path_manual_import_roots() -> Vec<PathBuf> {
@@ -354,22 +406,8 @@ pub async fn preview_manual_import_path(
         validate_manual_import_video_files(&video_files, trusted_root)?;
     }
 
-    let collections = app
-        .services
-        .catalog
-        .shows
-        .list_collections_for_title(title_id)
-        .await?;
-    let mut all_episodes = Vec::new();
-    for collection in &collections {
-        let episodes = app
-            .services
-            .catalog
-            .shows
-            .list_episodes_for_collection(&collection.id)
-            .await?;
-        all_episodes.extend(episodes);
-    }
+    let (all_episodes, available_series_movies) =
+        manual_import_preview_targets(app, title_id).await?;
 
     let mut previews = Vec::new();
     let other_video_files = video_files.len() > 1;
@@ -458,6 +496,7 @@ pub async fn preview_manual_import_path(
     Ok(ManualImportPreview {
         files: previews,
         available_episodes: all_episodes,
+        available_series_movies,
     })
 }
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
@@ -509,23 +548,9 @@ pub async fn preview_manual_import(
     let dest_dir = Path::new(&completed.dest_dir);
     let video_files = find_video_files(dest_dir, false)?;
 
-    // Get all episodes for this title across all seasons
-    let collections = app
-        .services
-        .catalog
-        .shows
-        .list_collections_for_title(title_id)
-        .await?;
-    let mut all_episodes = Vec::new();
-    for collection in &collections {
-        let episodes = app
-            .services
-            .catalog
-            .shows
-            .list_episodes_for_collection(&collection.id)
-            .await?;
-        all_episodes.extend(episodes);
-    }
+    // Get all manual import targets for this title.
+    let (all_episodes, available_series_movies) =
+        manual_import_preview_targets(app, title_id).await?;
 
     // For each file, parse and attempt auto-match
     let mut previews = Vec::new();
@@ -619,15 +644,61 @@ pub async fn preview_manual_import(
     Ok(ManualImportPreview {
         files: previews,
         available_episodes: all_episodes,
+        available_series_movies,
     })
 }
-/// A user-specified mapping of one file to one episode.
+/// A user-specified mapping of one file to one manual import target.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ManualImportFileMapping {
     pub file_path: String,
-    pub episode_id: String,
+    #[serde(default)]
+    pub episode_id: Option<String>,
+    #[serde(default)]
+    pub series_movie_link_id: Option<String>,
     pub quality: Option<String>,
 }
+
+#[derive(Clone, Copy)]
+enum ManualImportMappingTarget<'a> {
+    Episode(&'a str),
+    SeriesMovie(&'a str),
+}
+
+fn normalize_manual_import_target(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn manual_import_mapping_target(
+    mapping: &ManualImportFileMapping,
+) -> AppResult<ManualImportMappingTarget<'_>> {
+    let episode_id = normalize_manual_import_target(mapping.episode_id.as_deref());
+    let series_movie_link_id =
+        normalize_manual_import_target(mapping.series_movie_link_id.as_deref());
+
+    match (episode_id, series_movie_link_id) {
+        (Some(episode_id), None) => Ok(ManualImportMappingTarget::Episode(episode_id)),
+        (None, Some(series_movie_link_id)) => {
+            Ok(ManualImportMappingTarget::SeriesMovie(series_movie_link_id))
+        }
+        (None, None) => Err(AppError::Validation(
+            "manual import mapping requires episode_id or series_movie_link_id".to_string(),
+        )),
+        (Some(_), Some(_)) => Err(AppError::Validation(
+            "manual import mapping cannot include both episode_id and series_movie_link_id"
+                .to_string(),
+        )),
+    }
+}
+
+pub(crate) fn validate_manual_import_mapping_targets(
+    files: &[ManualImportFileMapping],
+) -> AppResult<()> {
+    for mapping in files {
+        manual_import_mapping_target(mapping)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_path_manual_import_mappings(
     source_path: &str,
     files: &[ManualImportFileMapping],
@@ -646,6 +717,7 @@ pub(crate) fn validate_path_manual_import_mappings(
             "at least one mapped file is required for path manual import".to_string(),
         ));
     }
+    validate_manual_import_mapping_targets(files)?;
 
     for mapping in files {
         let file_path = stored_path_to_path_buf(&mapping.file_path);
@@ -684,12 +756,34 @@ pub(crate) fn validate_path_manual_import_mappings(
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ManualImportFileResult {
     pub file_path: String,
-    pub episode_id: String,
+    #[serde(default)]
+    pub episode_id: Option<String>,
+    #[serde(default)]
+    pub series_movie_link_id: Option<String>,
     pub success: bool,
     pub dest_path: Option<String>,
     pub error_code: Option<ImportErrorCode>,
     pub error_message: Option<String>,
 }
+
+fn manual_import_file_result(
+    mapping: &ManualImportFileMapping,
+    success: bool,
+    dest_path: Option<String>,
+    error_code: Option<ImportErrorCode>,
+    error_message: Option<String>,
+) -> ManualImportFileResult {
+    ManualImportFileResult {
+        file_path: mapping.file_path.clone(),
+        episode_id: mapping.episode_id.clone(),
+        series_movie_link_id: mapping.series_movie_link_id.clone(),
+        success,
+        dest_path,
+        error_code,
+        error_message,
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ManualImportRequestPayload {
     pub requested_by_user_id: Option<String>,
@@ -939,6 +1033,274 @@ fn manual_import_terminal_status_and_error(
         primary.error_message.clone(),
     )
 }
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "manual series-movie import needs source, title, and resolved path context"
+)]
+async fn execute_manual_series_movie_import(
+    app: &AppUseCase,
+    actor: &User,
+    import_id: &str,
+    title: &scryer_domain::Title,
+    completed: Option<&CompletedDownload>,
+    source: &Path,
+    mapping: &ManualImportFileMapping,
+    series_movie_link_id: &str,
+    full_folder_path: &Path,
+    rename_enabled: bool,
+) -> AppResult<ManualImportFileResult> {
+    let link = match app
+        .services
+        .catalog
+        .shows
+        .get_series_movie_link_by_id(series_movie_link_id)
+        .await?
+    {
+        Some(link) if link.series_title_id == title.id => link,
+        Some(_) => {
+            return Ok(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(ImportErrorCode::Unknown),
+                Some(format!(
+                    "series movie link {series_movie_link_id} does not belong to title {}",
+                    title.id
+                )),
+            ));
+        }
+        None => {
+            return Ok(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(ImportErrorCode::Unknown),
+                Some(format!("series movie link {series_movie_link_id} not found")),
+            ));
+        }
+    };
+
+    let parsed = completed
+        .map(|completed| build_augmented_movie_import_metadata(source, completed))
+        .unwrap_or_else(|| parsed_release_from_file_stem(source));
+    let ext = scryer_domain::canonical_video_extension(source)
+        .unwrap_or("mkv")
+        .to_string();
+    let linked_episode = if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
+        app.services
+            .catalog
+            .shows
+            .get_episode_by_id(linked_episode_id)
+            .await?
+    } else {
+        None
+    };
+    let season_episode = linked_episode
+        .as_ref()
+        .and_then(|episode| {
+            let season = episode.season_number.as_deref()?.parse::<i32>().ok()?;
+            let episode_number = episode.episode_number.as_deref()?.parse::<i32>().ok()?;
+            Some(format!("S{season:02}E{episode_number:02}"))
+        })
+        .unwrap_or_else(|| "S00E00".to_string());
+    let rendered_filename = if rename_enabled {
+        sanitize_filesystem_component(&format!(
+            "{} - {} - {}.{}",
+            title.name, season_episode, link.movie.title, ext
+        ))
+    } else {
+        preserved_import_filename(source)
+    };
+    let dest_path = full_folder_path.join("Season 00").join(rendered_filename);
+    if let Some(parent) = dest_path.parent()
+        && let Err(error) = tokio::fs::create_dir_all(parent).await
+    {
+        return Ok(manual_import_file_result(
+            mapping,
+            false,
+            None,
+            Some(classify_manual_import_error_message(&error.to_string())),
+            Some(format!(
+                "failed to create destination directory {}: {error}",
+                parent.display()
+            )),
+        ));
+    }
+
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
+    let file_result =
+        match import_file_with_record_progress(app, import_id, source, &dest_path, import_mode, None)
+            .await
+        {
+            Ok(file_result) => file_result,
+            Err(error) => {
+                let message = error.to_string();
+                return Ok(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(classify_manual_import_error_message(&message)),
+                    Some(message),
+                ));
+            }
+        };
+    persist_title_folder_path_if_missing(app, title, full_folder_path).await;
+
+    let quality_label = mapping.quality.clone().or_else(|| parsed.quality.clone());
+    let started_at = Utc::now();
+    let imported_media_file_id = match app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&crate::InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: path_to_stored_string(&dest_path),
+            size_bytes: file_result.size_bytes as i64,
+            role: crate::MediaFileRole::Primary,
+            quality_label: quality_label.clone(),
+            scene_name: Some(parsed.raw_title.clone()),
+            release_group: parsed.release_group.clone(),
+            source_type: crate::release_parser::parsed_release_source_type(&parsed),
+            resolution: quality_label,
+            video_codec_parsed: parsed.video_codec,
+            audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
+            audio_channels_parsed: parsed.audio_channels.clone(),
+            original_file_path: Some(path_to_stored_string(source)),
+            grabbed_release_title: completed.map(|download| download.name.clone()),
+            grabbed_at: completed.map(|_| started_at.to_rfc3339()),
+            edition: parsed.edition.clone(),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(file_id) => file_id,
+        Err(error) => {
+            let message = error.to_string();
+            return Ok(manual_import_file_result(
+                mapping,
+                false,
+                Some(path_to_stored_string(&dest_path)),
+                Some(classify_manual_import_error_message(&message)),
+                Some(message),
+            ));
+        }
+    };
+
+    app.services
+        .library
+        .media_files
+        .link_file_to_series_movie(&imported_media_file_id, series_movie_link_id)
+        .await?;
+    if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
+        app.services
+            .library
+            .media_files
+            .link_file_to_episode(&imported_media_file_id, linked_episode_id)
+            .await?;
+    }
+
+    analyze_and_persist_imported_media_file(app, &title.id, &imported_media_file_id, &dest_path)
+        .await;
+    if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+        app,
+        &title.id,
+        &imported_media_file_id,
+        None,
+        &dest_path,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            title_id = %title.id,
+            file_id = %imported_media_file_id,
+            dest_path = %dest_path.display(),
+            "failed to reconcile external subtitles after manual series movie import"
+        );
+    }
+    maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
+    if let Err(error) = finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path)
+        .await
+    {
+        let message = error.to_string();
+        return Ok(manual_import_file_result(
+            mapping,
+            false,
+            Some(path_to_stored_string(&dest_path)),
+            Some(classify_manual_import_error_message(&message)),
+            Some(message),
+        ));
+    }
+
+    if let Some(completed) = completed {
+        let linked_episode_artifacts = linked_episode.iter().cloned().collect::<Vec<_>>();
+        persist_file_import_artifact(
+            app,
+            import_id,
+            completed,
+            title.id.as_str(),
+            source,
+            "movie",
+            "imported",
+            None,
+            Some(imported_media_file_id.as_str()),
+            &linked_episode_artifacts,
+        )
+        .await;
+    }
+
+    let nfo_enabled = app
+        .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
+        .await?;
+    if nfo_enabled {
+        let nfo_path = dest_path.with_extension("nfo");
+        let nfo_content =
+            crate::nfo::render_series_movie_episode_nfo(&link.movie, &season_episode, link.after_season);
+        if let Err(error) = tokio::fs::write(&nfo_path, nfo_content.as_bytes()).await {
+            tracing::warn!(
+                error = %error,
+                path = %nfo_path.display(),
+                "failed to write manual series movie NFO sidecar"
+            );
+        }
+    }
+
+    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, None).await;
+    spawn_post_processing(PostProcessingContext {
+        app: app.clone(),
+        actor: crate::domain_events::DomainEventActor::from(actor),
+        title_id: title.id.clone(),
+        title_name: title.name.clone(),
+        facet: title.facet.clone(),
+        dest_path: dest_path.clone(),
+        year: title.year,
+        imdb_id: title
+            .external_ids
+            .iter()
+            .find(|external_id| external_id.source == "imdb")
+            .map(|external_id| external_id.value.clone()),
+        tvdb_id: title
+            .external_ids
+            .iter()
+            .find(|external_id| external_id.source == "tvdb")
+            .map(|external_id| external_id.value.clone()),
+        season: None,
+        episode: None,
+        quality: parsed.quality.clone(),
+    });
+
+    Ok(manual_import_file_result(
+        mapping,
+        true,
+        Some(path_to_stored_string(&dest_path)),
+        None,
+        None,
+    ))
+}
+
 /// Execute a manual import: import each file with user-specified episode mappings.
 pub async fn execute_manual_import(
     app: &AppUseCase,
@@ -980,59 +1342,91 @@ pub async fn execute_manual_import(
         if let Some(trusted_root) = trusted_source_root.as_deref()
             && let Err(err) = validate_manual_import_source_under_trusted_root(&source, trusted_root)
         {
-            results.push(ManualImportFileResult {
-                file_path: mapping.file_path.clone(),
-                episode_id: mapping.episode_id.clone(),
-                success: false,
-                dest_path: None,
-                error_code: Some(classify_manual_import_error_message(&err.to_string())),
-                error_message: Some(err.to_string()),
-            });
+            results.push(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(classify_manual_import_error_message(&err.to_string())),
+                Some(err.to_string()),
+            ));
             continue;
         }
 
         // Validate file exists
         if !source.exists() || !source.is_file() {
-            results.push(ManualImportFileResult {
-                file_path: mapping.file_path.clone(),
-                episode_id: mapping.episode_id.clone(),
-                success: false,
-                dest_path: None,
-                error_code: Some(ImportErrorCode::FileNotFound),
-                error_message: Some(format!("file not found: {}", mapping.file_path)),
-            });
+            results.push(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(ImportErrorCode::FileNotFound),
+                Some(format!("file not found: {}", mapping.file_path)),
+            ));
             continue;
         }
+
+        let target = match manual_import_mapping_target(mapping) {
+            Ok(target) => target,
+            Err(err) => {
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(ImportErrorCode::Unknown),
+                    Some(err.to_string()),
+                ));
+                continue;
+            }
+        };
+
+        let episode_id = match target {
+            ManualImportMappingTarget::Episode(episode_id) => episode_id,
+            ManualImportMappingTarget::SeriesMovie(series_movie_link_id) => {
+                let result = execute_manual_series_movie_import(
+                    app,
+                    actor,
+                    import_id,
+                    &title,
+                    completed,
+                    &source,
+                    mapping,
+                    series_movie_link_id,
+                    &full_folder_path,
+                    rename_enabled,
+                )
+                .await?;
+                imported_any |= result.success;
+                results.push(result);
+                continue;
+            }
+        };
 
         // Look up episode
         let episode = match app
             .services
             .catalog
             .shows
-            .get_episode_by_id(&mapping.episode_id)
+            .get_episode_by_id(episode_id)
             .await
         {
             Ok(Some(ep)) => ep,
             Ok(None) => {
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: false,
-                    dest_path: None,
-                    error_code: Some(ImportErrorCode::EpisodeNotFound),
-                    error_message: Some(format!("episode not found: {}", mapping.episode_id)),
-                });
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(ImportErrorCode::EpisodeNotFound),
+                    Some(format!("episode not found: {episode_id}")),
+                ));
                 continue;
             }
             Err(err) => {
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: false,
-                    dest_path: None,
-                    error_code: Some(ImportErrorCode::EpisodeLookupFailed),
-                    error_message: Some(format!("episode lookup failed: {}", err)),
-                });
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(ImportErrorCode::EpisodeLookupFailed),
+                    Some(format!("episode lookup failed: {}", err)),
+                ));
                 continue;
             }
         };
@@ -1083,51 +1477,47 @@ pub async fn execute_manual_import(
         {
             Ok(EpisodeImportOutcome::Imported { dest_path, .. }) => {
                 imported_any = true;
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: true,
-                    dest_path: Some(dest_path),
-                    error_code: None,
-                    error_message: None,
-                });
+                results.push(manual_import_file_result(
+                    mapping,
+                    true,
+                    Some(dest_path),
+                    None,
+                    None,
+                ));
             }
             Ok(EpisodeImportOutcome::Skipped {
                 message,
                 skip_reason,
                 ..
             }) => {
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: false,
-                    dest_path: None,
-                    error_code: Some(manual_import_error_from_skip_reason(skip_reason.clone())),
-                    error_message: Some(message),
-                });
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(manual_import_error_from_skip_reason(skip_reason.clone())),
+                    Some(message),
+                ));
             }
             Ok(EpisodeImportOutcome::Rejected { rejection, .. }) => {
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: false,
-                    dest_path: None,
-                    error_code: Some(manual_import_error_from_skip_reason(
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(manual_import_error_from_skip_reason(
                         rejection.skip_reason.clone(),
                     )),
-                    error_message: Some(rejection.message),
-                });
+                    Some(rejection.message),
+                ));
             }
             Err(err) => {
                 let error_message = err.to_string();
-                results.push(ManualImportFileResult {
-                    file_path: mapping.file_path.clone(),
-                    episode_id: mapping.episode_id.clone(),
-                    success: false,
-                    dest_path: None,
-                    error_code: Some(classify_manual_import_error_message(&error_message)),
-                    error_message: Some(error_message),
-                });
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(classify_manual_import_error_message(&error_message)),
+                    Some(error_message),
+                ));
             }
         }
     }
@@ -1153,7 +1543,7 @@ pub async fn execute_manual_import(
         let episode_ids = results
             .iter()
             .filter(|result| result.success)
-            .map(|result| result.episode_id.clone())
+            .filter_map(|result| result.episode_id.clone())
             .collect::<Vec<_>>();
         app.append_domain_event(new_title_domain_event(
             actor,

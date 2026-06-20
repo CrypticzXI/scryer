@@ -178,6 +178,11 @@ function SearchResultRow({
       <div
         id={rowId}
         data-ui="release-search-result-row"
+        data-release-source={result.source ?? ""}
+        data-release-title={result.title}
+        data-release-link={result.link ?? ""}
+        data-release-download-url={result.downloadUrl ?? ""}
+        data-release-candidate-token={result.candidateToken ?? ""}
         className="rounded-lg border border-border bg-background/40 p-3"
       >
         <div className="space-y-2">
@@ -278,7 +283,15 @@ function SearchResultRow({
 
   return (
     <>
-      <tr id={rowId} data-ui="release-search-result-row">
+      <tr
+        id={rowId}
+        data-ui="release-search-result-row"
+        data-release-source={result.source ?? ""}
+        data-release-title={result.title}
+        data-release-link={result.link ?? ""}
+        data-release-download-url={result.downloadUrl ?? ""}
+        data-release-candidate-token={result.candidateToken ?? ""}
+      >
         <td className="rounded-l-lg border border-border border-r-0 px-4 py-2 align-middle">
           <div className="space-y-1">
             <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">{result.title}</p>

@@ -1363,7 +1363,8 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode.id.clone(),
+            episode_id: Some(episode.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,
@@ -1431,7 +1432,8 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode.id.clone(),
+            episode_id: Some(episode.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,
@@ -1514,7 +1516,8 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
             file_path: source_file.to_string_lossy().to_string(),
-            episode_id: episode1.id.clone(),
+            episode_id: Some(episode1.id.clone()),
+            series_movie_link_id: None,
             quality: Some("1080P".to_string()),
         }],
         None,

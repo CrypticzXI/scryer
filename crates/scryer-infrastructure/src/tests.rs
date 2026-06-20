@@ -1040,6 +1040,181 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     let _ = std::fs::remove_file(db);
 }
 
+fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmission {
+    DownloadSubmission {
+        title_id: String::new(),
+        purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+        facet: String::new(),
+        download_client_id: Some("client-a".to_string()),
+        download_client_type: "qbittorrent".to_string(),
+        download_client_item_id: item_id.to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some(source_title.to_string()),
+        request_signature: None,
+        scope: SubmissionScope::Orphan,
+    }
+}
+
+fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
+    DownloadSubmission {
+        title_id: "title-managed".to_string(),
+        purpose: scryer_application::DownloadSubmissionPurpose::AdditionalFile,
+        facet: "anime".to_string(),
+        download_client_id: Some("client-a".to_string()),
+        download_client_type: "qbittorrent".to_string(),
+        download_client_item_id: item_id.to_string(),
+        source_hint: Some("magnet:?xt=urn:btih:feedface".to_string()),
+        source_kind: Some(scryer_application::DownloadSourceKind::TorrentFile),
+        source_title: Some("Managed.Release.S01".to_string()),
+        request_signature: Some("request-signature-1".to_string()),
+        scope: SubmissionScope::EpisodeSet {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+        },
+    }
+}
+
+async fn assert_download_submission_orphan_precedence(
+    workflow: &DownloadSubmissionStore,
+) -> AppResult<()> {
+    let item_id = "feedfacefeedfacefeedfacefeedfacefeedface";
+    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "qbittorrent", item_id);
+
+    workflow
+        .record_submission(orphan_test_submission(item_id, "Foreign.Observation"))
+        .await?;
+    let orphan = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("orphan row should insert");
+    assert!(orphan.title_id.is_empty());
+    assert!(matches!(orphan.scope, SubmissionScope::Orphan));
+
+    workflow
+        .record_submission_with_identity(
+            managed_episode_set_test_submission(item_id),
+            DownloadSubmissionIdentity {
+                download_id: Some("download-feedface".to_string()),
+            },
+        )
+        .await?;
+
+    let managed = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("managed row should replace orphan");
+    assert_eq!(managed.title_id, "title-managed");
+    assert_eq!(managed.facet, "anime");
+    assert_eq!(managed.source_title.as_deref(), Some("Managed.Release.S01"));
+    assert_eq!(
+        managed.source_kind.map(|kind| kind.as_str()),
+        Some("torrent_file")
+    );
+    assert_eq!(
+        managed.request_signature.as_deref(),
+        Some("request-signature-1")
+    );
+    assert_eq!(managed.purpose.as_str(), "additional_file");
+    assert_eq!(
+        managed.scope.episode_ids().unwrap_or(&[]),
+        &["episode-1".to_string(), "episode-2".to_string()]
+    );
+
+    let submission_identity = workflow
+        .get_submission_identity(&source_identity)
+        .await?
+        .expect("managed row should keep accepted identity");
+    assert_eq!(
+        submission_identity.download_id.as_deref(),
+        Some("download-feedface")
+    );
+    let by_download_id = workflow
+        .list_by_download_id(Some("client-a"), "qbittorrent", "download-feedface")
+        .await?;
+    assert_eq!(by_download_id.len(), 1);
+    assert_eq!(by_download_id[0].title_id, "title-managed");
+
+    workflow
+        .record_submission(orphan_test_submission(item_id, "Late.Foreign.Observation"))
+        .await?;
+
+    let still_managed = workflow
+        .find_by_client_item_id(&source_identity)
+        .await?
+        .expect("managed row should survive late orphan");
+    assert_eq!(still_managed.title_id, "title-managed");
+    assert_eq!(still_managed.facet, "anime");
+    assert_eq!(
+        still_managed.source_title.as_deref(),
+        Some("Managed.Release.S01")
+    );
+    assert_eq!(
+        still_managed.scope.episode_ids().unwrap_or(&[]),
+        &["episode-1".to_string(), "episode-2".to_string()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_submission_orphan_precedence_sqlite() -> AppResult<()> {
+    let (services, db) = temp_services("scryer_download_submission_orphan_precedence").await;
+    let workflow = DownloadSubmissionStore::new(services.datastore());
+    let result = assert_download_submission_orphan_precedence(&workflow).await;
+    drop(services);
+    let _ = std::fs::remove_file(db);
+    result
+}
+
+#[tokio::test]
+async fn download_submission_orphan_precedence_postgres() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "skipping PostgreSQL download submission orphan precedence test; SCRYER_TEST_POSTGRES_URL is not set"
+        );
+        return Ok(());
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to create schema: {error}")))?;
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await?;
+        let workflow = DownloadSubmissionStore::new(services.datastore());
+        let result = assert_download_submission_orphan_precedence(&workflow).await;
+        services.pool().close().await;
+        result
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.map_err(|error| AppError::Repository(format!("failed to drop schema: {error}")))?;
+    result
+}
+
 #[tokio::test]
 async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
     let db = std::env::temp_dir().join(format!(

@@ -154,15 +154,15 @@ export function AssignTrackedDownloadTitleDialog({
         <CommandGroup heading={t("queue.assignTitleResults") }>
           {results.map((title) => {
             const assigning = assigningId === title.id;
+            const optionId = selectorId(
+              "activity-assign-title-item",
+              title.name,
+              title.year ?? "",
+              title.facet,
+            );
             return (
               <CommandItem
                 key={title.id}
-                id={selectorId(
-                  "activity-assign-title-item",
-                  title.name,
-                  title.year ?? "",
-                  title.facet,
-                )}
                 value={`${title.name} ${title.year ?? ""} ${title.facet}`}
                 onSelect={() => {
                   void handleSelect(title.id);
@@ -170,7 +170,10 @@ export function AssignTrackedDownloadTitleDialog({
                 disabled={assigningId !== null}
               >
                 <Search className="h-4 w-4 text-muted-foreground" />
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div
+                  id={optionId}
+                  className="flex min-w-0 flex-1 flex-col gap-0.5"
+                >
                   <span className="truncate font-medium text-foreground">
                     {title.name}
                   </span>

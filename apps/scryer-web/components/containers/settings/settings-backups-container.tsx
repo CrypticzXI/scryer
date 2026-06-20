@@ -106,6 +106,7 @@ const DEFAULT_AUTO_BACKUP_SETTINGS: AutoBackupSettings = {
   autoBackupDisabledMissingKeyNotice: false,
   nextRunAt: null,
 };
+const AUTO_BACKUP_KEY_MIN_LENGTH = 8;
 const UNSAVED_AUTO_BACKUP_CHANGES_MESSAGE =
   "You have unsaved automatic backup changes. Leave without saving?";
 
@@ -122,6 +123,10 @@ function mutationErrorMessage(error: unknown, fallback: string): string {
     return error.message.trim();
   }
   return fallback;
+}
+
+function nonWhitespaceCharacterCount(value: string): number {
+  return Array.from(value.trim()).filter((char) => !/\s/u.test(char)).length;
 }
 
 function buildAppUrl(path: string): string {
@@ -301,11 +306,20 @@ export function SettingsBackupsContainer() {
   const passwordRequired = password.trim().length === 0;
   const confirmPasswordRequired = confirmPassword.length === 0;
   const passwordMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+  const autoBackupReplacementKeyPresent = autoBackupKey.trim().length > 0;
+  const autoBackupReplacementKeyTooShort =
+    autoBackupReplacementKeyPresent &&
+    nonWhitespaceCharacterCount(autoBackupKey) < AUTO_BACKUP_KEY_MIN_LENGTH;
   const autoBackupWillHaveKey =
     !clearAutoBackupKey &&
-    (autoBackupKey.trim().length > 0 || autoBackupSettings.autoBackupKeyPresent);
+    (autoBackupReplacementKeyPresent || autoBackupSettings.autoBackupKeyPresent);
   const autoBackupKeyRequired = autoBackupSettings.enabled && !autoBackupWillHaveKey;
-  const canSaveAutoBackupSettings = !autoBackupSaving && !autoBackupKeyRequired;
+  const autoBackupKeyValidationMessage = autoBackupKeyRequired
+    ? t("settings.autoBackupsKeyRequired", { count: AUTO_BACKUP_KEY_MIN_LENGTH })
+    : autoBackupReplacementKeyTooShort
+      ? t("settings.autoBackupsKeyTooShort", { count: AUTO_BACKUP_KEY_MIN_LENGTH })
+      : null;
+  const canSaveAutoBackupSettings = !autoBackupSaving && !autoBackupKeyValidationMessage;
   const canCreateBackup =
     !creatingRequest &&
     !hasCreatingManualBackup &&
@@ -523,15 +537,15 @@ export function SettingsBackupsContainer() {
   }, [client, setGlobalStatus, t]);
 
   const handleSaveAutoBackupSettings = React.useCallback(async () => {
-    if (autoBackupKeyRequired) {
-      setGlobalStatus(t("settings.autoBackupsKeyRequired"));
+    if (autoBackupKeyValidationMessage) {
+      setGlobalStatus(autoBackupKeyValidationMessage);
       return;
     }
 
     setAutoBackupSaving(true);
     try {
       const nextAutoBackupKey =
-        clearAutoBackupKey ? null : autoBackupKey.trim().length > 0 ? autoBackupKey : null;
+        clearAutoBackupKey ? null : autoBackupReplacementKeyPresent ? autoBackupKey : null;
       const { data, error } = await client
         .mutation<UpdateAutoBackupSettingsMutationResult>(updateAutoBackupSettingsMutation, {
           input: {
@@ -559,7 +573,8 @@ export function SettingsBackupsContainer() {
     }
   }, [
     autoBackupKey,
-    autoBackupKeyRequired,
+    autoBackupKeyValidationMessage,
+    autoBackupReplacementKeyPresent,
     autoBackupSettings.dailyTimeLocal,
     autoBackupSettings.enabled,
     clearAutoBackupKey,
@@ -654,7 +669,9 @@ export function SettingsBackupsContainer() {
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{t("settings.autoBackupsKeyLabel")}</span>
                   <InfoHelp
-                    text={t("settings.autoBackupsKeyHelp")}
+                    text={t("settings.autoBackupsKeyHelp", {
+                      count: AUTO_BACKUP_KEY_MIN_LENGTH,
+                    })}
                     ariaLabel={t("settings.autoBackupsKeyHelpLabel")}
                   />
                 </div>
@@ -693,9 +710,9 @@ export function SettingsBackupsContainer() {
                         )}
                       </button>
                     </div>
-                    {autoBackupKeyRequired ? (
+                    {autoBackupKeyValidationMessage ? (
                       <p className="text-xs text-destructive">
-                        {t("settings.autoBackupsKeyRequired")}
+                        {autoBackupKeyValidationMessage}
                       </p>
                     ) : null}
                   </div>

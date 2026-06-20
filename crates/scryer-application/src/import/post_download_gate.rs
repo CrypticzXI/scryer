@@ -26,6 +26,7 @@ pub(crate) enum ImportedFileGateDecision {
 pub(crate) struct ImportedFileAcceptance {
     pub analysis: Option<crate::MediaFileAnalysis>,
     pub scan_error: Option<String>,
+    pub rule_file_doc: Option<scryer_rules::FileDoc>,
 }
 
 pub(crate) struct PreparedImportCandidate {
@@ -33,6 +34,12 @@ pub(crate) struct PreparedImportCandidate {
     pub accepted: Box<ImportedFileAcceptance>,
     pub rescore_changes: Vec<String>,
     pub source_snapshot: scryer_domain::ImportSourceSnapshot,
+}
+
+pub(crate) struct PostDownloadAcquisitionDecision {
+    pub parsed: crate::ParsedReleaseMetadata,
+    pub score: i32,
+    pub scoring_log: Option<String>,
 }
 
 #[derive(Debug)]
@@ -400,6 +407,7 @@ pub(crate) async fn probe_and_validate(
         return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
             analysis: Some(build_stream_pointer_media_file_analysis_from_parsed(parsed)),
             scan_error: None,
+            rule_file_doc: None,
         }));
     }
 
@@ -419,6 +427,7 @@ pub(crate) async fn probe_and_validate(
             return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
                 analysis: synthetic_analysis,
                 scan_error: Some(error.to_string()),
+                rule_file_doc: None,
             }));
         }
     };
@@ -483,6 +492,15 @@ pub(crate) async fn probe_and_validate(
             crate::ScoringPersona::default()
         });
 
+    let accepted_analysis = build_media_file_analysis(&analysis);
+    let rule_file_doc = crate::user_rule_input::build_file_doc(&analysis);
+    let accepted_for_rules = ImportedFileAcceptance {
+        analysis: Some(accepted_analysis.clone()),
+        scan_error: None,
+        rule_file_doc: Some(rule_file_doc.clone()),
+    };
+    let (rescored_for_rules, _) = rescore_from_mediainfo(parsed, &accepted_for_rules);
+
     let user_rules_engine = app
         .services
         .customization
@@ -513,14 +531,14 @@ pub(crate) async fn probe_and_validate(
             quality_profile,
             &required_audio_languages,
             &persona,
-            parsed,
+            &rescored_for_rules,
             category_hint,
             title.runtime_minutes,
             Some(size_bytes),
             has_existing_file,
         );
         let input = crate::user_rule_input::build_rule_input(
-            parsed,
+            &rescored_for_rules,
             quality_profile,
             &decision,
             crate::user_rule_input::ReleaseRuntimeInfo {
@@ -543,7 +561,7 @@ pub(crate) async fn probe_and_validate(
                 runtime_minutes: title.runtime_minutes,
                 is_filler,
             },
-            Some(crate::user_rule_input::build_file_doc(&analysis)),
+            Some(rule_file_doc.clone()),
         );
         let mut evaluator = user_rules_engine.evaluator();
         match evaluator.evaluate(&input, facet_to_category_hint(&title.facet)) {
@@ -586,8 +604,9 @@ pub(crate) async fn probe_and_validate(
     }
 
     ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
-        analysis: Some(build_media_file_analysis(&analysis)),
+        analysis: Some(accepted_analysis),
         scan_error: None,
+        rule_file_doc: Some(rule_file_doc),
     }))
 }
 
@@ -614,6 +633,7 @@ pub(crate) async fn probe_and_validate(
             inferred_container_format_for_path(path),
         )),
         scan_error: Some("native media analysis is not compiled into this target".to_string()),
+        rule_file_doc: None,
     }))
 }
 
@@ -815,16 +835,33 @@ pub(crate) fn rescore_from_mediainfo(
 }
 /// Compute acquisition score from a gate acceptance, applying mediainfo rescoring.
 /// Returns the final score and the rescored parsed metadata (for logging).
-pub(crate) async fn compute_acquisition_score(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "post-download scoring needs the full import context to match search-time policy decisions"
+)]
+pub(crate) async fn compute_post_download_acquisition_decision(
     app: &AppUseCase,
     parsed: &crate::ParsedReleaseMetadata,
     acceptance: &ImportedFileAcceptance,
     profile: &crate::QualityProfile,
     title: &Title,
+    runtime_minutes: Option<i32>,
     size_bytes: i64,
     has_existing_file: bool,
-) -> i32 {
+    existing_score: Option<i32>,
+    prior_rescore_changes: &[String],
+    is_filler: bool,
+) -> PostDownloadAcquisitionDecision {
     let (rescored, changes) = rescore_from_mediainfo(parsed, acceptance);
+    let mut rescore_changes = prior_rescore_changes.to_vec();
+    for change in changes {
+        if !rescore_changes
+            .iter()
+            .any(|existing_change| existing_change == &change)
+        {
+            rescore_changes.push(change);
+        }
+    }
     let category = facet_to_category_hint(&title.facet);
     let required_audio_languages = app
         .resolve_required_audio_languages(
@@ -838,26 +875,194 @@ pub(crate) async fn compute_acquisition_score(
         .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category))
         .await
         .unwrap_or_default();
-    let decision = build_import_profile_decision(
+    let mut decision = build_import_profile_decision(
         profile,
         &required_audio_languages,
         &persona,
         &rescored,
         category,
-        title.runtime_minutes,
+        runtime_minutes,
         Some(size_bytes),
         has_existing_file,
     );
+    append_post_download_user_rule_scores(
+        app,
+        title,
+        profile,
+        &rescored,
+        &mut decision,
+        acceptance,
+        size_bytes,
+        has_existing_file,
+        existing_score,
+        is_filler,
+        runtime_minutes,
+    )
+    .await;
     let score = decision.preference_score;
-    if !changes.is_empty() {
+    if !rescore_changes.is_empty() {
         tracing::debug!(
             title = %title.name,
             score,
-            changes = ?changes,
+            changes = ?rescore_changes,
             "mediainfo rescore applied to acquisition score"
         );
     }
-    score
+    let scoring_log = serialize_post_download_scoring_log(&decision, &rescore_changes);
+    PostDownloadAcquisitionDecision {
+        parsed: rescored,
+        score,
+        scoring_log,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "post-download user-rule scoring needs the same context as import policy scoring"
+)]
+async fn append_post_download_user_rule_scores(
+    app: &AppUseCase,
+    title: &Title,
+    profile: &crate::QualityProfile,
+    parsed: &crate::ParsedReleaseMetadata,
+    decision: &mut crate::QualityProfileDecision,
+    acceptance: &ImportedFileAcceptance,
+    size_bytes: i64,
+    has_existing_file: bool,
+    existing_score: Option<i32>,
+    is_filler: bool,
+    runtime_minutes: Option<i32>,
+) {
+    let user_rules_engine = app
+        .services
+        .customization
+        .user_rules
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| scryer_rules::UserRulesEngine::empty());
+    if user_rules_engine.is_empty() {
+        return;
+    }
+
+    let library_name = match app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&title.library_id)
+        .await
+    {
+        Ok(Some(library)) => Some(library.name),
+        Ok(None) => None,
+        Err(error) => {
+            warn!(
+                error = %error,
+                library_id = %title.library_id,
+                "failed to resolve library name for post-download score rule context"
+            );
+            None
+        }
+    };
+    let category = facet_to_category_hint(&title.facet);
+    let file_doc = acceptance.rule_file_doc.clone();
+    let input = crate::user_rule_input::build_rule_input(
+        parsed,
+        profile,
+        decision,
+        crate::user_rule_input::ReleaseRuntimeInfo {
+            size_bytes: Some(size_bytes),
+            published_at: None,
+            thumbs_up: None,
+            thumbs_down: None,
+            is_password_protected: None,
+            extra: None,
+            indexer_languages: None,
+        },
+        crate::user_rule_input::RuleContextInfo {
+            title_id: Some(&title.id),
+            library_name: library_name.as_deref(),
+            category: Some(category),
+            title_tags: &title.tags,
+            has_existing_file,
+            existing_score,
+            search_mode: "post_download",
+            runtime_minutes,
+            is_filler,
+        },
+        file_doc,
+    );
+    let mut evaluator = user_rules_engine.evaluator();
+    match evaluator.evaluate(&input, category) {
+        Ok(result) => {
+            for entry in result.entries {
+                decision.log_with_source(
+                    &entry.code,
+                    entry.delta,
+                    crate::ScoringSource::UserRule {
+                        id: entry.rule_set_id,
+                        name: entry.rule_set_name,
+                    },
+                );
+            }
+            for err in result.errors {
+                decision.log_with_source(
+                    "user_rule_error",
+                    0,
+                    crate::ScoringSource::UserRule {
+                        id: err.rule_set_id,
+                        name: err.rule_set_name,
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                "post-download score rule evaluation failed; scoring built-in decision only"
+            );
+        }
+    }
+}
+
+fn serialize_post_download_scoring_log(
+    decision: &crate::QualityProfileDecision,
+    rescore_changes: &[String],
+) -> Option<String> {
+    let scoring_log = decision
+        .scoring_log
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "code": entry.code,
+                "delta": entry.delta,
+                "source": scoring_source_json(&entry.source),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&serde_json::json!({
+        "kind": "post_download_acquisition_score",
+        "release_score": decision.release_score,
+        "preference_score": decision.preference_score,
+        "allowed": decision.allowed,
+        "block_codes": decision.block_codes,
+        "rescore_changes": rescore_changes,
+        "scoring_log": scoring_log,
+    }))
+    .ok()
+}
+
+fn scoring_source_json(source: &crate::ScoringSource) -> serde_json::Value {
+    match source {
+        crate::ScoringSource::Builtin => {
+            serde_json::json!({"kind": "builtin"})
+        }
+        crate::ScoringSource::UserRule { id, name } => {
+            serde_json::json!({"kind": "user_rule", "id": id, "name": name})
+        }
+        crate::ScoringSource::SystemRule { id, name } => {
+            serde_json::json!({"kind": "system_rule", "id": id, "name": name})
+        }
+    }
 }
 
 pub(crate) async fn persist_media_analysis_result(

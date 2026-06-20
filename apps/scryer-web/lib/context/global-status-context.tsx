@@ -1,8 +1,14 @@
 import { createContext, useContext } from "react";
 
-export const GlobalStatusContext = createContext<((status: string) => void) | null>(null);
+export type GlobalStatusOptions = {
+  toastId?: string;
+};
 
-export function useGlobalStatus(): (status: string) => void {
+export type SetGlobalStatus = (status: string, options?: GlobalStatusOptions) => void;
+
+export const GlobalStatusContext = createContext<SetGlobalStatus | null>(null);
+
+export function useGlobalStatus(): SetGlobalStatus {
   const fn = useContext(GlobalStatusContext);
   if (!fn) throw new Error("useGlobalStatus must be used within GlobalStatusContext.Provider");
   return fn;

@@ -332,14 +332,14 @@ function MediaServerUserCombobox({
                       connectionId: group.connectionId,
                       connectionName: group.connectionName,
                     };
+                    const optionId = selectorId(
+                      "settings-external-invite-provider-user-option",
+                      group.provider,
+                      group.connectionId,
+                      user.username,
+                    );
                     return (
                       <CommandItem
-                        id={selectorId(
-                          "settings-external-invite-provider-user-option",
-                          group.provider,
-                          group.connectionId,
-                          user.username,
-                        )}
                         key={`${group.connectionId}:${user.id}`}
                         value={`${user.username} ${user.displayName ?? ""} ${user.id} ${group.connectionName} ${group.provider}`}
                         onSelect={() => {
@@ -352,7 +352,7 @@ function MediaServerUserCombobox({
                           avatarUrl={user.avatarUrl}
                           label={label}
                         />
-                        <span className="min-w-0 flex-1">
+                        <span id={optionId} className="min-w-0 flex-1">
                           <span className="block truncate font-medium">
                             {label}
                           </span>
