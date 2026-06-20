@@ -536,7 +536,7 @@ impl DownloadQueueItemPayload {
                 .as_ref()
                 .map(|episode_id| QueueDownloadScopePayload {
                     kind: "episode".to_string(),
-                    episode_id: Some(episode_id.clone().into()),
+                    episode_id: Some(episode_id.clone()),
                     episode_ids: Vec::new(),
                     collection_id: None,
                     series_movie_link_id: None,
@@ -561,7 +561,7 @@ impl DownloadQueueItemPayload {
                 .as_ref()
                 .map(|episode_id| QueueDownloadScopePayload {
                     kind: "episode".to_string(),
-                    episode_id: Some(episode_id.clone().into()),
+                    episode_id: Some(episode_id.clone()),
                     episode_ids: Vec::new(),
                     collection_id: None,
                     series_movie_link_id: None,

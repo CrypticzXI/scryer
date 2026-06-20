@@ -166,6 +166,117 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
     std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
 }
 
+fn assert_lookup_matches_tracked_download(
+    lookup: &CompletedDownloadLookup,
+    td: &TrackedDownload,
+    expected: bool,
+) {
+    assert_eq!(
+        find_completed_download_in_lookup(lookup, td).is_some(),
+        expected
+    );
+    assert_eq!(lookup.matches_tracked_download(td), expected);
+}
+
+#[test]
+fn lookup_identity_download_id_miss_falls_back_to_exact_source_without_completed_identity() {
+    let mut completed = build_completed_download(
+        "Paperman.2012.720p.WEB-DL",
+        "/downloads/Paperman.2012.720p.WEB-DL",
+        Some("movie"),
+    );
+    completed.download_id = None;
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.720p.WEB-DL");
+    td.client_item.download_id = Some("scryer-download:managed".to_string());
+
+    assert_lookup_matches_tracked_download(&lookup, &td, true);
+}
+
+#[test]
+fn lookup_identity_download_id_miss_falls_back_to_exact_source_with_matching_identity() {
+    let download_id = "scryer-download:managed";
+    let mut completed = build_completed_download(
+        "Paperman.2012.720p.WEB-DL",
+        "/downloads/Paperman.2012.720p.WEB-DL",
+        Some("movie"),
+    );
+    completed.download_id = Some(download_id.to_string());
+    let mut lookup = CompletedDownloadLookup::empty_recent();
+    lookup.by_source.insert(
+        completed_download_lookup_key(Some("client-1"), "nzbget", "dl-1"),
+        completed,
+    );
+    let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.720p.WEB-DL");
+    td.client_item.download_id = Some(download_id.to_string());
+
+    assert_lookup_matches_tracked_download(&lookup, &td, true);
+}
+
+#[test]
+fn lookup_identity_download_id_miss_rejects_exact_source_with_conflicting_identity() {
+    let mut completed = build_completed_download(
+        "Paperman.2012.720p.WEB-DL",
+        "/downloads/Paperman.2012.720p.WEB-DL",
+        Some("movie"),
+    );
+    completed.download_id = Some("scryer-download:other".to_string());
+    let mut lookup = CompletedDownloadLookup::empty_recent();
+    lookup.by_source.insert(
+        completed_download_lookup_key(Some("client-1"), "nzbget", "dl-1"),
+        completed,
+    );
+    let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.720p.WEB-DL");
+    td.client_item.download_id = Some("scryer-download:managed".to_string());
+
+    assert_lookup_matches_tracked_download(&lookup, &td, false);
+}
+
+#[test]
+fn lookup_identity_download_id_conflict_suppresses_exact_source_fallback() {
+    let download_id = "scryer-download:managed";
+    let mut first =
+        build_completed_download("First.Release.2026", "/downloads/first", Some("movie"));
+    first.download_id = Some(download_id.to_string());
+    first.download_client_item_id = "other-1".to_string();
+    let mut second =
+        build_completed_download("Second.Release.2026", "/downloads/second", Some("movie"));
+    second.download_id = Some(download_id.to_string());
+    second.download_client_item_id = "other-2".to_string();
+    let mut source = build_completed_download(
+        "Paperman.2012.720p.WEB-DL",
+        "/downloads/Paperman.2012.720p.WEB-DL",
+        Some("movie"),
+    );
+    source.download_id = None;
+    let lookup = index_completed_downloads(
+        vec![first, second, source],
+        CompletedDownloadLookupCoverage::Recent,
+    );
+    let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.720p.WEB-DL");
+    td.client_item.download_id = Some(download_id.to_string());
+
+    assert_lookup_matches_tracked_download(&lookup, &td, false);
+}
+
+#[test]
+fn lookup_identity_matches_exact_source_with_mixed_case_client_type() {
+    let mut completed = build_completed_download(
+        "Paperman.2012.720p.WEB-DL",
+        "/downloads/Paperman.2012.720p.WEB-DL",
+        Some("movie"),
+    );
+    completed.client_type = "WeAvEr".to_string();
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.720p.WEB-DL");
+    td.client_type = "weaver".to_string();
+    td.client_item.client_type = "weaver".to_string();
+
+    assert_lookup_matches_tracked_download(&lookup, &td, true);
+}
+
 #[tokio::test]
 async fn check_with_lookup_retries_scryer_origin_when_completed_history_is_missing() {
     let title = build_title("title-1", "Paperman", MediaFacet::Movie);

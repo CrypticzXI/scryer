@@ -90,6 +90,10 @@ pub trait TitleRepository: Send + Sync {
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "title catalog repository queries mirror the user-visible filter, sort, pagination, and projection surface"
+    )]
     async fn list_for_libraries_catalog(
         &self,
         facet: Option<MediaFacet>,

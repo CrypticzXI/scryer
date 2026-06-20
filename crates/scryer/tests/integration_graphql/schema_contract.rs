@@ -91,15 +91,35 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
             .filter(|ty| ty["kind"].as_str() == Some(kind))
             .count()
     };
+    let query_field_names: Vec<&str> = body["data"]["__schema"]["queryType"]["fields"]
+        .as_array()
+        .expect("query fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    let mutation_field_names: Vec<&str> = body["data"]["__schema"]["mutationType"]["fields"]
+        .as_array()
+        .expect("mutation fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    let public_type_names: Vec<&str> = public_types
+        .iter()
+        .filter_map(|ty| ty["name"].as_str())
+        .collect();
 
-    assert_eq!(query_field_count, 101);
-    assert_eq!(mutation_field_count, 156);
+    assert_eq!(query_field_count, 102);
+    assert_eq!(mutation_field_count, 157);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 430);
-    assert_eq!(kind_count("OBJECT"), 222);
-    assert_eq!(kind_count("INPUT_OBJECT"), 136);
+    assert_eq!(public_types.len(), 432);
+    assert_eq!(kind_count("OBJECT"), 223);
+    assert_eq!(kind_count("INPUT_OBJECT"), 137);
     assert_eq!(kind_count("ENUM"), 62);
     assert_eq!(kind_count("SCALAR"), 10);
+    assert!(query_field_names.contains(&"backupSettings"));
+    assert!(mutation_field_names.contains(&"updateBackupSettings"));
+    assert!(public_type_names.contains(&"BackupSettingsPayload"));
+    assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
 }
 
 #[tokio::test]

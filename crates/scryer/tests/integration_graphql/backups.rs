@@ -283,8 +283,12 @@ async fn prepare_backup_download_rejects_missing_file_and_non_ready_backup() {
         },
         b"missing-backup",
     );
-    std::fs::remove_file(ctx.app.backup_dir().join("backup_20260515_missing.tar.zst"))
-        .expect("remove bundle file");
+    std::fs::remove_file(
+        ctx.app
+            .default_backup_dir()
+            .join("backup_20260515_missing.tar.zst"),
+    )
+    .expect("remove bundle file");
 
     let missing_file = schema_exec(
         &ctx,

@@ -615,6 +615,11 @@ async fn invalid_command_records_spawn_failure() {
 async fn script_configuration_changes_are_audited_without_script_content() {
     let ctx = TestContext::new().await;
     let actor = admin();
+    let mut audit_actor = admin();
+    audit_actor.authorization.app = AppPermissionMask::from_permissions([
+        AppPermission::ManageCatalogSettings,
+        AppPermission::ManageSystemSettings,
+    ]);
     let script_id = "pp-audit-inline-script".to_string();
     let secret_content = "echo audit-secret-content";
     let now = chrono::Utc::now();
@@ -656,8 +661,8 @@ async fn script_configuration_changes_are_audited_without_script_content() {
 
     let events = ctx
         .app
-        .list_domain_events(
-            &actor,
+        .audit_log(
+            &audit_actor,
             &DomainEventFilter {
                 event_types: Some(vec![DomainEventType::ConfigurationChanged]),
                 limit: 20,
@@ -674,11 +679,11 @@ async fn script_configuration_changes_are_audited_without_script_content() {
             !payload_json.contains(secret_content),
             "audit payload should not include script content: {payload_json}"
         );
-        if let DomainEventPayload::ConfigurationChanged(data) = event.payload {
-            if data.resource_id.as_deref() == Some(&script_id) {
-                assert_eq!(data.resource_type, "post_processing_inline_script");
-                actions.push(data.action);
-            }
+        if let DomainEventPayload::ConfigurationChanged(data) = event.payload
+            && data.resource_id.as_deref() == Some(&script_id)
+        {
+            assert_eq!(data.resource_type, "post_processing_inline_script");
+            actions.push(data.action);
         }
     }
 

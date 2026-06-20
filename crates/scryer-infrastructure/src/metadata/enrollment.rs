@@ -800,6 +800,10 @@ fn sign_bootstrap_mac(registration_secret: &str, message: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(hmac::sign(&key, message).as_ref())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "PQ request signing mirrors the canonical request fields"
+)]
 pub(crate) async fn sign_pq_request(
     seed_b64: &str,
     auth_version: PqAuthVersion,

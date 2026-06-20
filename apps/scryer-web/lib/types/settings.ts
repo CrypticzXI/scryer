@@ -170,6 +170,12 @@ export type AutoBackupSettings = {
   nextRunAt: string | null;
 };
 
+export type BackupSettings = {
+  customBackupPath: string | null;
+  defaultBackupPath: string;
+  effectiveBackupPath: string;
+};
+
 export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;

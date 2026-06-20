@@ -12,6 +12,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 
 /// Context passed from the import pipeline into post-processing.
 /// All fields that the caller already has are included here so the
@@ -57,6 +58,21 @@ impl AppUseCase {
             .await
     }
 
+    async fn finalize_post_processing_script_mutation(
+        &self,
+        actor: &User,
+        script: &PostProcessingScript,
+        action: ConfigurationChangeAction,
+    ) {
+        self.emit_configuration_changed_event(
+            actor,
+            post_processing_script_resource_type(script.script_type),
+            Some(script.id.clone()),
+            action,
+        )
+        .await;
+    }
+
     pub async fn create_post_processing_script(
         &self,
         actor: &User,
@@ -70,10 +86,9 @@ impl AppUseCase {
             .pp_scripts
             .create_script(script)
             .await?;
-        self.emit_configuration_changed_event(
+        self.finalize_post_processing_script_mutation(
             actor,
-            post_processing_script_resource_type(created.script_type),
-            Some(created.id.clone()),
+            &created,
             ConfigurationChangeAction::Saved,
         )
         .await;
@@ -103,10 +118,9 @@ impl AppUseCase {
             .pp_scripts
             .update_script(script)
             .await?;
-        self.emit_configuration_changed_event(
+        self.finalize_post_processing_script_mutation(
             actor,
-            post_processing_script_resource_type(updated.script_type),
-            Some(updated.id.clone()),
+            &updated,
             ConfigurationChangeAction::Updated,
         )
         .await;
@@ -132,10 +146,9 @@ impl AppUseCase {
             .delete_script(id)
             .await?;
         if let Some(script) = existing {
-            self.emit_configuration_changed_event(
+            self.finalize_post_processing_script_mutation(
                 actor,
-                post_processing_script_resource_type(script.script_type),
-                Some(script.id),
+                &script,
                 ConfigurationChangeAction::Deleted,
             )
             .await;
@@ -165,10 +178,9 @@ impl AppUseCase {
             .pp_scripts
             .update_script(script)
             .await?;
-        self.emit_configuration_changed_event(
+        self.finalize_post_processing_script_mutation(
             actor,
-            post_processing_script_resource_type(updated.script_type),
-            Some(updated.id.clone()),
+            &updated,
             ConfigurationChangeAction::Updated,
         )
         .await;
@@ -305,6 +317,27 @@ fn validate_file_script_path(script_content: &str) -> Result<&str, &'static str>
     Ok(path)
 }
 
+fn build_post_processing_command(script: &PostProcessingScript) -> Result<Command, &'static str> {
+    match script.script_type {
+        ScriptType::Inline => Ok(build_inline_script_command(&script.script_content)),
+        ScriptType::File => validate_file_script_path(&script.script_content).map(Command::new),
+    }
+}
+
+#[cfg(windows)]
+fn build_inline_script_command(script_content: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", script_content]);
+    command
+}
+
+#[cfg(not(windows))]
+fn build_inline_script_command(script_content: &str) -> Command {
+    let mut command = Command::new("sh");
+    command.args(["-c", script_content]);
+    command
+}
+
 fn file_script_path_failure_run(
     script: &PostProcessingScript,
     ctx: &PostProcessingContext,
@@ -353,42 +386,12 @@ async fn execute_script(
         .unwrap_or(Path::new("/"))
         .to_path_buf();
 
-    #[cfg(windows)]
-    let mut cmd = match script.script_type {
-        ScriptType::Inline => {
-            let mut c = tokio::process::Command::new("cmd");
-            c.args(["/C", &script.script_content]);
-            c
-        }
-        ScriptType::File => {
-            let path = match validate_file_script_path(&script.script_content) {
-                Ok(path) => path,
-                Err(reason) => {
-                    return file_script_path_failure_run(
-                        script, ctx, facet_str, env_json, run_id, started_at, reason,
-                    );
-                }
-            };
-            tokio::process::Command::new(path)
-        }
-    };
-    #[cfg(not(windows))]
-    let mut cmd = match script.script_type {
-        ScriptType::Inline => {
-            let mut c = tokio::process::Command::new("sh");
-            c.args(["-c", &script.script_content]);
-            c
-        }
-        ScriptType::File => {
-            let path = match validate_file_script_path(&script.script_content) {
-                Ok(path) => path,
-                Err(reason) => {
-                    return file_script_path_failure_run(
-                        script, ctx, facet_str, env_json, run_id, started_at, reason,
-                    );
-                }
-            };
-            tokio::process::Command::new(path)
+    let mut cmd = match build_post_processing_command(script) {
+        Ok(command) => command,
+        Err(reason) => {
+            return file_script_path_failure_run(
+                script, ctx, facet_str, env_json, run_id, started_at, reason,
+            );
         }
     };
     #[cfg(not(windows))]

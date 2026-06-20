@@ -178,6 +178,12 @@ pub struct AutoBackupSettings {
     pub next_run_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupSettings {
+    pub custom_backup_path: Option<String>,
+    pub default_backup_path: String,
+    pub effective_backup_path: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateGeneralSettings {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
@@ -190,6 +196,51 @@ pub struct UpdateAutoBackupSettings {
     pub set_auto_backup_key: Option<String>,
     pub clear_auto_backup_key: bool,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateBackupSettings {
+    pub custom_backup_path: Option<String>,
+}
+
+fn normalize_backup_path_setting(value: Option<String>) -> AppResult<Option<PathBuf>> {
+    let Some(value) = normalize_optional_string(value) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(AppError::Validation(
+            "backup path must be an absolute server path".to_string(),
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn backup_path_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn validate_backup_storage_dir(path: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(path).map_err(|error| {
+        AppError::Validation(format!("failed to create backup directory: {error}"))
+    })?;
+    if !path.is_dir() {
+        return Err(AppError::Validation(
+            "backup path must be a directory".to_string(),
+        ));
+    }
+
+    let timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    let probe_path = path.join(format!(
+        ".scryer-backup-write-test-{}-{timestamp}.tmp",
+        std::process::id()
+    ));
+    std::fs::write(&probe_path, b"scryer backup path probe")
+        .map_err(|error| AppError::Validation(format!("backup path is not writable: {error}")))?;
+    std::fs::remove_file(&probe_path).map_err(|error| {
+        AppError::Validation(format!("failed to remove backup path probe: {error}"))
+    })?;
+    Ok(())
+}
+
 impl AppUseCase {
     async fn load_general_settings(&self) -> AppResult<GeneralSettings> {
         let keep_history_forever = self
@@ -231,6 +282,36 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub fn default_backup_dir(&self) -> PathBuf {
+        self.services.config.backup_dir.clone()
+    }
+
+    pub async fn effective_backup_dir(&self) -> AppResult<PathBuf> {
+        Ok(normalize_backup_path_setting(
+            self.read_setting_string_value(BACKUP_PATH_KEY, None)
+                .await?,
+        )?
+        .unwrap_or_else(|| self.default_backup_dir()))
+    }
+
+    async fn load_backup_settings(&self) -> AppResult<BackupSettings> {
+        let custom_backup_path = normalize_backup_path_setting(
+            self.read_setting_string_value(BACKUP_PATH_KEY, None)
+                .await?,
+        )?
+        .map(|path| backup_path_to_string(&path));
+        let default_backup_path = backup_path_to_string(&self.default_backup_dir());
+        let effective_backup_path = custom_backup_path
+            .clone()
+            .unwrap_or_else(|| default_backup_path.clone());
+
+        Ok(BackupSettings {
+            custom_backup_path,
+            default_backup_path,
+            effective_backup_path,
+        })
+    }
+
     async fn auto_backup_key_present(&self) -> AppResult<bool> {
         Ok(self
             .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
@@ -292,6 +373,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         self.load_auto_backup_settings().await
+    }
+
+    pub async fn get_backup_settings(&self, actor: &User) -> AppResult<BackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.load_backup_settings().await
     }
 }
 impl AppUseCase {
@@ -420,6 +507,37 @@ impl AppUseCase {
         self.load_auto_backup_settings().await
     }
 
+    pub async fn update_backup_settings(
+        &self,
+        actor: &User,
+        input: UpdateBackupSettings,
+    ) -> AppResult<BackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let custom_path = normalize_backup_path_setting(input.custom_backup_path)?;
+        if let Some(path) = &custom_path {
+            validate_backup_storage_dir(path)?;
+            self.upsert_system_setting_json(
+                BACKUP_PATH_KEY,
+                &backup_path_to_string(path),
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_system_setting(BACKUP_PATH_KEY).await?;
+        }
+
+        self.emit_settings_saved(
+            actor,
+            "backup_settings",
+            None,
+            vec![BACKUP_PATH_KEY.to_string()],
+        )
+        .await;
+        self.load_backup_settings().await
+    }
+
     pub async fn acknowledge_auto_backup_disabled_missing_key_notice(
         &self,
         actor: &User,
@@ -480,6 +598,24 @@ mod tests {
         assert!(normalize_auto_backup_daily_time_local("24:00").is_err());
         assert!(normalize_auto_backup_daily_time_local("10:60").is_err());
         assert!(normalize_auto_backup_daily_time_local("nope").is_err());
+    }
+
+    #[test]
+    fn normalize_backup_path_setting_resets_empty_and_rejects_relative_paths() {
+        assert_eq!(
+            normalize_backup_path_setting(Some("   ".to_string())).expect("empty resets"),
+            None
+        );
+        assert!(normalize_backup_path_setting(Some("relative/backups".to_string())).is_err());
+    }
+
+    #[test]
+    fn normalize_backup_path_setting_accepts_absolute_paths() {
+        let path = normalize_backup_path_setting(Some("/tmp/scryer-backups".to_string()))
+            .expect("absolute path")
+            .expect("custom path");
+
+        assert_eq!(path, PathBuf::from("/tmp/scryer-backups"));
     }
 
     #[test]

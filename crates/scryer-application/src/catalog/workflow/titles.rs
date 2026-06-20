@@ -103,6 +103,10 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "title catalog listing mirrors the user-visible filter, sort, pagination, and projection surface"
+    )]
     pub async fn list_titles(
         &self,
         actor: &User,

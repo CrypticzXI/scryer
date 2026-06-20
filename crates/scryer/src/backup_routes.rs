@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::extract::{Path as AxumPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use scryer_application::{AppError, AppUseCase, BackupInfo, BackupService, BackupStatus};
+use scryer_application::{AppError, AppUseCase, BackupInfo, BackupStatus};
 use scryer_infrastructure::{
     DatastoreConfig, DatastoreEngine, datastore_file_path,
     restore_prepared_backup_directory_to_datastore,
@@ -255,7 +255,10 @@ pub(crate) async fn download_backup_handler(
         return map_app_error(error);
     }
 
-    let backup_dir = state.app.backup_dir();
+    let backup_dir = match state.app.effective_backup_dir().await {
+        Ok(path) => path,
+        Err(error) => return map_app_error(error),
+    };
     if !is_supported_backup_filename(&filename) {
         return map_app_error(AppError::Validation("invalid backup filename".into()));
     }

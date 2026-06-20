@@ -8,8 +8,8 @@ use tokio::time::{Duration, timeout};
 
 use common::TestContext;
 use scryer_application::{
-    BackupService, JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository,
-    LibraryRootDraft, MediaFileRepository, TitleRepository, UserRepository,
+    JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository, LibraryRootDraft,
+    MediaFileRepository, TitleRepository, UserRepository,
 };
 use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
@@ -489,7 +489,7 @@ async fn automatic_backup_job_skips_stale_enabled_config_without_key() {
         .await
         .expect("stale automatic backup config should skip without error");
 
-    let backup_dir = ctx.app.backup_dir();
+    let backup_dir = ctx.app.default_backup_dir();
     assert!(
         !backup_dir.exists()
             || std::fs::read_dir(backup_dir)

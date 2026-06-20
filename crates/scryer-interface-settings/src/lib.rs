@@ -167,6 +167,14 @@ fn from_auto_backup_settings(
     }
 }
 
+fn from_backup_settings(settings: scryer_application::BackupSettings) -> BackupSettingsPayload {
+    BackupSettingsPayload {
+        custom_backup_path: settings.custom_backup_path,
+        default_backup_path: settings.default_backup_path,
+        effective_backup_path: settings.effective_backup_path,
+    }
+}
+
 fn from_security_settings(
     settings: scryer_application::SecuritySettings,
     auth_runtime: &AuthRuntimeStateSnapshot,
@@ -330,6 +338,16 @@ impl SettingsQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_auto_backup_settings(settings))
+    }
+
+    async fn backup_settings(&self, ctx: &Context<'_>) -> GqlResult<BackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_backup_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_backup_settings(settings))
     }
 
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {

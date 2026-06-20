@@ -258,7 +258,6 @@ async fn prepare_completed_download_for_tracked_import(
 /// artifact history across all passes.
 ///
 /// Returns true if all expected files are accounted for (imported or already_present).
-
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),

@@ -339,6 +339,15 @@ fn single_completed_download_identity_match(
     None
 }
 
+fn source_match_identity_is_compatible(
+    queue_identity: &crate::DownloadSubmissionIdentity,
+    completed: &CompletedDownload,
+) -> bool {
+    let completed_identity = observed_completed_download_identity(completed);
+    crate::download_submission_identity_is_empty(&completed_identity)
+        || completed_identity == *queue_identity
+}
+
 pub(super) fn completed_download_lookup_key(
     client_id: Option<&str>,
     client_type: &str,
@@ -350,7 +359,7 @@ pub(super) fn completed_download_lookup_key(
             .filter(|value| !value.is_empty())
             .unwrap_or("")
             .to_string(),
-        client_type.to_string(),
+        client_type.trim().to_ascii_lowercase(),
         item_id.to_string(),
     )
 }
@@ -434,7 +443,7 @@ pub(super) async fn find_completed_download(
     }
 }
 
-fn find_completed_download_in_lookup(
+pub(super) fn find_completed_download_in_lookup(
     lookup: &CompletedDownloadLookup,
     td: &TrackedDownload,
 ) -> Option<CompletedDownload> {
@@ -445,15 +454,26 @@ fn find_completed_download_in_lookup(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return single_completed_download_identity_match(
-            lookup.by_download_id.get(&completed_download_lookup_key(
-                Some(&td.client_id),
-                &td.client_type,
+        let identity_key =
+            completed_download_lookup_key(Some(&td.client_id), &td.client_type, download_id);
+        if let Some(matches) = lookup.by_download_id.get(&identity_key) {
+            return single_completed_download_identity_match(
+                Some(matches),
+                "download_id",
                 download_id,
-            )),
-            "download_id",
-            download_id,
+            );
+        }
+
+        let source_key = completed_download_lookup_key(
+            Some(&td.client_id),
+            &td.client_type,
+            &td.client_item.download_client_item_id,
         );
+        return lookup
+            .by_source
+            .get(&source_key)
+            .filter(|completed| source_match_identity_is_compatible(&observed_identity, completed))
+            .cloned();
     }
 
     let key = completed_download_lookup_key(

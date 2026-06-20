@@ -32,11 +32,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
-    IndexerPluginProvider, MovieFacetHandler, NotificationPluginProvider,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
-    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
-    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, AutoBackupRunOutcome,
+    DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry, IndexerPluginProvider,
+    JobTriggerSource, MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
+    SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
@@ -713,6 +714,11 @@ async fn bootstrap_application(
 
     // Detect version upgrades by comparing with last-run version stored in DB
     let version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    record_post_upgrade_auto_backup_pending_if_needed(
+        bootstrap_settings_store.clone(),
+        &version_lifecycle,
+    )
+    .await;
     startup_migrations::_0001_legacy_history_retention_forever_override::clear_legacy_history_retention_forever_override(
         bootstrap_settings_store.clone(),
     )
@@ -1105,6 +1111,11 @@ async fn bootstrap_application(
     )
     .await;
     startup_migrations::_0004_auto_backup_missing_key_disable::disable_auto_backups_without_key(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
+    spawn_post_upgrade_auto_backup_if_pending(
+        app_use_case.clone(),
         bootstrap_settings_store.clone(),
     )
     .await;
@@ -1856,6 +1867,143 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn parse_optional_setting_string(value_json: &str) -> Option<String> {
+    serde_json::from_str::<Option<String>>(value_json)
+        .ok()
+        .flatten()
+        .or_else(|| serde_json::from_str::<String>(value_json).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+async fn read_post_upgrade_auto_backup_pending_version(
+    settings_store: Arc<SettingsStore>,
+) -> Option<String> {
+    match settings_store
+        .get_setting_with_defaults(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+        )
+        .await
+    {
+        Ok(Some(record)) => parse_optional_setting_string(&record.effective_value_json),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to read post-upgrade automatic backup marker"
+            );
+            None
+        }
+    }
+}
+
+async fn record_post_upgrade_auto_backup_pending_if_needed(
+    settings_store: Arc<SettingsStore>,
+    lifecycle: &VersionLifecycle,
+) {
+    if !matches!(lifecycle, VersionLifecycle::Upgraded { .. }) {
+        return;
+    }
+
+    let value_json = serde_json::to_string(VERSION).expect("VERSION serializes");
+    if let Err(error) = settings_store
+        .upsert_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+            value_json,
+            "system",
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to record post-upgrade automatic backup marker"
+        );
+    }
+}
+
+async fn clear_post_upgrade_auto_backup_pending_version(
+    settings_store: Arc<SettingsStore>,
+    reason: &'static str,
+) {
+    if let Err(error) = settings_store
+        .delete_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            reason,
+            "failed to clear post-upgrade automatic backup marker"
+        );
+    }
+}
+
+async fn spawn_post_upgrade_auto_backup_if_pending(
+    app: AppUseCase,
+    settings_store: Arc<SettingsStore>,
+) {
+    let pending_version =
+        read_post_upgrade_auto_backup_pending_version(settings_store.clone()).await;
+    if pending_version.as_deref() != Some(VERSION) {
+        return;
+    }
+
+    let settings = match app.auto_backup_settings().await {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to read automatic backup settings for post-upgrade backup"
+            );
+            return;
+        }
+    };
+    if !settings.enabled || !settings.auto_backup_key_present {
+        clear_post_upgrade_auto_backup_pending_version(settings_store, "auto backup not eligible")
+            .await;
+        return;
+    }
+
+    tokio::spawn(async move {
+        match app
+            .run_scheduled_auto_backup_job_now(JobTriggerSource::SystemInternal)
+            .await
+        {
+            Ok(AutoBackupRunOutcome::Created { info, .. }) => {
+                clear_post_upgrade_auto_backup_pending_version(
+                    settings_store,
+                    "post-upgrade automatic backup created",
+                )
+                .await;
+                tracing::info!(
+                    filename = %info.filename,
+                    "post-upgrade automatic backup completed"
+                );
+            }
+            Ok(AutoBackupRunOutcome::Skipped { reason }) => {
+                tracing::warn!(
+                    reason,
+                    "post-upgrade automatic backup skipped; will retry on next startup"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "post-upgrade automatic backup failed; will retry on next startup"
+                );
+            }
+        }
+    });
 }
 
 async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLifecycle {

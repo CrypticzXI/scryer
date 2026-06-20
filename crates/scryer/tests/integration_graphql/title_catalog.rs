@@ -1524,6 +1524,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
         &ctx,
         r#"mutation($input: UpdateTitleInput!) {
             updateTitle(input: $input) {
+                libraryId
                 rootFolderId
                 rootFolderPath
                 tags
@@ -1541,6 +1542,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     .await;
     assert_no_errors(&cleared_by_default);
     let cleared = &cleared_by_default["data"]["updateTitle"];
+    assert_eq!(cleared["libraryId"], library_a_id);
     assert!(cleared["rootFolderId"].is_null());
     assert!(cleared["rootFolderPath"].is_null());
     let cleared_tags = cleared["tags"].as_array().expect("tags array");
@@ -1554,7 +1556,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     let reset = gql(
         &ctx,
         r#"mutation($input: UpdateTitleInput!) {
-            updateTitle(input: $input) { rootFolderId rootFolderPath }
+            updateTitle(input: $input) { libraryId rootFolderId rootFolderPath }
         }"#,
         json!({
             "input": {
@@ -1567,6 +1569,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     )
     .await;
     assert_no_errors(&reset);
+    assert_eq!(reset["data"]["updateTitle"]["libraryId"], library_a_id);
     assert_eq!(
         reset["data"]["updateTitle"]["rootFolderPath"],
         "/library/root-update-a-custom"
@@ -1576,6 +1579,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
         &ctx,
         r#"mutation($input: UpdateTitleInput!) {
             updateTitle(input: $input) {
+                libraryId
                 rootFolderId
                 rootFolderPath
                 tags
@@ -1593,6 +1597,7 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     .await;
     assert_no_errors(&cleared_by_null);
     let cleared = &cleared_by_null["data"]["updateTitle"];
+    assert_eq!(cleared["libraryId"], library_a_id);
     assert!(cleared["rootFolderId"].is_null());
     assert!(cleared["rootFolderPath"].is_null());
     let cleared_tags = cleared["tags"].as_array().expect("tags array");
@@ -1601,6 +1606,179 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
             .iter()
             .filter_map(|tag| tag.as_str())
             .any(|tag| tag.starts_with("scryer:root-folder:"))
+    );
+}
+
+#[tokio::test]
+async fn graphql_update_title_root_folder_id_omitted_preserves_override() {
+    let ctx = TestContext::new().await;
+    let library = create_title_catalog_library(
+        &ctx,
+        "anime",
+        "Root Preserve Anime Library",
+        &[
+            ("/library/root-preserve-default", true),
+            ("/library/root-preserve-custom", false),
+        ],
+    )
+    .await;
+    let library_id = library_id(&library);
+    let custom_root_id = library_root_id(&library, "/library/root-preserve-custom");
+
+    let add_body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { id }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Root Preserve Anime",
+                "facet": "anime",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "options": {
+                    "rootFolderId": custom_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&add_body);
+    let title_id = add_body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .expect("title id")
+        .to_string();
+
+    let body = gql(
+        &ctx,
+        r#"mutation($input: UpdateTitleInput!) {
+            updateTitle(input: $input) {
+                tags
+                qualityProfileId
+                rootFolderId
+                rootFolderPath
+            }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "options": {
+                    "qualityProfileId": "anime-preserve-hd"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let updated = &body["data"]["updateTitle"];
+    assert_eq!(updated["qualityProfileId"], "anime-preserve-hd");
+    assert_eq!(updated["rootFolderId"], custom_root_id);
+    assert_eq!(updated["rootFolderPath"], "/library/root-preserve-custom");
+    let tags = updated["tags"].as_array().expect("tags array");
+    let tag_values: Vec<&str> = tags.iter().filter_map(|tag| tag.as_str()).collect();
+    assert!(tag_values.contains(&"scryer:quality-profile:anime-preserve-hd"));
+    assert!(tag_values.contains(&"scryer:root-folder:/library/root-preserve-custom"));
+}
+
+#[tokio::test]
+async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
+    let ctx = TestContext::new().await;
+    let anime_library = create_title_catalog_library(
+        &ctx,
+        "anime",
+        "Wrong Facet Anime Library",
+        &[
+            ("/library/wrong-facet-anime-default", true),
+            ("/library/wrong-facet-anime-custom", false),
+        ],
+    )
+    .await;
+    let movie_library = create_title_catalog_library(
+        &ctx,
+        "movie",
+        "Wrong Facet Movie Library",
+        &[
+            ("/library/wrong-facet-movie-default", true),
+            ("/library/wrong-facet-movie-custom", false),
+        ],
+    )
+    .await;
+    let anime_library_id = library_id(&anime_library);
+    let anime_root_id = library_root_id(&anime_library, "/library/wrong-facet-anime-custom");
+    let movie_root_id = library_root_id(&movie_library, "/library/wrong-facet-movie-custom");
+
+    let add_wrong_facet = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) { title { id } }
+        }"#,
+        json!({
+            "input": {
+                "name": "Wrong Facet Add Anime",
+                "facet": "anime",
+                "monitored": true,
+                "tags": [],
+                "options": {
+                    "rootFolderId": movie_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        add_wrong_facet.get("errors").is_some(),
+        "movie root should not be accepted for anime addTitle: {add_wrong_facet}"
+    );
+
+    let add_body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { id }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Wrong Facet Update Anime",
+                "facet": "anime",
+                "libraryId": anime_library_id,
+                "monitored": true,
+                "tags": [],
+                "options": {
+                    "rootFolderId": anime_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&add_body);
+    let title_id = add_body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .expect("title id")
+        .to_string();
+
+    let update_wrong_facet = gql(
+        &ctx,
+        r#"mutation($input: UpdateTitleInput!) {
+            updateTitle(input: $input) { id }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "options": {
+                    "rootFolderId": movie_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        update_wrong_facet.get("errors").is_some(),
+        "movie root should not be accepted for anime updateTitle: {update_wrong_facet}"
     );
 }
 

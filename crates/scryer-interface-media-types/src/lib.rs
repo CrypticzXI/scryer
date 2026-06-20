@@ -2113,6 +2113,13 @@ pub struct AutoBackupSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct BackupSettingsPayload {
+    pub custom_backup_path: Option<String>,
+    pub default_backup_path: String,
+    pub effective_backup_path: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub password_min_length: i32,
@@ -2578,6 +2585,11 @@ pub struct UpdateAutoBackupSettingsInput {
     pub daily_time_local: String,
     pub set_auto_backup_key: Option<String>,
     pub clear_auto_backup_key: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateBackupSettingsInput {
+    pub custom_backup_path: Option<String>,
 }
 
 #[derive(InputObject, Clone)]

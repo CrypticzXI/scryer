@@ -330,10 +330,7 @@ impl TrackedDownloadService {
         excluded_client_types: &[&str],
     ) {
         for td in self.cache.values_mut() {
-            if excluded_client_types
-                .iter()
-                .any(|client_type| td.client_type.eq_ignore_ascii_case(client_type))
-            {
+            if tracked_client_type_is_excluded(&td.client_type, excluded_client_types) {
                 continue;
             }
             if !seen_ids.contains(&td.id) && !should_preserve_tracking(td.state) {
@@ -1059,6 +1056,15 @@ impl TrackedDownloadHandle {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+pub(crate) fn tracked_client_type_is_excluded(
+    client_type: &str,
+    excluded_client_types: &[&str],
+) -> bool {
+    excluded_client_types
+        .iter()
+        .any(|excluded| excluded.trim().eq_ignore_ascii_case(client_type.trim()))
+}
 
 fn should_preserve_tracking(state: TrackedDownloadState) -> bool {
     matches!(
@@ -3381,6 +3387,13 @@ mod tests {
     }
 
     #[test]
+    fn tracked_client_type_is_excluded_trims_and_ignores_case() {
+        assert!(tracked_client_type_is_excluded("weaver", &[" Weaver "]));
+        assert!(tracked_client_type_is_excluded(" WEAVER ", &["weaver"]));
+        assert!(!tracked_client_type_is_excluded("nzbget", &[" weaver "]));
+    }
+
+    #[test]
     fn update_trackable_excluding_client_types_preserves_excluded_realtime_clients() {
         let mut tracker = TrackedDownloadService::new();
         let mut weaver = build_tracked_download("weaver-active");
@@ -3402,6 +3415,26 @@ mod tests {
         tracker.update_trackable_excluding_client_types(&HashSet::new(), &[]);
 
         if let Some(td) = tracker.find(&weaver_id) {
+            assert!(!td.is_trackable);
+        }
+    }
+
+    #[test]
+    fn update_trackable_excluding_client_types_trims_excluded_client_type() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut weaver = build_tracked_download("weaver-active");
+        weaver.client_type = " Weaver ".to_string();
+        weaver.client_item.client_type = " Weaver ".to_string();
+        let weaver_id = weaver.id.clone();
+        let nzb = build_tracked_download("nzbget-active");
+        let nzb_id = nzb.id.clone();
+        tracker.cache.insert(weaver_id.clone(), weaver);
+        tracker.cache.insert(nzb_id.clone(), nzb);
+
+        tracker.update_trackable_excluding_client_types(&HashSet::new(), &[" weaver "]);
+
+        assert!(tracker.find(&weaver_id).is_some_and(|td| td.is_trackable));
+        if let Some(td) = tracker.find(&nzb_id) {
             assert!(!td.is_trackable);
         }
     }

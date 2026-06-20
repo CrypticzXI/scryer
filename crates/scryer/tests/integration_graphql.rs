@@ -42,14 +42,14 @@ use aws_lc_rs::hmac;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
-    BlocklistRepository, CutoffUnmetQualitySummary, DownloadSubmissionRepository,
-    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, JwtSessionScope, LibraryRootDraft,
-    MediaFileAnalysis, MediaFileRepository, MediaFileRole, MediaServerConnectionRepository,
-    PendingRelease, PendingReleaseRepository, ReleaseDecision, ShowRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository,
-    UserRepository, WantedItem, WantedItemRepository, WebauthnCredentialRecord, WebauthnRepository,
+    AppError, AppResult, BackupInfo, BackupStatus, BackupTrigger, BlocklistRepository,
+    CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
+    InsertMediaFileInput, JwtSessionScope, LibraryRootDraft, MediaFileAnalysis,
+    MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
+    PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
+    TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository, UserRepository,
+    WantedItem, WantedItemRepository, WebauthnCredentialRecord, WebauthnRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -321,7 +321,7 @@ async fn seed_test_passkey(ctx: &TestContext, user_id: &str, credential_id: &str
 }
 
 fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]) {
-    let backup_dir = ctx.app.backup_dir();
+    let backup_dir = ctx.app.default_backup_dir();
     std::fs::create_dir_all(&backup_dir).expect("create backup dir");
     std::fs::write(backup_dir.join(&info.filename), bundle_bytes).expect("write backup bundle");
     let metadata_path = backup_dir.join(format!("{}.metadata.json", info.filename));
@@ -333,7 +333,7 @@ fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]
 }
 
 fn backup_dir_is_empty(ctx: &TestContext) -> bool {
-    let backup_dir = ctx.app.backup_dir();
+    let backup_dir = ctx.app.default_backup_dir();
     !backup_dir.exists()
         || std::fs::read_dir(backup_dir)
             .expect("read backup dir")

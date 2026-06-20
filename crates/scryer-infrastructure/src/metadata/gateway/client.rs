@@ -74,6 +74,14 @@ fn sha256_hex(input: &str) -> String {
         })
 }
 
+fn blake3_digest(input: &str) -> String {
+    format!("blake3:{}", blake3::hash(input.as_bytes()).to_hex())
+}
+
+fn apq_cache_key(operation_name: &str, hash: &str, variables_str: &str) -> String {
+    format!("{operation_name}:{hash}:{}", blake3_digest(variables_str))
+}
+
 /// Precompute the SHA-256 hash for a static query string (APQ registration).
 fn apq_hash(query: &str) -> String {
     sha256_hex(query)
@@ -983,7 +991,7 @@ impl MetadataGatewayClient {
         let extensions_str = serde_json::to_string(&extensions)
             .map_err(|e| AppError::Repository(format!("failed to serialize extensions: {e}")))?;
 
-        let cache_key = format!("{operation_name}:{hash}:{variables_str}");
+        let cache_key = apq_cache_key(operation_name, hash, &variables_str);
 
         // Check for a cached ETag to send If-None-Match
         let cached_etag = self
@@ -1988,13 +1996,14 @@ mod tests {
     use super::{
         ArtworkItem, InstanceAuth, MetadataGatewayClient, MetadataSearchQuery, MtlsState,
         OP_SEARCH_TVDB, SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
-        apply_instance_auth_headers_with_nonce, apq_hash, build_bulk_artwork_url_query,
-        build_bulk_mixed_query, build_search_tvdb_batch_query, canonical_request_host,
-        canonical_request_path_and_query, compatibility_poll_phase, enrollment_retry_delay,
-        is_version_incompatible_response, next_version_compatibility_poll_delay_at,
-        normalize_artwork_url, normalize_optional_artwork_url,
-        parse_version_compatibility_incompatible, parse_version_compatibility_success,
-        pick_artwork_url, sha256_hex, validate_search_tvdb_batch_echo,
+        apply_instance_auth_headers_with_nonce, apq_cache_key, apq_hash,
+        build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
+        canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
+        enrollment_retry_delay, is_version_incompatible_response,
+        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_incompatible,
+        parse_version_compatibility_success, pick_artwork_url, sha256_hex,
+        validate_search_tvdb_batch_echo,
     };
     use base64::Engine as _;
     use serde_json::json;
@@ -2154,6 +2163,20 @@ mod tests {
             .expect("APQ registration should succeed");
 
         assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[test]
+    fn apq_cache_key_uses_blake3_variables_digest() {
+        let variables_str = r#"{"query":"Fixture Query","type":"movie","limit":10,"year":null}"#;
+        let variables_digest = blake3::hash(variables_str.as_bytes()).to_hex().to_string();
+
+        let key = apq_cache_key(OP_SEARCH_TVDB, "query-hash", variables_str);
+
+        assert_eq!(
+            key,
+            format!("{OP_SEARCH_TVDB}:query-hash:blake3:{variables_digest}")
+        );
+        assert!(!key.contains(variables_str));
     }
 
     #[test]

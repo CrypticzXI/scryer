@@ -3,6 +3,7 @@ use std::sync::Arc;
 use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
@@ -206,6 +207,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             data_type: "string",
             default_value_json: "null",
             is_sensitive: true,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: BACKUP_PATH_KEY,
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
         },
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_GENERAL,

@@ -26,7 +26,6 @@ enum ImportArtifactSourceKey {
 /// Called every poll cycle for downloads in Downloading or ImportBlocked state.
 /// Transitions to ImportPending if all validations pass, or ImportBlocked with
 /// warnings if auto-import is not safe.
-
 pub async fn verify_import(
     app: &AppUseCase,
     td: &TrackedDownload,

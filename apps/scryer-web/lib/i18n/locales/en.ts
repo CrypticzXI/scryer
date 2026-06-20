@@ -2769,6 +2769,17 @@ const en: LocaleDictionary = {
   "settings.autoBackupsShowKey": "Show automatic backup key",
   "settings.autoBackupsHideKey": "Hide automatic backup key",
   "settings.autoBackupsSaved": "Automatic backup settings saved.",
+  "settings.backupLocationTitle": "Backup location",
+  "settings.backupLocationDescription":
+    "Choose where Scryer stores backup bundles on the server.",
+  "settings.backupLocationCustomPath": "Custom backup path",
+  "settings.backupLocationBrowse": "Browse",
+  "settings.backupLocationEffectivePath": "Active path",
+  "settings.backupLocationHelp":
+    "Use a server or container path. Changing it switches the active backup folder; existing backups are not moved and are hidden until you switch back.",
+  "settings.backupLocationReset": "Use default",
+  "settings.backupLocationPickerTitle": "Select backup folder",
+  "settings.backupLocationSaved": "Backup location saved.",
   "settings.backupsSection":
     "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared, even if an automatic backup is already running.",
   "settings.backupsEmpty": "No backups created yet.",

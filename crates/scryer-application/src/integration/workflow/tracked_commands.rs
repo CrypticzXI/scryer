@@ -1044,12 +1044,6 @@ fn trackable_import_work_completed_lookup_items(
         .collect()
 }
 
-fn tracked_client_type_is_excluded(client_type: &str, excluded_client_types: &[&str]) -> bool {
-    excluded_client_types
-        .iter()
-        .any(|excluded| excluded.trim().eq_ignore_ascii_case(client_type.trim()))
-}
-
 fn trackable_ids_excluding_client_types(
     tracker: &crate::tracked_downloads::TrackedDownloadService,
     excluded_client_types: &[&str],
@@ -1058,7 +1052,12 @@ fn trackable_ids_excluding_client_types(
         .get_all()
         .into_iter()
         .filter(|td| td.is_trackable && !td.state.is_terminal())
-        .filter(|td| !tracked_client_type_is_excluded(&td.client_type, excluded_client_types))
+        .filter(|td| {
+            !crate::tracked_downloads::tracked_client_type_is_excluded(
+                &td.client_type,
+                excluded_client_types,
+            )
+        })
         .map(|td| td.id.clone())
         .collect()
 }
@@ -1073,13 +1072,38 @@ fn excluded_completed_history_retry_items(
         .into_iter()
         .filter(|td| td.is_trackable)
         .filter(|td| td.client_item.state == scryer_domain::DownloadQueueState::Completed)
-        .filter(|td| td.state == TrackedDownloadState::ImportPending)
-        .filter(|td| td.waiting_for_completed_history)
+        .filter(|td| excluded_completed_history_retry_candidate(td))
         .filter(|td| !td.import_attempted)
         .filter(|td| !tracked_work_in_flight.contains(&td.id))
-        .filter(|td| tracked_client_type_is_excluded(&td.client_type, excluded_client_types))
+        .filter(|td| {
+            crate::tracked_downloads::tracked_client_type_is_excluded(
+                &td.client_type,
+                excluded_client_types,
+            )
+        })
         .map(|td| (td.id.clone(), td.client_item.clone()))
         .collect()
+}
+
+fn excluded_completed_history_retry_candidate(
+    td: &crate::tracked_downloads::TrackedDownload,
+) -> bool {
+    (td.state == TrackedDownloadState::ImportPending && td.waiting_for_completed_history)
+        || (td.state == TrackedDownloadState::Downloading && td.path_missing_since.is_some())
+}
+
+fn tracked_download_ready_for_retry_dispatch(
+    td: &crate::tracked_downloads::TrackedDownload,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    td.is_trackable
+        && td.state == TrackedDownloadState::ImportPending
+        && !td.waiting_for_completed_history
+        && !td.import_attempted
+        && td
+            .no_video_import_retry
+            .as_ref()
+            .is_none_or(|retry| retry.next_retry_at <= now)
 }
 
 struct TrackedDownloadHistoryRetryDrain {
@@ -1136,11 +1160,9 @@ async fn build_excluded_completed_history_retry_drain(
             revalidated = true;
         }
 
+        let now = chrono::Utc::now();
         if tracker.find(&id).is_some_and(|td| {
-            td.is_trackable
-                && td.state == TrackedDownloadState::ImportPending
-                && !td.waiting_for_completed_history
-                && !td.import_attempted
+            tracked_download_ready_for_retry_dispatch(td, now)
                 && completed_lookup.matches_tracked_download(td)
         }) {
             retry_ids.push(id);

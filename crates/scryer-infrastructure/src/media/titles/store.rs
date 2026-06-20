@@ -1561,6 +1561,10 @@ fn build_title_catalog_count_sql(
     (sql, args)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "title catalog SQL assembly mirrors the catalog query filter, sort, pagination, and dialect inputs"
+)]
 fn build_title_catalog_page_sql(
     facet: Option<MediaFacet>,
     library_ids: &[String],

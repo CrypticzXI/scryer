@@ -1962,6 +1962,14 @@ export const autoBackupSettingsQuery = `query AutoBackupSettings {
   }
 }`;
 
+export const backupSettingsQuery = `query BackupSettings {
+  backupSettings {
+    customBackupPath
+    defaultBackupPath
+    effectiveBackupPath
+  }
+}`;
+
 export const delayProfilesQuery = `query DelayProfiles {
   delayProfiles {
     id

@@ -7,6 +7,7 @@ use scryer_application::{
     MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
+    UpdateBackupSettings as AppUpdateBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
     UpdateRecycleBinSettings as AppUpdateRecycleBinSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
@@ -124,6 +125,14 @@ fn from_auto_backup_settings(
         auto_backup_key_present: settings.auto_backup_key_present,
         auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
         next_run_at: parse_optional_datetime(settings.next_run_at, "auto backup next_run_at"),
+    }
+}
+
+fn from_backup_settings(settings: scryer_application::BackupSettings) -> BackupSettingsPayload {
+    BackupSettingsPayload {
+        custom_backup_path: settings.custom_backup_path,
+        default_backup_path: settings.default_backup_path,
+        effective_backup_path: settings.effective_backup_path,
     }
 }
 
@@ -740,6 +749,29 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_auto_backup_settings(settings))
+    }
+
+    async fn update_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateBackupSettingsInput,
+    ) -> GqlResult<BackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+
+        let settings = app
+            .update_backup_settings(
+                &actor,
+                AppUpdateBackupSettings {
+                    custom_backup_path: input.custom_backup_path,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_backup_settings(settings))
     }
 
     async fn acknowledge_auto_backup_disabled_missing_key_notice(

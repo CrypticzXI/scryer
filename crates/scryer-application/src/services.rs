@@ -2652,27 +2652,6 @@ impl AppUseCase {
         Ok(title)
     }
 
-    pub async fn get_title_tags_for_update(
-        &self,
-        actor: &User,
-        title_id: &str,
-    ) -> AppResult<Vec<String>> {
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-        self.require_library_permission(
-            actor,
-            &title.library_id,
-            scryer_domain::LibraryPermission::ManageTitles,
-        )
-        .await?;
-        Ok(title.tags)
-    }
-
     pub async fn get_completed_download(
         &self,
         actor: &User,

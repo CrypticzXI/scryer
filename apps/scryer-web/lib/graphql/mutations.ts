@@ -716,8 +716,18 @@ const AUTO_BACKUP_SETTINGS_FIELDS = `
     autoBackupDisabledMissingKeyNotice
     nextRunAt`;
 
+const BACKUP_SETTINGS_FIELDS = `
+    customBackupPath
+    defaultBackupPath
+    effectiveBackupPath`;
+
 export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettings($input: UpdateAutoBackupSettingsInput!) {
   updateAutoBackupSettings(input: $input) {${AUTO_BACKUP_SETTINGS_FIELDS}
+  }
+}`;
+
+export const updateBackupSettingsMutation = `mutation UpdateBackupSettings($input: UpdateBackupSettingsInput!) {
+  updateBackupSettings(input: $input) {${BACKUP_SETTINGS_FIELDS}
   }
 }`;
 

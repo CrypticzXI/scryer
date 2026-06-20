@@ -1461,6 +1461,12 @@ impl SystemQueries {
         match current_user_from_ctx(ctx) {
             Some(user) => {
                 let app = app_from_ctx(ctx)?;
+                let effective_authorization = user.authorization.clone();
+                let mut user = app
+                    .load_user_for_auth_payload(&user)
+                    .await
+                    .map_err(to_gql_error)?;
+                user.authorization = effective_authorization;
                 let auth_factor_status = app
                     .user_auth_factor_status(&user.id)
                     .await
