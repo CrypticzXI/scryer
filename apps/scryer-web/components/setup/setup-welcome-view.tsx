@@ -8,6 +8,7 @@ interface SetupWelcomeViewProps {
   onRestoreSetup: () => void;
   onSkip: () => void;
   skipping: boolean;
+  canRestoreSetup: boolean;
 }
 
 export function SetupWelcomeView({
@@ -17,6 +18,7 @@ export function SetupWelcomeView({
   onRestoreSetup,
   onSkip,
   skipping,
+  canRestoreSetup,
 }: SetupWelcomeViewProps) {
   return (
     <div id="setup-welcome-view" className="flex flex-col items-center gap-8">
@@ -29,7 +31,11 @@ export function SetupWelcomeView({
         </h1>
         <p className="text-muted-foreground">{t("setup.welcomeDescription")}</p>
       </div>
-      <div className="grid w-full max-w-5xl gap-4 xl:grid-cols-3">
+      <div
+        className={`grid w-full gap-4 ${
+          canRestoreSetup ? "max-w-5xl xl:grid-cols-3" : "max-w-3xl md:grid-cols-2"
+        }`}
+      >
         <Card
           id="setup-welcome-fresh"
           className="cursor-pointer transition-colors hover:border-primary"
@@ -60,21 +66,23 @@ export function SetupWelcomeView({
             </div>
           </CardContent>
         </Card>
-        <Card
-          id="setup-welcome-restore"
-          className="cursor-pointer transition-colors hover:border-primary"
-          onClick={onRestoreSetup}
-        >
-          <CardContent className="flex flex-col items-center gap-3 p-6 text-center">
-            <Upload className="h-8 w-8 text-violet-500" />
-            <div>
-              <p className="font-semibold">{t("setup.restoreSetup")}</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {t("setup.restoreSetupDescription")}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        {canRestoreSetup ? (
+          <Card
+            id="setup-welcome-restore"
+            className="cursor-pointer transition-colors hover:border-primary"
+            onClick={onRestoreSetup}
+          >
+            <CardContent className="flex flex-col items-center gap-3 p-6 text-center">
+              <Upload className="h-8 w-8 text-violet-500" />
+              <div>
+                <p className="font-semibold">{t("setup.restoreSetup")}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t("setup.restoreSetupDescription")}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
       <button
         id="setup-welcome-skip"

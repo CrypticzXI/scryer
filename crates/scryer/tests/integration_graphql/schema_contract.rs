@@ -1,0 +1,4143 @@
+use super::*;
+
+#[tokio::test]
+async fn graphql_get_returns_non_500() {
+    let ctx = TestContext::new().await;
+    let resp = ctx
+        .http_client()
+        .get(format!("{}/graphql", ctx.app_url))
+        .send()
+        .await
+        .unwrap();
+    // GET on a POST-only endpoint — should not crash
+    assert_ne!(resp.status().as_u16(), 500);
+}
+
+// ---------------------------------------------------------------------------
+// Introspection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn graphql_introspection_query_type() {
+    let ctx = TestContext::new().await;
+    let body = gql(&ctx, "{ __schema { queryType { name } } }", json!({})).await;
+    assert_eq!(body["data"]["__schema"]["queryType"]["name"], "QueryRoot");
+}
+
+#[tokio::test]
+async fn graphql_introspection_mutation_type() {
+    let ctx = TestContext::new().await;
+    let body = gql(&ctx, "{ __schema { mutationType { name } } }", json!({})).await;
+    assert_eq!(
+        body["data"]["__schema"]["mutationType"]["name"],
+        "MutationRoot"
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_schema_census_matches_contract_baseline() {
+    let ctx = TestContext::new().await;
+    let sdl = schema_sdl(&ctx);
+    assert!(sdl.contains("type QueryRoot"));
+    assert!(sdl.contains("type MutationRoot"));
+    assert!(sdl.contains("type SubscriptionRoot"));
+    assert!(sdl.contains("scalar Date"));
+    assert!(sdl.contains("scalar DateTime"));
+    assert!(sdl.contains("scalar Long"));
+
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          __schema {
+            queryType { fields { name } }
+            mutationType { fields { name } }
+            subscriptionType { fields { name } }
+            types { name kind }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_field_count = body["data"]["__schema"]["queryType"]["fields"]
+        .as_array()
+        .expect("query fields")
+        .len();
+    let mutation_field_count = body["data"]["__schema"]["mutationType"]["fields"]
+        .as_array()
+        .expect("mutation fields")
+        .len();
+    let subscription_field_count = body["data"]["__schema"]["subscriptionType"]["fields"]
+        .as_array()
+        .expect("subscription fields")
+        .len();
+
+    let public_types: Vec<&Value> = body["data"]["__schema"]["types"]
+        .as_array()
+        .expect("schema types")
+        .iter()
+        .filter(|ty| {
+            ty["name"]
+                .as_str()
+                .is_some_and(|name| !name.starts_with("__"))
+        })
+        .collect();
+    let kind_count = |kind: &str| -> usize {
+        public_types
+            .iter()
+            .filter(|ty| ty["kind"].as_str() == Some(kind))
+            .count()
+    };
+
+    assert_eq!(query_field_count, 101);
+    assert_eq!(mutation_field_count, 156);
+    assert_eq!(subscription_field_count, 13);
+    assert_eq!(public_types.len(), 430);
+    assert_eq!(kind_count("OBJECT"), 222);
+    assert_eq!(kind_count("INPUT_OBJECT"), 136);
+    assert_eq!(kind_count("ENUM"), 62);
+    assert_eq!(kind_count("SCALAR"), 10);
+}
+
+#[tokio::test]
+async fn graphql_introspection_plugin_mutations_use_progress_api() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+            }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          installPluginInput: __type(name: "InstallPluginInput") { name }
+          uninstallPluginInput: __type(name: "UninstallPluginInput") { name }
+          upgradePluginInput: __type(name: "UpgradePluginInput") { name }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    let fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
+
+    assert!(names.contains(&"refreshPluginCatalog"));
+    assert!(names.contains(&"beginInstallPlugin"));
+    assert!(names.contains(&"beginUpgradePlugin"));
+    assert!(names.contains(&"installManualPlugin"));
+    assert!(names.contains(&"installUploadedPlugin"));
+    assert!(!names.contains(&"refreshPluginRegistry"));
+    assert!(!names.contains(&"installPlugin"));
+    assert!(!names.contains(&"upgradePlugin"));
+    assert!(body["data"]["installPluginInput"].is_null());
+    assert!(body["data"]["uninstallPluginInput"].is_null());
+    assert!(body["data"]["upgradePluginInput"].is_null());
+
+    let plugin_id_arg = |field_name: &str| {
+        fields
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{field_name} should exist"))["args"]
+            .as_array()
+            .expect("plugin mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == "pluginId")
+            .unwrap_or_else(|| panic!("{field_name}.pluginId should exist"))
+            .clone()
+    };
+    for field_name in [
+        "beginInstallPlugin",
+        "uninstallPlugin",
+        "beginUpgradePlugin",
+    ] {
+        let arg = plugin_id_arg(field_name);
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_media_request_actions_use_direct_request_id() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+            }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          mediaRequestActionInput: __type(name: "MediaRequestActionInput") { name }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert!(body["data"]["mediaRequestActionInput"].is_null());
+
+    let fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let request_id_arg = |field_name: &str| {
+        fields
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{field_name} should exist"))["args"]
+            .as_array()
+            .expect("media request mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == "requestId")
+            .unwrap_or_else(|| panic!("{field_name}.requestId should exist"))
+            .clone()
+    };
+    for field_name in ["dismissMediaRequest", "cancelMyMediaRequest"] {
+        let arg = request_id_arg(field_name);
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_media_request_inputs_use_id_fields() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          submitInput: __type(name: "SubmitMediaRequestInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          approveInput: __type(name: "ApproveMediaRequestInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateInput: __type(name: "UpdateMediaRequestInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let field = |type_alias: &str, name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose inputFields"))
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+            .clone()
+    };
+    for (type_alias, name) in [
+        ("submitInput", "libraryId"),
+        ("approveInput", "requestId"),
+        ("approveInput", "qualityProfileId"),
+        ("updateInput", "requestId"),
+        ("updateInput", "requestedQualityProfileId"),
+    ] {
+        let field = field(type_alias, name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{type_alias}.{name}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{type_alias}.{name}");
+    }
+    let requested_quality_profile_id = field("submitInput", "requestedQualityProfileId");
+    assert_eq!(
+        requested_quality_profile_id["type"]["kind"], "SCALAR",
+        "submitInput.requestedQualityProfileId"
+    );
+    assert_eq!(
+        requested_quality_profile_id["type"]["name"], "ID",
+        "submitInput.requestedQualityProfileId"
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_media_requests_changed_uses_typed_payload() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          subscriptionRoot: __type(name: "SubscriptionRoot") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          payload: __type(name: "MediaRequestChangedPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
+        .as_array()
+        .expect("SubscriptionRoot should expose fields");
+    let media_requests_changed = subscription_fields
+        .iter()
+        .find(|field| field["name"] == "mediaRequestsChanged")
+        .expect("mediaRequestsChanged should exist");
+    assert_eq!(media_requests_changed["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        media_requests_changed["type"]["ofType"]["name"],
+        "MediaRequestChangedPayload"
+    );
+
+    let payload_fields = body["data"]["payload"]["fields"]
+        .as_array()
+        .expect("MediaRequestChangedPayload should expose fields");
+    let field = |name: &str| {
+        payload_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("MediaRequestChangedPayload.{name} should exist"))
+    };
+    for name in ["eventId", "requestId", "libraryId"] {
+        let field = field(name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{name}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{name}");
+    }
+    for name in [
+        "createdTitleId",
+        "requestedQualityProfileId",
+        "approvedQualityProfileId",
+    ] {
+        let field = field(name);
+        assert_eq!(field["type"]["kind"], "SCALAR", "{name}");
+        assert_eq!(field["type"]["name"], "ID", "{name}");
+    }
+    let event_type = field("eventType");
+    assert_eq!(event_type["type"]["kind"], "NON_NULL");
+    assert_eq!(event_type["type"]["ofType"]["name"], "DomainEventTypeValue");
+}
+
+#[tokio::test]
+async fn graphql_introspection_provider_catalog_changed_uses_family_enum() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          subscriptionRoot: __type(name: "SubscriptionRoot") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
+        .as_array()
+        .expect("SubscriptionRoot should expose fields");
+    let provider_catalog_changed = subscription_fields
+        .iter()
+        .find(|field| field["name"] == "providerCatalogChanged")
+        .expect("providerCatalogChanged should exist");
+    assert_eq!(provider_catalog_changed["type"]["kind"], "NON_NULL");
+    assert_eq!(provider_catalog_changed["type"]["ofType"]["kind"], "LIST");
+    assert_eq!(
+        provider_catalog_changed["type"]["ofType"]["ofType"]["kind"],
+        "NON_NULL"
+    );
+    assert_eq!(
+        provider_catalog_changed["type"]["ofType"]["ofType"]["ofType"]["name"],
+        "ProviderCatalogFamilyValue"
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_plugin_install_progress_uses_plugin_id() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          subscriptionRoot: __type(name: "SubscriptionRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
+        .as_array()
+        .expect("SubscriptionRoot should expose fields");
+    let plugin_install_progress = subscription_fields
+        .iter()
+        .find(|field| field["name"] == "pluginInstallProgress")
+        .expect("pluginInstallProgress should exist");
+    let plugin_id = plugin_install_progress["args"]
+        .as_array()
+        .expect("pluginInstallProgress should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "pluginId")
+        .expect("pluginId should exist");
+    assert_eq!(plugin_id["type"]["kind"], "NON_NULL");
+    assert_eq!(plugin_id["type"]["ofType"]["name"], "ID");
+}
+
+#[tokio::test]
+async fn graphql_introspection_delete_previews_use_direct_ids() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+            }
+          }
+          deleteTitlePreviewInput: __type(name: "DeleteTitlePreviewInput") { name }
+          deleteMediaFilePreviewInput: __type(name: "DeleteMediaFilePreviewInput") { name }
+          deleteExternalSubtitlePreviewInput: __type(name: "DeleteExternalSubtitlePreviewInput") { name }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert!(body["data"]["deleteTitlePreviewInput"].is_null());
+    assert!(body["data"]["deleteMediaFilePreviewInput"].is_null());
+    assert!(body["data"]["deleteExternalSubtitlePreviewInput"].is_null());
+
+    let fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let id_arg = |field_name: &str, arg_name: &str| {
+        fields
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{field_name} should exist"))["args"]
+            .as_array()
+            .expect("preview query should expose args")
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
+            .clone()
+    };
+    for (field_name, arg_name) in [
+        ("deleteTitlePreview", "titleId"),
+        ("deleteMediaFilePreview", "fileId"),
+        ("deleteExternalSubtitlePreview", "externalSubtitleId"),
+    ] {
+        let arg = id_arg(field_name, arg_name);
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_uninstall_plugin_uses_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+	              type {
+	                kind
+	                name
+	                ofType {
+	                  kind
+	                  name
+	                }
+	              }
+	            }
+          }
+          uninstallPayload: __type(name: "UninstallPluginPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let uninstall = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "uninstallPlugin")
+        .expect("uninstallPlugin should exist");
+    assert_eq!(
+        uninstall["type"]["ofType"]["name"],
+        "UninstallPluginPayload"
+    );
+
+    let payload_fields: Vec<&str> = body["data"]["uninstallPayload"]["fields"]
+        .as_array()
+        .expect("UninstallPluginPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["pluginId", "uninstalled"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_query_root_uses_semantic_search_and_browse_fields() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ __type(name: "QueryRoot") { fields { name } } }"#,
+        json!({}),
+    )
+    .await;
+    let fields = body["data"]["__type"]["fields"]
+        .as_array()
+        .expect("should have fields");
+    let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
+
+    assert!(names.contains(&"searchReleases"));
+    assert!(!names.contains(&"searchIndexers"));
+    assert!(!names.contains(&"searchIndexersEpisode"));
+    assert!(!names.contains(&"searchIndexersForTitle"));
+    assert!(!names.contains(&"searchIndexersForEpisode"));
+    assert!(!names.contains(&"titleCollections"));
+    assert!(!names.contains(&"collectionEpisodes"));
+    assert!(!names.contains(&"titleMediaFiles"));
+    assert!(names.contains(&"wantedItem"));
+    assert!(!names.contains(&"pendingRelease"));
+    assert!(names.contains(&"titleHistory"));
+    assert!(!names.contains(&"titleEvents"));
+    assert!(!names.contains(&"episodeHistory"));
+    assert!(names.contains(&"libraryScanSession"));
+    assert!(!names.contains(&"domainEvents"));
+    assert!(names.contains(&"downloadHistory"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_pending_releases_uses_page_payload() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          page: __type(name: "PendingReleasesPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          filter: __type(name: "PendingReleaseFilterInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let pending_releases = query_fields
+        .iter()
+        .find(|field| field["name"] == "pendingReleases")
+        .expect("pendingReleases should exist");
+    assert_eq!(pending_releases["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        pending_releases["type"]["ofType"]["name"],
+        "PendingReleasesPayload"
+    );
+
+    let pending_arg = |name: &str| {
+        pending_releases["args"]
+            .as_array()
+            .expect("pendingReleases should expose args")
+            .iter()
+            .find(|arg| arg["name"] == name)
+            .unwrap_or_else(|| panic!("pendingReleases.{name} arg should exist"))
+            .clone()
+    };
+    let filter_arg = pending_arg("filter");
+    assert_eq!(filter_arg["type"]["kind"], "INPUT_OBJECT");
+    assert_eq!(filter_arg["type"]["name"], "PendingReleaseFilterInput");
+    for arg_name in ["limit", "offset"] {
+        let arg = pending_arg(arg_name);
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{arg_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "Int", "{arg_name}");
+    }
+
+    let page_fields = body["data"]["page"]["fields"]
+        .as_array()
+        .expect("PendingReleasesPayload should expose fields");
+    let page_field = |name: &str| {
+        page_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("PendingReleasesPayload.{name} should exist"))
+    };
+    assert_eq!(page_field("items")["type"]["kind"], "NON_NULL");
+    assert_eq!(page_field("limit")["type"]["ofType"]["name"], "Int");
+    assert_eq!(page_field("offset")["type"]["ofType"]["name"], "Int");
+    assert_eq!(page_field("hasMore")["type"]["ofType"]["name"], "Boolean");
+    assert_eq!(page_field("totalCount")["type"]["ofType"]["name"], "Int");
+
+    let filter_fields = body["data"]["filter"]["inputFields"]
+        .as_array()
+        .expect("PendingReleaseFilterInput should expose fields");
+    let filter_field = |name: &str| {
+        filter_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("PendingReleaseFilterInput.{name} should exist"))
+    };
+    for name in ["titleId", "wantedItemId"] {
+        assert_eq!(filter_field(name)["type"]["kind"], "SCALAR", "{name}");
+        assert_eq!(filter_field(name)["type"]["name"], "ID", "{name}");
+    }
+    let statuses = filter_field("statuses");
+    assert_eq!(statuses["type"]["kind"], "LIST");
+    assert_eq!(statuses["type"]["ofType"]["kind"], "NON_NULL");
+    assert_eq!(
+        statuses["type"]["ofType"]["ofType"]["name"],
+        "PendingReleaseStatusValue"
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_search_metadata_uses_media_facet_enum() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+	              args {
+	                name
+	                type {
+	                  kind
+	                  name
+	                  ofType {
+	                    kind
+	                    name
+	                    ofType {
+	                      kind
+	                      name
+	                    }
+	                  }
+	                }
+	              }
+            }
+          }
+          metadataMovieInput: __type(name: "MetadataMovieInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          metadataSeriesInput: __type(name: "MetadataSeriesInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let search_metadata = fields
+        .iter()
+        .find(|field| field["name"] == "searchMetadata")
+        .expect("searchMetadata should exist");
+    let args = search_metadata["args"]
+        .as_array()
+        .expect("searchMetadata should expose args");
+    let type_arg = args
+        .iter()
+        .find(|arg| arg["name"] == "type")
+        .expect("searchMetadata.type should exist");
+    assert_eq!(type_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(type_arg["type"]["ofType"]["name"], "MediaFacetValue");
+
+    for (field_name, input_name) in [
+        ("metadataMovie", "MetadataMovieInput"),
+        ("metadataSeries", "MetadataSeriesInput"),
+    ] {
+        let field = fields
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .expect("metadata lookup field should exist");
+        let args = field["args"]
+            .as_array()
+            .expect("metadata lookup should expose args");
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0]["name"], "input");
+        assert_eq!(args[0]["type"]["kind"], "NON_NULL");
+        assert_eq!(args[0]["type"]["ofType"]["name"], input_name);
+    }
+
+    let movie_input_fields = body["data"]["metadataMovieInput"]["inputFields"]
+        .as_array()
+        .expect("MetadataMovieInput should expose fields");
+    assert_eq!(
+        movie_input_fields
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["tvdbId", "language"]
+    );
+    assert_eq!(movie_input_fields[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(movie_input_fields[0]["type"]["ofType"]["name"], "String");
+
+    let series_input_fields = body["data"]["metadataSeriesInput"]["inputFields"]
+        .as_array()
+        .expect("MetadataSeriesInput should expose fields");
+    assert_eq!(
+        series_input_fields
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["tvdbId", "includeEpisodes", "language"]
+    );
+    assert_eq!(series_input_fields[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(series_input_fields[0]["type"]["ofType"]["name"], "String");
+}
+
+#[tokio::test]
+async fn graphql_introspection_preview_manual_import_uses_input_object() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+	          queryRoot: __type(name: "QueryRoot") {
+	            fields {
+	              name
+	              args {
+	                name
+	                type {
+	                  kind
+	                  name
+	                  ofType {
+	                    kind
+	                    name
+	                    ofType {
+	                      kind
+	                      name
+	                    }
+	                  }
+	                }
+	              }
+	            }
+	          }
+          previewManualImportInput: __type(name: "PreviewManualImportInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let preview_manual_import = fields
+        .iter()
+        .find(|field| field["name"] == "previewManualImport")
+        .expect("previewManualImport should exist");
+    let args = preview_manual_import["args"]
+        .as_array()
+        .expect("previewManualImport should expose args");
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0]["name"], "input");
+    assert_eq!(args[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        args[0]["type"]["ofType"]["name"],
+        "PreviewManualImportInput"
+    );
+
+    let input_fields = body["data"]["previewManualImportInput"]["inputFields"]
+        .as_array()
+        .expect("PreviewManualImportInput should expose input fields");
+    let input_field = |name: &str| {
+        input_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("input field should exist")
+    };
+    assert_eq!(input_field("clientId")["type"]["name"], "ID");
+
+    let download_client_item_id = input_field("downloadClientItemId");
+    assert_eq!(download_client_item_id["type"]["kind"], "NON_NULL");
+    assert_eq!(download_client_item_id["type"]["ofType"]["name"], "String");
+
+    let title_id = input_field("titleId");
+    assert_eq!(title_id["type"]["kind"], "NON_NULL");
+    assert_eq!(title_id["type"]["ofType"]["name"], "ID");
+}
+
+#[tokio::test]
+async fn graphql_introspection_title_history_filter_uses_event_type_enum() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          filterInput: __type(name: "TitleHistoryFilterInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+            }
+          }
+          eventType: __type(name: "TitleHistoryEventTypeValue") {
+            enumValues { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = body["data"]["filterInput"]["inputFields"]
+        .as_array()
+        .expect("TitleHistoryFilterInput should expose input fields");
+    let event_types = fields
+        .iter()
+        .find(|field| field["name"] == "eventTypes")
+        .expect("eventTypes input should exist");
+    assert_eq!(event_types["type"]["kind"], "LIST");
+    assert_eq!(
+        event_types["type"]["ofType"]["ofType"]["name"],
+        "TitleHistoryEventTypeValue"
+    );
+    let id_list_input = |name: &str| {
+        fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{name} input should exist"))
+    };
+    for name in ["titleIds", "libraryIds"] {
+        let field = id_list_input(name);
+        assert_eq!(field["type"]["kind"], "LIST", "{name}");
+        assert_eq!(field["type"]["ofType"]["kind"], "NON_NULL", "{name}");
+        assert_eq!(field["type"]["ofType"]["ofType"]["name"], "ID", "{name}");
+    }
+    let episode_id = id_list_input("episodeId");
+    assert_eq!(episode_id["type"]["kind"], "SCALAR");
+    assert_eq!(episode_id["type"]["name"], "ID");
+
+    let names: Vec<&str> = body["data"]["eventType"]["enumValues"]
+        .as_array()
+        .expect("TitleHistoryEventTypeValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert!(names.contains(&"download_failed"));
+    assert!(names.contains(&"download_ignored"));
+    assert!(names.contains(&"rematched"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_recycle_bin_uses_id_and_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          recycledItem: __type(name: "RecycledItemPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          restorePayload: __type(name: "RestoreRecycledItemPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deletePayload: __type(name: "DeleteRecycledItemPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          emptyPayload: __type(name: "EmptyRecycleBinPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let recycled_fields = body["data"]["recycledItem"]["fields"]
+        .as_array()
+        .expect("RecycledItemPayload should expose fields");
+    let recycled_field = |name: &str| {
+        recycled_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("recycled item field should exist")
+    };
+    assert_eq!(recycled_field("id")["type"]["kind"], "NON_NULL");
+    assert_eq!(recycled_field("id")["type"]["ofType"]["name"], "ID");
+    assert_eq!(recycled_field("libraryId")["type"]["kind"], "NON_NULL");
+    assert_eq!(recycled_field("libraryId")["type"]["ofType"]["name"], "ID");
+    assert_eq!(recycled_field("titleId")["type"]["name"], "ID");
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+    let restore = mutation("restoreRecycledItem");
+    assert_eq!(
+        restore["type"]["ofType"]["name"],
+        "RestoreRecycledItemPayload"
+    );
+    let restore_id_arg = restore["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|arg| arg["name"] == "id")
+        .expect("restore id arg should exist");
+    assert_eq!(restore_id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(restore_id_arg["type"]["ofType"]["name"], "ID");
+
+    let delete = mutation("deleteRecycledItem");
+    assert_eq!(
+        delete["type"]["ofType"]["name"],
+        "DeleteRecycledItemPayload"
+    );
+    let empty = mutation("emptyRecycleBin");
+    assert_eq!(empty["type"]["ofType"]["name"], "EmptyRecycleBinPayload");
+
+    let restore_payload_fields = body["data"]["restorePayload"]["fields"]
+        .as_array()
+        .expect("RestoreRecycledItemPayload should expose fields");
+    let restore_id = restore_payload_fields
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("restore payload id field should exist");
+    assert_eq!(restore_id["type"]["ofType"]["name"], "ID");
+
+    let delete_payload_fields = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteRecycledItemPayload should expose fields");
+    let delete_id = delete_payload_fields
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("delete payload id field should exist");
+    assert_eq!(delete_id["type"]["ofType"]["name"], "ID");
+
+    let empty_payload_names: Vec<&str> = body["data"]["emptyPayload"]["fields"]
+        .as_array()
+        .expect("EmptyRecycleBinPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(empty_payload_names, vec!["purgedCount"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_notification_mutations_use_id_and_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteChannelPayload: __type(name: "DeleteNotificationChannelPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          testChannelPayload: __type(name: "NotificationChannelTestPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteSubscriptionPayload: __type(name: "DeleteNotificationSubscriptionPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          channelPayload: __type(name: "NotificationChannelPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          subscriptionPayload: __type(name: "NotificationSubscriptionPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          targetPayload: __type(name: "NotificationTargetPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          createChannelInput: __type(name: "CreateNotificationChannelInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateChannelInput: __type(name: "UpdateNotificationChannelInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          createSubscriptionInput: __type(name: "CreateNotificationSubscriptionInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateSubscriptionInput: __type(name: "UpdateNotificationSubscriptionInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+
+    fn id_arg(field: &Value) -> &Value {
+        field["args"]
+            .as_array()
+            .expect("mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == "id")
+            .expect("id arg should exist")
+    }
+
+    let delete_channel = mutation("deleteNotificationChannel");
+    assert_eq!(
+        delete_channel["type"]["ofType"]["name"],
+        "DeleteNotificationChannelPayload"
+    );
+    assert_eq!(id_arg(delete_channel)["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg(delete_channel)["type"]["ofType"]["name"], "ID");
+
+    let test_channel = mutation("testNotificationChannel");
+    assert_eq!(
+        test_channel["type"]["ofType"]["name"],
+        "NotificationChannelTestPayload"
+    );
+    assert_eq!(id_arg(test_channel)["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg(test_channel)["type"]["ofType"]["name"], "ID");
+
+    let delete_subscription = mutation("deleteNotificationSubscription");
+    assert_eq!(
+        delete_subscription["type"]["ofType"]["name"],
+        "DeleteNotificationSubscriptionPayload"
+    );
+    assert_eq!(id_arg(delete_subscription)["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg(delete_subscription)["type"]["ofType"]["name"], "ID");
+
+    let delete_channel_fields = body["data"]["deleteChannelPayload"]["fields"]
+        .as_array()
+        .expect("DeleteNotificationChannelPayload should expose fields");
+    let delete_channel_id = delete_channel_fields
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("delete channel payload id field should exist");
+    assert_eq!(delete_channel_id["type"]["ofType"]["name"], "ID");
+
+    let test_channel_names: Vec<&str> = body["data"]["testChannelPayload"]["fields"]
+        .as_array()
+        .expect("NotificationChannelTestPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        test_channel_names,
+        vec!["id", "status", "message", "retryAfterSeconds"]
+    );
+
+    let delete_subscription_fields = body["data"]["deleteSubscriptionPayload"]["fields"]
+        .as_array()
+        .expect("DeleteNotificationSubscriptionPayload should expose fields");
+    let delete_subscription_id = delete_subscription_fields
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("delete subscription payload id field should exist");
+    assert_eq!(delete_subscription_id["type"]["ofType"]["name"], "ID");
+
+    let output_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+    let assert_optional_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "ID", "{label}");
+    };
+    for (type_alias, field_name) in [
+        ("channelPayload", "id"),
+        ("subscriptionPayload", "id"),
+        ("subscriptionPayload", "targetId"),
+        ("targetPayload", "id"),
+    ] {
+        assert_non_null_id(
+            output_field(type_alias, field_name),
+            &format!("{type_alias}.{field_name}"),
+        );
+    }
+    for (type_alias, field_name) in [
+        ("channelPayload", "mediaServerConnectionId"),
+        ("subscriptionPayload", "channelId"),
+        ("targetPayload", "mediaServerConnectionId"),
+    ] {
+        assert_optional_id(
+            output_field(type_alias, field_name),
+            &format!("{type_alias}.{field_name}"),
+        );
+    }
+    for (type_alias, field_name) in [
+        ("updateChannelInput", "id"),
+        ("updateSubscriptionInput", "id"),
+    ] {
+        assert_non_null_id(
+            input_field(type_alias, field_name),
+            &format!("{type_alias}.{field_name}"),
+        );
+    }
+    for (type_alias, field_name) in [
+        ("createChannelInput", "mediaServerConnectionId"),
+        ("updateChannelInput", "mediaServerConnectionId"),
+        ("createSubscriptionInput", "channelId"),
+        ("createSubscriptionInput", "targetId"),
+        ("updateSubscriptionInput", "targetId"),
+    ] {
+        assert_optional_id(
+            input_field(type_alias, field_name),
+            &format!("{type_alias}.{field_name}"),
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_provider_tests_use_validation_payload() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          providerValidation: __type(name: "ProviderValidationPayload") {
+            fields { name }
+          }
+          testMediaServerConnectionInput: __type(name: "TestMediaServerConnectionInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+
+    for name in [
+        "testIndexerConnection",
+        "testDownloadClientConnection",
+        "testSubtitleProviderConnection",
+        "testMediaServerConnection",
+    ] {
+        assert_eq!(
+            mutation(name)["type"]["ofType"]["name"],
+            "ProviderValidationPayload",
+            "{name} should return ProviderValidationPayload"
+        );
+    }
+
+    let media_server_test = mutation("testMediaServerConnection");
+    let media_server_args = media_server_test["args"]
+        .as_array()
+        .expect("testMediaServerConnection should expose args");
+    assert_eq!(media_server_args.len(), 1);
+    assert_eq!(media_server_args[0]["name"], "input");
+    assert_eq!(media_server_args[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        media_server_args[0]["type"]["ofType"]["name"],
+        "TestMediaServerConnectionInput"
+    );
+
+    let media_server_input_fields = body["data"]["testMediaServerConnectionInput"]["inputFields"]
+        .as_array()
+        .expect("TestMediaServerConnectionInput should expose input fields");
+    let id_field = media_server_input_fields
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("id field should exist");
+    assert_eq!(id_field["type"]["kind"], "NON_NULL");
+    assert_eq!(id_field["type"]["ofType"]["name"], "ID");
+    let plex_auth_token_field = media_server_input_fields
+        .iter()
+        .find(|field| field["name"] == "plexAuthToken")
+        .expect("plexAuthToken field should exist");
+    assert_eq!(plex_auth_token_field["type"]["name"], "String");
+
+    let payload_fields: Vec<&str> = body["data"]["providerValidation"]["fields"]
+        .as_array()
+        .expect("ProviderValidationPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        payload_fields,
+        vec!["status", "message", "retryAfterSeconds"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_provider_configs_use_typed_config_values() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          configValuePayload: __type(name: "ProviderConfigValuePayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          configValueInput: __type(name: "ProviderConfigValueInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          indexerPayload: __type(name: "IndexerConfigPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          downloadClientPayload: __type(name: "DownloadClientConfigPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          indexerSyncPayload: __type(name: "IndexerConfigSyncPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          notificationChannelPayload: __type(name: "NotificationChannelPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          createIndexerInput: __type(name: "CreateIndexerConfigInput") {
+            inputFields { name }
+          }
+          updateIndexerInput: __type(name: "UpdateIndexerConfigInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          testIndexerInput: __type(name: "TestIndexerConnectionInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          createDownloadClientInput: __type(name: "CreateDownloadClientConfigInput") {
+            inputFields { name }
+          }
+          updateDownloadClientInput: __type(name: "UpdateDownloadClientConfigInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          reorderDownloadClientInput: __type(name: "ReorderDownloadClientConfigsInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          reorderDownloadClientPayload: __type(name: "ReorderDownloadClientConfigsPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          testDownloadClientInput: __type(name: "TestDownloadClientConnectionInput") {
+            inputFields { name }
+          }
+          createSubtitleProviderInput: __type(name: "CreateSubtitleProviderConfigInput") {
+            inputFields { name }
+          }
+          updateSubtitleProviderInput: __type(name: "UpdateSubtitleProviderConfigInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          testSubtitleProviderInput: __type(name: "TestSubtitleProviderConnectionInput") {
+            inputFields { name }
+          }
+          createNotificationChannelInput: __type(name: "CreateNotificationChannelInput") {
+            inputFields { name }
+          }
+          updateNotificationChannelInput: __type(name: "UpdateNotificationChannelInput") {
+            inputFields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let field_names = |type_alias: &str, field_key: &str| -> Vec<&str> {
+        body["data"][type_alias][field_key]
+            .as_array()
+            .expect("type should expose fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect()
+    };
+
+    assert_eq!(
+        field_names("configValuePayload", "fields"),
+        vec![
+            "key",
+            "label",
+            "fieldType",
+            "required",
+            "defaultValue",
+            "valueSource",
+            "role",
+            "hostBinding",
+            "options",
+            "helpText",
+            "stringValue",
+            "boolValue",
+            "intValue",
+            "floatValue",
+            "secretStored"
+        ]
+    );
+    assert_eq!(
+        field_names("configValueInput", "inputFields"),
+        vec![
+            "key",
+            "stringValue",
+            "boolValue",
+            "intValue",
+            "floatValue",
+            "secretValue",
+            "clearSecret"
+        ]
+    );
+
+    let output_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+    let assert_optional_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "ID", "{label}");
+    };
+    let assert_non_null_id_list = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{label}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], "ID",
+            "{label}"
+        );
+    };
+    let assert_non_null_string_list = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{label}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], "String",
+            "{label}"
+        );
+    };
+    let assert_optional_string = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "String", "{label}");
+    };
+    let assert_optional_bool = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "Boolean", "{label}");
+    };
+
+    assert_optional_string(
+        output_field("configValuePayload", "stringValue"),
+        "ProviderConfigValuePayload.stringValue",
+    );
+    assert_optional_string(
+        input_field("configValueInput", "secretValue"),
+        "ProviderConfigValueInput.secretValue",
+    );
+    assert_optional_bool(
+        input_field("configValueInput", "clearSecret"),
+        "ProviderConfigValueInput.clearSecret",
+    );
+    let secret_stored = output_field("configValuePayload", "secretStored");
+    assert_eq!(
+        secret_stored["type"]["kind"], "NON_NULL",
+        "ProviderConfigValuePayload.secretStored"
+    );
+    assert_eq!(
+        secret_stored["type"]["ofType"]["name"], "Boolean",
+        "ProviderConfigValuePayload.secretStored"
+    );
+    let field_type = output_field("configValuePayload", "fieldType");
+    assert_eq!(
+        field_type["type"]["name"], "PluginConfigFieldTypeValue",
+        "ProviderConfigValuePayload.fieldType"
+    );
+    let value_source = output_field("configValuePayload", "valueSource");
+    assert_eq!(
+        value_source["type"]["name"], "PluginConfigValueSourceValue",
+        "ProviderConfigValuePayload.valueSource"
+    );
+    let options = output_field("configValuePayload", "options");
+    assert_eq!(
+        options["type"]["kind"], "NON_NULL",
+        "ProviderConfigValuePayload.options"
+    );
+    assert_eq!(
+        options["type"]["ofType"]["kind"], "LIST",
+        "ProviderConfigValuePayload.options"
+    );
+    assert_eq!(
+        options["type"]["ofType"]["ofType"]["ofType"]["name"], "PluginConfigFieldOptionPayload",
+        "ProviderConfigValuePayload.options"
+    );
+
+    assert_non_null_id(
+        output_field("indexerPayload", "id"),
+        "IndexerConfigPayload.id",
+    );
+    assert_optional_id(
+        output_field("indexerPayload", "managedParentConfigId"),
+        "IndexerConfigPayload.managedParentConfigId",
+    );
+    assert_non_null_id(
+        output_field("downloadClientPayload", "id"),
+        "DownloadClientConfigPayload.id",
+    );
+    for type_alias in [
+        "indexerPayload",
+        "downloadClientPayload",
+        "notificationChannelPayload",
+    ] {
+        assert_non_null_string_list(
+            output_field(type_alias, "storedSecretKeys"),
+            &format!("{type_alias}.storedSecretKeys"),
+        );
+    }
+    for field_name in ["parentConfigId", "createdIds", "updatedIds", "deletedIds"] {
+        let field = output_field("indexerSyncPayload", field_name);
+        if field_name == "parentConfigId" {
+            assert_non_null_id(field, "IndexerConfigSyncPayload.parentConfigId");
+        } else {
+            assert_non_null_id_list(field, field_name);
+        }
+    }
+    assert_non_null_id(
+        input_field("updateIndexerInput", "id"),
+        "UpdateIndexerConfigInput.id",
+    );
+    assert_optional_id(
+        input_field("testIndexerInput", "indexerId"),
+        "TestIndexerConnectionInput.indexerId",
+    );
+    assert_non_null_id(
+        input_field("updateDownloadClientInput", "id"),
+        "UpdateDownloadClientConfigInput.id",
+    );
+    let disabled_until = input_field("updateSubtitleProviderInput", "disabledUntil");
+    assert_eq!(
+        disabled_until["type"]["kind"], "SCALAR",
+        "UpdateSubtitleProviderConfigInput.disabledUntil"
+    );
+    assert_eq!(
+        disabled_until["type"]["name"], "DateTime",
+        "UpdateSubtitleProviderConfigInput.disabledUntil"
+    );
+    assert_non_null_id_list(
+        input_field("reorderDownloadClientInput", "ids"),
+        "ReorderDownloadClientConfigsInput.ids",
+    );
+    assert_non_null_id_list(
+        output_field("reorderDownloadClientPayload", "ids"),
+        "ReorderDownloadClientConfigsPayload.ids",
+    );
+
+    for type_alias in [
+        "indexerPayload",
+        "downloadClientPayload",
+        "notificationChannelPayload",
+    ] {
+        let fields = field_names(type_alias, "fields");
+        assert!(fields.contains(&"config"));
+        assert!(!fields.contains(&"configJson"));
+    }
+
+    for type_alias in [
+        "createIndexerInput",
+        "updateIndexerInput",
+        "testIndexerInput",
+        "createDownloadClientInput",
+        "updateDownloadClientInput",
+        "testDownloadClientInput",
+        "createSubtitleProviderInput",
+        "updateSubtitleProviderInput",
+        "testSubtitleProviderInput",
+        "createNotificationChannelInput",
+        "updateNotificationChannelInput",
+    ] {
+        let fields = field_names(type_alias, "inputFields");
+        assert!(fields.contains(&"config"));
+        assert!(!fields.contains(&"configJson"));
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_config_deletes_use_id_and_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteIndexerInput: __type(name: "DeleteIndexerConfigInput") { name }
+          deleteDownloadClientInput: __type(name: "DeleteDownloadClientConfigInput") { name }
+          deleteSubtitleProviderInput: __type(name: "DeleteSubtitleProviderConfigInput") { name }
+          deleteIndexerPayload: __type(name: "DeleteIndexerConfigPayload") {
+            fields { name }
+          }
+          deleteDownloadClientPayload: __type(name: "DeleteDownloadClientConfigPayload") {
+            fields { name }
+          }
+          deleteSubtitleProviderPayload: __type(name: "DeleteSubtitleProviderConfigPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert!(body["data"]["deleteIndexerInput"].is_null());
+    assert!(body["data"]["deleteDownloadClientInput"].is_null());
+    assert!(body["data"]["deleteSubtitleProviderInput"].is_null());
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+    fn id_arg(field: &Value) -> &Value {
+        field["args"]
+            .as_array()
+            .expect("mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == "id")
+            .expect("id arg should exist")
+    }
+
+    for (name, payload_name) in [
+        ("deleteIndexerConfig", "DeleteIndexerConfigPayload"),
+        (
+            "deleteDownloadClientConfig",
+            "DeleteDownloadClientConfigPayload",
+        ),
+        (
+            "deleteSubtitleProviderConfig",
+            "DeleteSubtitleProviderConfigPayload",
+        ),
+    ] {
+        let mutation = mutation(name);
+        assert_eq!(mutation["type"]["ofType"]["name"], payload_name);
+        assert_eq!(id_arg(mutation)["type"]["kind"], "NON_NULL");
+        assert_eq!(id_arg(mutation)["type"]["ofType"]["name"], "ID");
+    }
+
+    for payload in [
+        "deleteIndexerPayload",
+        "deleteDownloadClientPayload",
+        "deleteSubtitleProviderPayload",
+    ] {
+        let field_names: Vec<&str> = body["data"][payload]["fields"]
+            .as_array()
+            .expect("delete payload should expose fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(field_names, vec!["id", "deleted"]);
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+            }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deletePayload: __type(name: "DeleteMediaServerConnectionPayload") {
+            fields { name }
+          }
+          mediaServerConnection: __type(name: "MediaServerConnectionPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          defaultLibraryGrant: __type(name: "MediaServerDefaultLibraryGrantPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          defaultLibraryGrantInput: __type(name: "MediaServerDefaultLibraryGrantInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateMediaServerConnectionInput: __type(name: "UpdateMediaServerConnectionInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          mediaServerUserGroup: __type(name: "MediaServerUserGroupPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let delete = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "deleteMediaServerConnection")
+        .expect("deleteMediaServerConnection should exist");
+    assert_eq!(
+        delete["type"]["ofType"]["name"],
+        "DeleteMediaServerConnectionPayload"
+    );
+    let id_arg = delete["args"]
+        .as_array()
+        .expect("deleteMediaServerConnection should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "id")
+        .expect("id arg should exist");
+    assert_eq!(id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg["type"]["ofType"]["name"], "ID");
+
+    let query_fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let query_arg = |field_name: &str, arg_name: &str| {
+        query_fields
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .expect("query field should exist")["args"]
+            .as_array()
+            .expect("query field should expose args")
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .expect("query arg should exist")
+            .clone()
+    };
+    for (field_name, arg_name) in [
+        ("mediaServerConnection", "id"),
+        ("jellyfinServerUsers", "connectionId"),
+    ] {
+        let arg = query_arg(field_name, arg_name);
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
+    }
+
+    let output_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    for (type_alias, field_name) in [
+        ("mediaServerConnection", "id"),
+        ("defaultLibraryGrant", "libraryId"),
+        ("mediaServerUserGroup", "connectionId"),
+    ] {
+        let field = output_field(type_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{type_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], "ID",
+            "{type_alias}.{field_name}"
+        );
+    }
+    for field_name in ["createdAt", "updatedAt"] {
+        let field = output_field("mediaServerConnection", field_name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(field["type"]["ofType"]["name"], "DateTime", "{field_name}");
+    }
+    for (type_alias, field_name) in [
+        ("defaultLibraryGrantInput", "libraryId"),
+        ("updateMediaServerConnectionInput", "id"),
+    ] {
+        let field = input_field(type_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{type_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], "ID",
+            "{type_alias}.{field_name}"
+        );
+    }
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteMediaServerConnectionPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "deleted"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_library_delete_uses_id_and_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteInput: __type(name: "DeleteLibraryInput") { name }
+          deletePayload: __type(name: "DeleteLibraryPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert!(body["data"]["deleteInput"].is_null());
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let delete = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "deleteLibrary")
+        .expect("deleteLibrary should exist");
+    assert_eq!(delete["type"]["ofType"]["name"], "DeleteLibraryPayload");
+    let id_arg = delete["args"]
+        .as_array()
+        .expect("deleteLibrary should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "id")
+        .expect("id arg should exist");
+    assert_eq!(id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg["type"]["ofType"]["name"], "ID");
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteLibraryPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "deleted"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_media_file_delete_uses_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteInput: __type(name: "DeleteMediaFileInput") {
+            inputFields { name }
+          }
+          deletePayload: __type(name: "DeleteMediaFilePayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let input_fields: Vec<&str> = body["data"]["deleteInput"]["inputFields"]
+        .as_array()
+        .expect("DeleteMediaFileInput should remain an input object")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        input_fields,
+        vec![
+            "fileId",
+            "deleteFromDisk",
+            "previewFingerprint",
+            "typedConfirmation"
+        ]
+    );
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let delete = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "deleteMediaFile")
+        .expect("deleteMediaFile should exist");
+    assert_eq!(delete["type"]["ofType"]["name"], "DeleteMediaFilePayload");
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteMediaFilePayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "deleted"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_title_delete_uses_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteInput: __type(name: "DeleteTitleInput") {
+            inputFields { name }
+          }
+          deletePayload: __type(name: "DeleteTitlePayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let input_fields: Vec<&str> = body["data"]["deleteInput"]["inputFields"]
+        .as_array()
+        .expect("DeleteTitleInput should remain an input object")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        input_fields,
+        vec![
+            "titleId",
+            "deleteFilesOnDisk",
+            "previewFingerprint",
+            "typedConfirmation"
+        ]
+    );
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let delete = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "deleteTitle")
+        .expect("deleteTitle should exist");
+    assert_eq!(delete["type"]["ofType"]["name"], "DeleteTitlePayload");
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteTitlePayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "deleted"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_release_blocklist_clear_uses_id_and_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          clearInput: __type(name: "ClearTitleReleaseBlocklistEntryInput") { name }
+          clearPayload: __type(name: "ClearTitleReleaseBlocklistEntryPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert!(body["data"]["clearInput"].is_null());
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let clear = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "clearTitleReleaseBlocklistEntry")
+        .expect("clearTitleReleaseBlocklistEntry should exist");
+    assert_eq!(
+        clear["type"]["ofType"]["name"],
+        "ClearTitleReleaseBlocklistEntryPayload"
+    );
+    let id_arg = clear["args"]
+        .as_array()
+        .expect("clearTitleReleaseBlocklistEntry should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "id")
+        .expect("id arg should exist");
+    assert_eq!(id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg["type"]["ofType"]["name"], "ID");
+
+    let payload_fields: Vec<&str> = body["data"]["clearPayload"]["fields"]
+        .as_array()
+        .expect("ClearTitleReleaseBlocklistEntryPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "cleared"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          wantedInput: __type(name: "WantedItemIdInput") { name }
+          pendingInput: __type(name: "PendingReleaseActionInput") { name }
+          pausePayload: __type(name: "PauseWantedItemPayload") { fields { name } }
+          resumePayload: __type(name: "ResumeWantedItemPayload") { fields { name } }
+          resetPayload: __type(name: "ResetWantedItemPayload") { fields { name } }
+          forceGrabPayload: __type(name: "ForceGrabPendingReleasePayload") { fields { name } }
+          dismissPayload: __type(name: "DismissPendingReleasePayload") { fields { name } }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert!(body["data"]["wantedInput"].is_null());
+    assert!(body["data"]["pendingInput"].is_null());
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+    fn id_arg(field: &Value) -> &Value {
+        field["args"]
+            .as_array()
+            .expect("mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == "id")
+            .expect("id arg should exist")
+    }
+
+    for (name, payload_name) in [
+        ("pauseWantedItem", "PauseWantedItemPayload"),
+        ("resumeWantedItem", "ResumeWantedItemPayload"),
+        ("resetWantedItem", "ResetWantedItemPayload"),
+        ("forceGrabPendingRelease", "ForceGrabPendingReleasePayload"),
+        ("dismissPendingRelease", "DismissPendingReleasePayload"),
+    ] {
+        let field = mutation(name);
+        assert_eq!(field["type"]["ofType"]["name"], payload_name);
+        assert_eq!(id_arg(field)["type"]["kind"], "NON_NULL");
+        assert_eq!(id_arg(field)["type"]["ofType"]["name"], "ID");
+    }
+
+    for (payload, flag) in [
+        ("pausePayload", "paused"),
+        ("resumePayload", "resumed"),
+        ("resetPayload", "reset"),
+        ("forceGrabPayload", "grabbed"),
+        ("dismissPayload", "dismissed"),
+    ] {
+        let field_names: Vec<&str> = body["data"][payload]["fields"]
+            .as_array()
+            .expect("action payload should expose fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(field_names, vec!["id", flag]);
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_rule_set_delete_uses_id_and_payload_result() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deletePayload: __type(name: "DeleteRuleSetPayload") {
+            fields { name }
+          }
+          updateInput: __type(name: "UpdateRuleSetInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          toggleInput: __type(name: "ToggleRuleSetInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          validateInput: __type(name: "ValidateRuleSetInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          requiredAudioInput: __type(name: "SetTitleRequiredAudioInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let delete = mutation_fields
+        .iter()
+        .find(|field| field["name"] == "deleteRuleSet")
+        .expect("deleteRuleSet should exist");
+    assert_eq!(delete["type"]["ofType"]["name"], "DeleteRuleSetPayload");
+    let id_arg = delete["args"]
+        .as_array()
+        .expect("deleteRuleSet should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "id")
+        .expect("id arg should exist");
+    assert_eq!(id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(id_arg["type"]["ofType"]["name"], "ID");
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteRuleSetPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["id", "deleted"]);
+
+    let input_field = |type_alias: &str, name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+            .clone()
+    };
+    for (type_alias, name) in [
+        ("updateInput", "id"),
+        ("toggleInput", "id"),
+        ("requiredAudioInput", "titleId"),
+    ] {
+        let field = input_field(type_alias, name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{type_alias}.{name}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{type_alias}.{name}");
+    }
+    let rule_set_id = input_field("validateInput", "ruleSetId");
+    assert_eq!(rule_set_id["type"]["kind"], "SCALAR");
+    assert_eq!(rule_set_id["type"]["name"], "ID");
+}
+
+#[tokio::test]
+async fn graphql_introspection_plugin_and_post_processing_ids_use_id_fields() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          registryPlugin: __type(name: "RegistryPluginPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          pluginInstallation: __type(name: "PluginInstallationPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          pluginInstallProgress: __type(name: "PluginInstallProgressPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          togglePluginInput: __type(name: "TogglePluginInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updatePostProcessingScriptInput: __type(name: "UpdatePostProcessingScriptInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let output_field = |type_alias: &str, name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+            .clone()
+    };
+    let input_field = |type_alias: &str, name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |field: serde_json::Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+
+    for (type_alias, name) in [
+        ("registryPlugin", "id"),
+        ("pluginInstallation", "id"),
+        ("pluginInstallation", "pluginId"),
+        ("pluginInstallProgress", "pluginId"),
+    ] {
+        assert_non_null_id(
+            output_field(type_alias, name),
+            &format!("{type_alias}.{name}"),
+        );
+    }
+    for (type_alias, name) in [
+        ("togglePluginInput", "pluginId"),
+        ("updatePostProcessingScriptInput", "id"),
+    ] {
+        assert_non_null_id(
+            input_field(type_alias, name),
+            &format!("{type_alias}.{name}"),
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_backup_actions_use_inputs_and_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          createInput: __type(name: "CreateBackupInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          prepareInput: __type(name: "PrepareBackupDownloadInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          deleteInput: __type(name: "DeleteBackupInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          deletePayload: __type(name: "DeleteBackupPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation should exist")
+    };
+    let assert_input_arg = |mutation_name: &str, input_type: &str| {
+        let args = mutation(mutation_name)["args"]
+            .as_array()
+            .expect("mutation should expose args");
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0]["name"], "input");
+        assert_eq!(args[0]["type"]["kind"], "NON_NULL");
+        assert_eq!(args[0]["type"]["ofType"]["name"], input_type);
+    };
+    assert_input_arg("createBackup", "CreateBackupInput");
+    assert_input_arg("prepareBackupDownload", "PrepareBackupDownloadInput");
+    assert_input_arg("deleteBackup", "DeleteBackupInput");
+
+    let delete = mutation("deleteBackup");
+    assert_eq!(delete["type"]["ofType"]["name"], "DeleteBackupPayload");
+
+    let create_input_password = body["data"]["createInput"]["inputFields"]
+        .as_array()
+        .expect("CreateBackupInput should expose fields")
+        .iter()
+        .find(|field| field["name"] == "password")
+        .expect("password field should exist");
+    assert_eq!(create_input_password["type"]["kind"], "NON_NULL");
+    assert_eq!(create_input_password["type"]["ofType"]["name"], "String");
+    for (type_name, field_name) in [("prepareInput", "filename"), ("deleteInput", "filename")] {
+        let filename_field = body["data"][type_name]["inputFields"]
+            .as_array()
+            .expect("backup filename input should expose fields")
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .expect("filename field should exist");
+        assert_eq!(filename_field["type"]["kind"], "NON_NULL");
+        assert_eq!(filename_field["type"]["ofType"]["name"], "String");
+    }
+
+    let payload_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteBackupPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(payload_fields, vec!["filename", "deleted"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_subtitle_actions_use_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          searchInput: __type(name: "SearchSubtitlesInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          downloadInput: __type(name: "DownloadSubtitleInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          deleteInput: __type(name: "DeleteExternalSubtitleInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          blocklistInput: __type(name: "BlocklistExternalSubtitleInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateProviderInput: __type(name: "UpdateSubtitleProviderConfigInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          testProviderInput: __type(name: "TestSubtitleProviderConnectionInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          downloadPayload: __type(name: "DownloadSubtitlePayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          deletePayload: __type(name: "DeleteExternalSubtitlePayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          blocklistPayload: __type(name: "BlocklistExternalSubtitlePayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          subtitleProviderConfig: __type(name: "SubtitleProviderConfigPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          externalSubtitlePayload: __type(name: "ExternalSubtitlePayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          externalSubtitleBlocklistEntryPayload: __type(name: "ExternalSubtitleBlocklistEntryPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_input_non_null = |type_alias: &str, field_name: &str, scalar_name: &str| {
+        let field = input_field(type_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{type_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], scalar_name,
+            "{type_alias}.{field_name}"
+        );
+    };
+    let assert_input_optional = |type_alias: &str, field_name: &str, scalar_name: &str| {
+        let field = input_field(type_alias, field_name);
+        assert_eq!(field["type"]["kind"], "SCALAR", "{type_alias}.{field_name}");
+        assert_eq!(
+            field["type"]["name"], scalar_name,
+            "{type_alias}.{field_name}"
+        );
+    };
+    let payload_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_payload_non_null = |type_alias: &str, field_name: &str, scalar_name: &str| {
+        let field = payload_field(type_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{type_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], scalar_name,
+            "{type_alias}.{field_name}"
+        );
+    };
+    let assert_payload_optional = |type_alias: &str, field_name: &str, scalar_name: &str| {
+        let field = payload_field(type_alias, field_name);
+        assert_eq!(field["type"]["kind"], "SCALAR", "{type_alias}.{field_name}");
+        assert_eq!(
+            field["type"]["name"], scalar_name,
+            "{type_alias}.{field_name}"
+        );
+    };
+
+    assert_input_non_null("searchInput", "mediaFileId", "ID");
+    assert_input_non_null("searchInput", "language", "String");
+    assert_input_non_null("downloadInput", "mediaFileId", "ID");
+    assert_input_non_null("downloadInput", "providerFileId", "String");
+    assert_input_non_null("downloadInput", "language", "String");
+    assert_input_non_null("deleteInput", "externalSubtitleId", "ID");
+    assert_input_non_null("blocklistInput", "externalSubtitleId", "ID");
+    assert_input_non_null("updateProviderInput", "id", "ID");
+    assert_input_optional("testProviderInput", "id", "ID");
+
+    for (name, payload_name) in [
+        ("downloadSubtitle", "DownloadSubtitlePayload"),
+        ("deleteExternalSubtitle", "DeleteExternalSubtitlePayload"),
+        (
+            "blocklistExternalSubtitle",
+            "BlocklistExternalSubtitlePayload",
+        ),
+    ] {
+        assert_eq!(mutation(name)["type"]["ofType"]["name"], payload_name);
+    }
+
+    let download_fields: Vec<&str> = body["data"]["downloadPayload"]["fields"]
+        .as_array()
+        .expect("DownloadSubtitlePayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        download_fields,
+        vec!["mediaFileId", "providerFileId", "downloaded"]
+    );
+    assert_payload_non_null("downloadPayload", "mediaFileId", "ID");
+    assert_payload_non_null("downloadPayload", "providerFileId", "String");
+    assert_payload_non_null("downloadPayload", "downloaded", "Boolean");
+
+    let delete_fields: Vec<&str> = body["data"]["deletePayload"]["fields"]
+        .as_array()
+        .expect("DeleteExternalSubtitlePayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(delete_fields, vec!["id", "deleted"]);
+    assert_payload_non_null("deletePayload", "id", "ID");
+    assert_payload_non_null("deletePayload", "deleted", "Boolean");
+
+    let blocklist_fields: Vec<&str> = body["data"]["blocklistPayload"]["fields"]
+        .as_array()
+        .expect("BlocklistExternalSubtitlePayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(blocklist_fields, vec!["id", "blocklisted"]);
+    assert_payload_non_null("blocklistPayload", "id", "ID");
+    assert_payload_non_null("blocklistPayload", "blocklisted", "Boolean");
+
+    assert_payload_non_null("subtitleProviderConfig", "id", "ID");
+
+    for field_name in ["id", "mediaFileId", "titleId"] {
+        assert_payload_non_null("externalSubtitlePayload", field_name, "ID");
+    }
+    assert_payload_optional("externalSubtitlePayload", "episodeId", "ID");
+    assert_payload_optional("externalSubtitlePayload", "providerFileId", "String");
+
+    for field_name in ["id", "mediaFileId"] {
+        assert_payload_non_null("externalSubtitleBlocklistEntryPayload", field_name, "ID");
+    }
+    assert_payload_non_null(
+        "externalSubtitleBlocklistEntryPayload",
+        "providerFileId",
+        "String",
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          searchReleases: __type(name: "SearchReleasesInput") { inputFields { name type { ...TypeRef } } }
+          queueDownload: __type(name: "QueueDownloadInput") { inputFields { name type { ...TypeRef } } }
+          queueBestRelease: __type(name: "QueueBestReleaseInput") { inputFields { name type { ...TypeRef } } }
+          queueDownloadScope: __type(name: "QueueDownloadScopeInput") { inputFields { name type { ...TypeRef } } }
+          retryImport: __type(name: "RetryImportInput") { inputFields { name type { ...TypeRef } } }
+          ignoreTrackedDownload: __type(name: "IgnoreTrackedDownloadInput") { inputFields { name type { ...TypeRef } } }
+          markTrackedDownloadFailed: __type(name: "MarkTrackedDownloadFailedInput") { inputFields { name type { ...TypeRef } } }
+          assignTrackedDownloadTitle: __type(name: "AssignTrackedDownloadTitleInput") { inputFields { name type { ...TypeRef } } }
+          resolvePendingImport: __type(name: "ResolvePendingImportInput") { inputFields { name type { ...TypeRef } } }
+          bindPendingImport: __type(name: "BindPendingImportInput") { inputFields { name type { ...TypeRef } } }
+          triggerWantedSearch: __type(name: "TriggerWantedSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerTitleWantedSearch: __type(name: "TriggerTitleWantedSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerSeasonWantedSearch: __type(name: "TriggerSeasonWantedSearchInput") { inputFields { name type { ...TypeRef } } }
+          deleteTitle: __type(name: "DeleteTitleInput") { inputFields { name type { ...TypeRef } } }
+          deleteTitlesItem: __type(name: "DeleteTitlesItemInput") { inputFields { name type { ...TypeRef } } }
+          deleteTitlesPreview: __type(name: "DeleteTitlesPreviewInput") { inputFields { name type { ...TypeRef } } }
+          setTitleMonitored: __type(name: "SetTitleMonitoredInput") { inputFields { name type { ...TypeRef } } }
+          updateTitle: __type(name: "UpdateTitleInput") { inputFields { name type { ...TypeRef } } }
+          setPrimaryMovieFile: __type(name: "SetPrimaryMovieFileInput") { inputFields { name type { ...TypeRef } } }
+          fixTitleMatch: __type(name: "FixTitleMatchInput") { inputFields { name type { ...TypeRef } } }
+          setCollectionMonitored: __type(name: "SetCollectionMonitoredInput") { inputFields { name type { ...TypeRef } } }
+          setEpisodeMonitored: __type(name: "SetEpisodeMonitoredInput") { inputFields { name type { ...TypeRef } } }
+          setSeriesMovieMonitored: __type(name: "SetSeriesMovieMonitoredInput") { inputFields { name type { ...TypeRef } } }
+          deleteMediaFile: __type(name: "DeleteMediaFileInput") { inputFields { name type { ...TypeRef } } }
+          manualImportFileMapping: __type(name: "ManualImportFileMappingInput") { inputFields { name type { ...TypeRef } } }
+          queueManualImport: __type(name: "QueueManualImportInput") { inputFields { name type { ...TypeRef } } }
+          pauseDownload: __type(name: "PauseDownloadInput") { inputFields { name type { ...TypeRef } } }
+          resumeDownload: __type(name: "ResumeDownloadInput") { inputFields { name type { ...TypeRef } } }
+          deleteDownload: __type(name: "DeleteDownloadInput") { inputFields { name type { ...TypeRef } } }
+          previewManualImportPath: __type(name: "PreviewManualImportPathInput") { inputFields { name type { ...TypeRef } } }
+          queuePathManualImport: __type(name: "QueuePathManualImportInput") { inputFields { name type { ...TypeRef } } }
+          mediaRenamePreview: __type(name: "MediaRenamePreviewInput") { inputFields { name type { ...TypeRef } } }
+          mediaRenameApply: __type(name: "MediaRenameApplyInput") { inputFields { name type { ...TypeRef } } }
+        }
+
+        fragment TypeRef on __Type {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+              ofType {
+                kind
+                name
+              }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let input_field = |input_alias: &str, field_name: &str| {
+        body["data"][input_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{input_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{input_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |input_alias: &str, field_name: &str| {
+        let field = input_field(input_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], "ID",
+            "{input_alias}.{field_name}"
+        );
+    };
+    let assert_nullable_id = |input_alias: &str, field_name: &str| {
+        let field = input_field(input_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "SCALAR",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(field["type"]["name"], "ID", "{input_alias}.{field_name}");
+    };
+    let assert_non_null_id_list = |input_alias: &str, field_name: &str| {
+        let field = input_field(input_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["kind"], "LIST",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], "ID",
+            "{input_alias}.{field_name}"
+        );
+    };
+    let assert_nullable_id_list = |input_alias: &str, field_name: &str| {
+        let field = input_field(input_alias, field_name);
+        assert_eq!(field["type"]["kind"], "LIST", "{input_alias}.{field_name}");
+        assert_eq!(
+            field["type"]["ofType"]["kind"], "NON_NULL",
+            "{input_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["name"], "ID",
+            "{input_alias}.{field_name}"
+        );
+    };
+
+    for (input_alias, field_name) in [
+        ("searchReleases", "titleId"),
+        ("queueDownload", "titleId"),
+        ("queueBestRelease", "titleId"),
+        ("retryImport", "importId"),
+        ("assignTrackedDownloadTitle", "titleId"),
+        ("resolvePendingImport", "pendingImportId"),
+        ("bindPendingImport", "pendingImportId"),
+        ("triggerWantedSearch", "wantedItemId"),
+        ("triggerTitleWantedSearch", "titleId"),
+        ("triggerSeasonWantedSearch", "titleId"),
+        ("deleteTitle", "titleId"),
+        ("deleteTitlesItem", "titleId"),
+        ("setTitleMonitored", "titleId"),
+        ("updateTitle", "titleId"),
+        ("setPrimaryMovieFile", "titleId"),
+        ("setPrimaryMovieFile", "fileId"),
+        ("fixTitleMatch", "titleId"),
+        ("setCollectionMonitored", "collectionId"),
+        ("setEpisodeMonitored", "episodeId"),
+        ("setSeriesMovieMonitored", "seriesMovieLinkId"),
+        ("deleteMediaFile", "fileId"),
+        ("previewManualImportPath", "titleId"),
+        ("queuePathManualImport", "titleId"),
+        ("mediaRenameApply", "titleId"),
+    ] {
+        assert_non_null_id(input_alias, field_name);
+    }
+
+    for (input_alias, field_name) in [
+        ("searchReleases", "seriesMovieLinkId"),
+        ("queueManualImport", "titleId"),
+        ("queueManualImport", "clientId"),
+        ("pauseDownload", "clientId"),
+        ("resumeDownload", "clientId"),
+        ("deleteDownload", "clientId"),
+        ("ignoreTrackedDownload", "clientId"),
+        ("markTrackedDownloadFailed", "clientId"),
+        ("assignTrackedDownloadTitle", "clientId"),
+        ("bindPendingImport", "collectionId"),
+        ("manualImportFileMapping", "episodeId"),
+        ("manualImportFileMapping", "seriesMovieLinkId"),
+        ("mediaRenamePreview", "titleId"),
+        ("queueDownloadScope", "episode"),
+        ("queueDownloadScope", "seriesMovie"),
+        ("queueDownloadScope", "collection"),
+    ] {
+        assert_nullable_id(input_alias, field_name);
+    }
+
+    assert_non_null_id_list("deleteTitlesPreview", "titleIds");
+    assert_non_null_id_list("bindPendingImport", "episodeIds");
+    assert_nullable_id_list("queueDownloadScope", "episodeSet");
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_finalize_uses_payload_results() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          cancelInput: __type(name: "CancelExternalImportMonitorWarmupInput") { name }
+          cancelPayload: __type(name: "CancelExternalImportMonitorWarmupPayload") {
+            fields { name }
+          }
+          finalizePayload: __type(name: "FinalizeExternalImportPayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert!(body["data"]["cancelInput"].is_null());
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+
+    let cancel = mutation("cancelExternalImportMonitorWarmup");
+    assert_eq!(
+        cancel["type"]["ofType"]["name"],
+        "CancelExternalImportMonitorWarmupPayload"
+    );
+    let session_id_arg = cancel["args"]
+        .as_array()
+        .expect("cancelExternalImportMonitorWarmup should expose args")
+        .iter()
+        .find(|arg| arg["name"] == "sessionId")
+        .expect("sessionId arg should exist");
+    assert_eq!(session_id_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(session_id_arg["type"]["ofType"]["name"], "ID");
+
+    let finalize = mutation("finalizeExternalImport");
+    assert_eq!(
+        finalize["type"]["ofType"]["name"],
+        "FinalizeExternalImportPayload"
+    );
+
+    let cancel_fields: Vec<&str> = body["data"]["cancelPayload"]["fields"]
+        .as_array()
+        .expect("CancelExternalImportMonitorWarmupPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(cancel_fields, vec!["sessionId", "canceled"]);
+
+    let finalize_fields: Vec<&str> = body["data"]["finalizePayload"]["fields"]
+        .as_array()
+        .expect("FinalizeExternalImportPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_does_not_project_api_keys() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          downloadClient: __type(name: "ExternalImportDownloadClientPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          indexer: __type(name: "ExternalImportIndexerPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = |type_alias: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+    };
+    let field = |type_alias: &str, name: &str| {
+        fields(type_alias)
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+            .clone()
+    };
+    for type_alias in ["downloadClient", "indexer"] {
+        let names: Vec<&str> = fields(type_alias)
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert!(
+            !names.contains(&"apiKey"),
+            "{type_alias} should not project API keys"
+        );
+        let api_key_present = field(type_alias, "apiKeyPresent");
+        assert_eq!(
+            api_key_present["type"]["kind"], "NON_NULL",
+            "{type_alias}.apiKeyPresent"
+        );
+        assert_eq!(
+            api_key_present["type"]["ofType"]["name"], "Boolean",
+            "{type_alias}.apiKeyPresent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_warmup_uses_session_ids() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields { name args { name type { kind name ofType { kind name } } } }
+          }
+          subscriptionRoot: __type(name: "SubscriptionRoot") {
+            fields { name args { name type { kind name ofType { kind name } } } }
+          }
+          finalizeInput: __type(name: "FinalizeExternalImportInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          progressPayload: __type(name: "ExternalImportMonitorWarmupProgressPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let root_arg = |root_alias: &str, field_name: &str, arg_name: &str| {
+        body["data"][root_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{root_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{field_name} should exist"))["args"]
+            .as_array()
+            .expect("field should expose args")
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
+            .clone()
+    };
+    for (root_alias, field_name) in [
+        ("queryRoot", "externalImportMonitorWarmupStatus"),
+        ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
+    ] {
+        let arg = root_arg(root_alias, field_name, "sessionId");
+        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
+    }
+
+    let finalize_field = body["data"]["finalizeInput"]["inputFields"]
+        .as_array()
+        .expect("FinalizeExternalImportInput should expose input fields")
+        .iter()
+        .find(|field| field["name"] == "monitorWarmupSessionId")
+        .expect("monitorWarmupSessionId should exist");
+    assert_eq!(finalize_field["type"]["kind"], "SCALAR");
+    assert_eq!(finalize_field["type"]["name"], "ID");
+
+    let payload_field = body["data"]["progressPayload"]["fields"]
+        .as_array()
+        .expect("ExternalImportMonitorWarmupProgressPayload should expose fields")
+        .iter()
+        .find(|field| field["name"] == "sessionId")
+        .expect("sessionId should exist");
+    assert_eq!(payload_field["type"]["kind"], "NON_NULL");
+    assert_eq!(payload_field["type"]["ofType"]["name"], "ID");
+}
+
+#[tokio::test]
+async fn graphql_introspection_account_setup_and_settings_actions_use_semantic_payloads() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteQualityProfileInput: __type(name: "DeleteQualityProfileInput") { name }
+          deleteDelayProfileInput: __type(name: "DeleteDelayProfileInput") { name }
+          deleteUserInput: __type(name: "DeleteUserInput") { name }
+          resetUserMfaInput: __type(name: "ResetUserMfaInput") { name }
+          unlinkExternalAccountInput: __type(name: "UnlinkExternalAccountInput") { name }
+          titleIdInput: __type(name: "TitleIdInput") { name }
+          cancelLibraryScanInput: __type(name: "CancelLibraryScanInput") { name }
+          ignorePendingImportInput: __type(name: "IgnorePendingImportInput") { name }
+          loginWithPlexInput: __type(name: "LoginWithPlexInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          loginWithJellyfinInput: __type(name: "LoginWithJellyfinInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          linkPlexAccountInput: __type(name: "LinkPlexAccountInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          linkJellyfinAccountInput: __type(name: "LinkJellyfinAccountInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          createExternalAccountInviteInput: __type(name: "CreateExternalAccountInviteInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          setUserPasswordInput: __type(name: "SetUserPasswordInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          setUserAppPermissionsInput: __type(name: "SetUserAppPermissionsInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          libraryPermissionGrantInput: __type(name: "LibraryPermissionGrantInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          setUserLibraryPermissionsInput: __type(name: "SetUserLibraryPermissionsInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          updateLibraryInput: __type(name: "UpdateLibraryInput") {
+            inputFields { name type { kind name ofType { kind name } } }
+          }
+          externalAuthRuntimeConnection: __type(name: "ExternalAuthRuntimeConnectionPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          scanLibraryInput: __type(name: "ScanLibraryInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          rehydrateAllMetadataInput: __type(name: "RehydrateAllMetadataInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          deleteMyPasskeyPayload: __type(name: "DeleteMyPasskeyPayload") { fields { name } }
+          revokeMyOauthAppPayload: __type(name: "RevokeMyOauthAppPayload") { fields { name } }
+          deleteUserPayload: __type(name: "DeleteUserPayload") { fields { name } }
+          unlinkExternalAccountPayload: __type(name: "UnlinkExternalAccountPayload") { fields { name } }
+          clearTitleImageCachePayload: __type(name: "ClearTitleImageCachePayload") { fields { name } }
+          completeSetupPayload: __type(name: "CompleteSetupPayload") { fields { name } }
+          reorderDownloadClientConfigsPayload: __type(name: "ReorderDownloadClientConfigsPayload") { fields { name } }
+          setTitleRequiredAudioPayload: __type(name: "SetTitleRequiredAudioPayload") { fields { name } }
+          rehydrateAllMetadataPayload: __type(name: "RehydrateAllMetadataPayload") { fields { name } }
+          deletePostProcessingScriptPayload: __type(name: "DeletePostProcessingScriptPayload") { fields { name } }
+          triggerTitleMismatchRecoverySearchPayload: __type(name: "TriggerTitleMismatchRecoverySearchPayload") { fields { name } }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    for removed_input in [
+        "deleteQualityProfileInput",
+        "deleteDelayProfileInput",
+        "deleteUserInput",
+        "resetUserMfaInput",
+        "unlinkExternalAccountInput",
+        "titleIdInput",
+        "cancelLibraryScanInput",
+        "ignorePendingImportInput",
+    ] {
+        assert!(
+            body["data"][removed_input].is_null(),
+            "{removed_input} should be removed from the schema"
+        );
+    }
+
+    let auth_input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    for (type_alias, field_name) in [
+        ("loginWithPlexInput", "connectionId"),
+        ("loginWithJellyfinInput", "connectionId"),
+        ("linkPlexAccountInput", "connectionId"),
+        ("linkJellyfinAccountInput", "connectionId"),
+        ("createExternalAccountInviteInput", "userId"),
+        ("createExternalAccountInviteInput", "connectionId"),
+        ("setUserPasswordInput", "userId"),
+        ("setUserAppPermissionsInput", "userId"),
+        ("libraryPermissionGrantInput", "libraryId"),
+        ("setUserLibraryPermissionsInput", "userId"),
+        ("updateLibraryInput", "libraryId"),
+    ] {
+        let field = auth_input_field(type_alias, field_name);
+        assert_eq!(
+            field["type"]["kind"], "NON_NULL",
+            "{type_alias}.{field_name}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["name"], "ID",
+            "{type_alias}.{field_name}"
+        );
+    }
+    let runtime_connection_id = body["data"]["externalAuthRuntimeConnection"]["fields"]
+        .as_array()
+        .expect("ExternalAuthRuntimeConnectionPayload should expose fields")
+        .iter()
+        .find(|field| field["name"] == "id")
+        .expect("ExternalAuthRuntimeConnectionPayload.id should exist");
+    assert_eq!(runtime_connection_id["type"]["kind"], "NON_NULL");
+    assert_eq!(runtime_connection_id["type"]["ofType"]["name"], "ID");
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation = |name: &str| {
+        mutation_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("mutation field should exist")
+    };
+    let assert_id_arg = |mutation_name: &str, arg_name: &str| {
+        let field = mutation(mutation_name);
+        let arg = field["args"]
+            .as_array()
+            .expect("mutation should expose args")
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .expect("ID arg should exist");
+        assert_eq!(arg["type"]["kind"], "NON_NULL");
+        assert_eq!(arg["type"]["ofType"]["name"], "ID");
+    };
+    for (mutation_name, arg_name) in [
+        ("deleteMyPasskey", "id"),
+        ("revokeMyOauthApp", "grantId"),
+        ("deleteUser", "id"),
+        ("resetUserMfa", "id"),
+        ("unlinkExternalAccount", "linkedAccountId"),
+        ("deleteDelayProfile", "id"),
+        ("deleteQualityProfile", "id"),
+        ("deletePostProcessingScript", "id"),
+        ("togglePostProcessingScript", "id"),
+        ("scanTitleLibrary", "titleId"),
+        ("cancelLibraryScan", "sessionId"),
+        ("ignorePendingImport", "pendingImportId"),
+        ("triggerTitleMismatchRecoverySearch", "titleId"),
+    ] {
+        assert_id_arg(mutation_name, arg_name);
+    }
+
+    let scan_library_args = mutation("scanLibrary")["args"]
+        .as_array()
+        .expect("scanLibrary should expose args");
+    assert_eq!(scan_library_args.len(), 1);
+    assert_eq!(scan_library_args[0]["name"], "input");
+    assert_eq!(scan_library_args[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        scan_library_args[0]["type"]["ofType"]["name"],
+        "ScanLibraryInput"
+    );
+
+    let scan_input_fields = body["data"]["scanLibraryInput"]["inputFields"]
+        .as_array()
+        .expect("ScanLibraryInput should expose input fields");
+    let scan_input_field = |name: &str| {
+        scan_input_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("ScanLibraryInput field should exist")
+    };
+    let library_id = scan_input_field("libraryId");
+    assert_eq!(library_id["type"]["kind"], "NON_NULL");
+    assert_eq!(library_id["type"]["ofType"]["name"], "ID");
+    let import_warmup_session_id = scan_input_field("importWarmupSessionId");
+    assert_eq!(import_warmup_session_id["type"]["name"], "ID");
+
+    let rehydrate_args = mutation("rehydrateAllMetadata")["args"]
+        .as_array()
+        .expect("rehydrateAllMetadata should expose args");
+    assert_eq!(rehydrate_args.len(), 1);
+    assert_eq!(rehydrate_args[0]["name"], "input");
+    assert_eq!(rehydrate_args[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        rehydrate_args[0]["type"]["ofType"]["name"],
+        "RehydrateAllMetadataInput"
+    );
+
+    let rehydrate_input_fields = body["data"]["rehydrateAllMetadataInput"]["inputFields"]
+        .as_array()
+        .expect("RehydrateAllMetadataInput should expose input fields");
+    assert_eq!(rehydrate_input_fields.len(), 1);
+    assert_eq!(rehydrate_input_fields[0]["name"], "language");
+    assert_eq!(rehydrate_input_fields[0]["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        rehydrate_input_fields[0]["type"]["ofType"]["name"],
+        "String"
+    );
+
+    for (mutation_name, payload_name) in [
+        ("deleteMyPasskey", "DeleteMyPasskeyPayload"),
+        ("revokeMyOauthApp", "RevokeMyOauthAppPayload"),
+        ("deleteUser", "DeleteUserPayload"),
+        ("unlinkExternalAccount", "UnlinkExternalAccountPayload"),
+        ("clearTitleImageCache", "ClearTitleImageCachePayload"),
+        ("completeSetup", "CompleteSetupPayload"),
+        (
+            "reorderDownloadClientConfigs",
+            "ReorderDownloadClientConfigsPayload",
+        ),
+        ("setTitleRequiredAudio", "SetTitleRequiredAudioPayload"),
+        ("rehydrateAllMetadata", "RehydrateAllMetadataPayload"),
+        (
+            "deletePostProcessingScript",
+            "DeletePostProcessingScriptPayload",
+        ),
+        (
+            "triggerTitleMismatchRecoverySearch",
+            "TriggerTitleMismatchRecoverySearchPayload",
+        ),
+    ] {
+        assert_eq!(
+            mutation(mutation_name)["type"]["ofType"]["name"],
+            payload_name
+        );
+    }
+
+    let payload_fields = |type_alias: &str| -> Vec<&str> {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .expect("payload should expose fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect()
+    };
+
+    assert_eq!(
+        payload_fields("deleteMyPasskeyPayload"),
+        vec!["id", "deleted"]
+    );
+    assert_eq!(
+        payload_fields("revokeMyOauthAppPayload"),
+        vec!["grantId", "revoked"]
+    );
+    assert_eq!(payload_fields("deleteUserPayload"), vec!["id", "deleted"]);
+    assert_eq!(
+        payload_fields("unlinkExternalAccountPayload"),
+        vec!["linkedAccountId", "unlinked"]
+    );
+    assert_eq!(
+        payload_fields("clearTitleImageCachePayload"),
+        vec!["accepted"]
+    );
+    assert_eq!(payload_fields("completeSetupPayload"), vec!["completed"]);
+    assert_eq!(
+        payload_fields("reorderDownloadClientConfigsPayload"),
+        vec!["ids", "reordered"]
+    );
+    assert_eq!(
+        payload_fields("setTitleRequiredAudioPayload"),
+        vec!["titleId", "facet", "languages", "updated"]
+    );
+    assert_eq!(
+        payload_fields("rehydrateAllMetadataPayload"),
+        vec!["language", "titlesCleared", "accepted"]
+    );
+    assert_eq!(
+        payload_fields("deletePostProcessingScriptPayload"),
+        vec!["id", "deleted"]
+    );
+    assert_eq!(
+        payload_fields("triggerTitleMismatchRecoverySearchPayload"),
+        vec!["titleId", "queuedCount"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_exposes_series_movie_search_input_on_search_releases() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          searchReleasesInput: __type(name: "SearchReleasesInput") {
+            inputFields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = body["data"]["searchReleasesInput"]["inputFields"]
+        .as_array()
+        .expect("should have input fields");
+    let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
+
+    assert!(names.contains(&"titleId"));
+    assert!(names.contains(&"seriesMovieLinkId"));
+    assert!(names.contains(&"season"));
+    assert!(names.contains(&"episode"));
+}
+
+#[tokio::test]
+async fn graphql_search_releases_rejects_series_movie_and_episode_inputs_together() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        query SearchReleases($input: SearchReleasesInput!) {
+          searchReleases(input: $input) { title }
+        }
+        "#,
+        json!({
+            "input": {
+                "titleId": "title-1",
+                "seriesMovieLinkId": "series-movie-link-1",
+                "season": "1",
+                "episode": "1"
+            }
+        }),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("expected graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("expected graphql error message");
+    assert!(message.contains("series movie searches cannot include season or episode"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_exposes_typed_settings_fields() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields { name }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields { name }
+          }
+          subtitleSettings: __type(name: "SubtitleSettingsPayload") {
+            fields { name }
+          }
+          acquisitionSettings: __type(name: "AcquisitionSettingsPayload") {
+            fields { name }
+          }
+          generalSettings: __type(name: "GeneralSettingsPayload") {
+            fields { name }
+          }
+          mediaSettings: __type(name: "MediaSettingsPayload") {
+            fields { name }
+          }
+          librarySettings: __type(name: "LibrarySettingsPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          librarySettingsInput: __type(name: "LibrarySettingsInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          libraryPaths: __type(name: "LibraryPathsPayload") {
+            fields { name }
+          }
+          serviceSettings: __type(name: "ServiceSettingsPayload") {
+            fields { name }
+          }
+          qualityProfileSettings: __type(name: "QualityProfileSettingsPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          qualityProfile: __type(name: "QualityProfilePayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          qualityProfileSelection: __type(name: "QualityProfileSelectionPayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          delayProfile: __type(name: "DelayProfilePayload") {
+            fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          qualityProfileCriteriaPayload: __type(name: "QualityProfileCriteriaPayload") {
+            fields { name }
+          }
+          qualityProfileCriteriaInput: __type(name: "QualityProfileCriteriaInput") {
+            inputFields { name }
+          }
+          qualityProfileInput: __type(name: "QualityProfileInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          qualityProfileSelectionInput: __type(name: "QualityProfileSelectionInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          saveQualityProfileSettingsInput: __type(name: "SaveQualityProfileSettingsInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          delayProfileInput: __type(name: "DelayProfileInput") {
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          updateSubtitleSettingsInput: __type(name: "UpdateSubtitleSettingsInput") {
+            inputFields { name }
+          }
+          updateGeneralSettingsInput: __type(name: "UpdateGeneralSettingsInput") {
+            inputFields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot should expose fields");
+    let query_names: Vec<&str> = query_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(query_names.contains(&"subtitleSettings"));
+    assert!(query_names.contains(&"acquisitionSettings"));
+    assert!(query_names.contains(&"generalSettings"));
+    assert!(query_names.contains(&"mediaSettings"));
+    assert!(query_names.contains(&"libraryPaths"));
+    assert!(query_names.contains(&"serviceSettings"));
+    assert!(query_names.contains(&"qualityProfileSettings"));
+    assert!(query_names.contains(&"downloadClientRouting"));
+    assert!(query_names.contains(&"indexerRouting"));
+    assert!(!query_names.contains(&"convenienceSettings"));
+    assert!(!query_names.contains(&"adminSettings"));
+
+    let mutation_fields = body["data"]["mutationRoot"]["fields"]
+        .as_array()
+        .expect("MutationRoot should expose fields");
+    let mutation_names: Vec<&str> = mutation_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(mutation_names.contains(&"updateSubtitleSettings"));
+    assert!(mutation_names.contains(&"updateAcquisitionSettings"));
+    assert!(mutation_names.contains(&"updateGeneralSettings"));
+    assert!(mutation_names.contains(&"updateMediaSettings"));
+    assert!(mutation_names.contains(&"updateLibraryPaths"));
+    assert!(mutation_names.contains(&"updateServiceSettings"));
+    assert!(mutation_names.contains(&"saveQualityProfileSettings"));
+    assert!(mutation_names.contains(&"updateDownloadClientRouting"));
+    assert!(mutation_names.contains(&"updateIndexerRouting"));
+    assert!(!mutation_names.contains(&"updateQualityProfileFacetPersona"));
+    assert!(!mutation_names.contains(&"saveAdminSettings"));
+
+    let subtitle_fields = body["data"]["subtitleSettings"]["fields"]
+        .as_array()
+        .expect("SubtitleSettingsPayload should expose fields");
+    let subtitle_names: Vec<&str> = subtitle_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(subtitle_names.contains(&"languages"));
+    assert!(!subtitle_names.contains(&"openSubtitlesUsername"));
+    assert!(!subtitle_names.contains(&"hasOpenSubtitlesApiKey"));
+    assert!(!subtitle_names.contains(&"hasOpenSubtitlesPassword"));
+
+    let subtitle_input_fields = body["data"]["updateSubtitleSettingsInput"]["inputFields"]
+        .as_array()
+        .expect("UpdateSubtitleSettingsInput should expose input fields");
+    let subtitle_input_names: Vec<&str> = subtitle_input_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(!subtitle_input_names.contains(&"openSubtitlesUsername"));
+    assert!(!subtitle_input_names.contains(&"openSubtitlesPassword"));
+    assert!(!subtitle_input_names.contains(&"openSubtitlesApiKey"));
+
+    let acquisition_fields = body["data"]["acquisitionSettings"]["fields"]
+        .as_array()
+        .expect("AcquisitionSettingsPayload should expose fields");
+    let acquisition_names: Vec<&str> = acquisition_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(acquisition_names.contains(&"pollIntervalSeconds"));
+    assert!(acquisition_names.contains(&"batchSize"));
+
+    let general_fields = body["data"]["generalSettings"]["fields"]
+        .as_array()
+        .expect("GeneralSettingsPayload should expose fields");
+    let general_names: Vec<&str> = general_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(general_names.contains(&"keepHistoryForever"));
+    assert!(general_names.contains(&"historyRetentionDays"));
+
+    let media_fields = body["data"]["mediaSettings"]["fields"]
+        .as_array()
+        .expect("MediaSettingsPayload should expose fields");
+    let media_names: Vec<&str> = media_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(media_names.contains(&"libraryPath"));
+    assert!(media_names.contains(&"rootFolders"));
+    assert!(media_names.contains(&"requiredAudioLanguages"));
+    assert!(media_names.contains(&"renameTemplate"));
+
+    let library_fields = body["data"]["libraryPaths"]["fields"]
+        .as_array()
+        .expect("LibraryPathsPayload should expose fields");
+    let library_names: Vec<&str> = library_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(library_names.contains(&"moviePath"));
+    assert!(library_names.contains(&"seriesPath"));
+    assert!(library_names.contains(&"animePath"));
+
+    let service_fields = body["data"]["serviceSettings"]["fields"]
+        .as_array()
+        .expect("ServiceSettingsPayload should expose fields");
+    let service_names: Vec<&str> = service_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(service_names.contains(&"tlsCertPath"));
+    assert!(service_names.contains(&"tlsKeyPath"));
+
+    let settings_output_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let settings_input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_settings_non_null_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+    let assert_settings_optional_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "ID", "{label}");
+    };
+    let assert_settings_non_null_id_list = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{label}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], "ID",
+            "{label}"
+        );
+    };
+    let assert_settings_optional_id_list = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "LIST", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["ofType"]["name"], "ID", "{label}");
+    };
+
+    assert_settings_non_null_id(
+        settings_output_field("delayProfile", "id"),
+        "DelayProfile.id",
+    );
+    assert_settings_non_null_id(
+        settings_input_field("delayProfileInput", "id"),
+        "DelayProfileInput.id",
+    );
+    assert_settings_non_null_id(
+        settings_output_field("qualityProfile", "id"),
+        "QualityProfilePayload.id",
+    );
+    assert_settings_non_null_id(
+        settings_input_field("qualityProfileInput", "id"),
+        "QualityProfileInput.id",
+    );
+    assert_settings_non_null_id(
+        settings_output_field("qualityProfileSettings", "globalProfileId"),
+        "QualityProfileSettingsPayload.globalProfileId",
+    );
+    assert_settings_optional_id(
+        settings_output_field("qualityProfileSelection", "overrideProfileId"),
+        "QualityProfileSelectionPayload.overrideProfileId",
+    );
+    assert_settings_non_null_id(
+        settings_output_field("qualityProfileSelection", "effectiveProfileId"),
+        "QualityProfileSelectionPayload.effectiveProfileId",
+    );
+    assert_settings_optional_id(
+        settings_input_field("qualityProfileSelectionInput", "profileId"),
+        "QualityProfileSelectionInput.profileId",
+    );
+    assert_settings_optional_id(
+        settings_input_field("saveQualityProfileSettingsInput", "globalProfileId"),
+        "SaveQualityProfileSettingsInput.globalProfileId",
+    );
+    assert_settings_optional_id(
+        settings_output_field("librarySettings", "qualityProfileIdOverride"),
+        "LibrarySettingsPayload.qualityProfileIdOverride",
+    );
+    assert_settings_non_null_id(
+        settings_output_field("librarySettings", "qualityProfileId"),
+        "LibrarySettingsPayload.qualityProfileId",
+    );
+    assert_settings_optional_id_list(
+        settings_output_field("librarySettings", "requestQualityProfileIdsOverride"),
+        "LibrarySettingsPayload.requestQualityProfileIdsOverride",
+    );
+    assert_settings_non_null_id_list(
+        settings_output_field("librarySettings", "requestQualityProfileIds"),
+        "LibrarySettingsPayload.requestQualityProfileIds",
+    );
+    assert_settings_non_null_id(
+        settings_output_field("librarySettings", "requestQualityProfileDefaultId"),
+        "LibrarySettingsPayload.requestQualityProfileDefaultId",
+    );
+    assert_settings_optional_id(
+        settings_input_field("librarySettingsInput", "qualityProfileId"),
+        "LibrarySettingsInput.qualityProfileId",
+    );
+    assert_settings_optional_id_list(
+        settings_input_field("librarySettingsInput", "requestQualityProfileIds"),
+        "LibrarySettingsInput.requestQualityProfileIds",
+    );
+
+    let quality_profile_settings_fields = body["data"]["qualityProfileSettings"]["fields"]
+        .as_array()
+        .expect("QualityProfileSettingsPayload should expose fields");
+    let quality_profile_settings_names: Vec<&str> = quality_profile_settings_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(quality_profile_settings_names.contains(&"globalScoringPersona"));
+    assert!(quality_profile_settings_names.contains(&"categoryPersonaSelections"));
+
+    let criteria_payload_fields = body["data"]["qualityProfileCriteriaPayload"]["fields"]
+        .as_array()
+        .expect("QualityProfileCriteriaPayload should expose fields");
+    let criteria_payload_names: Vec<&str> = criteria_payload_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(!criteria_payload_names.contains(&"requiredAudioLanguages"));
+    assert!(!criteria_payload_names.contains(&"scoringPersona"));
+    assert!(!criteria_payload_names.contains(&"facetPersonaOverrides"));
+    assert!(!criteria_payload_names.contains(&"atmosPreferred"));
+
+    let criteria_input_fields = body["data"]["qualityProfileCriteriaInput"]["inputFields"]
+        .as_array()
+        .expect("QualityProfileCriteriaInput should expose inputFields");
+    let criteria_input_names: Vec<&str> = criteria_input_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(!criteria_input_names.contains(&"requiredAudioLanguages"));
+    assert!(!criteria_input_names.contains(&"scoringPersona"));
+    assert!(!criteria_input_names.contains(&"facetPersonaOverrides"));
+    assert!(!criteria_input_names.contains(&"atmosPreferred"));
+
+    let general_input_fields = body["data"]["updateGeneralSettingsInput"]["inputFields"]
+        .as_array()
+        .expect("UpdateGeneralSettingsInput should expose inputFields");
+    let general_input_names: Vec<&str> = general_input_fields
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(general_input_names.contains(&"keepHistoryForever"));
+    assert!(general_input_names.contains(&"historyRetentionDays"));
+}

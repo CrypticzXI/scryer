@@ -1201,6 +1201,7 @@ export const updateTitleMutation = `mutation UpdateTitle($input: UpdateTitleInpu
     tags
     monitored
     qualityProfileId
+    rootFolderId
     rootFolderPath
     monitorType
     useSeasonFolders
@@ -1860,8 +1861,8 @@ export const deletePostProcessingScriptMutation = `mutation DeletePostProcessing
   }
 }`;
 
-export const togglePostProcessingScriptMutation = `mutation TogglePostProcessingScript($id: ID!) {
-  togglePostProcessingScript(id: $id) {${ppScriptFields}}
+export const togglePostProcessingScriptMutation = `mutation TogglePostProcessingScript($id: ID!, $inlineShellAcknowledged: Boolean) {
+  togglePostProcessingScript(id: $id, inlineShellAcknowledged: $inlineShellAcknowledged) {${ppScriptFields}}
 }`;
 
 // Input type companion — keep in sync with ExecuteExternalImportInput on the backend.

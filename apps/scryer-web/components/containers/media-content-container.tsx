@@ -302,7 +302,7 @@ function upsertCatalogTitleRecord(
   } else {
     next[existingIndex] = mergePreferLoadedImageFields(next[existingIndex], title);
   }
-  return next;
+  return sortCatalogTitles(next);
 }
 
 function isPendingHydrationPosterTitle(title: TitleRecord, nowMs: number): boolean {
@@ -480,8 +480,8 @@ function inferTitleUpdateBatchOutcome(
       return false;
     }
     if (
-      changes.rootFolderPath !== undefined &&
-      (refreshed.rootFolderPath ?? "") !== changes.rootFolderPath
+      changes.rootFolderId !== undefined &&
+      (refreshed.rootFolderId ?? null) !== changes.rootFolderId
     ) {
       return false;
     }
@@ -802,11 +802,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [libraries, selectedTitleLibraryIds],
   );
   const bulkRootFolders = React.useMemo(
-    () =>
-      (selectedTitleLibrary?.roots ?? []).map((root) => ({
-        path: root.path,
-        isDefault: root.isDefault,
-      })),
+    () => selectedTitleLibrary?.roots ?? [],
     [selectedTitleLibrary],
   );
 

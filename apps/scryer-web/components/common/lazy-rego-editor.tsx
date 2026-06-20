@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 const RegoEditor = lazy(() => import("./rego-editor"));
 
 type LazyRegoEditorProps = {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   readOnly?: boolean;
@@ -12,6 +13,7 @@ type LazyRegoEditorProps = {
 };
 
 function TextareaFallback({
+  id,
   value,
   onChange,
   readOnly,
@@ -28,6 +30,7 @@ function TextareaFallback({
 
   return (
     <textarea
+      id={id}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       readOnly={readOnly}

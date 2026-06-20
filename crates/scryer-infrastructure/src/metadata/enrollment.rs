@@ -4,11 +4,12 @@ use std::time::Duration;
 
 use aws_lc_rs::{digest, hmac, rand::SecureRandom};
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ml_dsa::{Keypair, MlDsa65, SigningKey};
 use scryer_application::{SettingsRepository, SmgScryerUpdateNotice};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, parse_retry_after,
-    smg_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
+    parse_retry_after, smg_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -17,6 +18,10 @@ use crate::metadata::response_body::read_response_body_preview;
 
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
 const PQ_CLIENT_FAMILY: &str = "scryer-stable";
+pub(crate) const PQ_AUTH_VERSION_ENV: &str = "SCRYER_SMG_PQ_AUTH_VERSION";
+const PQ_AUTH_VERSION_V1: &str = "pqsig-v1";
+const PQ_AUTH_VERSION_V2: &str = "pqsig-v2";
+const PQ_AUTH_NONCE_BYTES: usize = 24;
 // ML-DSA key generation and signing allocate large fixed-size temporaries on the stack.
 // Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
@@ -25,6 +30,65 @@ const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
+static CONFIGURED_PQ_AUTH_VERSION: LazyLock<PqAuthVersion> = LazyLock::new(|| {
+    let raw = std::env::var(PQ_AUTH_VERSION_ENV).ok();
+    match parse_pq_auth_version(raw.as_deref()) {
+        Some(version) => version,
+        None => {
+            if let Some(raw) = raw
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                warn!(
+                    env_var = PQ_AUTH_VERSION_ENV,
+                    configured = raw,
+                    fallback = PQ_AUTH_VERSION_V2,
+                    "invalid SMG PQ auth version override; using default"
+                );
+            }
+            PqAuthVersion::V2
+        }
+    }
+});
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PqAuthVersion {
+    V1,
+    V2,
+}
+
+impl PqAuthVersion {
+    pub(crate) fn header_value(self) -> &'static str {
+        match self {
+            Self::V1 => PQ_AUTH_VERSION_V1,
+            Self::V2 => PQ_AUTH_VERSION_V2,
+        }
+    }
+}
+
+fn parse_pq_auth_version(raw: Option<&str>) -> Option<PqAuthVersion> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Some(PqAuthVersion::V2),
+        Some(value) if value.eq_ignore_ascii_case("v1") => Some(PqAuthVersion::V1),
+        Some(value) if value.eq_ignore_ascii_case(PQ_AUTH_VERSION_V1) => Some(PqAuthVersion::V1),
+        Some(value) if value.eq_ignore_ascii_case("v2") => Some(PqAuthVersion::V2),
+        Some(value) if value.eq_ignore_ascii_case(PQ_AUTH_VERSION_V2) => Some(PqAuthVersion::V2),
+        Some(_) => None,
+    }
+}
+
+pub(crate) fn configured_pq_auth_version() -> PqAuthVersion {
+    *CONFIGURED_PQ_AUTH_VERSION
+}
+
+pub(crate) fn generate_pq_auth_nonce() -> Result<String, String> {
+    let rng = aws_lc_rs::rand::SystemRandom::new();
+    let mut nonce = [0u8; PQ_AUTH_NONCE_BYTES];
+    rng.fill(&mut nonce)
+        .map_err(|_| "failed to generate SMG PQ auth nonce".to_string())?;
+    Ok(URL_SAFE_NO_PAD.encode(nonce))
+}
 
 /// Returned when SMG reports a version compatibility issue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -574,37 +638,69 @@ async fn send_authenticated_pq_registration_request(
         .map_err(|e| EnrollmentError::Other(format!("failed to serialize PQ payload: {e}")))?;
     let host = canonical_request_host(&endpoint_url)?;
     let path_and_query = canonical_request_path_and_query(&endpoint_url);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| EnrollmentError::Other(format!("system clock before UNIX_EPOCH: {e}")))?
-        .as_secs() as i64;
-    let signature = sign_pq_request(
-        current_seed_b64,
-        reqwest::Method::POST.as_str(),
-        &host,
-        &path_and_query,
-        timestamp,
-        &sha256_hex_bytes(&body_bytes),
-    )
-    .await
-    .map_err(EnrollmentError::Other)?;
-
+    let client = http.client().clone();
     let url = url.to_string();
-    http.send(
+    let current_seed_b64 = current_seed_b64.to_string();
+    let current_key_id = current_key_id.to_string();
+    http.send_async(
         enrollment_request_policy("smg_pq_authenticated_request"),
         || {
-            http.client()
-                .post(url.clone())
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .header("X-Scryer-Auth-Version", "pqsig-v1")
-                .header("X-Scryer-Key-Id", current_key_id)
-                .header("X-Scryer-Timestamp", timestamp.to_string())
-                .header("X-Scryer-Signature", signature.clone())
-                .body(body_bytes.clone())
+            let client = client.clone();
+            let url = url.clone();
+            let current_seed_b64 = current_seed_b64.clone();
+            let current_key_id = current_key_id.clone();
+            let body_bytes = body_bytes.clone();
+            let host = host.clone();
+            let path_and_query = path_and_query.clone();
+            async move {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| {
+                        EnrollmentError::Other(format!("system clock before UNIX_EPOCH: {e}"))
+                    })?
+                    .as_secs() as i64;
+                let auth_version = configured_pq_auth_version();
+                let nonce = match auth_version {
+                    PqAuthVersion::V1 => None,
+                    PqAuthVersion::V2 => {
+                        Some(generate_pq_auth_nonce().map_err(EnrollmentError::Other)?)
+                    }
+                };
+                let body_hash = sha256_hex_bytes(&body_bytes);
+                let signature = sign_pq_request(
+                    &current_seed_b64,
+                    auth_version,
+                    reqwest::Method::POST.as_str(),
+                    &host,
+                    &path_and_query,
+                    timestamp,
+                    nonce.as_deref(),
+                    &body_hash,
+                )
+                .await
+                .map_err(EnrollmentError::Other)?;
+
+                let mut request = client
+                    .post(url.clone())
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .header("X-Scryer-Auth-Version", auth_version.header_value())
+                    .header("X-Scryer-Key-Id", current_key_id)
+                    .header("X-Scryer-Timestamp", timestamp.to_string())
+                    .header("X-Scryer-Signature", signature.clone());
+                if let Some(nonce) = &nonce {
+                    request = request.header("X-Scryer-Nonce", nonce);
+                }
+                Ok(request.body(body_bytes))
+            }
         },
     )
     .await
-    .map_err(|error| map_enrollment_outbound_error("SMG PQ authenticated request", error))
+    .map_err(|error| match error {
+        OutboundRequestError::Build(error) => error,
+        OutboundRequestError::Http(error) => {
+            map_enrollment_outbound_error("SMG PQ authenticated request", error)
+        }
+    })
 }
 
 pub(crate) async fn registration_response_error(
@@ -704,25 +800,47 @@ fn sign_bootstrap_mac(registration_secret: &str, message: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(hmac::sign(&key, message).as_ref())
 }
 
-pub async fn sign_pq_request(
+pub(crate) async fn sign_pq_request(
     seed_b64: &str,
+    auth_version: PqAuthVersion,
     method: &str,
     host: &str,
     path_and_query: &str,
     timestamp: i64,
+    nonce: Option<&str>,
     body_hash: &str,
 ) -> Result<String, String> {
-    let message = canonical_pq_request_message(method, host, path_and_query, timestamp, body_hash);
+    let message = match auth_version {
+        PqAuthVersion::V1 => {
+            canonical_pq_request_message_v1(method, host, path_and_query, timestamp, body_hash)
+        }
+        PqAuthVersion::V2 => {
+            let nonce = nonce.ok_or_else(|| "pqsig-v2 signing requires nonce".to_string())?;
+            canonical_pq_request_message_v2(
+                method,
+                host,
+                path_and_query,
+                timestamp,
+                nonce,
+                body_hash,
+            )
+        }
+    };
     sign_pq_seed(seed_b64, &message).await
 }
 
 fn canonical_request_host(url: &reqwest::Url) -> Result<String, EnrollmentError> {
     let host = url
-        .host_str()
+        .host()
         .ok_or_else(|| EnrollmentError::Other("registration URL missing host".to_string()))?;
+    let host = match host {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(addr) => addr.to_string(),
+        url::Host::Ipv6(addr) => format!("[{addr}]"),
+    };
     Ok(match url.port() {
         Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
+        None => host,
     })
 }
 
@@ -761,7 +879,7 @@ fn sign_pq_seed_sync(seed_b64: &str, message: &[u8]) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(encoded.as_slice()))
 }
 
-fn canonical_pq_request_message(
+fn canonical_pq_request_message_v1(
     method: &str,
     host: &str,
     path_and_query: &str,
@@ -774,6 +892,26 @@ fn canonical_pq_request_message(
         host,
         path_and_query,
         timestamp,
+        body_hash
+    )
+    .into_bytes()
+}
+
+fn canonical_pq_request_message_v2(
+    method: &str,
+    host: &str,
+    path_and_query: &str,
+    timestamp: i64,
+    nonce: &str,
+    body_hash: &str,
+) -> Vec<u8> {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method.to_ascii_uppercase(),
+        host,
+        path_and_query,
+        timestamp,
+        nonce,
         body_hash
     )
     .into_bytes()
@@ -902,8 +1040,10 @@ fn hex_bytes(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnrollmentError, canonical_pq_request_message, generate_pq_keypair,
-        pq_registration_proof_message, sign_bootstrap_mac, sign_pq_request,
+        EnrollmentError, PqAuthVersion, canonical_pq_request_message_v1,
+        canonical_pq_request_message_v2, canonical_request_host, generate_pq_auth_nonce,
+        generate_pq_keypair, parse_pq_auth_version, pq_registration_proof_message,
+        sign_bootstrap_mac, sign_pq_request,
     };
     use scryer_outbound_http::parse_retry_after;
     use std::time::Duration;
@@ -946,13 +1086,72 @@ mod tests {
     }
 
     #[test]
-    fn canonical_pq_request_message_uses_newline_separated_fields() {
+    fn canonical_request_host_formats_http_host_header_value() {
+        let ipv4_url = reqwest::Url::parse("http://127.0.0.1:43210/api/register").unwrap();
+        let ipv6_url = reqwest::Url::parse("http://[::1]:43210/api/register").unwrap();
+
+        assert_eq!(
+            canonical_request_host(&ipv4_url).unwrap(),
+            "127.0.0.1:43210"
+        );
+        assert_eq!(canonical_request_host(&ipv6_url).unwrap(), "[::1]:43210");
+    }
+
+    #[test]
+    fn canonical_pq_request_message_v1_uses_newline_separated_fields() {
         let message =
-            canonical_pq_request_message("post", "smg.example", "/graphql?x=1", 123, "abc");
+            canonical_pq_request_message_v1("post", "smg.example", "/graphql?x=1", 123, "abc");
 
         assert_eq!(
             String::from_utf8(message).unwrap(),
             "POST\nsmg.example\n/graphql?x=1\n123\nabc"
+        );
+    }
+
+    #[test]
+    fn canonical_pq_request_message_v2_includes_nonce() {
+        let message = canonical_pq_request_message_v2(
+            "get",
+            "smg.example",
+            "/graphql?extensions=%7B%7D",
+            123,
+            "nonce-1",
+            "empty-body-hash",
+        );
+
+        assert_eq!(
+            String::from_utf8(message).unwrap(),
+            "GET\nsmg.example\n/graphql?extensions=%7B%7D\n123\nnonce-1\nempty-body-hash"
+        );
+    }
+
+    #[test]
+    fn pq_auth_version_parser_defaults_to_v2_and_accepts_v1_override() {
+        assert_eq!(parse_pq_auth_version(None), Some(PqAuthVersion::V2));
+        assert_eq!(parse_pq_auth_version(Some("")), Some(PqAuthVersion::V2));
+        assert_eq!(
+            parse_pq_auth_version(Some("pqsig-v1")),
+            Some(PqAuthVersion::V1)
+        );
+        assert_eq!(parse_pq_auth_version(Some("v1")), Some(PqAuthVersion::V1));
+        assert_eq!(
+            parse_pq_auth_version(Some("pqsig-v2")),
+            Some(PqAuthVersion::V2)
+        );
+        assert_eq!(parse_pq_auth_version(Some("nope")), None);
+    }
+
+    #[test]
+    fn pq_auth_nonce_is_url_safe_and_unique() {
+        let first = generate_pq_auth_nonce().expect("first nonce");
+        let second = generate_pq_auth_nonce().expect("second nonce");
+
+        assert_ne!(first, second);
+        assert!(first.len() >= 22);
+        assert!(
+            first
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         );
     }
 
@@ -991,18 +1190,34 @@ mod tests {
 
         runtime.block_on(async {
             let keypair = generate_pq_keypair().await.expect("generated pq keypair");
-            let signature = sign_pq_request(
+            let v1_signature = sign_pq_request(
                 &keypair.seed_b64,
+                PqAuthVersion::V1,
                 "post",
                 "smg.example",
                 "/graphql",
                 123,
+                None,
                 "abc123",
             )
             .await
-            .expect("signed pq request");
+            .expect("signed v1 pq request");
+            let v2_signature = sign_pq_request(
+                &keypair.seed_b64,
+                PqAuthVersion::V2,
+                "get",
+                "smg.example",
+                "/graphql?extensions=%7B%7D",
+                124,
+                Some("nonce-1"),
+                "abc123",
+            )
+            .await
+            .expect("signed v2 pq request");
 
-            assert!(!signature.is_empty());
+            assert!(!v1_signature.is_empty());
+            assert!(!v2_signature.is_empty());
+            assert_ne!(v1_signature, v2_signature);
         });
     }
 }

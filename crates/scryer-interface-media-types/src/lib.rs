@@ -2280,7 +2280,7 @@ pub struct ExternalIdInput {
 #[derive(InputObject, Clone)]
 pub struct TitleOptionsInput {
     pub quality_profile_id: Option<ID>,
-    pub root_folder_path: Option<String>,
+    pub root_folder_id: MaybeUndefined<ID>,
     pub monitor_type: Option<MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,
@@ -3235,8 +3235,8 @@ pub struct ManualImportSeriesMovieTargetPayload {
 #[derive(InputObject)]
 pub struct ManualImportFileMappingInput {
     pub file_path: String,
-    pub episode_id: Option<String>,
-    pub series_movie_link_id: Option<String>,
+    pub episode_id: Option<ID>,
+    pub series_movie_link_id: Option<ID>,
     pub quality: Option<String>,
 }
 
@@ -4236,8 +4236,9 @@ pub struct PostProcessingScriptRunPayload {
 pub struct CreatePostProcessingScriptInput {
     pub name: String,
     pub description: Option<String>,
-    pub script_type: Option<String>,
+    pub script_type: String,
     pub script_content: Option<String>,
+    pub inline_shell_acknowledged: Option<bool>,
     pub applied_facets: Option<Vec<String>>,
     pub execution_mode: Option<String>,
     pub timeout_secs: Option<i32>,
@@ -4252,6 +4253,7 @@ pub struct UpdatePostProcessingScriptInput {
     pub description: Option<String>,
     pub script_type: Option<String>,
     pub script_content: Option<String>,
+    pub inline_shell_acknowledged: Option<bool>,
     pub applied_facets: Option<Vec<String>>,
     pub execution_mode: Option<String>,
     pub timeout_secs: Option<i32>,

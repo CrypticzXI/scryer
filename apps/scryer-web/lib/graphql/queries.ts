@@ -35,6 +35,7 @@ export const TITLE_CORE_FIELDS = `
     requiredAudioLanguagesOverride
     effectiveRequiredAudioLanguages
     inheritsRequiredAudioLanguages
+    rootFolderId
     rootFolderPath
     monitorType
     useSeasonFolders
@@ -824,6 +825,8 @@ export const TITLE_LIST_FIELDS = `
     imdbId
     posterUrl
     posterSourceUrl
+    rootFolderId
+    rootFolderPath
     qualityTier
     sizeBytes
     episodesOwned

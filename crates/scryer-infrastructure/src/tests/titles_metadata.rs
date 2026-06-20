@@ -1,0 +1,1610 @@
+use super::*;
+
+#[tokio::test]
+async fn nzbget_client_is_sendable() {
+    let client = NzbgetDownloadClient::new(
+        "http://127.0.0.1:6789".to_string(),
+        Some("user".into()),
+        Some("pass".into()),
+        "SCORE".to_string(),
+    );
+    // We only validate that it can be built and is callable in type system.
+    let _ = client.endpoint();
+}
+
+#[tokio::test]
+async fn title_queries_prefer_local_cached_poster_url() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_poster_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title("title-1", Some("https://tvdb.example/poster.jpg"));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let before_cache = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        before_cache.poster_url.as_deref(),
+        Some("https://tvdb.example/poster.jpg")
+    );
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            TitleImageSourceResult {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster.jpg".to_string(),
+                source_etag: Some("\"etag-1\"".to_string()),
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w250".to_string(),
+                    format: "avif".to_string(),
+                    width: 250,
+                    height: 375,
+                    bytes: vec![7, 8, 9],
+                    digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                }],
+            },
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let after_cache = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        after_cache.poster_url.as_deref(),
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
+    );
+    assert_eq!(
+        after_cache.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster.jpg")
+    );
+
+    let listed = TitleRepository::list(&catalog, None, None)
+        .await
+        .expect("title list should succeed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].poster_url.as_deref(),
+        Some("/images/titles/title-1/poster/w250?v=bbbbbbbbbbbbbbbb")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_connection_sqlite() {
+    let (services, db) =
+        single_connection_services("scryer_title_hydration_single_connection").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-hydration-extra-ids", None);
+    title.facet = MediaFacet::Anime;
+    title.external_ids = vec![
+        ExternalId {
+            source: "tvdb".to_string(),
+            value: "12345".to_string(),
+        },
+        ExternalId {
+            source: "mal".to_string(),
+            value: "old-mal".to_string(),
+        },
+    ];
+    title.tags = vec!["score:old".to_string(), "keep".to_string()];
+
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let update = TitleMetadataUpdate {
+        metadata_language: Some("eng".to_string()),
+        metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+        extra_external_ids: vec![
+            ExternalId {
+                source: "mal".to_string(),
+                value: "834".to_string(),
+            },
+            ExternalId {
+                source: "anilist".to_string(),
+                value: "269".to_string(),
+            },
+        ],
+        extra_tags: vec!["score:9.1".to_string()],
+        ..TitleMetadataUpdate::default()
+    };
+
+    let updated = timeout(
+        Duration::from_secs(1),
+        TitleRepository::update_title_hydrated_metadata(&catalog, &title.id, update),
+    )
+    .await
+    .expect("hydrated metadata update should not self-deadlock on single-connection sqlite")
+    .expect("hydrated metadata update should succeed");
+
+    assert!(
+        updated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "mal" && external_id.value == "834" })
+    );
+    assert!(
+        updated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "anilist" && external_id.value == "269" })
+    );
+    assert_eq!(
+        updated
+            .external_ids
+            .iter()
+            .filter(|external_id| external_id.source == "mal")
+            .map(|external_id| external_id.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["834"]
+    );
+    assert!(!updated.tags.iter().any(|tag| tag == "score:old"));
+    assert!(updated.tags.iter().any(|tag| tag == "score:9.1"));
+    assert!(updated.tags.iter().any(|tag| tag == "keep"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_preserves_retry_until_fetch_marker_sqlite() {
+    let (services, db) = temp_services("scryer_title_hydration_retry_preserve").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-hydration-retry-preserve", None);
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = ?,
+             metadata_hydration_attempt_count = ?
+         WHERE id = ?",
+    )
+    .bind("2026-01-01T00:00:00Z")
+    .bind(7_i64)
+    .bind(&title.id)
+    .execute(services.pool())
+    .await
+    .expect("retry state should update");
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("eng".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("partial metadata update should succeed");
+
+    let retry_state: (Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
+         FROM titles
+         WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(services.pool())
+    .await
+    .expect("retry state should load");
+    assert_eq!(retry_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(retry_state.1, 7);
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some("2026-02-01T00:00:00Z".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fetched metadata update should succeed");
+
+    let cleared_retry_state: (Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
+         FROM titles
+         WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(services.pool())
+    .await
+    .expect("cleared retry state should load");
+    assert_eq!(cleared_retry_state.0, None);
+    assert_eq!(cleared_retry_state.1, 0);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn replace_title_match_state_completes_on_single_connection_sqlite() {
+    let (services, db) =
+        single_connection_services("scryer_replace_match_state_single_connection").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-replace-match-state", None);
+    title.facet = MediaFacet::Anime;
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    title.year = Some(2024);
+    title.overview = Some("overview before clear".to_string());
+
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let updated = timeout(
+        Duration::from_secs(1),
+        TitleRepository::replace_match_state(
+            &catalog,
+            &title.id,
+            vec![ExternalId {
+                source: "tvdb".to_string(),
+                value: "99999".to_string(),
+            }],
+            vec!["score:9.1".to_string()],
+        ),
+    )
+    .await
+    .expect("replace match state should not self-deadlock on single-connection sqlite")
+    .expect("replace match state should succeed");
+
+    assert_eq!(updated.year, None);
+    assert_eq!(updated.overview, None);
+    assert!(
+        updated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tvdb" && external_id.value == "99999" })
+    );
+    assert!(updated.tags.iter().any(|tag| tag == "score:9.1"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_update_metadata_keeps_validation_and_not_found_errors() {
+    let (services, db) = temp_services("scryer_title_update_metadata_errors").await;
+    let catalog = title_store(&services);
+
+    let title = make_test_title("title-update-metadata-errors", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let empty_err = TitleRepository::update_metadata(&catalog, &title.id, None, None, None)
+        .await
+        .expect_err("empty update should fail validation");
+    assert!(matches!(
+        empty_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("at least one title field")
+    ));
+
+    let blank_name_err =
+        TitleRepository::update_metadata(&catalog, &title.id, Some("   ".to_string()), None, None)
+            .await
+            .expect_err("blank title name should fail validation");
+    assert!(matches!(
+        blank_name_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("title name cannot be empty")
+    ));
+
+    let missing_err = TitleRepository::update_metadata(
+        &catalog,
+        "missing-title",
+        Some("Renamed".to_string()),
+        None,
+        None,
+    )
+    .await
+    .expect_err("missing title update should fail not found");
+    assert!(matches!(
+        missing_err,
+        scryer_application::AppError::NotFound(message) if message.contains("missing-title")
+    ));
+
+    let renamed = TitleRepository::update_metadata(
+        &catalog,
+        &title.id,
+        Some(" Renamed Title ".to_string()),
+        None,
+        None,
+    )
+    .await
+    .expect("valid metadata update should succeed");
+    assert_eq!(renamed.name, "Renamed Title");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_change_local_version_when_cached_poster_changes() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_poster_version_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title("title-2", Some("https://tvdb.example/poster-a.jpg"));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    for (source_url, sha) in [
+        (
+            "https://tvdb.example/poster-a.jpg",
+            "11111111111111111111111111111111",
+        ),
+        (
+            "https://tvdb.example/poster-b.jpg",
+            "22222222222222222222222222222222",
+        ),
+    ] {
+        title_images
+            .upsert_title_image_source_result(
+                &title.id,
+                test_title_image_source_result_with_variants(
+                    TitleImageKind::Poster,
+                    source_url,
+                    vec![test_title_image_variant_record("w250", 250, 375, sha)],
+                ),
+                None,
+            )
+            .await
+            .expect("title image should upsert");
+        sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
+            .bind(source_url)
+            .bind(&title.id)
+            .execute(&services.pool)
+            .await
+            .expect("source urls should update");
+    }
+
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        updated.poster_url.as_deref(),
+        Some("/images/titles/title-2/poster/w250?v=2222222222222222")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_lookup_by_external_id_preserves_source_image_url() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let mut title = make_test_title(
+        "title-external-id",
+        Some("https://tvdb.example/poster-external.jpg"),
+    );
+    title.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let found = catalog
+        .find_by_external_id("tvdb", "123456")
+        .await
+        .expect("lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        found.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-external.jpg")
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn create_title_only_marks_tvdb_titles_for_background_hydration() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_hydration_seed_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut tvdb_title = make_test_title("title-tvdb", None);
+    tvdb_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123".to_string(),
+    }];
+    TitleRepository::create(&catalog, tvdb_title)
+        .await
+        .expect("tvdb title should insert");
+
+    let mut imdb_title = make_test_title("title-imdb", None);
+    imdb_title.external_ids = vec![ExternalId {
+        source: "imdb".to_string(),
+        value: "tt1234567".to_string(),
+    }];
+    TitleRepository::create(&catalog, imdb_title)
+        .await
+        .expect("imdb title should insert");
+
+    let markers: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, metadata_hydration_next_attempt_at
+         FROM titles
+         WHERE id IN (?, ?)
+         ORDER BY id",
+    )
+    .bind("title-imdb")
+    .bind("title-tvdb")
+    .fetch_all(&services.pool)
+    .await
+    .expect("load hydration markers");
+
+    assert_eq!(markers[0], ("title-imdb".to_string(), None));
+    assert!(
+        markers[1].1.is_some(),
+        "tvdb-backed titles should be queued for background hydration"
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_hydration_excluded_facets_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut anime_title = make_test_title("anime-due", None);
+    anime_title.facet = MediaFacet::Anime;
+    anime_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "301".to_string(),
+    }];
+    TitleRepository::create(&catalog, anime_title)
+        .await
+        .expect("anime title should insert");
+
+    let mut movie_title = make_test_title("movie-due", None);
+    movie_title.facet = MediaFacet::Movie;
+    movie_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "101".to_string(),
+    }];
+    TitleRepository::create(&catalog, movie_title)
+        .await
+        .expect("movie title should insert");
+
+    let mut series_title = make_test_title("series-due", None);
+    series_title.facet = MediaFacet::Series;
+    series_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "201".to_string(),
+    }];
+    TitleRepository::create(&catalog, series_title)
+        .await
+        .expect("series title should insert");
+
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = ?,
+             metadata_hydration_attempt_count = 0
+         WHERE id IN (?, ?, ?)",
+    )
+    .bind("2026-01-01T00:00:00Z")
+    .bind("anime-due")
+    .bind("movie-due")
+    .bind("series-due")
+    .execute(&services.pool)
+    .await
+    .expect("normalize due timestamps");
+
+    let due_titles =
+        TitleRepository::list_titles_due_for_hydration(&catalog, 10, &[MediaFacet::Series])
+            .await
+            .expect("load due titles excluding active series facet");
+
+    let due_ids = due_titles
+        .into_iter()
+        .map(|pending| pending.title.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        due_ids,
+        vec!["anime-due".to_string(), "movie-due".to_string()]
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_find_by_external_id() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let mut title = make_test_title(
+        "title-external-id",
+        Some("https://tvdb.example/poster-external.jpg"),
+    );
+    title.external_ids = vec![ExternalId {
+        source: "TVDB".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-external.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "ffffffffffffffffffffffffffffffff",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let found = catalog
+        .find_by_external_id("tvdb", "123456")
+        .await
+        .expect("lookup should succeed")
+        .expect("title should exist");
+
+    assert_eq!(found.id, title.id);
+    assert_eq!(
+        found.poster_url.as_deref(),
+        Some("/images/titles/title-external-id/poster/w250?v=ffffffffffffffff")
+    );
+    assert_eq!(
+        found.poster_source_url.as_deref(),
+        Some("https://tvdb.example/poster-external.jpg")
+    );
+
+    let uppercase_source = catalog
+        .find_by_external_id("TVDB", "123456")
+        .await
+        .expect("uppercase source lookup should succeed")
+        .expect("title should exist for uppercase source");
+    assert_eq!(uppercase_source.id, title.id);
+
+    let padded_source = catalog
+        .find_by_external_id(" tvdb ", "123456")
+        .await
+        .expect("padded source lookup should succeed");
+    assert!(padded_source.is_none());
+
+    let padded_value = catalog
+        .find_by_external_id("tvdb", " 123456 ")
+        .await
+        .expect("padded value lookup should succeed");
+    assert!(padded_value.is_none());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_first_matches() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_external_id_batch_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-a", Some("https://tvdb.example/a.jpg"));
+    first.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "123456".to_string(),
+    }];
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+
+    let mut second = make_test_title("title-b", Some("https://tvdb.example/b.jpg"));
+    second.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "345678".to_string(),
+    }];
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let values = vec![
+        "345678".to_string(),
+        "123456".to_string(),
+        "123456".to_string(),
+        "000000".to_string(),
+    ];
+    let matches = catalog
+        .list_by_external_ids("tvdb", &values)
+        .await
+        .expect("batch lookup should succeed");
+
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].id, second.id);
+    assert_eq!(matches[1].id, first.id);
+
+    let padded_values = vec![" 345678 ".to_string()];
+    let padded_value_matches = catalog
+        .list_by_external_ids("tvdb", &padded_values)
+        .await
+        .expect("padded value batch lookup should succeed");
+    assert!(padded_value_matches.is_empty());
+
+    let exact_values = vec!["345678".to_string()];
+    let padded_source_matches = catalog
+        .list_by_external_ids(" tvdb ", &exact_values)
+        .await
+        .expect("padded source batch lookup should succeed");
+    assert!(padded_source_matches.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_with_empty_library_allowlist_return_no_results() {
+    let (services, db) = temp_services("scryer_title_empty_library_allowlist").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-empty-library-allowlist", None);
+    title.name = "Alpha Allowlist".to_string();
+    TitleRepository::create(&catalog, title)
+        .await
+        .expect("title should insert");
+
+    let empty_library_ids = Vec::<String>::new();
+
+    let listed = TitleRepository::list_for_libraries(&catalog, None, &empty_library_ids, None)
+        .await
+        .expect("plain library listing should succeed");
+    assert!(listed.is_empty());
+
+    let searched = TitleRepository::list_for_libraries_without_external_ids(
+        &catalog,
+        None,
+        &empty_library_ids,
+        Some("alpha".to_string()),
+    )
+    .await
+    .expect("ranked library listing should succeed");
+    assert!(searched.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_slug_lookup").await;
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-slug-primary", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+
+    let found =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, " earth-defenders ")
+            .await
+            .expect("trimmed slug lookup should succeed")
+            .expect("trimmed slug lookup should find a title");
+    assert_eq!(found.id, first.id);
+
+    let mut duplicate = make_test_title("title-slug-duplicate", None);
+    duplicate.facet = MediaFacet::Movie;
+    duplicate.library_id = "library-b".to_string();
+    duplicate.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, duplicate)
+        .await
+        .expect("duplicate title should insert in a different library");
+
+    let err =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, "earth-defenders")
+            .await
+            .expect_err("duplicate slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("earth-defenders") && message.contains("multiple titles")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_libraries_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_library_slug_lookup").await;
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-library-slug-a", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, first)
+        .await
+        .expect("first title should insert");
+
+    let mut second = make_test_title("title-library-slug-b", None);
+    second.facet = MediaFacet::Movie;
+    second.library_id = "library-b".to_string();
+    second.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let library_b = vec!["library-b".to_string()];
+    let found = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &library_b,
+        " planet-heroes ",
+    )
+    .await
+    .expect("trimmed library slug lookup should succeed")
+    .expect("trimmed library slug lookup should find a title");
+    assert_eq!(found.id, second.id);
+
+    let libraries = vec!["library-a".to_string(), "library-b".to_string()];
+    let err = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &libraries,
+        "planet-heroes",
+    )
+    .await
+    .expect_err("duplicate library slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("planet-heroes") && message.contains("multiple titles")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_query_modes_keep_spellfix_search_scoped_to_presentation_sqlite() {
+    let (services, db) = temp_services("scryer_title_query_mode_search_scope").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-query-mode-search-scope", None);
+    title.name = "Canonical Search Name".to_string();
+    title.aliases = vec!["Hidden Search Alias".to_string()];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let presentation_hits =
+        TitleRepository::list(&catalog, None, Some("hidden search alias".to_string()))
+            .await
+            .expect("presentation search should load");
+    assert_eq!(
+        presentation_hits.first().map(|title| title.id.as_str()),
+        Some(title.id.as_str())
+    );
+
+    let matching_alias_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some("hidden search alias".to_string()))
+            .await
+            .expect("matching search should load");
+    assert!(
+        !matching_alias_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let matching_name_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some("canonical search".to_string()))
+            .await
+            .expect("matching name search should load");
+    assert!(
+        matching_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let padded_matching_name_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some(" canonical search ".to_string()))
+            .await
+            .expect("padded matching name search should load");
+    assert!(
+        !padded_matching_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let library_ids = vec![title.library_id.clone()];
+    let library_alias_hits = TitleRepository::list_for_libraries(
+        &catalog,
+        None,
+        &library_ids,
+        Some("hidden search alias".to_string()),
+    )
+    .await
+    .expect("library search should load");
+    assert!(
+        !library_alias_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let library_padded_name_hits = TitleRepository::list_for_libraries(
+        &catalog,
+        None,
+        &library_ids,
+        Some(" canonical search ".to_string()),
+    )
+    .await
+    .expect("padded library search should load");
+    assert!(
+        !library_padded_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_create_or_get_existing_reuses_external_ids_not_slug_only() {
+    let (services, db) = temp_services("scryer_title_create_or_get_existing_parity").await;
+    let catalog = title_store(&services);
+
+    let mut existing = make_test_title("title-existing-external-id", None);
+    existing.slug = Some("shared-slug".to_string());
+    existing.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, existing.clone())
+        .await
+        .expect("existing title should insert");
+
+    let mut same_slug = make_test_title("title-same-slug-new-external-id", None);
+    same_slug.slug = Some("shared-slug".to_string());
+    same_slug.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "67890".to_string(),
+    }];
+    let same_slug_outcome = TitleRepository::create_or_get_existing(&catalog, same_slug.clone())
+        .await
+        .expect("same-slug title should create");
+    assert!(!same_slug_outcome.reused_existing);
+    assert_eq!(same_slug_outcome.title.id, same_slug.id);
+
+    let mut same_external_id = make_test_title("title-same-external-id", None);
+    same_external_id.slug = Some("different-slug".to_string());
+    same_external_id.external_ids = existing.external_ids.clone();
+    let same_external_id_outcome =
+        TitleRepository::create_or_get_existing(&catalog, same_external_id)
+            .await
+            .expect("same external id title should reuse");
+    assert!(same_external_id_outcome.reused_existing);
+    assert_eq!(same_external_id_outcome.title.id, existing.id);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_list_for_matching_keeps_source_image_urls() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_list_for_matching_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title(
+        "title-list-matching",
+        Some("https://tvdb.example/poster.jpg"),
+    );
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let titles = TitleRepository::list_for_matching(&catalog, None, None)
+        .await
+        .expect("matching list should succeed");
+    let listed = titles
+        .into_iter()
+        .find(|candidate| candidate.id == title.id)
+        .expect("title should be listed");
+
+    assert_eq!(
+        listed.poster_url.as_deref(),
+        Some("https://tvdb.example/poster.jpg")
+    );
+    assert!(listed.poster_source_url.is_none());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn media_file_source_signature_refresh_preserves_scan_status() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_media_file_signature_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let media_files = media_file_store(&services);
+
+    let title = make_test_title("title-media-file", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let file_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/library/Movie.Title.2024.mkv".to_string(),
+            size_bytes: 4_096,
+            ..Default::default()
+        })
+        .await
+        .expect("media file should insert");
+
+    sqlx::query("UPDATE media_files SET scan_status = 'scanned' WHERE id = ?")
+        .bind(&file_id)
+        .execute(&services.pool)
+        .await
+        .expect("scan status should update");
+
+    media_files
+        .update_media_file_source_signature(
+            &file_id,
+            4_096,
+            Some("unix_mtime_nsec_v1".to_string()),
+            Some("1:2".to_string()),
+        )
+        .await
+        .expect("source signature should refresh");
+
+    let media_file = media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup should succeed")
+        .expect("media file should exist");
+
+    assert_eq!(media_file.scan_status, "scanned");
+    assert_eq!(
+        media_file.source_signature_scheme.as_deref(),
+        Some("unix_mtime_nsec_v1")
+    );
+    assert_eq!(media_file.source_signature_value.as_deref(), Some("1:2"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn media_file_aggregates_ignore_additional_files_but_listing_includes_them() {
+    let (services, db) = temp_services("scryer_media_file_primary_aggregates").await;
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
+    let media_files = media_file_store(&services);
+
+    let movie_title = make_test_title("title-primary-aggregate-movie", None);
+    TitleRepository::create(&catalog, movie_title.clone())
+        .await
+        .expect("movie title should insert");
+
+    let movie_primary_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: movie_title.id.clone(),
+            file_path: "/library/Movie.Primary.2160p.mkv".to_string(),
+            size_bytes: 8_192,
+            quality_label: Some("2160p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("movie primary media file should insert");
+    let movie_additional_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: movie_title.id.clone(),
+            file_path: "/library/Movie.Additional.720p.mkv".to_string(),
+            size_bytes: 4_096,
+            role: MediaFileRole::Additional,
+            quality_label: Some("720p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("movie additional media file should insert");
+
+    let movie_listing = media_files
+        .list_media_files_for_title(&movie_title.id)
+        .await
+        .expect("movie media files should list");
+    assert_eq!(movie_listing.len(), 2);
+    assert!(
+        movie_listing
+            .iter()
+            .any(|file| { file.id == movie_primary_id && file.role == MediaFileRole::Primary })
+    );
+    assert!(
+        movie_listing.iter().any(|file| {
+            file.id == movie_additional_id && file.role == MediaFileRole::Additional
+        })
+    );
+
+    let quality_summaries = media_files
+        .list_title_quality_summaries(std::slice::from_ref(&movie_title.id))
+        .await
+        .expect("title quality summaries should list");
+    assert_eq!(quality_summaries.len(), 1);
+    assert_eq!(quality_summaries[0].title_id, movie_title.id);
+    assert_eq!(quality_summaries[0].quality_tier, "2160P");
+
+    let mut series_title = make_test_title("title-primary-aggregate-series", None);
+    series_title.facet = MediaFacet::Series;
+    series_title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    TitleRepository::create(&catalog, series_title.clone())
+        .await
+        .expect("series title should insert");
+
+    let collection = Collection {
+        id: "primary-aggregate-season-1".to_string(),
+        title_id: series_title.id.clone(),
+        collection_type: CollectionType::Season,
+        collection_index: "1".to_string(),
+        label: Some("Season 1".to_string()),
+        ordered_path: None,
+        narrative_order: Some("1".to_string()),
+        first_episode_number: Some("1".to_string()),
+        last_episode_number: Some("2".to_string()),
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    ShowRepository::create_collection(&shows, collection.clone())
+        .await
+        .expect("collection should insert");
+
+    let episode_one = Episode {
+        id: "primary-aggregate-s01e01".to_string(),
+        title_id: series_title.id.clone(),
+        collection_id: Some(collection.id.clone()),
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("Episode 1".to_string()),
+        air_date: Some("2026-01-01".to_string()),
+        duration_seconds: Some(1_800),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        image_url: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    let episode_two = Episode {
+        id: "primary-aggregate-s01e02".to_string(),
+        episode_number: Some("2".to_string()),
+        episode_label: Some("S01E02".to_string()),
+        title: Some("Episode 2".to_string()),
+        air_date: Some("2026-01-02".to_string()),
+        ..episode_one.clone()
+    };
+    ShowRepository::create_episode(&shows, episode_one.clone())
+        .await
+        .expect("episode one should insert");
+    ShowRepository::create_episode(&shows, episode_two.clone())
+        .await
+        .expect("episode two should insert");
+
+    let episode_one_primary_id = media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: series_title.id.clone(),
+            file_path: "/library/Series.S01E01.Primary.1080p.mkv".to_string(),
+            size_bytes: 2_048,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("episode primary file should insert");
+    media_files
+        .link_file_to_episode(&episode_one_primary_id, &episode_one.id)
+        .await
+        .expect("primary file should link to episode one");
+
+    for (file_path, episode_id) in [
+        (
+            "/library/Series.S01E01.Additional.360p.mkv",
+            episode_one.id.as_str(),
+        ),
+        (
+            "/library/Series.S01E02.Additional.360p.mkv",
+            episode_two.id.as_str(),
+        ),
+    ] {
+        let additional_id = media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: series_title.id.clone(),
+                file_path: file_path.to_string(),
+                size_bytes: 1_024,
+                role: MediaFileRole::Additional,
+                quality_label: Some("360p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("additional episode file should insert");
+        media_files
+            .link_file_to_episode(&additional_id, episode_id)
+            .await
+            .expect("additional file should link to episode");
+    }
+
+    let cutoff_summaries = media_files
+        .list_cutoff_unmet_quality_summaries(&[series_title.id.clone()])
+        .await
+        .expect("cutoff quality summaries should list");
+    assert_eq!(cutoff_summaries.len(), 1);
+    assert_eq!(
+        cutoff_summaries[0].episode_id.as_deref(),
+        Some(episode_one.id.as_str())
+    );
+    assert_eq!(cutoff_summaries[0].quality_tier, "1080P");
+
+    let progress_summaries = media_files
+        .list_title_episode_progress_summaries(&[series_title.id.clone()])
+        .await
+        .expect("episode progress summaries should list");
+    assert_eq!(progress_summaries.len(), 1);
+    assert_eq!(progress_summaries[0].title_id, series_title.id);
+    assert_eq!(progress_summaries[0].owned_episodes, 1);
+    assert_eq!(progress_summaries[0].monitored_episodes, 2);
+    assert_eq!(progress_summaries[0].total_episodes, 2);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_poster_original_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title("title-3", Some("https://tvdb.example/poster-original.jpg"));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-original.jpg",
+                Vec::new(),
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        updated.poster_url.as_deref(),
+        Some("https://tvdb.example/poster-original.jpg")
+    );
+
+    let original = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+        .await
+        .expect("original blob lookup should succeed");
+    assert_eq!(original, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn replace_title_image_and_append_event_commits_image_and_event_atomically() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_event_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let domain_events = DomainEventStore::new(services.datastore());
+
+    let title = make_test_title("title-image-event", Some("https://tvdb.example/poster.jpg"));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let event = NewDomainEvent {
+        event_id: Id::new().0,
+        occurred_at: Utc::now(),
+        actor_kind: scryer_domain::DomainEventActorKind::System,
+        actor_user_id: None,
+        actor_display_name: "System".to_string(),
+        title_id: Some(title.id.clone()),
+        facet: Some(title.facet.clone()),
+        correlation_id: None,
+        causation_id: None,
+        schema_version: 1,
+        stream: DomainEventStream::Title {
+            title_id: title.id.clone(),
+        },
+        payload: DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
+            title: TitleContextSnapshot {
+                title_name: title.name.clone(),
+                facet: title.facet.clone(),
+                external_ids: Default::default(),
+                poster_url: title.poster_url.clone(),
+                year: title.year,
+            },
+        }),
+    };
+
+    let stored = title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster.jpg",
+                vec![test_title_image_variant_record(
+                    "w250",
+                    250,
+                    375,
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                )],
+            ),
+            Some(event.clone()),
+        )
+        .await
+        .expect("title image and event should commit");
+
+    assert_eq!(
+        stored.expect("event should be stored").event_id,
+        event.event_id
+    );
+    let blob = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "w250")
+        .await
+        .expect("blob lookup should succeed")
+        .expect("blob should exist");
+    assert_eq!(blob.bytes, vec![4, 5, 6]);
+
+    let events = domain_events
+        .list(&DomainEventFilter {
+            title_id: Some(title.id.clone()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("domain event list should succeed");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, event.event_id);
+    assert!(matches!(
+        events[0].payload,
+        DomainEventPayload::TitleUpdated(_)
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_poster_incomplete_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title(
+        "title-4",
+        Some("https://tvdb.example/poster-incomplete.jpg"),
+    );
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Poster,
+                "https://tvdb.example/poster-incomplete.jpg",
+                Vec::new(),
+            ),
+            None,
+        )
+        .await
+        .expect("title image should insert");
+
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        updated.poster_url.as_deref(),
+        Some("https://tvdb.example/poster-incomplete.jpg")
+    );
+
+    let pending = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("list pending poster refresh should succeed");
+    assert!(
+        pending.iter().any(|task| task.title_id == title.id),
+        "incomplete AVIF cache rows should be re-queued for repair"
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn fanart_queries_use_w1280_variant_when_present() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_fanart_w1280_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title("title-fanart-w1280", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
+        .bind("https://tvdb.example/fanart.jpg")
+        .bind(&title.id)
+        .execute(&services.pool)
+        .await
+        .expect("source urls should update");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart.jpg",
+                vec![TitleImageVariantRecord {
+                    variant_key: "w1280".to_string(),
+                    format: "avif".to_string(),
+                    width: 1280,
+                    height: 720,
+                    bytes: vec![9, 10, 11],
+                    digest: "33333333333333333333333333333333".to_string(),
+                }],
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image should insert");
+
+    let updated = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("title lookup should succeed")
+        .expect("title should exist");
+    assert_eq!(
+        updated.background_url.as_deref(),
+        Some("/images/titles/title-fanart-w1280/fanart/w1280?v=3333333333333333")
+    );
+    assert_eq!(
+        updated.background_source_url.as_deref(),
+        Some("https://tvdb.example/fanart.jpg")
+    );
+
+    let fanart_variant = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "w1280")
+        .await
+        .expect("fanart variant blob lookup should succeed");
+    assert_eq!(
+        fanart_variant,
+        Some(TitleImageBlob {
+            content_type: "image/avif".to_string(),
+            etag: "33333333333333333333333333333333".to_string(),
+            bytes: vec![9, 10, 11],
+        })
+    );
+
+    let fanart = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
+        .await
+        .expect("fanart blob lookup should succeed");
+    assert_eq!(fanart, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_refresh_work_requires_fanart_w1280_variant() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_fanart_refresh_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title("title-fanart-refresh", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
+        .bind("https://tvdb.example/fanart-refresh.jpg")
+        .bind(&title.id)
+        .execute(&services.pool)
+        .await
+        .expect("source urls should update");
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                Vec::new(),
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image should insert");
+
+    let pending_fanart = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("list pending fanart refresh should succeed");
+    assert!(
+        pending_fanart.iter().any(|task| task.title_id == title.id),
+        "fanart without w1280 should be re-queued for processing"
+    );
+
+    title_images
+        .upsert_title_image_source_result(
+            &title.id,
+            test_title_image_source_result_with_variants(
+                TitleImageKind::Fanart,
+                "https://tvdb.example/fanart-refresh.jpg",
+                vec![test_title_image_variant_record(
+                    "w1280",
+                    1280,
+                    720,
+                    "cccccccccccccccccccccccccccccccc",
+                )],
+            ),
+            None,
+        )
+        .await
+        .expect("fanart image with w1280 should insert");
+
+    let pending_fanart = title_images
+        .list_title_image_refresh_work(10, &[])
+        .await
+        .expect("list pending fanart refresh should succeed");
+    assert!(pending_fanart.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}

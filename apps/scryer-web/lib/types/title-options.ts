@@ -1,6 +1,6 @@
 export type TitleOptionUpdates = {
   qualityProfileId?: string;
-  rootFolderPath?: string;
+  rootFolderId?: string | null;
   monitorType?: string;
   useSeasonFolders?: boolean;
   monitorSpecials?: boolean;

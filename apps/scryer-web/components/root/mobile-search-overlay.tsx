@@ -134,7 +134,6 @@ export function MobileSearchOverlay({
     requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
-    rootFoldersByFacet,
     librariesByFacet,
     requestableLibrariesByFacet,
     setGlobalSearch,
@@ -438,7 +437,6 @@ export function MobileSearchOverlay({
         catalogQualityProfileOptions={catalogQualityProfileOptions}
         catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
-        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         manageableLibraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
         onAdd={handleAddDialogSubmit}
       />

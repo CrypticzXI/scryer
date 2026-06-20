@@ -1015,11 +1015,12 @@ const de: LocaleDictionary = {
   "settings.pp.descriptionLabel": "Beschreibung",
   "settings.pp.descriptionPlaceholder": "Was macht dieses Skript?",
   "settings.pp.scriptType": "Skripttyp",
-  "settings.pp.inline": "Im Einklang",
+  "settings.pp.inline": "Inline-Shell",
   "settings.pp.filePath": "Dateipfad",
-  "settings.pp.inlineHelp": "Geben Sie einen Shell-Befehl zur Ausführung ein.",
+  "settings.pp.inlineHelp":
+    "Gib einen Shell-Befehl ein, der über die Server-Shell ausgeführt wird.",
   "settings.pp.filePathHelp":
-    "Pfad zu einem ausführbaren Skript auf dem Server.",
+    "Absoluter Pfad zu einem ausführbaren Skript auf dem Server. Argumente, Umleitungen und Shell-Erweiterungen werden nicht angewendet.",
   "settings.pp.blocking": "Blockierung",
   "settings.pp.fireAndForget": "Feuer & Vergessen",
   "settings.pp.blockingHelp":
@@ -1039,6 +1040,15 @@ const de: LocaleDictionary = {
   "settings.pp.updated": "Skript aktualisiert.",
   "settings.pp.deleted": "Skript gelöscht.",
   "settings.pp.toggled": "Skript {{state}}.",
+  "settings.pp.createNewScript": "Neues Skript erstellen",
+  "settings.pp.confirmDiscardTitle":
+    "Aktuelle Nachbearbeitungsskript-Änderungen verwerfen?",
+  "settings.pp.confirmDiscardDescription":
+    "Deine aktuellen Nachbearbeitungsskript-Änderungen gehen verloren.",
+  "settings.pp.inlineShellConfirmTitle": "Inline-Shell-Skript erlauben?",
+  "settings.pp.inlineShellConfirmDescription":
+    "Inline-Nachbearbeitungsskripte laufen nach Importen über die Server-Shell. Speichere nur Skripte, die du geprüft hast und denen du vertraust.",
+  "settings.pp.inlineShellConfirm": "Inline-Shell erlauben",
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Plugins verwalten",
   "settings.pluginsRefresh": "Registry aktualisieren",

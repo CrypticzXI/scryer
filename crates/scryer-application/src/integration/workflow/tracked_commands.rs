@@ -49,6 +49,48 @@ impl TrackedDownloadWorkDrain {
     }
 }
 
+struct TrackedDownloadRuntimeState {
+    tracker: crate::tracked_downloads::TrackedDownloadService,
+    previous_items_by_projection: HashMap<String, HashMap<String, DownloadQueueItem>>,
+    tracked_work_in_flight: HashSet<String>,
+    tracked_work_drain: TrackedDownloadWorkDrain,
+}
+
+impl TrackedDownloadRuntimeState {
+    fn new() -> Self {
+        Self {
+            tracker: crate::tracked_downloads::TrackedDownloadService::new(),
+            previous_items_by_projection: HashMap::new(),
+            tracked_work_in_flight: HashSet::new(),
+            tracked_work_drain: TrackedDownloadWorkDrain::empty(),
+        }
+    }
+}
+
+enum TrackedDownloadSnapshotPrune {
+    GlobalExcludingClientTypes,
+    Scope(crate::tracked_downloads::TrackedDownloadSnapshotScope),
+    None,
+}
+
+enum TrackedDownloadSnapshotProjection {
+    Publish {
+        key: String,
+        actor_id: Option<String>,
+    },
+    UpsertOnly {
+        actor_id: Option<String>,
+    },
+}
+
+enum TrackedDownloadSnapshotDispatch {
+    AllTrackable,
+    Seen {
+        completed_lookup: crate::completed_download_handler::CompletedDownloadLookup,
+    },
+    None,
+}
+
 fn apply_tracked_download_queue_metadata(
     item: &mut DownloadQueueItem,
     tracked: &TrackedDownloadQueueMetadata,
@@ -254,15 +296,326 @@ impl AppUseCase {
         Ok(())
     }
 }
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "snapshot processing owns tracker, dispatch, projection, and source-specific pruning"
+)]
+async fn process_tracked_download_snapshot(
+    app: &AppUseCase,
+    actor: &User,
+    runtime: &mut TrackedDownloadRuntimeState,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    mut items: Vec<DownloadQueueItem>,
+    completed_download_lookup: Option<crate::completed_download_handler::CompletedDownloadLookup>,
+    prune: TrackedDownloadSnapshotPrune,
+    projection: TrackedDownloadSnapshotProjection,
+    dispatch: TrackedDownloadSnapshotDispatch,
+    emit_metrics: bool,
+    excluded_client_type_refs: &[&str],
+    snapshot_label: &'static str,
+) {
+    let cycle_started_at = Instant::now();
+
+    enrich_download_queue_items_from_submissions(app, &mut items).await;
+
+    let mut seen_ids = HashSet::new();
+    let mut seen_order = Vec::new();
+
+    // Phase 1: Refresh — track each item and run checks.
+    for item in items.iter() {
+        let id = tracked_download_id_for_item(item);
+        if seen_ids.insert(id.clone()) {
+            seen_order.push(id.clone());
+        }
+
+        let is_new = runtime.tracker.find(&id).is_none();
+        runtime.tracker.track(app, item.clone()).await;
+
+        if let Some(td) = runtime.tracker.find(&id)
+            && is_new
+        {
+            if td.state.is_terminal() || is_history_download_state(&td.client_item.state) {
+                tracing::debug!(
+                    id = %td.id,
+                    state = ?td.state,
+                    client_state = ?td.client_item.state,
+                    match_type = ?td.match_type,
+                    title_id = ?td.title_id,
+                    client_title_name = %td.client_item.title_name,
+                    "tracked: new background download"
+                )
+            } else {
+                tracing::info!(
+                    id = %td.id,
+                    state = ?td.state,
+                    client_state = ?td.client_item.state,
+                    match_type = ?td.match_type,
+                    title_id = ?td.title_id,
+                    client_title_name = %td.client_item.title_name,
+                    "tracked: new download"
+                )
+            }
+        }
+
+        if let Some(td) = runtime.tracker.find_mut(&id)
+            && matches!(
+                td.state,
+                TrackedDownloadState::Downloading
+                    | TrackedDownloadState::ImportPending
+                    | TrackedDownloadState::ImportBlocked
+            )
+        {
+            let state_before = td.state;
+            crate::failed_download_handler::check(td);
+            if td.state != TrackedDownloadState::FailedPending {
+                crate::completed_download_handler::check_with_lookup(
+                    app,
+                    td,
+                    completed_download_lookup.as_ref(),
+                )
+                .await;
+            }
+            if td.state != state_before {
+                tracing::info!(
+                    id = %id,
+                    from = ?state_before,
+                    to = ?td.state,
+                    "tracked: state transition after check"
+                );
+            }
+        }
+    }
+
+    match prune {
+        TrackedDownloadSnapshotPrune::GlobalExcludingClientTypes => runtime
+            .tracker
+            .update_trackable_excluding_client_types(&seen_ids, excluded_client_type_refs),
+        TrackedDownloadSnapshotPrune::Scope(scope) => {
+            runtime
+                .tracker
+                .update_trackable_for_scope(&seen_ids, &scope);
+        }
+        TrackedDownloadSnapshotPrune::None => {}
+    }
+
+    reconcile_terminal_tracked_downloads(app, &mut runtime.tracker).await;
+    publish_runtime_tracked_download_snapshot_cache(app, &runtime.tracker).await;
+
+    // Phase 2: Dispatch — import pending and failed items.
+    let mut published_after_dispatch = false;
+    if runtime.tracked_work_in_flight.is_empty() {
+        if !runtime.tracked_work_drain.has_pending() {
+            match dispatch {
+                TrackedDownloadSnapshotDispatch::AllTrackable => {
+                    let trackable_ids = trackable_ids_excluding_client_types(
+                        &runtime.tracker,
+                        excluded_client_type_refs,
+                    );
+                    runtime.tracked_work_drain = build_tracked_download_work_drain(
+                        app,
+                        &runtime.tracker,
+                        &runtime.tracked_work_in_flight,
+                        &trackable_ids,
+                        excluded_client_type_refs,
+                    )
+                    .await;
+                }
+                TrackedDownloadSnapshotDispatch::Seen { completed_lookup } => {
+                    let trackable_ids = seen_order
+                        .iter()
+                        .filter(|id| {
+                            runtime.tracker.find(id).is_some_and(|td| {
+                                td.is_trackable
+                                    && !td.state.is_terminal()
+                                    && !td.waiting_for_completed_history
+                                    && completed_lookup.matches_tracked_download(td)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    runtime.tracked_work_drain =
+                        TrackedDownloadWorkDrain::new(trackable_ids, completed_lookup);
+                }
+                TrackedDownloadSnapshotDispatch::None => {}
+            }
+        }
+
+        if runtime.tracked_work_drain.has_pending()
+            && try_dispatch_next_tracked_download_background_work(
+                app,
+                actor,
+                &mut runtime.tracker,
+                &mut runtime.tracked_work_in_flight,
+                result_tx,
+                &mut runtime.tracked_work_drain,
+            )
+        {
+            published_after_dispatch = true;
+        }
+    }
+
+    if published_after_dispatch {
+        publish_runtime_tracked_download_snapshot_cache(app, &runtime.tracker).await;
+    }
+
+    // Enrich items with tracked state before broadcasting.
+    for item in &mut items {
+        let id = tracked_download_id_for_item(item);
+        if let Some(td) = runtime.tracker.find(&id) {
+            let metadata = tracked_download_queue_snapshot(td);
+            apply_tracked_download_queue_metadata(item, &metadata);
+        }
+    }
+
+    if emit_metrics {
+        // Emit download queue gauge by state.
+        let mut counts = [0u64; 9];
+        for item in &items {
+            match item.state {
+                scryer_domain::DownloadQueueState::Queued => counts[0] += 1,
+                scryer_domain::DownloadQueueState::Downloading => counts[1] += 1,
+                scryer_domain::DownloadQueueState::Paused => counts[2] += 1,
+                scryer_domain::DownloadQueueState::Completed => counts[3] += 1,
+                scryer_domain::DownloadQueueState::ImportPending => counts[4] += 1,
+                scryer_domain::DownloadQueueState::Failed => counts[5] += 1,
+                scryer_domain::DownloadQueueState::Verifying => counts[6] += 1,
+                scryer_domain::DownloadQueueState::Repairing => counts[7] += 1,
+                scryer_domain::DownloadQueueState::Extracting => counts[8] += 1,
+            }
+        }
+        let labels = [
+            "queued",
+            "downloading",
+            "paused",
+            "completed",
+            "import_pending",
+            "failed",
+            "verifying",
+            "repairing",
+            "extracting",
+        ];
+        for (label, &count) in labels.iter().zip(&counts) {
+            metrics::gauge!("scryer_download_queue_items", "state" => *label).set(count as f64);
+        }
+    }
+
+    match projection {
+        TrackedDownloadSnapshotProjection::Publish { key, actor_id } => {
+            let previous_items = runtime
+                .previous_items_by_projection
+                .entry(key)
+                .or_default();
+            publish_download_queue_snapshot_events(app, actor_id, previous_items, &items).await;
+        }
+        TrackedDownloadSnapshotProjection::UpsertOnly { actor_id } => {
+            publish_download_queue_upsert_events(app, actor_id, &items).await;
+        }
+    }
+
+    tracing::debug!(
+        elapsed_ms = cycle_started_at.elapsed().as_millis() as u64,
+        item_count = items.len(),
+        tracked_count = runtime.tracker.get_all().len(),
+        active_workers = runtime.tracked_work_in_flight.len(),
+        snapshot = snapshot_label,
+        "download queue poller cycle completed"
+    );
+}
+
+fn tracked_download_snapshot_projection_key(
+    scope: &crate::tracked_downloads::TrackedDownloadSnapshotScope,
+) -> Option<String> {
+    match scope {
+        crate::tracked_downloads::TrackedDownloadSnapshotScope::AuthoritativeForClient {
+            client_id,
+            client_type,
+        } => Some(format!(
+            "client:{}:{}",
+            client_type.trim().to_ascii_lowercase(),
+            client_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("")
+        )),
+        crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta => None,
+    }
+}
+
+async fn process_external_tracked_download_snapshot_update(
+    app: &AppUseCase,
+    actor: &User,
+    runtime: &mut TrackedDownloadRuntimeState,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    update: crate::tracked_downloads::TrackedDownloadSnapshotUpdate,
+    excluded_client_type_refs: &[&str],
+) {
+    let crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+        scope,
+        items,
+        completed_downloads,
+        actor_id,
+    } = update;
+    let has_completed_downloads = !completed_downloads.is_empty();
+    let completed_lookup =
+        crate::completed_download_handler::CompletedDownloadLookup::from_recent_downloads(
+            completed_downloads,
+        );
+    let projection_key = tracked_download_snapshot_projection_key(&scope);
+    let prune = match scope.clone() {
+        crate::tracked_downloads::TrackedDownloadSnapshotScope::AuthoritativeForClient {
+            ..
+        } => TrackedDownloadSnapshotPrune::Scope(scope),
+        crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta => {
+            TrackedDownloadSnapshotPrune::None
+        }
+    };
+    let projection = match projection_key {
+        Some(key) => TrackedDownloadSnapshotProjection::Publish { key, actor_id },
+        None => TrackedDownloadSnapshotProjection::UpsertOnly { actor_id },
+    };
+    let emit_metrics = matches!(
+        &projection,
+        TrackedDownloadSnapshotProjection::Publish { .. }
+    );
+    let dispatch = if has_completed_downloads {
+        TrackedDownloadSnapshotDispatch::Seen {
+            completed_lookup: completed_lookup.clone(),
+        }
+    } else {
+        TrackedDownloadSnapshotDispatch::None
+    };
+
+    process_tracked_download_snapshot(
+        app,
+        actor,
+        runtime,
+        result_tx,
+        items,
+        Some(completed_lookup),
+        prune,
+        projection,
+        dispatch,
+        emit_metrics,
+        excluded_client_type_refs,
+        "external",
+    )
+    .await;
+}
+
 pub async fn start_download_queue_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
     command_rx: tokio::sync::mpsc::Receiver<crate::tracked_downloads::TrackedDownloadCommand>,
 ) {
+    let (_snapshot_tx, snapshot_rx) =
+        tokio::sync::mpsc::channel::<crate::tracked_downloads::TrackedDownloadSnapshotUpdate>(1);
     start_download_queue_poller_with_options(
         app,
         token,
         command_rx,
+        snapshot_rx,
         DownloadQueuePollerOptions::default(),
     )
     .await;
@@ -272,12 +625,12 @@ pub async fn start_download_queue_poller_with_options(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
     mut command_rx: tokio::sync::mpsc::Receiver<crate::tracked_downloads::TrackedDownloadCommand>,
+    mut snapshot_rx: tokio::sync::mpsc::Receiver<
+        crate::tracked_downloads::TrackedDownloadSnapshotUpdate,
+    >,
     options: DownloadQueuePollerOptions,
 ) {
-    use crate::tracked_downloads::{
-        TrackedDownloadService, publish_runtime_tracked_download_snapshot_cache,
-    };
-    use scryer_domain::TrackedDownloadState;
+    use crate::tracked_downloads::publish_runtime_tracked_download_snapshot_cache;
 
     let actor = match app.find_or_create_default_user().await {
         Ok(actor) => actor,
@@ -287,12 +640,9 @@ pub async fn start_download_queue_poller_with_options(
         }
     };
 
-    let mut tracker = TrackedDownloadService::new();
-    let mut previous_items: HashMap<String, DownloadQueueItem> = HashMap::new();
+    let mut runtime = TrackedDownloadRuntimeState::new();
     let (tracked_work_result_tx, mut tracked_work_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<TrackedDownloadBackgroundWorkResult>();
-    let mut tracked_work_in_flight = HashSet::new();
-    let mut tracked_work_drain = TrackedDownloadWorkDrain::empty();
     let mut last_recent_history_poll: Option<Instant> = None;
 
     let excluded_client_type_refs = options
@@ -307,6 +657,7 @@ pub async fn start_download_queue_poller_with_options(
     );
     let mut interval = tokio::time::interval(options.interval);
     let mut commands_open = true;
+    let mut snapshots_open = true;
     loop {
         tokio::select! {
             _ = token.cancelled() => {
@@ -319,8 +670,8 @@ pub async fn start_download_queue_poller_with_options(
                         handle_tracked_download_command(
                             &app,
                             &actor,
-                            &mut tracker,
-                            &mut tracked_work_in_flight,
+                            &mut runtime.tracker,
+                            &mut runtime.tracked_work_in_flight,
                             &tracked_work_result_tx,
                             command,
                         )
@@ -331,29 +682,46 @@ pub async fn start_download_queue_poller_with_options(
                     }
                 }
             }
-            maybe_result = tracked_work_result_rx.recv(), if !tracked_work_in_flight.is_empty() => {
+            maybe_snapshot = snapshot_rx.recv(), if snapshots_open => {
+                match maybe_snapshot {
+                    Some(update) => {
+                        process_external_tracked_download_snapshot_update(
+                            &app,
+                            &actor,
+                            &mut runtime,
+                            &tracked_work_result_tx,
+                            update,
+                            &excluded_client_type_refs,
+                        )
+                        .await;
+                    }
+                    None => {
+                        snapshots_open = false;
+                    }
+                }
+            }
+            maybe_result = tracked_work_result_rx.recv(), if !runtime.tracked_work_in_flight.is_empty() => {
                 if let Some(result) = maybe_result {
                     handle_tracked_download_background_work_result(
                         &app,
-                        &mut tracker,
-                        &mut tracked_work_in_flight,
+                        &mut runtime.tracker,
+                        &mut runtime.tracked_work_in_flight,
                         result,
                     )
                     .await;
                     if try_dispatch_next_tracked_download_background_work(
                         &app,
                         &actor,
-                        &mut tracker,
-                        &mut tracked_work_in_flight,
+                        &mut runtime.tracker,
+                        &mut runtime.tracked_work_in_flight,
                         &tracked_work_result_tx,
-                        &mut tracked_work_drain,
+                        &mut runtime.tracked_work_drain,
                     ) {
-                        publish_runtime_tracked_download_snapshot_cache(&app, &tracker).await;
+                        publish_runtime_tracked_download_snapshot_cache(&app, &runtime.tracker).await;
                     }
                 }
             }
             _ = interval.tick() => {
-                let cycle_started_at = Instant::now();
                 let include_recent_history = last_recent_history_poll
                     .map(|last| last.elapsed() >= DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL)
                     .unwrap_or(true);
@@ -369,8 +737,7 @@ pub async fn start_download_queue_poller_with_options(
                     )
                     .await
                 {
-                    Ok(mut items) => {
-                        let mut seen_ids = HashSet::new();
+                    Ok(items) => {
                         let completed_download_lookup =
                             crate::completed_download_handler::load_completed_download_lookup_for_items_excluding_client_types(
                                 &app,
@@ -379,155 +746,36 @@ pub async fn start_download_queue_poller_with_options(
                                 &excluded_client_type_refs,
                             )
                             .await;
-
-                        // Phase 1: Refresh — track each item and run checks.
-                        for item in items.iter() {
-                            let id = tracked_download_id_for_item(item);
-                            seen_ids.insert(id.clone());
-
-                            let is_new = tracker.find(&id).is_none();
-                            tracker.track(&app, item.clone()).await;
-
-                            if let Some(td) = tracker.find(&id)
-                                && is_new
-                            {
-                                if td.state.is_terminal()
-                                    || is_history_download_state(&td.client_item.state)
-                                {
-                                    tracing::debug!(
-                                        id = %td.id,
-                                        state = ?td.state,
-                                        client_state = ?td.client_item.state,
-                                        match_type = ?td.match_type,
-                                        title_id = ?td.title_id,
-                                        client_title_name = %td.client_item.title_name,
-                                        "tracked: new background download"
-                                    )
-                                } else {
-                                    tracing::info!(
-                                        id = %td.id,
-                                        state = ?td.state,
-                                        client_state = ?td.client_item.state,
-                                        match_type = ?td.match_type,
-                                        title_id = ?td.title_id,
-                                        client_title_name = %td.client_item.title_name,
-                                        "tracked: new download"
-                                    )
-                                }
-                            }
-
-                            if let Some(td) = tracker.find_mut(&id)
-                                && matches!(
-                                    td.state,
-                                    TrackedDownloadState::Downloading
-                                        | TrackedDownloadState::ImportPending
-                                        | TrackedDownloadState::ImportBlocked
-                                )
-                            {
-                                let state_before = td.state;
-                                crate::failed_download_handler::check(td);
-                                if td.state != TrackedDownloadState::FailedPending {
-                                    crate::completed_download_handler::check_with_lookup(
-                                        &app,
-                                        td,
-                                        completed_download_lookup.as_ref(),
-                                    )
-                                    .await;
-                                }
-                                if td.state != state_before {
-                                    tracing::info!(
-                                        id = %id,
-                                        from = ?state_before,
-                                        to = ?td.state,
-                                        "tracked: state transition after check"
-                                    );
-                                }
-                            }
-                        }
-
-                        tracker.update_trackable(&seen_ids);
-                        reconcile_terminal_tracked_downloads(&app, &mut tracker).await;
-                        publish_runtime_tracked_download_snapshot_cache(&app, &tracker).await;
-
-                        // Phase 2: Dispatch — import pending and failed items.
-                        let mut published_after_dispatch = false;
-                        if tracked_work_in_flight.is_empty() {
-                            if !tracked_work_drain.has_pending() {
-                                let trackable_ids = tracker.get_trackable_ids();
-                                tracked_work_drain = build_tracked_download_work_drain(
-                                    &app,
-                                    &tracker,
-                                    &tracked_work_in_flight,
-                                    &trackable_ids,
-                                    &excluded_client_type_refs,
-                                )
-                                .await;
-                            }
-                            if try_dispatch_next_tracked_download_background_work(
-                                &app,
-                                &actor,
-                                &mut tracker,
-                                &mut tracked_work_in_flight,
-                                &tracked_work_result_tx,
-                                &mut tracked_work_drain,
-                            ) {
-                                published_after_dispatch = true;
-                            }
-                        }
-
-                        if published_after_dispatch {
-                            publish_runtime_tracked_download_snapshot_cache(&app, &tracker).await;
-                        }
-
-                        // Enrich items with tracked state before broadcasting.
-                        for item in &mut items {
-                            let id = tracked_download_id_for_item(item);
-                            if let Some(td) = tracker.find(&id) {
-                                let metadata = tracked_download_queue_snapshot(td);
-                                apply_tracked_download_queue_metadata(item, &metadata);
-                            }
-                        }
-
-                        // Emit download queue gauge by state.
-                        let mut counts = [0u64; 9];
-                        for item in &items {
-                            match item.state {
-                                scryer_domain::DownloadQueueState::Queued => counts[0] += 1,
-                                scryer_domain::DownloadQueueState::Downloading => counts[1] += 1,
-                                scryer_domain::DownloadQueueState::Paused => counts[2] += 1,
-                                scryer_domain::DownloadQueueState::Completed => counts[3] += 1,
-                                scryer_domain::DownloadQueueState::ImportPending => counts[4] += 1,
-                                scryer_domain::DownloadQueueState::Failed => counts[5] += 1,
-                                scryer_domain::DownloadQueueState::Verifying => counts[6] += 1,
-                                scryer_domain::DownloadQueueState::Repairing => counts[7] += 1,
-                                scryer_domain::DownloadQueueState::Extracting => counts[8] += 1,
-                            }
-                        }
-                        let labels = ["queued", "downloading", "paused", "completed", "import_pending", "failed", "verifying", "repairing", "extracting"];
-                        for (label, &count) in labels.iter().zip(&counts) {
-                            metrics::gauge!("scryer_download_queue_items", "state" => *label).set(count as f64);
-                        }
-
-                        publish_download_queue_snapshot_events(
+                        process_tracked_download_snapshot(
                             &app,
-                            None,
-                            &mut previous_items,
-                            &items,
-                        )
-                        .await;
-
-                        tracing::debug!(
-                            elapsed_ms = cycle_started_at.elapsed().as_millis() as u64,
-                            item_count = items.len(),
-                            tracked_count = tracker.get_all().len(),
-                            active_workers = tracked_work_in_flight.len(),
-                            "download queue poller cycle completed"
-                        );
+                            &actor,
+                            &mut runtime,
+                            &tracked_work_result_tx,
+                            items,
+                            completed_download_lookup,
+                            TrackedDownloadSnapshotPrune::GlobalExcludingClientTypes,
+                            TrackedDownloadSnapshotProjection::Publish {
+                                key: "poller".to_string(),
+                                actor_id: None,
+                            },
+                            TrackedDownloadSnapshotDispatch::AllTrackable,
+                            true,
+                            &excluded_client_type_refs,
+                            "poller",
+                        ).await;
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, "download queue poll failed");
                     }
                 }
+                try_dispatch_excluded_completed_history_retry(
+                    &app,
+                    &actor,
+                    &mut runtime,
+                    &tracked_work_result_tx,
+                    &excluded_client_type_refs,
+                )
+                .await;
             }
         }
     }
@@ -750,6 +998,9 @@ fn prepare_tracked_download_background_work_dispatch(
     let td = tracker.find_mut(id)?;
     match td.state {
         TrackedDownloadState::ImportPending => {
+            if td.waiting_for_completed_history {
+                return None;
+            }
             if td
                 .no_video_import_retry
                 .as_ref()
@@ -791,6 +1042,152 @@ fn trackable_import_work_completed_lookup_items(
             })
         })
         .collect()
+}
+
+fn tracked_client_type_is_excluded(client_type: &str, excluded_client_types: &[&str]) -> bool {
+    excluded_client_types
+        .iter()
+        .any(|excluded| excluded.trim().eq_ignore_ascii_case(client_type.trim()))
+}
+
+fn trackable_ids_excluding_client_types(
+    tracker: &crate::tracked_downloads::TrackedDownloadService,
+    excluded_client_types: &[&str],
+) -> Vec<String> {
+    tracker
+        .get_all()
+        .into_iter()
+        .filter(|td| td.is_trackable && !td.state.is_terminal())
+        .filter(|td| !tracked_client_type_is_excluded(&td.client_type, excluded_client_types))
+        .map(|td| td.id.clone())
+        .collect()
+}
+
+fn excluded_completed_history_retry_items(
+    tracker: &crate::tracked_downloads::TrackedDownloadService,
+    tracked_work_in_flight: &HashSet<String>,
+    excluded_client_types: &[&str],
+) -> Vec<(String, DownloadQueueItem)> {
+    tracker
+        .get_all()
+        .into_iter()
+        .filter(|td| td.is_trackable)
+        .filter(|td| td.client_item.state == scryer_domain::DownloadQueueState::Completed)
+        .filter(|td| td.state == TrackedDownloadState::ImportPending)
+        .filter(|td| td.waiting_for_completed_history)
+        .filter(|td| !td.import_attempted)
+        .filter(|td| !tracked_work_in_flight.contains(&td.id))
+        .filter(|td| tracked_client_type_is_excluded(&td.client_type, excluded_client_types))
+        .map(|td| (td.id.clone(), td.client_item.clone()))
+        .collect()
+}
+
+struct TrackedDownloadHistoryRetryDrain {
+    drain: TrackedDownloadWorkDrain,
+    revalidated: bool,
+}
+
+async fn build_excluded_completed_history_retry_drain(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    tracked_work_in_flight: &HashSet<String>,
+    excluded_client_types: &[&str],
+) -> TrackedDownloadHistoryRetryDrain {
+    let retry_items =
+        excluded_completed_history_retry_items(tracker, tracked_work_in_flight, excluded_client_types);
+    if retry_items.is_empty() {
+        return TrackedDownloadHistoryRetryDrain {
+            drain: TrackedDownloadWorkDrain::empty(),
+            revalidated: false,
+        };
+    }
+
+    let lookup_items = retry_items
+        .iter()
+        .map(|(_, item)| item.clone())
+        .collect::<Vec<_>>();
+    let completed_lookup =
+        crate::completed_download_handler::load_completed_download_lookup_for_tracked_client_items_excluding_client_types(
+            app,
+            &lookup_items,
+            DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+            &[],
+        )
+        .await
+        .unwrap_or_default();
+    let mut retry_ids = Vec::new();
+    let mut revalidated = false;
+
+    for (id, _) in retry_items {
+        let has_completed_history = tracker
+            .find(&id)
+            .is_some_and(|td| completed_lookup.matches_tracked_download(td));
+        if !has_completed_history {
+            continue;
+        }
+
+        if let Some(td) = tracker.find_mut(&id) {
+            if td.waiting_for_completed_history && td.state == TrackedDownloadState::ImportPending
+            {
+                td.state = TrackedDownloadState::Downloading;
+            }
+            crate::completed_download_handler::check_with_lookup(app, td, Some(&completed_lookup))
+                .await;
+            revalidated = true;
+        }
+
+        if tracker.find(&id).is_some_and(|td| {
+            td.is_trackable
+                && td.state == TrackedDownloadState::ImportPending
+                && !td.waiting_for_completed_history
+                && !td.import_attempted
+                && completed_lookup.matches_tracked_download(td)
+        }) {
+            retry_ids.push(id);
+        }
+    }
+
+    TrackedDownloadHistoryRetryDrain {
+        drain: TrackedDownloadWorkDrain::new(retry_ids, completed_lookup),
+        revalidated,
+    }
+}
+
+async fn try_dispatch_excluded_completed_history_retry(
+    app: &AppUseCase,
+    actor: &User,
+    runtime: &mut TrackedDownloadRuntimeState,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    excluded_client_types: &[&str],
+) {
+    if excluded_client_types.is_empty()
+        || !runtime.tracked_work_in_flight.is_empty()
+        || runtime.tracked_work_drain.has_pending()
+    {
+        return;
+    }
+
+    let retry_drain = build_excluded_completed_history_retry_drain(
+        app,
+        &mut runtime.tracker,
+        &runtime.tracked_work_in_flight,
+        excluded_client_types,
+    )
+    .await;
+    let revalidated = retry_drain.revalidated;
+    runtime.tracked_work_drain = retry_drain.drain;
+
+    if try_dispatch_next_tracked_download_background_work(
+        app,
+        actor,
+        &mut runtime.tracker,
+        &mut runtime.tracked_work_in_flight,
+        result_tx,
+        &mut runtime.tracked_work_drain,
+    ) || revalidated
+    {
+        publish_runtime_tracked_download_snapshot_cache(app, &runtime.tracker).await;
+    }
 }
 
 async fn build_tracked_download_work_drain(

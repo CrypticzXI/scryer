@@ -11,6 +11,7 @@ import { CODE_FONT } from "@/lib/fonts";
 import { isDarkTheme } from "@/lib/theme";
 
 type RegoEditorProps = {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   readOnly?: boolean;
@@ -55,6 +56,7 @@ const prideTheme = EditorView.theme({
 }, { dark: true });
 
 export default function RegoEditor({
+  id,
   value,
   onChange,
   readOnly = false,
@@ -140,6 +142,7 @@ export default function RegoEditor({
 
   return (
     <div
+      id={id}
       ref={containerRef}
       className="overflow-auto rounded-lg border border-border text-sm"
       style={{ height: computedHeight, minHeight: "120px" }}

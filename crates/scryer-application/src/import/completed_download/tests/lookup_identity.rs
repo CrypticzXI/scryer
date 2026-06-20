@@ -1,0 +1,550 @@
+use super::*;
+
+#[test]
+fn completed_download_lookup_keeps_same_native_id_from_different_clients() {
+    let first = build_completed_download("Paper.Lantern.2012.1080p", "/downloads/a", Some("movie"));
+    let mut second =
+        build_completed_download("Paper.Lantern.2012.1080p", "/downloads/b", Some("movie"));
+    second.client_id = "client-2".to_string();
+
+    let lookup =
+        index_completed_downloads(vec![first, second], CompletedDownloadLookupCoverage::Recent);
+
+    assert_eq!(lookup.by_source.len(), 2);
+    assert!(
+        lookup
+            .by_source
+            .contains_key(&completed_download_lookup_key(
+                Some("client-1"),
+                "nzbget",
+                "dl-1"
+            ))
+    );
+    assert!(
+        lookup
+            .by_source
+            .contains_key(&completed_download_lookup_key(
+                Some("client-2"),
+                "nzbget",
+                "dl-1"
+            ))
+    );
+}
+
+#[tokio::test]
+async fn check_with_lookup_remaps_remote_completed_download_paths_before_readiness_checks() {
+    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let local_root = std::env::temp_dir().join(format!("scryer-remote-path-map-{}", Id::new().0));
+    let local_download_dir = local_root.join("Paper.Lantern.2012.1080p");
+    std::fs::create_dir_all(&local_download_dir).expect("create mapped download directory");
+
+    let remote_completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        "/downloads/Paper.Lantern.2012.1080p",
+        Some("movie"),
+    );
+    let lookup = index_completed_downloads(
+        vec![remote_completed],
+        CompletedDownloadLookupCoverage::Recent,
+    );
+    let download_client = Arc::new(TestDownloadClient::default());
+    let app = build_app_with_download_client_and_configs(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        download_client,
+        Arc::new(TestDownloadClientConfigRepo {
+            configs: vec![DownloadClientConfig {
+                id: "client-1".to_string(),
+                name: "qBittorrent".to_string(),
+                client_type: "qbittorrent".to_string(),
+                config_json: format!(
+                    r#"{{"remote_path_mappings":"/downloads => {}"}}"#,
+                    local_root.to_string_lossy()
+                ),
+                is_enabled: true,
+                status: scryer_domain::DownloadClientStatus::Healthy,
+                last_error: None,
+                last_seen_at: None,
+                client_priority: 0,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }],
+        }),
+    );
+    let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
+
+    check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert!(td.status_messages.is_empty());
+
+    std::fs::remove_dir_all(&local_root).expect("remove mapped download directory");
+}
+
+#[tokio::test]
+async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
+    let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+    let release_title = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let info_hash = "5b4ba671c3729e34718de86e3372be2ecb527b15";
+    let accepted_identity = crate::download_identity::accepted_download_submission_identity(
+        crate::download_identity::AcceptedDownloadIdentityInput {
+            initial_download_id: Some("scryer-download:test-qbit"),
+            source_kind: Some(crate::DownloadSourceKind::TorrentFile),
+            source_hint: Some("http://torrent-indexer/download/paperman.torrent"),
+            info_hash_hint: None,
+            client_type: Some("qbittorrent"),
+            client_item_id: Some(info_hash),
+            accepted_info_hash: Some(info_hash),
+        },
+    );
+    assert_eq!(accepted_identity.download_id.as_deref(), Some(info_hash));
+
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    submission_repo
+        .record_submission_with_identity(
+            DownloadSubmission {
+                title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: title.facet.as_str().to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "qbittorrent".to_string(),
+                download_client_item_id: info_hash.to_string(),
+                source_hint: Some("http://torrent-indexer/download/paperman.torrent".to_string()),
+                source_kind: Some(crate::DownloadSourceKind::TorrentFile),
+                source_title: Some(release_title.to_string()),
+                request_signature: Some(
+                    "torrent_file|http://torrent-indexer/download/paperman.torrent|Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb"
+                        .to_string(),
+                ),
+                scope: crate::SubmissionScope::Title,
+            },
+            accepted_identity,
+        )
+        .await
+        .expect("record submission");
+
+    let completed_dir = std::env::temp_dir().join(format!("scryer-qbit-completed-{}", Id::new().0));
+    std::fs::create_dir_all(&completed_dir).expect("create completed dir");
+    let mut completed = build_completed_download(
+        release_title,
+        completed_dir.to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.client_type = "qbittorrent".to_string();
+    completed.client_id = "client-1".to_string();
+    completed.download_client_item_id = info_hash.to_string();
+    completed.download_id = Some(info_hash.to_string());
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+
+    let app = build_app_with_download_client_configs_and_submissions(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        Arc::new(TestDownloadClient::default()),
+        Arc::new(NullDownloadClientConfigRepository),
+        submission_repo,
+    );
+    let mut td = build_tracked_download(&title.id, "movie", release_title);
+    td.id = format!("download:{info_hash}");
+    td.client_type = "qbittorrent".to_string();
+    td.client_id = "client-1".to_string();
+    td.client_item.client_id = "client-1".to_string();
+    td.client_item.client_name = "qBittorrent".to_string();
+    td.client_item.client_type = "qbittorrent".to_string();
+    td.client_item.download_client_item_id = info_hash.to_string();
+    td.client_item.download_id = Some(info_hash.to_string());
+
+    check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert!(td.status_messages.is_empty());
+
+    std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
+}
+
+#[tokio::test]
+async fn check_with_lookup_retries_scryer_origin_when_completed_history_is_missing() {
+    let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+    let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    let app = build_app_with_download_client_configs_and_submissions(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        Arc::new(TestDownloadClient::default()),
+        Arc::new(NullDownloadClientConfigRepository),
+        submission_repo.clone(),
+    );
+    let lookup = index_completed_downloads(vec![], CompletedDownloadLookupCoverage::Recent);
+    let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+    td.id = format!("download:client-1:qbittorrent:{download_id}");
+    td.client_type = "qbittorrent".to_string();
+    td.client_item.client_type = "qbittorrent".to_string();
+    td.client_item.client_name = "qBittorrent".to_string();
+    td.client_item.download_client_item_id = "2".to_string();
+    td.client_item.download_id = Some(download_id.to_string());
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+
+    check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert!(
+        td.status_messages
+            .iter()
+            .any(|message| message.contains("waiting for client history"))
+    );
+    assert!(
+        submission_repo
+            .identity_tracked_states
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn check_with_recent_lookup_retries_local_identity_miss_without_manual_block() {
+    let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+    let download_id = "10010";
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some(download_id.to_string()),
+    };
+    let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    let app = build_app_with_download_client_configs_and_submissions(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        Arc::new(TestDownloadClient::default()),
+        Arc::new(NullDownloadClientConfigRepository),
+        submission_repo.clone(),
+    );
+    let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+    td.id = format!("download:{download_id}");
+    td.client_item.download_id = Some(download_id.to_string());
+
+    check_with_lookup(
+        &app,
+        &mut td,
+        Some(&CompletedDownloadLookup::empty_recent()),
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert!(
+        td.status_messages
+            .iter()
+            .any(|message| message.contains("waiting for client history"))
+    );
+    let recorded_state = submission_repo
+        .get_identity_tracked_state(&identity, Some(&source_identity))
+        .await
+        .expect("identity state lookup");
+    assert!(recorded_state.is_none());
+}
+
+#[tokio::test]
+async fn check_with_lookup_uses_durable_terminal_state_before_redispatch() {
+    let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+    let download_id = "scryer-download:terminal";
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some(download_id.to_string()),
+    };
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    submission_repo
+        .record_identity_tracked_state(
+            &identity,
+            Some(&DownloadSourceIdentity::new(
+                Some("client-1"),
+                "nzbget",
+                "dl-1",
+            )),
+            TrackedDownloadState::Imported.as_str(),
+            None,
+            None,
+        )
+        .await
+        .expect("record identity state");
+
+    let app = build_app_with_download_client_configs_and_submissions(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        Arc::new(TestDownloadClient::default()),
+        Arc::new(NullDownloadClientConfigRepository),
+        submission_repo,
+    );
+    let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+    td.id = format!("download:{download_id}");
+    td.client_item.download_id = Some(download_id.to_string());
+
+    check_with_lookup(
+        &app,
+        &mut td,
+        Some(&CompletedDownloadLookup::empty_recent()),
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+    assert_eq!(td.status, TrackedDownloadStatus::Ok);
+    assert!(td.status_messages.is_empty());
+}
+
+#[tokio::test]
+async fn check_with_lookup_does_not_apply_client_local_terminal_state_from_other_client() {
+    let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+    let download_id = "10010";
+    let identity = DownloadSubmissionIdentity {
+        download_id: Some(download_id.to_string()),
+    };
+    let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
+    let current_client_source = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    submission_repo
+        .record_identity_tracked_state(
+            &identity,
+            Some(&other_client_source),
+            TrackedDownloadState::Imported.as_str(),
+            None,
+            None,
+        )
+        .await
+        .expect("record other client identity state");
+
+    let app = build_app_with_download_client_configs_and_submissions(
+        vec![title.clone()],
+        vec![],
+        vec![],
+        vec![],
+        Arc::new(TestDownloadClient::default()),
+        Arc::new(NullDownloadClientConfigRepository),
+        submission_repo.clone(),
+    );
+    let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.720p.WEB-DL");
+    td.id = format!("download:{download_id}");
+    td.client_item.download_id = Some(download_id.to_string());
+
+    check_with_lookup(&app, &mut td, Some(&CompletedDownloadLookup::empty_full())).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    let current_client_state = submission_repo
+        .get_identity_tracked_state(&identity, Some(&current_client_source))
+        .await
+        .expect("current client state lookup");
+    let other_client_state = submission_repo
+        .get_identity_tracked_state(&identity, Some(&other_client_source))
+        .await
+        .expect("other client state lookup");
+    assert_eq!(
+        current_client_state.as_deref(),
+        Some(TrackedDownloadState::ImportBlocked.as_str())
+    );
+    assert_eq!(
+        other_client_state.as_deref(),
+        Some(TrackedDownloadState::Imported.as_str())
+    );
+}
+
+#[tokio::test]
+async fn load_completed_download_lookup_for_items_fetches_client_history_once_per_cycle() {
+    let completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    let download_client = Arc::new(TestDownloadClient {
+        completed_downloads: Arc::new(Mutex::new(vec![completed.clone()])),
+        completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let app =
+        build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+    let first = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    let mut second = build_tracked_download("title-2", "movie", "Paper.Lantern.2012.1080p.REPACK");
+    second.client_item.download_client_item_id = "dl-2".to_string();
+    second.client_item.title_id = Some("title-2".to_string());
+
+    let lookup = load_completed_download_lookup_for_items(
+        &app,
+        &[first.client_item.clone(), second.client_item.clone()],
+        100,
+    )
+    .await
+    .expect("completed lookup should load");
+
+    assert_eq!(lookup.by_source.len(), 1);
+    assert_eq!(
+        download_client
+            .completed_download_calls
+            .load(Ordering::SeqCst),
+        0
+    );
+    assert_eq!(
+        download_client
+            .recent_completed_download_calls
+            .load(Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn load_completed_download_lookup_for_items_scopes_to_completed_item_clients() {
+    let mut completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.client_id = "qbit-client".to_string();
+    completed.client_type = "qbittorrent".to_string();
+    let download_client = Arc::new(TestDownloadClient {
+        completed_downloads: Arc::new(Mutex::new(vec![completed])),
+        completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let app =
+        build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+    let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    qbit.client_item.client_id = "qbit-client".to_string();
+    qbit.client_item.client_type = "qbittorrent".to_string();
+    let mut nzbget = build_tracked_download("title-2", "movie", "Other.Release.2012.1080p");
+    nzbget.client_item.client_id = "nzbget-client".to_string();
+    nzbget.client_item.client_type = "nzbget".to_string();
+    nzbget.client_item.state = DownloadQueueState::Downloading;
+
+    let lookup = load_completed_download_lookup_for_items(
+        &app,
+        &[qbit.client_item.clone(), nzbget.client_item.clone()],
+        100,
+    )
+    .await
+    .expect("completed lookup should load");
+
+    assert_eq!(lookup.by_source.len(), 1);
+    let calls = download_client.scoped_recent_completed_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, vec!["qbit-client".to_string()]);
+    assert!(calls[0].1.is_empty());
+    assert_eq!(
+        download_client
+            .recent_completed_download_calls
+            .load(Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn load_completed_download_lookup_for_items_scopes_import_pending_items() {
+    let mut completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.client_id = "qbit-client".to_string();
+    completed.client_type = "qbittorrent".to_string();
+    let download_client = Arc::new(TestDownloadClient {
+        completed_downloads: Arc::new(Mutex::new(vec![completed])),
+        completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let app =
+        build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+    let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    qbit.client_item.client_id = "qbit-client".to_string();
+    qbit.client_item.client_type = "qbittorrent".to_string();
+    qbit.client_item.state = DownloadQueueState::ImportPending;
+
+    let lookup = load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+        .await
+        .expect("completed lookup should load");
+
+    assert_eq!(lookup.by_source.len(), 1);
+    let calls = download_client.scoped_recent_completed_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, vec!["qbit-client".to_string()]);
+    assert!(calls[0].1.is_empty());
+    assert_eq!(
+        download_client
+            .recent_completed_download_calls
+            .load(Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn load_completed_download_lookup_for_items_uses_exact_id_when_client_id_is_present() {
+    let mut completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.client_id = "default".to_string();
+    completed.client_type = "qbittorrent".to_string();
+    let download_client = Arc::new(TestDownloadClient {
+        completed_downloads: Arc::new(Mutex::new(vec![completed])),
+        completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let app =
+        build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+    let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    qbit.client_item.client_id = "default".to_string();
+    qbit.client_item.client_type = "qbittorrent".to_string();
+    qbit.client_item.state = DownloadQueueState::ImportPending;
+
+    let lookup = load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+        .await
+        .expect("completed lookup should load");
+
+    assert_eq!(lookup.by_source.len(), 1);
+    let calls = download_client.scoped_recent_completed_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, vec!["default".to_string()]);
+    assert!(calls[0].1.is_empty());
+}
+
+#[tokio::test]
+async fn load_completed_download_lookup_for_items_uses_type_scope_for_idless_items() {
+    let mut completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.client_id = String::new();
+    completed.client_type = "qbittorrent".to_string();
+    let download_client = Arc::new(TestDownloadClient {
+        completed_downloads: Arc::new(Mutex::new(vec![completed])),
+        completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let app =
+        build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
+    let mut qbit = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    qbit.client_item.client_id = String::new();
+    qbit.client_item.client_type = "qbittorrent".to_string();
+    qbit.client_item.state = DownloadQueueState::ImportPending;
+
+    let lookup = load_completed_download_lookup_for_items(&app, &[qbit.client_item.clone()], 100)
+        .await
+        .expect("completed lookup should load");
+
+    assert_eq!(lookup.by_source.len(), 1);
+    let calls = download_client.scoped_recent_completed_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].0.is_empty());
+    assert_eq!(calls[0].1, vec!["qbittorrent".to_string()]);
+}

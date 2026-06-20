@@ -1,0 +1,488 @@
+use super::*;
+
+#[tokio::test]
+async fn graphql_quality_profile_settings_round_trip() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let update = gql(
+        &ctx,
+        r#"
+        mutation SaveQualityProfileSettings($input: SaveQualityProfileSettingsInput!) {
+          saveQualityProfileSettings(input: $input) {
+            globalProfileId
+            globalScoringPersona
+            profiles {
+              id
+              name
+              criteria {
+                qualityTiers
+              }
+            }
+            categorySelections {
+              scope
+              overrideProfileId
+              effectiveProfileId
+              inheritsGlobal
+            }
+            categoryPersonaSelections {
+              scope
+              overridePersona
+              effectivePersona
+              inheritsGlobal
+            }
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "profiles": [
+              {
+                "id": "custom-audio",
+                "name": "Custom Audio",
+                "criteria": {
+                  "qualityTiers": ["2160P", "1080P"],
+                  "archivalQuality": "2160P",
+                  "allowUnknownQuality": false,
+                  "sourceAllowlist": [],
+                  "sourceBlocklist": [],
+                  "videoCodecAllowlist": [],
+                  "videoCodecBlocklist": [],
+                  "audioCodecAllowlist": [],
+                  "audioCodecBlocklist": [],
+                  "dolbyVisionAllowed": true,
+                  "detectedHdrAllowed": true,
+                  "preferRemux": false,
+                  "allowBdDisk": true,
+                  "allowUpgrades": true,
+                  "scoringOverrides": {},
+                  "cutoffTier": null,
+                  "minScoreToGrab": null
+                }
+              }
+            ],
+            "globalProfileId": "custom-audio",
+            "globalScoringPersona": "audiophile",
+            "categorySelections": [
+              {
+                "scope": "movie",
+                "profileId": "custom-audio",
+                "inheritGlobal": false
+              },
+              {
+                "scope": "series",
+                "profileId": null,
+                "inheritGlobal": true
+              }
+            ],
+            "categoryPersonaSelections": [
+              {
+                "scope": "anime",
+                "persona": "compatible",
+                "inheritGlobal": false
+              }
+            ],
+            "replaceExisting": false
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["saveQualityProfileSettings"]["globalProfileId"],
+        "custom-audio"
+    );
+    assert_eq!(
+        update["data"]["saveQualityProfileSettings"]["globalScoringPersona"],
+        "audiophile"
+    );
+    let anime_persona_selection =
+        update["data"]["saveQualityProfileSettings"]["categoryPersonaSelections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|selection| selection["scope"] == "anime")
+            .unwrap();
+    assert_eq!(anime_persona_selection["overridePersona"], "compatible");
+    assert_eq!(anime_persona_selection["effectivePersona"], "compatible");
+    assert_eq!(anime_persona_selection["inheritsGlobal"], false);
+
+    let read = gql(
+        &ctx,
+        r#"
+        query QualityProfileSettings {
+          qualityProfileSettings {
+            globalProfileId
+            globalScoringPersona
+            profiles {
+              id
+              criteria {
+                qualityTiers
+              }
+            }
+            categorySelections {
+              scope
+              overrideProfileId
+              effectiveProfileId
+              inheritsGlobal
+            }
+            categoryPersonaSelections {
+              scope
+              overridePersona
+              effectivePersona
+              inheritsGlobal
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&read);
+
+    let settings = &read["data"]["qualityProfileSettings"];
+    assert_eq!(settings["globalProfileId"], "custom-audio");
+    assert_eq!(settings["globalScoringPersona"], "audiophile");
+    let movie_selection = settings["categorySelections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|selection| selection["scope"] == "movie")
+        .unwrap();
+    assert_eq!(movie_selection["overrideProfileId"], "custom-audio");
+    assert_eq!(movie_selection["inheritsGlobal"], false);
+
+    let anime_persona_selection = settings["categoryPersonaSelections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|selection| selection["scope"] == "anime")
+        .unwrap();
+    assert_eq!(anime_persona_selection["overridePersona"], "compatible");
+    assert_eq!(anime_persona_selection["effectivePersona"], "compatible");
+    assert_eq!(anime_persona_selection["inheritsGlobal"], false);
+}
+
+#[tokio::test]
+async fn graphql_quality_profile_settings_updates_category_persona_selection_round_trip() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let seed = gql(
+        &ctx,
+        r#"
+        mutation SaveQualityProfileSettings($input: SaveQualityProfileSettingsInput!) {
+          saveQualityProfileSettings(input: $input) {
+            profiles {
+              id
+            }
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "profiles": [
+              {
+                "id": "custom-audio",
+                "name": "Custom Audio",
+                "criteria": {
+                  "qualityTiers": ["2160P", "1080P"],
+                  "archivalQuality": "2160P",
+                  "allowUnknownQuality": false,
+                  "sourceAllowlist": [],
+                  "sourceBlocklist": [],
+                  "videoCodecAllowlist": [],
+                  "videoCodecBlocklist": [],
+                  "audioCodecAllowlist": [],
+                  "audioCodecBlocklist": [],
+                  "dolbyVisionAllowed": true,
+                  "detectedHdrAllowed": true,
+                  "preferRemux": false,
+                  "allowBdDisk": true,
+                  "allowUpgrades": true,
+                  "scoringOverrides": {},
+                  "cutoffTier": null,
+                  "minScoreToGrab": null
+                }
+              }
+            ],
+            "globalProfileId": null,
+            "globalScoringPersona": "balanced",
+            "categorySelections": [],
+            "categoryPersonaSelections": [],
+            "replaceExisting": false
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&seed);
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation SaveQualityProfileSettings($input: SaveQualityProfileSettingsInput!) {
+          saveQualityProfileSettings(input: $input) {
+            globalScoringPersona
+            profiles {
+              id
+            }
+            categoryPersonaSelections {
+              scope
+              overridePersona
+              effectivePersona
+              inheritsGlobal
+            }
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "profiles": [],
+            "globalProfileId": null,
+            "globalScoringPersona": "balanced",
+            "categorySelections": [],
+            "categoryPersonaSelections": [
+              {
+                "scope": "anime",
+                "persona": "compatible",
+                "inheritGlobal": false
+              }
+            ],
+            "replaceExisting": false
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    assert_eq!(
+        update["data"]["saveQualityProfileSettings"]["globalScoringPersona"],
+        "balanced"
+    );
+    let anime_override = update["data"]["saveQualityProfileSettings"]["categoryPersonaSelections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["scope"] == "anime")
+        .unwrap();
+    assert_eq!(anime_override["overridePersona"], "compatible");
+    assert_eq!(anime_override["effectivePersona"], "compatible");
+    assert_eq!(anime_override["inheritsGlobal"], false);
+}
+
+#[tokio::test]
+async fn graphql_introspection_exposes_scoring_persona_values_lowercase() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          scoringPersona: __type(name: "ScoringPersonaValue") {
+            enumValues { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let names: Vec<&str> = body["data"]["scoringPersona"]["enumValues"]
+        .as_array()
+        .expect("ScoringPersonaValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["balanced", "audiophile", "efficient", "compatible"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_introspection_exposes_plugin_config_field_metadata_enums() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          fieldPayload: __type(name: "PluginConfigFieldPayload") {
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+          fieldType: __type(name: "PluginConfigFieldTypeValue") {
+            enumValues { name }
+          }
+          valueSource: __type(name: "PluginConfigValueSourceValue") {
+            enumValues { name }
+          }
+          fieldRole: __type(name: "PluginConfigFieldRoleValue") {
+            enumValues { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let fields = body["data"]["fieldPayload"]["fields"]
+        .as_array()
+        .expect("PluginConfigFieldPayload should expose fields");
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .expect("field should exist")
+    };
+
+    assert_eq!(field("fieldType")["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        field("fieldType")["type"]["ofType"]["name"],
+        "PluginConfigFieldTypeValue"
+    );
+    assert_eq!(field("valueSource")["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        field("valueSource")["type"]["ofType"]["name"],
+        "PluginConfigValueSourceValue"
+    );
+    assert_eq!(field("role")["type"]["kind"], "ENUM");
+    assert_eq!(field("role")["type"]["name"], "PluginConfigFieldRoleValue");
+
+    let enum_names = |path: &str| -> Vec<&str> {
+        body["data"][path]["enumValues"]
+            .as_array()
+            .expect("enum values should exist")
+            .iter()
+            .filter_map(|value| value["name"].as_str())
+            .collect()
+    };
+    assert_eq!(
+        enum_names("fieldType"),
+        vec![
+            "string",
+            "password",
+            "multiline",
+            "bool",
+            "select",
+            "number"
+        ]
+    );
+    assert_eq!(enum_names("valueSource"), vec!["user", "host_binding"]);
+    assert_eq!(enum_names("fieldRole"), vec!["connection_url"]);
+}
+
+#[tokio::test]
+async fn graphql_typed_routing_round_trip() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let update_download = gql(
+        &ctx,
+        r#"
+        mutation UpdateDownloadClientRouting($input: UpdateDownloadClientRoutingInput!) {
+          updateDownloadClientRouting(input: $input) {
+            clientId
+            enabled
+            category
+            recentQueuePriority
+            olderQueuePriority
+            removeCompleted
+            removeFailed
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "movie",
+            "entries": [
+              {
+                "clientId": "client-a",
+                "enabled": true,
+                "category": "movies",
+                "recentQueuePriority": "high",
+                "olderQueuePriority": "low",
+                "removeCompleted": true,
+                "removeFailed": false
+              }
+            ]
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update_download);
+    assert_eq!(
+        update_download["data"]["updateDownloadClientRouting"][0]["clientId"],
+        "client-a"
+    );
+
+    let update_indexer = gql(
+        &ctx,
+        r#"
+        mutation UpdateIndexerRouting($input: UpdateIndexerRoutingInput!) {
+          updateIndexerRouting(input: $input) {
+            indexerId
+            enabled
+            categories
+            priority
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "anime",
+            "entries": [
+              {
+                "indexerId": "indexer-a",
+                "enabled": true,
+                "categories": ["5070", "2000"],
+                "priority": 3
+              }
+            ]
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update_indexer);
+    assert_eq!(
+        update_indexer["data"]["updateIndexerRouting"][0]["indexerId"],
+        "indexer-a"
+    );
+
+    let read = gql(
+        &ctx,
+        r#"
+        query TypedRouting {
+          downloadClientRouting(scope: movie) {
+            clientId
+            category
+            recentQueuePriority
+          }
+          indexerRouting(scope: anime) {
+            indexerId
+            categories
+            priority
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(
+        read["data"]["downloadClientRouting"][0]["clientId"],
+        "client-a"
+    );
+    assert_eq!(
+        read["data"]["downloadClientRouting"][0]["category"],
+        "movies"
+    );
+    assert_eq!(read["data"]["indexerRouting"][0]["indexerId"], "indexer-a");
+    assert_eq!(read["data"]["indexerRouting"][0]["priority"], 3);
+}

@@ -1,0 +1,779 @@
+use super::*;
+
+#[tokio::test]
+async fn graphql_activity_events_empty() {
+    let ctx = TestContext::new().await;
+    let body = gql(&ctx, "{ activityEvents { id kind severity } }", json!({})).await;
+    assert_no_errors(&body);
+    assert!(body["data"]["activityEvents"].is_array());
+}
+
+#[tokio::test]
+async fn graphql_title_history_empty() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ titleHistory(filter: { limit: 10 }) { records { id eventType sourceTitle } totalCount } }"#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
+    assert!(body["data"]["titleHistory"]["records"].is_array());
+}
+
+#[tokio::test]
+async fn graphql_title_history_works_without_legacy_table() {
+    let ctx = TestContext::new().await;
+    let legacy_table: Option<String> = sqlx::query_scalar(
+        "SELECT name
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'title_history'
+          LIMIT 1",
+    )
+    .fetch_optional(ctx.db.pool())
+    .await
+    .expect("sqlite master query should succeed");
+    assert_eq!(legacy_table, None);
+
+    let title = create_catalog_title(
+        &ctx,
+        "Legacy Title History Fixture",
+        MediaFacet::Movie,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: ID!) {
+          titleHistory(filter: { titleIds: [$titleId], limit: 10 }) {
+            totalCount
+            records {
+              id
+              eventType
+              sourceTitle
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 0);
+    assert_eq!(
+        body["data"]["titleHistory"]["records"]
+            .as_array()
+            .expect("history records array")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn graphql_title_history_rejects_unsupported_event_type_filters() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ titleHistory(filter: { eventTypes: [download_completed], limit: 10 }) { totalCount } }"#,
+        json!({}),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(message.contains("unsupported title history event type `download_completed`"));
+    assert!(message.contains("grabbed"));
+    assert!(message.contains("rematched"));
+}
+
+#[tokio::test]
+async fn graphql_title_history_rejects_download_ignored_event_type_filters() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"{ titleHistory(filter: { eventTypes: [download_ignored], limit: 10 }) { totalCount } }"#,
+        json!({}),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(message.contains("unsupported title history event type `download_ignored`"));
+    assert!(message.contains("imported"));
+    assert!(message.contains("rematched"));
+}
+
+#[tokio::test]
+async fn graphql_title_history_includes_download_failed_and_blocklisted_events() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Download Outcome History Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("download-outcome-episode-1".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    let title_context = TitleContextSnapshot {
+        title_name: title.name.clone(),
+        facet: title.facet,
+        external_ids: DomainExternalIds::default(),
+        poster_url: title.poster_url.clone(),
+        year: title.year,
+    };
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::DownloadFailed(DownloadFailedEventData {
+                title: Some(title_context.clone()),
+                source_title: Some("Fixture.S01.1080p.WEB-DL".to_string()),
+                source_hint: Some("https://indexer.example/release".to_string()),
+                download_id: Some("job-123".to_string()),
+                client_id: Some("client-1".to_string()),
+                client_name: Some("Primary".to_string()),
+                client_type: Some("nzbget".to_string()),
+                quality: Some("1080P".to_string()),
+                reason: Some(
+                    "download failed for 'Fixture.S01.1080p.WEB-DL': CORRUPT ARCHIVE".to_string(),
+                ),
+                episode_ids: vec![episode.id.clone()],
+                collection_id: Some(collection.id.clone()),
+            }),
+        })
+        .await
+        .expect("append download failed event");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ReleaseBlocklisted(ReleaseBlocklistedEventData {
+                title: Some(title_context),
+                source_title: Some("Fixture.S01.1080p.WEB-DL".to_string()),
+                source_hint: Some("https://indexer.example/release".to_string()),
+                download_id: Some("job-123".to_string()),
+                client_id: Some("client-1".to_string()),
+                client_name: Some("Primary".to_string()),
+                client_type: Some("nzbget".to_string()),
+                quality: Some("1080P".to_string()),
+                reason: Some("download client failure: CORRUPT ARCHIVE".to_string()),
+                episode_ids: vec![episode.id.clone()],
+                collection_id: Some(collection.id.clone()),
+            }),
+        })
+        .await
+        .expect("append release blocklisted event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: ID!) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: [download_failed, blocklisted], limit: 10 }) {
+            totalCount
+            records {
+              eventType
+              sourceTitle
+              downloadId
+              clientId
+              clientName
+              failureReason
+              blocklistReason
+              episodeId
+              collectionId
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 2);
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("title history records array");
+
+    let download_failed = records
+        .iter()
+        .find(|record| record["eventType"] == "download_failed")
+        .expect("download_failed record");
+    assert_eq!(download_failed["sourceTitle"], "Fixture.S01.1080p.WEB-DL");
+    assert_eq!(download_failed["downloadId"], "job-123");
+    assert_eq!(download_failed["clientId"], "client-1");
+    assert_eq!(download_failed["clientName"], "Primary");
+    assert_eq!(download_failed["episodeId"], episode.id);
+    assert_eq!(download_failed["collectionId"], collection.id);
+    assert!(
+        download_failed["failureReason"]
+            .as_str()
+            .is_some_and(|value| value.contains("CORRUPT ARCHIVE"))
+    );
+
+    let blocklisted = records
+        .iter()
+        .find(|record| record["eventType"] == "blocklisted")
+        .expect("blocklisted record");
+    assert_eq!(blocklisted["downloadId"], "job-123");
+    assert_eq!(blocklisted["clientId"], "client-1");
+    assert_eq!(blocklisted["clientName"], "Primary");
+    assert_eq!(blocklisted["episodeId"], episode.id);
+    assert_eq!(blocklisted["collectionId"], collection.id);
+    assert_eq!(
+        blocklisted["blocklistReason"],
+        "download client failure: CORRUPT ARCHIVE"
+    );
+}
+
+#[tokio::test]
+async fn graphql_title_history_filters_by_episode_id() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Episode Scoped History Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode_one = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("episode-history-1".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create first episode");
+    let episode_two = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("2".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E02".to_string()),
+            title: Some("Episode Two".to_string()),
+            air_date: Some("2024-01-08".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("2".to_string()),
+            overview: None,
+            tvdb_id: Some("episode-history-2".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create second episode");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                },
+                media_updates: vec![
+                    MediaPathUpdate {
+                        path: "/library/Episode Scoped History Fixture/S01E01.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                    MediaPathUpdate {
+                        path: "/library/Episode Scoped History Fixture/S01E02.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                ],
+                imported_count: 2,
+                import_id: None,
+                source_system: None,
+                source_ref: None,
+                source_title: None,
+                source_path: None,
+                dest_path: None,
+                quality: None,
+                episode_ids: vec![episode_one.id.clone(), episode_two.id.clone()],
+            }),
+        })
+        .await
+        .expect("append import completed event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: ID!, $episodeId: ID!) {
+          titleHistory(filter: { titleIds: [$titleId], episodeId: $episodeId, limit: 10 }) {
+            totalCount
+            records {
+              eventType
+              episodeId
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id, "episodeId": episode_one.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("title history records array");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["eventType"], "imported");
+    assert_eq!(records[0]["episodeId"], episode_one.id);
+}
+
+#[tokio::test]
+async fn graphql_title_history_filters_skipped_import_by_episode_id() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Skipped Episode History Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("The Skipped One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("skipped-episode-history-1".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ImportRejected(scryer_domain::ImportRejectedEventData {
+                title: Some(TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                }),
+                status: scryer_domain::ImportStatus::Skipped,
+                import_id: Some("skipped-episode-import".to_string()),
+                source_system: Some("weaver".to_string()),
+                source_ref: Some("10028".to_string()),
+                source_title: Some("Skipped Episode Release".to_string()),
+                source_path: Some(
+                    "/weaver-downloads/complete/anime/Skipped Episode Release#10028".to_string(),
+                ),
+                dest_path: None,
+                quality: None,
+                reason: Some("duplicate file already exists".to_string()),
+                skip_reason: Some(scryer_domain::ImportSkipReason::DuplicateFile),
+                episode_ids: vec![episode.id.clone()],
+            }),
+        })
+        .await
+        .expect("append skipped import event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: ID!, $episodeId: ID!) {
+          titleHistory(filter: { titleIds: [$titleId], episodeId: $episodeId, limit: 10 }) {
+            totalCount
+            records {
+              eventType
+              episodeId
+              episodeIds
+              failureReason
+              skipReason
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id, "episodeId": episode.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("title history records array");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["eventType"], "import_skipped");
+    assert_eq!(records[0]["episodeId"], episode.id);
+    assert_eq!(records[0]["episodeIds"], json!([episode.id.clone()]));
+    assert_eq!(records[0]["failureReason"], "duplicate file already exists");
+    assert_eq!(records[0]["skipReason"], "duplicate_file");
+}
+
+#[tokio::test]
+async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_events() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "History Projection Fixture",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("2".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create collection");
+    let episode_one = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode One".to_string()),
+            air_date: Some("2024-01-01".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("1".to_string()),
+            overview: None,
+            tvdb_id: Some("history-episode-1".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create first episode");
+    let episode_two = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: EpisodeType::Standard,
+            episode_number: Some("2".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E02".to_string()),
+            title: Some("Episode Two".to_string()),
+            air_date: Some("2024-01-08".to_string()),
+            duration_seconds: Some(1500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("2".to_string()),
+            overview: None,
+            tvdb_id: Some("history-episode-2".to_string()),
+            image_url: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create second episode");
+
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                },
+                media_updates: vec![
+                    MediaPathUpdate {
+                        path: "/library/History Projection Fixture/S01E01.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                    MediaPathUpdate {
+                        path: "/library/History Projection Fixture/S01E02.mkv".to_string(),
+                        update_type: MediaUpdateType::Created,
+                    },
+                ],
+                imported_count: 2,
+                import_id: None,
+                source_system: None,
+                source_ref: None,
+                source_title: None,
+                source_path: None,
+                dest_path: None,
+                quality: None,
+                episode_ids: vec![episode_one.id.clone(), episode_two.id.clone()],
+            }),
+        })
+        .await
+        .expect("append import completed event");
+
+    let body = gql(
+        &ctx,
+        r#"
+        query EpisodeHistory($episodeId: ID!) {
+          titleHistory(filter: { episodeId: $episodeId, limit: 10 }) {
+            records {
+              eventType
+              sourceTitle
+            }
+          }
+        }
+        "#,
+        json!({ "episodeId": episode_one.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let records = body["data"]["titleHistory"]["records"]
+        .as_array()
+        .expect("episode history array");
+    let imported = records
+        .iter()
+        .find(|record| record["eventType"] == "imported")
+        .expect("imported event");
+    assert!(imported["sourceTitle"].is_null());
+}
+
+#[tokio::test]
+async fn graphql_search_metadata_movie() {
+    let ctx = TestContext::new().await;
+    let fixture = load_fixture("smg/search_tvdb_rich.json");
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let body = gql(
+        &ctx,
+        r#"query($query: String!, $type: MediaFacetValue!) {
+            searchMetadata(query: $query, type: $type) {
+                tvdbId name year type overview posterUrl
+            }
+        }"#,
+        json!({ "query": "Test Movie", "type": "movie" }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let results = body["data"]["searchMetadata"].as_array().unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["name"], "Test Movie Title");
+}

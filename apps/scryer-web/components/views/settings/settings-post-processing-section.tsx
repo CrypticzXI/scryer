@@ -112,17 +112,24 @@ function formatDuration(ms: number | null): string {
 }
 
 function ScriptRunsTable({
+  scriptId,
   runs,
   noRunsLabel,
   outputNotCapturedLabel,
 }: {
+  scriptId: string;
   runs: PPScriptRun[];
   noRunsLabel: string;
   outputNotCapturedLabel: string;
 }) {
   if (runs.length === 0) {
     return (
-      <p className="px-3 py-4 text-xs text-muted-foreground">{noRunsLabel}</p>
+      <p
+        id={selectorId("settings-post-processing-no-runs", scriptId)}
+        className="px-3 py-4 text-xs text-muted-foreground"
+      >
+        {noRunsLabel}
+      </p>
     );
   }
   return (
@@ -139,12 +146,18 @@ function ScriptRunsTable({
         {runs.map((run) => {
           const hasOutput = run.stdoutTail || run.stderrTail;
           return (
-            <TableRow key={run.id}>
+            <TableRow
+              key={run.id}
+              id={selectorId("settings-post-processing-run-row", run.id)}
+            >
               <TableCell className="text-xs">
                 {run.titleName || run.titleId || "--"}
               </TableCell>
               <TableCell>
-                <span className={`text-xs font-medium capitalize ${statusColor(run.status)}`}>
+                <span
+                  id={selectorId("settings-post-processing-run-status", run.id)}
+                  className={`text-xs font-medium capitalize ${statusColor(run.status)}`}
+                >
                   {run.status}
                   {run.exitCode != null && run.status === "failed"
                     ? ` (exit ${run.exitCode})`
@@ -158,12 +171,18 @@ function ScriptRunsTable({
                 {hasOutput ? (
                   <div className="space-y-1">
                     {run.stdoutTail ? (
-                      <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                      <pre
+                        id={selectorId("settings-post-processing-run-stdout", run.id)}
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground"
+                      >
                         {run.stdoutTail}
                       </pre>
                     ) : null}
                     {run.stderrTail ? (
-                      <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-mono text-[10px] leading-relaxed text-red-300">
+                      <pre
+                        id={selectorId("settings-post-processing-run-stderr", run.id)}
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-mono text-[10px] leading-relaxed text-red-300"
+                      >
                         {run.stderrTail}
                       </pre>
                     ) : null}
@@ -218,7 +237,7 @@ export const SettingsPostProcessingSection = React.memo(
     );
 
     return (
-      <div className="space-y-4 text-sm">
+      <div id="settings-post-processing-section" className="space-y-4 text-sm">
         <CardTitle className="flex items-center gap-2 text-base">
           <Terminal className="h-4 w-4" />
           {t("settings.pp.title")}
@@ -348,11 +367,18 @@ export const SettingsPostProcessingSection = React.memo(
                     {expandedScriptId === script.id ? (
                       <TableRow>
                         <TableCell colSpan={7} className="bg-muted/30 p-0">
-                          <div className="px-4 py-2">
+                          <div
+                            id={selectorId(
+                              "settings-post-processing-run-history",
+                              script.id,
+                            )}
+                            className="px-4 py-2"
+                          >
                             <p className="mb-1 text-xs font-medium text-muted-foreground">
                               {t("settings.pp.runHistory")}
                             </p>
                             <ScriptRunsTable
+                              scriptId={script.id}
                               runs={scriptRuns[script.id] || []}
                               noRunsLabel={t("settings.pp.noRuns")}
                               outputNotCapturedLabel={t("settings.pp.outputNotCaptured")}
@@ -460,6 +486,7 @@ export const SettingsPostProcessingSection = React.memo(
                       {t("settings.pp.inlineHelp")}
                     </Label>
                     <LazyRegoEditor
+                      id="settings-post-processing-script-content"
                       value={scriptDraft.scriptContent}
                       onChange={(value) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: value }))
@@ -591,6 +618,7 @@ export const SettingsPostProcessingSection = React.memo(
                       {t("settings.pp.timeout")}
                     </Label>
                     <Input
+                      id="settings-post-processing-timeout"
                       {...integerInputProps}
                       value={scriptDraft.timeoutSecs}
                       onChange={(e) =>
@@ -607,6 +635,7 @@ export const SettingsPostProcessingSection = React.memo(
                       {t("settings.pp.priority")}
                     </Label>
                     <Input
+                      id="settings-post-processing-priority"
                       {...integerInputProps}
                       value={scriptDraft.priority}
                       onChange={(e) =>
@@ -627,6 +656,7 @@ export const SettingsPostProcessingSection = React.memo(
               {/* Debug */}
               <label className="flex items-center gap-2">
                 <Checkbox
+                  id="settings-post-processing-debug"
                   checked={scriptDraft.debug}
                   onCheckedChange={(checked) =>
                     setScriptDraft((prev) => ({

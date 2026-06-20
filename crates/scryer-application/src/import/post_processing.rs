@@ -3,9 +3,10 @@ use crate::stored_paths::path_to_stored_string;
 use crate::{AppError, AppUseCase};
 use chrono::Utc;
 use scryer_domain::{
-    DomainEventPayload, DomainEventStream, DomainExternalIds, ExecutionMode, Id, MediaFacet,
-    NewDomainEvent, PostProcessingCompletedEventData, PostProcessingResult, PostProcessingScript,
-    PostProcessingScriptRun, ScriptRunStatus, ScriptType, TitleContextSnapshot, User,
+    ConfigurationChangeAction, DomainEventPayload, DomainEventStream, DomainExternalIds,
+    ExecutionMode, Id, MediaFacet, NewDomainEvent, PostProcessingCompletedEventData,
+    PostProcessingResult, PostProcessingScript, PostProcessingScriptRun, ScriptRunStatus,
+    ScriptType, TitleContextSnapshot, User,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -63,11 +64,20 @@ impl AppUseCase {
     ) -> crate::AppResult<PostProcessingScript> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
-        self.services
+        let created = self
+            .services
             .customization
             .pp_scripts
             .create_script(script)
-            .await
+            .await?;
+        self.emit_configuration_changed_event(
+            actor,
+            post_processing_script_resource_type(created.script_type),
+            Some(created.id.clone()),
+            ConfigurationChangeAction::Saved,
+        )
+        .await;
+        Ok(created)
     }
 
     pub async fn get_post_processing_script(
@@ -87,11 +97,20 @@ impl AppUseCase {
     ) -> crate::AppResult<PostProcessingScript> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
-        self.services
+        let updated = self
+            .services
             .customization
             .pp_scripts
             .update_script(script)
-            .await
+            .await?;
+        self.emit_configuration_changed_event(
+            actor,
+            post_processing_script_resource_type(updated.script_type),
+            Some(updated.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(updated)
     }
 
     pub async fn delete_post_processing_script(
@@ -101,11 +120,27 @@ impl AppUseCase {
     ) -> crate::AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let existing = self
+            .services
+            .customization
+            .pp_scripts
+            .get_script(id)
+            .await?;
         self.services
             .customization
             .pp_scripts
             .delete_script(id)
-            .await
+            .await?;
+        if let Some(script) = existing {
+            self.emit_configuration_changed_event(
+                actor,
+                post_processing_script_resource_type(script.script_type),
+                Some(script.id),
+                ConfigurationChangeAction::Deleted,
+            )
+            .await;
+        }
+        Ok(())
     }
 
     pub async fn toggle_post_processing_script(
@@ -124,11 +159,20 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("script {id} not found")))?;
         script.enabled = !script.enabled;
         script.updated_at = Utc::now();
-        self.services
+        let updated = self
+            .services
             .customization
             .pp_scripts
             .update_script(script)
-            .await
+            .await?;
+        self.emit_configuration_changed_event(
+            actor,
+            post_processing_script_resource_type(updated.script_type),
+            Some(updated.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(updated)
     }
 }
 
@@ -243,6 +287,57 @@ fn build_script_env_payload(ctx: &PostProcessingContext, facet_str: &str) -> ser
     })
 }
 
+fn post_processing_script_resource_type(script_type: ScriptType) -> &'static str {
+    match script_type {
+        ScriptType::Inline => "post_processing_inline_script",
+        ScriptType::File => "post_processing_script",
+    }
+}
+
+fn validate_file_script_path(script_content: &str) -> Result<&str, &'static str> {
+    let path = script_content.trim();
+    if path.is_empty() {
+        return Err("file script path is empty");
+    }
+    if !Path::new(path).is_absolute() {
+        return Err("file script path must be absolute");
+    }
+    Ok(path)
+}
+
+fn file_script_path_failure_run(
+    script: &PostProcessingScript,
+    ctx: &PostProcessingContext,
+    facet_str: &str,
+    env_json: &str,
+    run_id: String,
+    started_at: String,
+    reason: &str,
+) -> PostProcessingScriptRun {
+    let completed_at = Utc::now().to_rfc3339();
+    PostProcessingScriptRun {
+        id: run_id,
+        script_id: script.id.clone(),
+        script_name: script.name.clone(),
+        title_id: Some(ctx.title_id.clone()),
+        title_name: Some(ctx.title_name.clone()),
+        facet: Some(facet_str.to_string()),
+        file_path: Some(path_to_stored_string(&ctx.dest_path)),
+        status: ScriptRunStatus::Failed,
+        exit_code: None,
+        stdout_tail: None,
+        stderr_tail: if script.debug {
+            Some(format!("spawn error: {reason}"))
+        } else {
+            None
+        },
+        duration_ms: Some(0),
+        env_payload_json: Some(env_json.to_string()),
+        started_at,
+        completed_at: Some(completed_at),
+    }
+}
+
 async fn execute_script(
     script: &PostProcessingScript,
     ctx: &PostProcessingContext,
@@ -252,11 +347,6 @@ async fn execute_script(
     let run_id = Id::new().0;
     let started_at = Utc::now().to_rfc3339();
 
-    let command = match script.script_type {
-        ScriptType::File => format!("exec {}", shell_escape(&script.script_content)),
-        ScriptType::Inline => script.script_content.clone(),
-    };
-
     let cwd = ctx
         .dest_path
         .parent()
@@ -264,25 +354,54 @@ async fn execute_script(
         .to_path_buf();
 
     #[cfg(windows)]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", &command]);
-        c
+    let mut cmd = match script.script_type {
+        ScriptType::Inline => {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", &script.script_content]);
+            c
+        }
+        ScriptType::File => {
+            let path = match validate_file_script_path(&script.script_content) {
+                Ok(path) => path,
+                Err(reason) => {
+                    return file_script_path_failure_run(
+                        script, ctx, facet_str, env_json, run_id, started_at, reason,
+                    );
+                }
+            };
+            tokio::process::Command::new(path)
+        }
     };
     #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new("sh");
-        c.args(["-c", &command]);
+    let mut cmd = match script.script_type {
+        ScriptType::Inline => {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", &script.script_content]);
+            c
+        }
+        ScriptType::File => {
+            let path = match validate_file_script_path(&script.script_content) {
+                Ok(path) => path,
+                Err(reason) => {
+                    return file_script_path_failure_run(
+                        script, ctx, facet_str, env_json, run_id, started_at, reason,
+                    );
+                }
+            };
+            tokio::process::Command::new(path)
+        }
+    };
+    #[cfg(not(windows))]
+    {
         // Create a new process group so we can kill the entire tree on timeout,
-        // not just the shell wrapper (which would orphan child processes).
+        // not just the direct child process.
         unsafe {
-            c.pre_exec(|| {
+            cmd.pre_exec(|| {
                 libc::setpgid(0, 0);
                 Ok(())
             });
         }
-        c
-    };
+    }
 
     cmd.env("SCRYER_METADATA", env_json)
         .env("SCRYER_EVENT", "post_import")
@@ -610,12 +729,6 @@ async fn persist_run_record(app: &AppUseCase, run: PostProcessingScriptRun) {
             "failed to record post-processing script run"
         );
     }
-}
-
-/// Escape a path for use in a shell command.
-fn shell_escape(s: &str) -> String {
-    // Wrap in single quotes, escaping any existing single quotes.
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Return the last `max_bytes` of `buf` as a trimmed UTF-8 string.

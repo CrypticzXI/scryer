@@ -10,8 +10,9 @@ use scryer_application::{
     run_post_processing,
 };
 use scryer_domain::{
-    AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet,
-    PostProcessingScript, User,
+    AppPermission, AppPermissionMask, ConfigurationChangeAction, DomainEventFilter,
+    DomainEventPayload, DomainEventType, LibraryPermission, LibraryPermissionMask, MediaFacet,
+    PostProcessingScript, ScriptRunStatus, ScriptType, User,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,19 +44,31 @@ async fn create_script(
     timeout_secs: i64,
     debug: bool,
 ) {
+    create_script_with_type(ctx, facet, ScriptType::Inline, command, timeout_secs, debug).await;
+}
+
+async fn create_script_with_type(
+    ctx: &TestContext,
+    facet: MediaFacet,
+    script_type: ScriptType,
+    content: &str,
+    timeout_secs: i64,
+    debug: bool,
+) -> String {
     let facet_str = facet.as_str();
+    let script_id = format!(
+        "pp-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
     let script = PostProcessingScript {
-        id: format!(
-            "pp-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ),
+        id: script_id.clone(),
         name: format!("Test script for {facet_str}"),
         description: String::new(),
-        script_type: scryer_domain::ScriptType::Inline,
-        script_content: command.to_string(),
+        script_type,
+        script_content: content.to_string(),
         applied_facets: vec![facet_str.to_string()],
         execution_mode: scryer_domain::ExecutionMode::Blocking,
         timeout_secs,
@@ -70,6 +83,19 @@ async fn create_script(
         .create_post_processing_script(&actor, script)
         .await
         .expect("create script");
+    script_id
+}
+
+#[cfg(unix)]
+fn write_executable_script(path: &std::path::Path, content: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, content).expect("write script");
+    let mut permissions = std::fs::metadata(path)
+        .expect("script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod script");
 }
 
 async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) {
@@ -239,6 +265,42 @@ async fn timeout_kills_script_and_records_warning() {
     assert_eq!(event.severity, ActivitySeverity::Warning);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn file_script_timeout_kills_script_and_records_timeout_run() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
+
+    let script_dir = tempfile::tempdir().expect("tempdir");
+    let script_path = script_dir.path().join("sleep-post-process.sh");
+    write_executable_script(&script_path, "#!/bin/sh\nsleep 60\n");
+    let script_id = create_script_with_type(
+        &ctx,
+        MediaFacet::Movie,
+        ScriptType::File,
+        script_path.to_str().expect("utf-8 script path"),
+        1,
+        false,
+    )
+    .await;
+
+    let dest_dir = tempfile::tempdir().expect("tempdir");
+    let dest_file = dest_dir.path().join("Movie.2024.1080p.mkv");
+    std::fs::write(&dest_file, b"fake").expect("write");
+
+    let pp_ctx = movie_context(&ctx.app, &dest_file);
+    run_post_processing(pp_ctx).await.expect("run");
+
+    let actor = admin();
+    let runs = ctx
+        .app
+        .list_post_processing_script_runs(&actor, &script_id, 1)
+        .await
+        .expect("list script runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, ScriptRunStatus::Timeout);
+}
+
 /// The script receives SCRYER_METADATA and legacy environment variables.
 #[tokio::test]
 async fn script_receives_environment_variables() {
@@ -319,6 +381,139 @@ async fn script_working_directory_is_file_parent() {
         .canonicalize()
         .expect("canonicalize cwd");
     assert_eq!(actual, expected);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_script_executes_direct_path_with_environment_and_cwd() {
+    let ctx = TestContext::new().await;
+
+    let output_dir = tempfile::tempdir().expect("tempdir");
+    let script_path = output_dir.path().join("direct-post-process.sh");
+    let env_dump = output_dir.path().join("file_env_dump.txt");
+    let cwd_dump = output_dir.path().join("file_cwd.txt");
+    write_executable_script(
+        &script_path,
+        &format!(
+            "#!/bin/sh\nenv | grep ^SCRYER_ | sort > '{}'\npwd > '{}'\n",
+            env_dump.display(),
+            cwd_dump.display()
+        ),
+    );
+    create_script_with_type(
+        &ctx,
+        MediaFacet::Movie,
+        ScriptType::File,
+        script_path.to_str().expect("utf-8 script path"),
+        300,
+        false,
+    )
+    .await;
+
+    let dest_dir = tempfile::tempdir().expect("tempdir");
+    let dest_file = dest_dir.path().join("Movie.2024.1080p.mkv");
+    std::fs::write(&dest_file, b"fake").expect("write");
+
+    let pp_ctx = movie_context(&ctx.app, &dest_file);
+    run_post_processing(pp_ctx).await.expect("run");
+
+    let env_content = std::fs::read_to_string(&env_dump).expect("read env dump");
+    assert!(
+        env_content.contains("SCRYER_EVENT=post_import"),
+        "content:\n{env_content}"
+    );
+    assert!(
+        env_content.contains("SCRYER_FACET=movie"),
+        "content:\n{env_content}"
+    );
+    assert!(
+        env_content.contains(&format!("SCRYER_FILE_PATH={}", dest_file.display())),
+        "content:\n{env_content}"
+    );
+
+    let cwd = std::fs::read_to_string(&cwd_dump)
+        .expect("read cwd dump")
+        .trim()
+        .to_string();
+    let expected = dest_dir.path().canonicalize().expect("canonicalize dest");
+    let actual = PathBuf::from(&cwd)
+        .canonicalize()
+        .expect("canonicalize cwd");
+    assert_eq!(actual, expected);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_script_content_is_executable_path_not_shell_command() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
+
+    let output_dir = tempfile::tempdir().expect("tempdir");
+    let script_path = output_dir.path().join("file-script-no-shell.sh");
+    let marker = output_dir.path().join("marker.txt");
+    write_executable_script(
+        &script_path,
+        &format!("#!/bin/sh\necho ran > '{}'\n", marker.display()),
+    );
+
+    create_script_with_type(
+        &ctx,
+        MediaFacet::Movie,
+        ScriptType::File,
+        &format!("{} --not-an-argument", script_path.display()),
+        300,
+        true,
+    )
+    .await;
+
+    let dest_dir = tempfile::tempdir().expect("tempdir");
+    let dest_file = dest_dir.path().join("Movie.mkv");
+    std::fs::write(&dest_file, b"fake").expect("write");
+
+    let pp_ctx = movie_context(&ctx.app, &dest_file);
+    run_post_processing(pp_ctx).await.expect("run");
+
+    assert!(
+        !marker.exists(),
+        "file script content must be treated as one executable path, not a shell command with arguments"
+    );
+    let event = last_post_processing_event(&ctx.app)
+        .await
+        .expect("should have activity event");
+    assert_eq!(event.severity, ActivitySeverity::Warning);
+}
+
+#[tokio::test]
+async fn file_script_bare_command_records_failure_without_path_lookup() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
+
+    let script_id =
+        create_script_with_type(&ctx, MediaFacet::Movie, ScriptType::File, "true", 300, true).await;
+
+    let dest_dir = tempfile::tempdir().expect("tempdir");
+    let dest_file = dest_dir.path().join("Movie.mkv");
+    std::fs::write(&dest_file, b"fake").expect("write");
+
+    let pp_ctx = movie_context(&ctx.app, &dest_file);
+    run_post_processing(pp_ctx).await.expect("run");
+
+    let actor = admin();
+    let runs = ctx
+        .app
+        .list_post_processing_script_runs(&actor, &script_id, 1)
+        .await
+        .expect("list script runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, ScriptRunStatus::Failed);
+    assert!(
+        runs[0]
+            .stderr_tail
+            .as_deref()
+            .is_some_and(|stderr| stderr.contains("file script path must be absolute")),
+        "stderr tail should explain absolute path requirement: {:?}",
+        runs[0].stderr_tail
+    );
 }
 
 /// Series facet uses series-targeted scripts.
@@ -414,4 +609,88 @@ async fn invalid_command_records_spawn_failure() {
         .await
         .expect("should have activity event");
     assert_eq!(event.severity, ActivitySeverity::Warning);
+}
+
+#[tokio::test]
+async fn script_configuration_changes_are_audited_without_script_content() {
+    let ctx = TestContext::new().await;
+    let actor = admin();
+    let script_id = "pp-audit-inline-script".to_string();
+    let secret_content = "echo audit-secret-content";
+    let now = chrono::Utc::now();
+    let script = PostProcessingScript {
+        id: script_id.clone(),
+        name: "Audited inline script".to_string(),
+        description: String::new(),
+        script_type: ScriptType::Inline,
+        script_content: secret_content.to_string(),
+        applied_facets: vec!["movie".to_string()],
+        execution_mode: scryer_domain::ExecutionMode::Blocking,
+        timeout_secs: 300,
+        priority: 0,
+        enabled: true,
+        debug: false,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let mut updated = ctx
+        .app
+        .create_post_processing_script(&actor, script)
+        .await
+        .expect("create script");
+    updated.description = "updated".to_string();
+    updated.updated_at = chrono::Utc::now();
+    ctx.app
+        .update_post_processing_script(&actor, updated)
+        .await
+        .expect("update script");
+    ctx.app
+        .toggle_post_processing_script(&actor, &script_id)
+        .await
+        .expect("toggle script");
+    ctx.app
+        .delete_post_processing_script(&actor, &script_id)
+        .await
+        .expect("delete script");
+
+    let events = ctx
+        .app
+        .list_domain_events(
+            &actor,
+            &DomainEventFilter {
+                event_types: Some(vec![DomainEventType::ConfigurationChanged]),
+                limit: 20,
+                ..DomainEventFilter::default()
+            },
+        )
+        .await
+        .expect("list events");
+
+    let mut actions = Vec::new();
+    for event in events {
+        let payload_json = serde_json::to_string(&event.payload).expect("payload json");
+        assert!(
+            !payload_json.contains(secret_content),
+            "audit payload should not include script content: {payload_json}"
+        );
+        if let DomainEventPayload::ConfigurationChanged(data) = event.payload {
+            if data.resource_id.as_deref() == Some(&script_id) {
+                assert_eq!(data.resource_type, "post_processing_inline_script");
+                actions.push(data.action);
+            }
+        }
+    }
+
+    assert!(actions.contains(&ConfigurationChangeAction::Saved));
+    assert!(actions.contains(&ConfigurationChangeAction::Updated));
+    assert!(actions.contains(&ConfigurationChangeAction::Deleted));
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| **action == ConfigurationChangeAction::Updated)
+            .count(),
+        2,
+        "update and toggle should both emit updated audit events"
+    );
 }

@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
-import type { RootFolderOption } from "@/lib/types/titles";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 
@@ -29,7 +29,7 @@ const DISABLED_VALUE = "disabled";
 
 type DraftState = {
   qualityProfileId: string;
-  rootFolderPath: string;
+  rootFolderId: string;
   monitorType: string;
   useSeasonFolders: string;
   monitorSpecials: string;
@@ -44,7 +44,7 @@ type BulkTitleEditDialogProps = {
   view: string;
   selectedTitles: TitleRecord[];
   qualityProfiles: ParsedQualityProfile[];
-  rootFolders: RootFolderOption[];
+  rootFolders: LibraryRootRecord[];
   busy: boolean;
   onSubmit: (changes: TitleOptionUpdates) => Promise<void> | void;
 };
@@ -52,7 +52,7 @@ type BulkTitleEditDialogProps = {
 function initialDraftState(): DraftState {
   return {
     qualityProfileId: UNCHANGED_VALUE,
-    rootFolderPath: UNCHANGED_VALUE,
+    rootFolderId: UNCHANGED_VALUE,
     monitorType: UNCHANGED_VALUE,
     useSeasonFolders: UNCHANGED_VALUE,
     monitorSpecials: UNCHANGED_VALUE,
@@ -136,11 +136,11 @@ export function BulkTitleEditDialog({
       changes.qualityProfileId =
         draft.qualityProfileId === INHERIT_VALUE ? "" : draft.qualityProfileId;
     }
-    if (draft.rootFolderPath !== UNCHANGED_VALUE) {
-      changes.rootFolderPath =
-        draft.rootFolderPath === DEFAULT_ROOT_FOLDER_VALUE
-          ? ""
-          : draft.rootFolderPath;
+    if (draft.rootFolderId !== UNCHANGED_VALUE) {
+      changes.rootFolderId =
+        draft.rootFolderId === DEFAULT_ROOT_FOLDER_VALUE
+          ? null
+          : draft.rootFolderId;
     }
     if (draft.monitorType !== UNCHANGED_VALUE) {
       changes.monitorType = draft.monitorType;
@@ -212,9 +212,9 @@ export function BulkTitleEditDialog({
 
           <EditableField label={t("title.rootFolder")}>
             <Select
-              value={draft.rootFolderPath}
+              value={draft.rootFolderId}
               onValueChange={(value) =>
-                setDraft((previous) => ({ ...previous, rootFolderPath: value }))
+                setDraft((previous) => ({ ...previous, rootFolderId: value }))
               }
               disabled={busy}
             >
@@ -232,11 +232,13 @@ export function BulkTitleEditDialog({
                       })
                     : t("label.default")}
                 </SelectItem>
-                {rootFolders.map((rootFolder) => (
-                  <SelectItem key={rootFolder.path} value={rootFolder.path}>
-                    {folderLabel(rootFolder.path)}
-                  </SelectItem>
-                ))}
+                {rootFolders
+                  .filter((rootFolder) => !rootFolder.isDefault)
+                  .map((rootFolder) => (
+                    <SelectItem key={rootFolder.id} value={rootFolder.id}>
+                      {folderLabel(rootFolder.path)}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </EditableField>

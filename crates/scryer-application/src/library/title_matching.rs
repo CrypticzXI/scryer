@@ -17,12 +17,10 @@ const MOVIE_LOW_SIGNAL_TOKENS: &[&str] = &[
     "gekijo",
     "gekijōban",
 ];
-const SERIES_LOW_SIGNAL_TOKENS: &[&str] = &["a", "an", "the", "arc", "special", "specials", "part"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TitleMatchProfile {
     Movie,
-    Series,
 }
 
 pub(crate) fn canonical_lookup_key(title: &str) -> String {
@@ -45,10 +43,6 @@ pub(crate) fn reduced_comparison_key(title: &str, profile: TitleMatchProfile) ->
         .filter(|token| !low_signal_tokens(profile).contains(token))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub(crate) fn has_usable_reduced_key(key: &str) -> bool {
-    key.split_whitespace().count() >= 2
 }
 
 pub(crate) fn search_variants(title: &str) -> Vec<String> {
@@ -143,7 +137,6 @@ fn is_separator(character: char) -> bool {
 fn low_signal_tokens(profile: TitleMatchProfile) -> &'static [&'static str] {
     match profile {
         TitleMatchProfile::Movie => MOVIE_LOW_SIGNAL_TOKENS,
-        TitleMatchProfile::Series => SERIES_LOW_SIGNAL_TOKENS,
     }
 }
 

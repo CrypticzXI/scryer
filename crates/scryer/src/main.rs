@@ -42,7 +42,8 @@ use scryer_application::{
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
     start_background_title_image_loop, start_download_queue_poller_with_options,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    start_notification_dispatcher,
+    tracked_downloads::{TrackedDownloadHandle, TrackedDownloadSnapshotIngestHandle},
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
@@ -956,6 +957,10 @@ async fn bootstrap_application(
     let library_renamer = Arc::new(FileSystemLibraryRenamer::new());
 
     let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(64);
+    let (tracked_download_snapshot_tx, tracked_download_snapshot_rx) =
+        tokio::sync::mpsc::channel(64);
+    let tracked_download_snapshot_ingest =
+        TrackedDownloadSnapshotIngestHandle::new(tracked_download_snapshot_tx);
 
     // Warm up SMG enrollment so the mTLS client is ready before the first real
     // metadata query, and check for version incompatibility.
@@ -1255,20 +1260,20 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
         tracked_download_rx,
+        tracked_download_snapshot_rx,
         poller_options,
     ));
     // Start the Weaver WebSocket subscription bridge when Weaver is primary.
-    // The bridge owns both subscription updates and its Weaver-only fallback
-    // polling when the socket is unavailable.
+    // The bridge feeds realtime Weaver observations into the tracked runtime.
     if let Some(bridge_client) = weaver_bridge_client {
         tracing::info!(
             client_type = "weaver",
             "using weaver subscription bridge for real-time download queue updates"
         );
         tokio::spawn(start_weaver_subscription_bridge(
-            app_use_case.clone(),
             shutdown_token.child_token(),
             bridge_client,
+            tracked_download_snapshot_ingest,
         ));
     }
     tokio::spawn(start_background_acquisition_poller(

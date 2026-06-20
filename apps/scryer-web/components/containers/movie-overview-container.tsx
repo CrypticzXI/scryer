@@ -3,6 +3,7 @@ import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
+  librariesQuery,
   mediaRenamePreviewQuery,
   movieOverviewSettingsInitQuery,
   searchForTitleQuery,
@@ -34,6 +35,7 @@ import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
@@ -94,6 +96,7 @@ export type TitleDetail = {
   effectiveRequiredAudioLanguages?: string[];
   inheritsRequiredAudioLanguages?: boolean;
   qualityProfileId?: string | null;
+  rootFolderId?: string | null;
   rootFolderPath?: string | null;
   monitorType?: string | null;
   useSeasonFolders?: boolean | null;
@@ -259,6 +262,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const [titleLookupFailed, setTitleLookupFailed] = React.useState(false);
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_MOVIE_LIBRARY_PATH);
+  const [rootFolders, setRootFolders] = React.useState<LibraryRootRecord[]>([]);
   const [mediaFiles, setMediaFiles] = React.useState<TitleMediaFile[]>([]);
   const [downloadQueueSeed, setDownloadQueueSeed] = React.useState<DownloadQueueItem[]>([]);
   const [downloadFeedbackSettled, setDownloadFeedbackSettled] = React.useState(false);
@@ -539,6 +543,38 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     void load();
     return () => { cancelled = true; };
   }, [client]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const libraryId = title?.libraryId;
+      if (!libraryId) {
+        setRootFolders([]);
+        return;
+      }
+      try {
+        const { data, error } = await client
+          .query(
+            librariesQuery,
+            { facet: "movie", permission: "manageTitles" },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) throw error;
+        if (cancelled) return;
+        const library = (data.libraries ?? []).find(
+          (candidate: { id: string }) => candidate.id === libraryId,
+        );
+        setRootFolders(Array.isArray(library?.roots) ? library.roots : []);
+      } catch {
+        if (!cancelled) setRootFolders([]);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, title?.libraryId]);
 
   const handleUpdateTitleOptions = React.useCallback(
     async (options: TitleOptionUpdates) => {
@@ -1106,6 +1142,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         onBackToList={onBackToList}
         qualityProfiles={qualityProfiles}
         defaultRootFolder={defaultRootFolder}
+        rootFolders={rootFolders}
         onUpdateTitleOptions={handleUpdateTitleOptions}
         onSetTitleMonitored={handleSetTitleMonitored}
         monitoredUpdating={monitoredUpdating}

@@ -318,7 +318,7 @@ fn submission_blocks_search_for_wanted_item(
 }
 
 impl AppUseCase {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn run_acquisition_cycle_once(&self) {
         process_due_wanted_items(self).await;
     }

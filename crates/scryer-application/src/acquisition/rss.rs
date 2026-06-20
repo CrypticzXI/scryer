@@ -222,7 +222,7 @@ fn match_release_to_title_context<'a>(
     best.map(|(info, _)| info)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
     parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }

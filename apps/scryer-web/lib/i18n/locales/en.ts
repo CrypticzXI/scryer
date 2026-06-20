@@ -1593,10 +1593,11 @@ const en: LocaleDictionary = {
   "settings.pp.descriptionLabel": "Description",
   "settings.pp.descriptionPlaceholder": "What does this script do?",
   "settings.pp.scriptType": "Script Type",
-  "settings.pp.inline": "Inline",
+  "settings.pp.inline": "Inline shell",
   "settings.pp.filePath": "File Path",
-  "settings.pp.inlineHelp": "Enter a shell command to execute.",
-  "settings.pp.filePathHelp": "Path to an executable script on the server.",
+  "settings.pp.inlineHelp": "Enter a shell command to run through the server shell.",
+  "settings.pp.filePathHelp":
+    "Absolute path to an executable script on the server. Arguments, redirection, and shell expansion are not applied.",
   "settings.pp.blocking": "Blocking",
   "settings.pp.fireAndForget": "Fire & Forget",
   "settings.pp.blockingHelp":
@@ -1627,6 +1628,10 @@ const en: LocaleDictionary = {
     "Discard current post-processing script edits?",
   "settings.pp.confirmDiscardDescription":
     "Your current post-processing script edits will be lost.",
+  "settings.pp.inlineShellConfirmTitle": "Allow inline shell script?",
+  "settings.pp.inlineShellConfirmDescription":
+    "Inline post-processing scripts run through the server shell after imports. Only save scripts you have reviewed and trust.",
+  "settings.pp.inlineShellConfirm": "Allow inline shell",
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",

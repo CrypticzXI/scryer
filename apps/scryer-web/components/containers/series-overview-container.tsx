@@ -3,6 +3,7 @@ import * as React from "react";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
+  librariesQuery,
   seriesOverviewSettingsInitQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -47,6 +48,7 @@ import { DeletePreviewSummary } from "@/components/common/delete-preview-summary
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import {
   assertNoReplaceConflict,
@@ -93,6 +95,7 @@ export type TitleDetail = {
   effectiveRequiredAudioLanguages?: string[];
   inheritsRequiredAudioLanguages?: boolean;
   qualityProfileId?: string | null;
+  rootFolderId?: string | null;
   rootFolderPath?: string | null;
   monitorType?: string | null;
   useSeasonFolders?: boolean | null;
@@ -313,7 +316,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_SERIES_LIBRARY_PATH);
   const [renameEnabled, setRenameEnabled] = React.useState(true);
-  const [rootFolders, setRootFolders] = React.useState<{ path: string; isDefault: boolean }[]>([]);
+  const [rootFolders, setRootFolders] = React.useState<LibraryRootRecord[]>([]);
   const [mediaFilesByEpisode, setMediaFilesByEpisode] = React.useState<
     Record<string, EpisodeMediaFile[]>
   >({});
@@ -651,9 +654,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         const folder = (data.mediaSettings?.libraryPath ?? "").trim();
         if (folder) setDefaultRootFolder(folder);
         setRenameEnabled(data.mediaSettings?.renameEnabled !== false);
-        if (Array.isArray(data.mediaSettings?.rootFolders)) {
-          setRootFolders(data.mediaSettings.rootFolders);
-        }
       } catch {
         // Settings fetch is best-effort
       }
@@ -661,6 +661,39 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     void load();
     return () => { cancelled = true; };
   }, [client, title?.facet]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const libraryId = title?.libraryId;
+      if (!libraryId) {
+        setRootFolders([]);
+        return;
+      }
+      const facet = title?.facet === "anime" ? "anime" : "series";
+      try {
+        const { data, error } = await client
+          .query(
+            librariesQuery,
+            { facet, permission: "manageTitles" },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) throw error;
+        if (cancelled) return;
+        const library = (data.libraries ?? []).find(
+          (candidate: { id: string }) => candidate.id === libraryId,
+        );
+        setRootFolders(Array.isArray(library?.roots) ? library.roots : []);
+      } catch {
+        if (!cancelled) setRootFolders([]);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, title?.facet, title?.libraryId]);
 
   const handleUpdateTitleOptions = React.useCallback(
     async (options: TitleOptionUpdates) => {

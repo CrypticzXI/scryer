@@ -1,0 +1,529 @@
+use super::lookup::find_completed_download;
+use super::*;
+
+pub(super) enum ExpectedEpisodeResolution {
+    NotApplicable,
+    Unresolved,
+    Resolved(HashSet<String>),
+    AtLeastOne(HashSet<String>),
+}
+
+enum SourceVideoEpisodeResolution {
+    Unavailable,
+    NoVisibleVideos,
+    Unmapped,
+    Resolved(HashSet<String>),
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+enum ImportArtifactSourceKey {
+    RelativePath(String),
+    NormalizedFileName(String),
+}
+
+/// Phase 1: evaluate a tracked download whose client reports completion.
+///
+/// Called every poll cycle for downloads in Downloading or ImportBlocked state.
+/// Transitions to ImportPending if all validations pass, or ImportBlocked with
+/// warnings if auto-import is not safe.
+
+pub async fn verify_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+) -> bool {
+    verify_import_inner(app, td, files_imported_this_pass, None).await
+}
+
+pub(super) async fn verify_import_inner(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+) -> bool {
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
+
+    let artifacts = match app
+        .services
+        .workflow
+        .import_artifacts
+        .list_by_source_identity(&source_identity)
+        .await
+    {
+        Ok(artifacts) => artifacts,
+        Err(_) => return false,
+    };
+
+    if artifacts.is_empty() {
+        return false;
+    }
+
+    let current_visible_files = current_visible_video_file_count(app, td, completed).await;
+    let source_video_units = visible_source_episode_units(app, td, &artifacts, completed).await;
+    let mut successful_units = HashSet::new();
+    let mut rejected_units = HashSet::new();
+
+    for artifact in &artifacts {
+        let logical_unit = artifact.episode_id.clone().unwrap_or_else(|| {
+            format!("{}:{}", artifact.media_kind, artifact.normalized_file_name)
+        });
+
+        match artifact.result.as_str() {
+            "imported" | "already_present" => {
+                successful_units.insert(logical_unit);
+            }
+            "rejected" => {
+                rejected_units.insert(logical_unit);
+            }
+            _ => {}
+        }
+    }
+
+    if successful_units.is_empty() {
+        return false;
+    }
+
+    if td.facet.as_deref() == Some("movie") {
+        return !successful_units.is_empty();
+    }
+
+    match expected_episode_units(app, td).await {
+        ExpectedEpisodeResolution::Resolved(expected_episode_units) => {
+            if expected_episode_units.is_empty() {
+                return false;
+            }
+
+            if let Some(source_units_complete) =
+                source_video_units_are_complete(&source_video_units, &successful_units)
+            {
+                return source_units_complete;
+            }
+
+            return expected_episode_units
+                .iter()
+                .all(|unit| successful_units.contains(unit));
+        }
+        ExpectedEpisodeResolution::AtLeastOne(expected_episode_units) => {
+            if expected_episode_units.is_empty() {
+                return false;
+            }
+
+            if let Some(source_units_complete) =
+                source_video_units_are_complete(&source_video_units, &successful_units)
+            {
+                return source_units_complete;
+            }
+
+            return expected_episode_units
+                .iter()
+                .any(|unit| successful_units.contains(unit));
+        }
+        ExpectedEpisodeResolution::Unresolved => {
+            if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
+                return true;
+            }
+
+            return files_imported_this_pass > 0 && rejected_units.is_empty();
+        }
+        ExpectedEpisodeResolution::NotApplicable => {}
+    }
+
+    if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
+        return true;
+    }
+
+    !successful_units.is_empty()
+}
+
+fn source_video_units_are_complete(
+    source_video_units: &SourceVideoEpisodeResolution,
+    successful_units: &HashSet<String>,
+) -> Option<bool> {
+    match source_video_units {
+        SourceVideoEpisodeResolution::Resolved(units) if !units.is_empty() => {
+            Some(units.iter().all(|unit| successful_units.contains(unit)))
+        }
+        SourceVideoEpisodeResolution::Unmapped => Some(false),
+        SourceVideoEpisodeResolution::Resolved(_)
+        | SourceVideoEpisodeResolution::NoVisibleVideos
+        | SourceVideoEpisodeResolution::Unavailable => None,
+    }
+}
+
+fn successful_units_cover_visible_files(
+    successful_unit_count: usize,
+    current_visible_files: usize,
+) -> bool {
+    current_visible_files > 0 && successful_unit_count >= current_visible_files
+}
+
+pub(super) async fn expected_episode_units(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+) -> ExpectedEpisodeResolution {
+    let Some(title_id) = td.title_id.as_deref() else {
+        return ExpectedEpisodeResolution::Unresolved;
+    };
+    let Some(title) = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return ExpectedEpisodeResolution::Unresolved;
+    };
+
+    let release_title = td
+        .source_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(td.client_item.title_name.as_str());
+    let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
+    let parsed = crate::parse_release_metadata_for_target(release_title, &parse_context);
+    let Some(ep_meta) = parsed.episode.as_ref() else {
+        return ExpectedEpisodeResolution::NotApplicable;
+    };
+    let season_str = ep_meta.season.unwrap_or(1).to_string();
+    let episodes =
+        crate::import_workflow::resolve_target_episodes(app, &title, ep_meta, &season_str).await;
+
+    if episodes.is_empty() {
+        return ExpectedEpisodeResolution::Unresolved;
+    }
+
+    let expected_lookup_count = if ep_meta.season.is_some() && !ep_meta.episode_numbers.is_empty() {
+        ep_meta
+            .episode_numbers
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+    } else if !ep_meta.absolute_episode_numbers.is_empty() {
+        ep_meta
+            .absolute_episode_numbers
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+    } else if ep_meta.absolute_episode.is_some() {
+        if ep_meta.episode_numbers.is_empty() {
+            1
+        } else {
+            ep_meta
+                .episode_numbers
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+        }
+    } else {
+        0
+    };
+
+    if expected_lookup_count > 0 && episodes.len() < expected_lookup_count {
+        return ExpectedEpisodeResolution::Unresolved;
+    }
+
+    let all_expected_episode_ids = episodes
+        .iter()
+        .map(|episode| episode.id.clone())
+        .collect::<HashSet<_>>();
+    let monitored_expected_episode_ids = episodes
+        .into_iter()
+        .filter(|episode| episode.monitored)
+        .map(|episode| episode.id)
+        .collect::<HashSet<_>>();
+    let expected_episode_ids = if monitored_expected_episode_ids.is_empty() {
+        all_expected_episode_ids
+    } else {
+        monitored_expected_episode_ids
+    };
+
+    if ep_meta.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+        && ep_meta.is_partial_season
+        && ep_meta.episode_numbers.is_empty()
+        && ep_meta.absolute_episode_numbers.is_empty()
+        && ep_meta.special_absolute_episode_numbers.is_empty()
+    {
+        return ExpectedEpisodeResolution::AtLeastOne(expected_episode_ids);
+    }
+
+    ExpectedEpisodeResolution::Resolved(expected_episode_ids)
+}
+
+pub(super) async fn current_visible_video_file_count(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> usize {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let Some(found) = find_completed_download(app, td, None).await else {
+                return 0;
+            };
+            completed_lookup = found;
+            &completed_lookup
+        }
+    };
+
+    let path = std::path::Path::new(&completed.dest_dir);
+    let filter_samples = td.facet.as_deref() != Some("movie");
+    crate::import_workflow::find_video_files(path, filter_samples)
+        .map(|files| files.len())
+        .unwrap_or(0)
+}
+
+async fn visible_source_episode_units(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    artifacts: &[crate::ImportArtifact],
+    completed: Option<&CompletedDownload>,
+) -> SourceVideoEpisodeResolution {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let Some(found) = find_completed_download(app, td, None).await else {
+                return SourceVideoEpisodeResolution::Unavailable;
+            };
+            completed_lookup = found;
+            &completed_lookup
+        }
+    };
+
+    let Some(title_id) = td.title_id.as_deref() else {
+        return SourceVideoEpisodeResolution::Unavailable;
+    };
+    let Some(title) = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(title_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return SourceVideoEpisodeResolution::Unavailable;
+    };
+
+    let path = std::path::Path::new(&completed.dest_dir);
+    let filter_samples = td.facet.as_deref() != Some("movie");
+    let files = match crate::import_workflow::find_video_files(path, filter_samples) {
+        Ok(files) => files,
+        Err(_) => {
+            return artifact_source_episode_units(artifacts)
+                .unwrap_or(SourceVideoEpisodeResolution::Unavailable);
+        }
+    };
+    if files.is_empty() {
+        return artifact_source_episode_units(artifacts)
+            .unwrap_or(SourceVideoEpisodeResolution::NoVisibleVideos);
+    }
+
+    let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
+    let mut visible_file_name_counts: HashMap<String, usize> = HashMap::new();
+    for file in &files {
+        *visible_file_name_counts
+            .entry(normalized_source_file_name(file))
+            .or_default() += 1;
+    }
+    let mut units = HashSet::new();
+    for file in files {
+        let normalized_file_name = normalized_source_file_name(&file);
+        let allow_filename_fallback = visible_file_name_counts
+            .get(&normalized_file_name)
+            .copied()
+            .unwrap_or_default()
+            == 1;
+        if let Some(artifact_units) = episode_units_from_import_artifacts_for_source_file(
+            &file,
+            completed,
+            artifacts,
+            allow_filename_fallback,
+        ) {
+            units.extend(artifact_units);
+            continue;
+        }
+
+        let file_name = file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| file.to_string_lossy().into_owned());
+        let parsed = crate::parse_release_metadata_for_target(&file_name, &parse_context);
+        let Some(ep_meta) = parsed.episode.as_ref() else {
+            tracing::debug!(
+                file = %file.display(),
+                source = %completed.name,
+                "verify_import: visible source video did not parse to an episode"
+            );
+            return SourceVideoEpisodeResolution::Unmapped;
+        };
+        let season_str = ep_meta.season.unwrap_or(1).to_string();
+        let episodes =
+            crate::import_workflow::resolve_target_episodes(app, &title, ep_meta, &season_str)
+                .await;
+        if episodes.is_empty() {
+            tracing::debug!(
+                file = %file.display(),
+                title_id = %title.id,
+                source = %completed.name,
+                "verify_import: visible source video did not resolve to catalog episodes"
+            );
+            return SourceVideoEpisodeResolution::Unmapped;
+        }
+        units.extend(episodes.into_iter().map(|episode| episode.id));
+    }
+
+    if units.is_empty() {
+        SourceVideoEpisodeResolution::NoVisibleVideos
+    } else {
+        SourceVideoEpisodeResolution::Resolved(units)
+    }
+}
+
+fn artifact_source_episode_units(
+    artifacts: &[crate::ImportArtifact],
+) -> Option<SourceVideoEpisodeResolution> {
+    let mut grouped_units: HashMap<ImportArtifactSourceKey, HashSet<String>> = HashMap::new();
+    for artifact in artifacts {
+        let Some(source_key) = import_artifact_source_key(artifact) else {
+            return Some(SourceVideoEpisodeResolution::Unmapped);
+        };
+        let group = grouped_units.entry(source_key).or_default();
+        if let Some(episode_id) = artifact
+            .episode_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            group.insert(episode_id.to_string());
+        }
+    }
+
+    if grouped_units.is_empty() {
+        return None;
+    }
+
+    let mut units = HashSet::new();
+    for group_units in grouped_units.into_values() {
+        if group_units.is_empty() {
+            return Some(SourceVideoEpisodeResolution::Unmapped);
+        }
+        units.extend(group_units);
+    }
+
+    if units.is_empty() {
+        Some(SourceVideoEpisodeResolution::Unmapped)
+    } else {
+        Some(SourceVideoEpisodeResolution::Resolved(units))
+    }
+}
+
+fn episode_units_from_import_artifacts_for_source_file(
+    file: &Path,
+    completed: &CompletedDownload,
+    artifacts: &[crate::ImportArtifact],
+    allow_filename_fallback: bool,
+) -> Option<HashSet<String>> {
+    let relative_path = file
+        .strip_prefix(&completed.dest_dir)
+        .ok()
+        .map(path_to_stored_string)
+        .filter(|path| !path.is_empty());
+    if let Some(relative_path) = relative_path.as_deref() {
+        let relative_matches = artifacts.iter().filter(|artifact| {
+            artifact.relative_path.as_deref().map(str::trim) == Some(relative_path)
+        });
+        if let Some(units) = episode_units_from_artifact_rows(relative_matches) {
+            return Some(units);
+        }
+    }
+
+    if !allow_filename_fallback {
+        return None;
+    }
+
+    let normalized_file_name = normalized_source_file_name(file);
+    let file_name_matches = artifacts.iter().filter(|artifact| {
+        artifact
+            .normalized_file_name
+            .trim()
+            .eq_ignore_ascii_case(&normalized_file_name)
+    });
+    let file_name_matches = file_name_matches.collect::<Vec<_>>();
+    if !artifact_rows_have_unique_source_key(&file_name_matches) {
+        return None;
+    }
+
+    episode_units_from_artifact_rows(file_name_matches.into_iter())
+}
+
+fn episode_units_from_artifact_rows<'a>(
+    artifacts: impl Iterator<Item = &'a crate::ImportArtifact>,
+) -> Option<HashSet<String>> {
+    let mut units = HashSet::new();
+    for artifact in artifacts {
+        if let Some(episode_id) = artifact
+            .episode_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            units.insert(episode_id.to_string());
+        }
+    }
+
+    (!units.is_empty()).then_some(units)
+}
+
+fn import_artifact_source_key(artifact: &crate::ImportArtifact) -> Option<ImportArtifactSourceKey> {
+    if let Some(relative_path) = artifact
+        .relative_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(ImportArtifactSourceKey::RelativePath(
+            relative_path.to_string(),
+        ));
+    }
+
+    let normalized_file_name = artifact.normalized_file_name.trim();
+    if normalized_file_name.is_empty() {
+        None
+    } else {
+        Some(ImportArtifactSourceKey::NormalizedFileName(
+            normalized_file_name.to_ascii_lowercase(),
+        ))
+    }
+}
+
+fn artifact_rows_have_unique_source_key(artifacts: &[&crate::ImportArtifact]) -> bool {
+    let mut source_keys = artifacts
+        .iter()
+        .filter_map(|artifact| import_artifact_source_key(artifact))
+        .collect::<HashSet<_>>();
+    if source_keys.len() <= 1 {
+        return true;
+    }
+
+    source_keys.retain(|key| matches!(key, ImportArtifactSourceKey::RelativePath(_)));
+    source_keys.len() <= 1
+}
+
+fn normalized_source_file_name(file: &Path) -> String {
+    file.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase())
+        .unwrap_or_else(|| file.to_string_lossy().to_ascii_lowercase())
+}

@@ -10,6 +10,7 @@ import {
   externalImportMonitorWarmupProgressSubscription,
   pluginInstallProgressSubscription,
   qualityProfilesInitQuery,
+  setupStatusQuery,
   setupWizardProviderTypesInitQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -302,6 +303,9 @@ export function SetupWizardContainer({
         ? "restore"
         : "fresh";
   const currentStep = parseInt(searchParams.get("step") || "0", 10);
+  const [canRestoreSetup, setCanRestoreSetup] = useState(false);
+  const [restoreAvailabilityChecked, setRestoreAvailabilityChecked] =
+    useState(false);
 
   const goToStep = useCallback(
     (step: number, path?: "fresh" | "import" | "restore") => {
@@ -314,6 +318,50 @@ export function SetupWizardContainer({
     },
     [wizardPath, setSearchParams],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanRestoreSetup(false);
+    setRestoreAvailabilityChecked(false);
+
+    client
+      .query(setupStatusQuery, {}, { requestPolicy: "network-only" })
+      .toPromise()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setCanRestoreSetup(data?.setupStatus?.setupComplete === false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCanRestoreSetup(false);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRestoreAvailabilityChecked(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (wizardPath !== "restore" || !restoreAvailabilityChecked || canRestoreSetup) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams();
+    if (isReentry) {
+      nextSearchParams.set("reentry", "1");
+    }
+    setSearchParams(nextSearchParams, { replace: true });
+  }, [
+    canRestoreSetup,
+    isReentry,
+    restoreAvailabilityChecked,
+    setSearchParams,
+    wizardPath,
+  ]);
 
   // ── Step 1 (fresh) / Step 3 (import): Quality Preferences ─────────
   const [facetPrefs, setFacetPrefs] = useState<
@@ -2131,6 +2179,7 @@ export function SetupWizardContainer({
           onRestoreSetup={() => goToStep(1, "restore")}
           onSkip={finishSetup}
           skipping={finishing}
+          canRestoreSetup={canRestoreSetup}
         />
       )}
 
@@ -2248,7 +2297,7 @@ export function SetupWizardContainer({
       {/* IMPORT PATH                                                     */}
       {/* ════════════════════════════════════════════════════════════════ */}
 
-      {currentStep === 1 && wizardPath === "restore" && (
+      {currentStep === 1 && wizardPath === "restore" && canRestoreSetup && (
         <SetupRestoreView
           t={t}
           onBack={() => goToStep(0)}

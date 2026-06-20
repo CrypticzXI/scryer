@@ -1,14 +1,16 @@
-use async_graphql::{Context, ID, Object, Result as GqlResult};
+use async_graphql::{Context, ID, MaybeUndefined, Object, Result as GqlResult};
 use scryer_application::{
-    DeleteExecutionConfirmation, DeleteTitlesJobItem, DeleteTitlesJobRequest,
+    AppError, AppUseCase, DeleteExecutionConfirmation, DeleteTitlesJobItem, DeleteTitlesJobRequest,
     QueuedReleaseSelection,
 };
+use scryer_domain::{Library, LibraryPermission, LibraryRoot, MediaFacet, Title, User};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{from_job_run, from_library_scan_summary, from_title};
 use crate::types::*;
 use crate::utils::{
-    map_add_input, merge_title_option_tags, normalize_title_tags, parse_download_source_kind,
+    ResolvedTitleOptionsInput, map_add_input, merge_title_option_tags, normalize_title_tags,
+    parse_download_source_kind,
 };
 
 #[derive(Default)]
@@ -31,6 +33,150 @@ fn queued_download_payload(
     }
 }
 
+fn validation_error(message: impl Into<String>) -> async_graphql::Error {
+    to_gql_error(AppError::Validation(message.into()))
+}
+
+fn normalized_root_folder_id(root_folder_id: &ID) -> GqlResult<&str> {
+    let value = root_folder_id.as_ref().trim();
+    if value.is_empty() {
+        return Err(validation_error("rootFolderId cannot be empty"));
+    }
+    Ok(value)
+}
+
+fn find_library_root<'a>(
+    libraries: &'a [Library],
+    root_folder_id: &str,
+) -> Option<(&'a Library, &'a LibraryRoot)> {
+    libraries.iter().find_map(|library| {
+        library
+            .roots
+            .iter()
+            .find(|root| root.id == root_folder_id)
+            .map(|root| (library, root))
+    })
+}
+
+fn root_folder_path_override(root: &LibraryRoot) -> Option<Option<String>> {
+    if root.is_default {
+        Some(None)
+    } else {
+        Some(Some(root.path.clone()))
+    }
+}
+
+fn resolved_title_options(
+    options: TitleOptionsInput,
+    root_folder_path: Option<Option<String>>,
+) -> ResolvedTitleOptionsInput {
+    let TitleOptionsInput {
+        quality_profile_id,
+        root_folder_id: _,
+        monitor_type,
+        use_season_folders,
+        monitor_specials,
+        inter_season_movies,
+        filler_policy,
+        recap_policy,
+    } = options;
+
+    ResolvedTitleOptionsInput {
+        quality_profile_id,
+        root_folder_path,
+        monitor_type,
+        use_season_folders,
+        monitor_specials,
+        inter_season_movies,
+        filler_policy,
+        recap_policy,
+    }
+}
+
+async fn manageable_libraries_for_facet(
+    app: &AppUseCase,
+    actor: &User,
+    facet: MediaFacet,
+) -> GqlResult<Vec<Library>> {
+    app.list_libraries_for_permission(actor, Some(facet), LibraryPermission::ManageTitles)
+        .await
+        .map_err(to_gql_error)
+}
+
+async fn resolve_add_title_options(
+    app: &AppUseCase,
+    actor: &User,
+    facet: MediaFacet,
+    library_id: Option<String>,
+    options: Option<TitleOptionsInput>,
+) -> GqlResult<(Option<String>, Option<ResolvedTitleOptionsInput>)> {
+    let Some(options) = options else {
+        return Ok((library_id, None));
+    };
+    let root_folder_id = options.root_folder_id.clone();
+    let (library_id, root_folder_path) = match root_folder_id {
+        MaybeUndefined::Undefined => (library_id, None),
+        MaybeUndefined::Null => (library_id, Some(None)),
+        MaybeUndefined::Value(root_folder_id) => {
+            let root_folder_id = normalized_root_folder_id(&root_folder_id)?;
+            let libraries = manageable_libraries_for_facet(app, actor, facet).await?;
+            let (root_library, root) =
+                find_library_root(&libraries, root_folder_id).ok_or_else(|| {
+                    validation_error("rootFolderId must reference a configured library root")
+                })?;
+            if let Some(library_id) = library_id.as_deref()
+                && root_library.id != library_id
+            {
+                return Err(validation_error(
+                    "rootFolderId must reference a root on the selected library",
+                ));
+            }
+            (
+                library_id.or_else(|| Some(root_library.id.clone())),
+                root_folder_path_override(root),
+            )
+        }
+    };
+
+    Ok((
+        library_id,
+        Some(resolved_title_options(options, root_folder_path)),
+    ))
+}
+
+async fn resolve_update_title_options(
+    app: &AppUseCase,
+    actor: &User,
+    title: &Title,
+    options: TitleOptionsInput,
+) -> GqlResult<ResolvedTitleOptionsInput> {
+    let root_folder_id = options.root_folder_id.clone();
+    let root_folder_path = match root_folder_id {
+        MaybeUndefined::Undefined => None,
+        MaybeUndefined::Null => Some(None),
+        MaybeUndefined::Value(root_folder_id) => {
+            let root_folder_id = normalized_root_folder_id(&root_folder_id)?;
+            let libraries = manageable_libraries_for_facet(app, actor, title.facet.clone()).await?;
+            let library = libraries
+                .iter()
+                .find(|library| library.id == title.library_id)
+                .ok_or_else(|| {
+                    validation_error("title library is not available for rootFolderId validation")
+                })?;
+            let root = library
+                .roots
+                .iter()
+                .find(|root| root.id == root_folder_id)
+                .ok_or_else(|| {
+                    validation_error("rootFolderId must reference a root on the title library")
+                })?;
+            root_folder_path_override(root)
+        }
+    };
+
+    Ok(resolved_title_options(options, root_folder_path))
+}
+
 #[Object]
 impl TitleMutations {
     async fn add_title(
@@ -40,8 +186,12 @@ impl TitleMutations {
     ) -> GqlResult<AddTitleResult> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let facet = input.facet.into_domain();
         let library_id = input.library_id.clone().map(String::from);
-        let request = map_add_input(input)?;
+        let options = input.options.clone();
+        let (library_id, resolved_options) =
+            resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let request = map_add_input(input, resolved_options)?;
         let result = if let Some(library_id) = library_id {
             app.add_title_with_outcome_in_library(&actor, request, library_id)
                 .await
@@ -72,8 +222,12 @@ impl TitleMutations {
         let source_hint = input.source_hint.clone();
         let source_kind = parse_download_source_kind(input.source_kind);
         let source_title = input.source_title.clone();
+        let facet = input.facet.into_domain();
         let library_id = input.library_id.clone().map(String::from);
-        let request = map_add_input(input)?;
+        let options = input.options.clone();
+        let (library_id, resolved_options) =
+            resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let request = map_add_input(input, resolved_options)?;
         let queued_release = QueuedReleaseSelection {
             source_hint,
             source_kind,
@@ -131,14 +285,18 @@ impl TitleMutations {
         let mut tags = tags.map(normalize_title_tags);
 
         if let Some(options) = options {
+            let title = app
+                .get_title_for_management(&actor, &title_id)
+                .await
+                .map_err(to_gql_error)?
+                .ok_or_else(|| to_gql_error(AppError::NotFound(format!("title {title_id}"))))?;
             let base_tags = match tags.take() {
                 Some(tags) => tags,
-                None => app
-                    .get_title_tags_for_update(&actor, &title_id)
-                    .await
-                    .map_err(to_gql_error)?,
+                None => title.tags.clone(),
             };
-            tags = Some(merge_title_option_tags(base_tags, options));
+            let resolved_options =
+                resolve_update_title_options(&app, &actor, &title, options).await?;
+            tags = Some(merge_title_option_tags(base_tags, resolved_options));
         }
 
         let title = app

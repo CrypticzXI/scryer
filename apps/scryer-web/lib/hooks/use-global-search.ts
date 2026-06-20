@@ -69,7 +69,7 @@ export type MetadataCatalogAddOptions = {
   minAvailability?: string;
   monitorSpecials?: boolean;
   interSeasonMovies?: boolean;
-  rootFolder?: string;
+  rootFolderId?: string;
 };
 
 export type MetadataCatalogRequestOptions = {
@@ -1112,7 +1112,7 @@ export function useGlobalSearch({
             tags: [],
             options: {
               qualityProfileId: qualityProfileId || undefined,
-              rootFolderPath: options.rootFolder || undefined,
+              rootFolderId: options.rootFolderId || undefined,
               monitorType: options.monitorType,
               ...(facet === "movie"
                 ? {}

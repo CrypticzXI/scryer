@@ -78,7 +78,6 @@ export const RootHeader = React.memo(function RootHeader({
     catalogConfigLoading,
     ensureCatalogConfigReady,
     isCatalogConfigReady,
-    rootFoldersByFacet,
     librariesByFacet,
     requestableLibrariesByFacet,
     catalogSearchResults,
@@ -753,7 +752,6 @@ export const RootHeader = React.memo(function RootHeader({
         catalogQualityProfileOptions={catalogQualityProfileOptions}
         catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
-        rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         manageableLibraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
         onAdd={handleAddDialogSubmit}
       />
