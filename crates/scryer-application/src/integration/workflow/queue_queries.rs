@@ -1303,6 +1303,9 @@ impl AppUseCase {
             ))
             .await?;
         if let Some(submission) = submission.as_ref() {
+            if matches!(submission.scope, SubmissionScope::Orphan) {
+                return Ok(Some(SubmissionScope::Orphan));
+            }
             let Some(title) = self
                 .services
                 .catalog

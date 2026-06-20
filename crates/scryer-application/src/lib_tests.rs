@@ -18335,6 +18335,42 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
 }
 
 #[tokio::test]
+async fn find_download_queue_scope_returns_orphan_without_title_lookup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: String::new(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "anime".to_string(),
+            download_client_id: Some("weaver-primary".to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "foreign-10000".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Foreign Weaver Download".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Orphan,
+        })
+        .await
+        .expect("record orphan submission");
+
+    let scope = app
+        .find_download_queue_scope(&user, Some("weaver-primary"), "weaver", "foreign-10000")
+        .await
+        .expect("orphan scope lookup should not require a title");
+
+    assert!(matches!(scope, Some(SubmissionScope::Orphan)));
+}
+
+#[tokio::test]
 async fn list_download_import_page_returns_promptly_when_tracked_snapshot_handle_never_replies() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

@@ -312,6 +312,7 @@ impl TrackedDownloadService {
                 td.state,
                 TrackedDownloadState::ImportPending
                     | TrackedDownloadState::Importing
+                    | TrackedDownloadState::ImportBlocked
                     | TrackedDownloadState::FailedPending
             );
             if !seen_ids.contains(&td.id) && !should_preserve_tracking {
@@ -3213,6 +3214,7 @@ mod tests {
         for (suffix, state) in [
             ("pending", TrackedDownloadState::ImportPending),
             ("importing", TrackedDownloadState::Importing),
+            ("blocked", TrackedDownloadState::ImportBlocked),
             ("failed", TrackedDownloadState::FailedPending),
         ] {
             tracker.cache.insert(
@@ -3251,6 +3253,11 @@ mod tests {
         assert!(
             tracker
                 .find("client-1:importing")
+                .is_some_and(|td| td.is_trackable)
+        );
+        assert!(
+            tracker
+                .find("client-1:blocked")
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(
