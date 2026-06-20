@@ -38,7 +38,7 @@ const INSPECT_RESTORE_BUNDLE_OPERATION = `
 `;
 
 const APPLY_RESTORE_BUNDLE_OPERATION = `
-  mutation ApplyRestoreBundle($uploadId: String!, $password: String) {
+  mutation ApplyRestoreBundle($uploadId: ID!, $password: String) {
     applyRestoreBundle(uploadId: $uploadId, password: $password) {
       summary {
         formatVersion
@@ -56,9 +56,9 @@ type RestoreSummaryPayload = {
   encrypted: boolean;
   rowCounts: Array<{
     table: string;
-    rowCount: string;
+    rowCount: number;
   }>;
-  totalRows: string;
+  totalRows: number;
 };
 
 type RestoreInspectResponse = {

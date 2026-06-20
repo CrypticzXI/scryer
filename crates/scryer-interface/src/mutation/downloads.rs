@@ -1,6 +1,6 @@
-use async_graphql::{Context, Error, Object, Result as GqlResult};
+use async_graphql::{Context, Object, Result as GqlResult};
 use scryer_application::{
-    AppUseCase, QueueDownloadOutcome, SubmissionConflictPolicy, SubmissionScopeConflict,
+    AppError, AppUseCase, QueueDownloadOutcome, SubmissionConflictPolicy, SubmissionScopeConflict,
 };
 use scryer_domain::User;
 
@@ -39,10 +39,10 @@ fn download_queue_action_payload(parts: DownloadQueueActionParts) -> DownloadQue
     DownloadQueueActionPayload {
         kind: parts.kind,
         download_client_item_id: parts.download_client_item_id,
-        client_id: parts.client_id,
+        client_id: parts.client_id.map(Into::into),
         client_type: parts.client_type,
-        import_id: parts.import_id,
-        command_id: parts.command_id,
+        import_id: parts.import_id.map(Into::into),
+        command_id: parts.command_id.map(Into::into),
         removed: parts.removed,
         queue_item: parts.queue_item,
     }
@@ -52,9 +52,9 @@ pub(crate) fn queue_download_conflict_payload(
     conflict: SubmissionScopeConflict,
 ) -> QueueDownloadConflictPayload {
     QueueDownloadConflictPayload {
-        title_id: conflict.title_id,
+        title_id: conflict.title_id.into(),
         title_name: conflict.title_name,
-        download_client_id: conflict.download_client_id,
+        download_client_id: conflict.download_client_id.map(Into::into),
         download_client_type: conflict.download_client_type,
         download_client_item_id: conflict.download_client_item_id,
         source_title: conflict.source_title,
@@ -83,6 +83,7 @@ impl DownloadMutations {
             replace_in_progress,
             purpose,
         } = input;
+        let title_id = title_id.to_string();
         let outcome = app
             .queue_existing_title_download_from_candidate_token_with_purpose(
                 &actor,
@@ -100,13 +101,13 @@ impl DownloadMutations {
             .get_title_for_download_actions(&actor, &title_id)
             .await
             .map_err(to_gql_error)?
-            .ok_or_else(|| Error::new(format!("title not found: {}", title_id)))?;
+            .ok_or_else(|| to_gql_error(AppError::NotFound(format!("title {title_id}"))))?;
 
         Ok(match outcome {
             QueueDownloadOutcome::Queued(queued) => QueueDownloadPayload {
                 status: QueueDownloadResultStatusValue::Queued,
-                job_id: Some(queued.job_id),
-                title_id: title.id,
+                job_id: Some(queued.job_id.into()),
+                title_id: title.id.into(),
                 title_name: title.name,
                 source_title: queued.queued_release.source_title,
                 source_kind: queued
@@ -118,7 +119,7 @@ impl DownloadMutations {
             QueueDownloadOutcome::Conflict(conflict) => QueueDownloadPayload {
                 status: QueueDownloadResultStatusValue::Conflict,
                 job_id: None,
-                title_id: title.id,
+                title_id: title.id.into(),
                 title_name: title.name,
                 source_title: None,
                 source_kind: None,
@@ -134,15 +135,16 @@ impl DownloadMutations {
     ) -> GqlResult<QueueDownloadPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = input.title_id.to_string();
         let title = app
-            .get_title_for_download_actions(&actor, &input.title_id)
+            .get_title_for_download_actions(&actor, &title_id)
             .await
             .map_err(to_gql_error)?
-            .ok_or_else(|| Error::new(format!("title not found: {}", input.title_id)))?;
+            .ok_or_else(|| to_gql_error(AppError::NotFound(format!("title {title_id}"))))?;
         let outcome = app
             .queue_best_release(
                 &actor,
-                &input.title_id,
+                &title_id,
                 input.scope.into_application(),
                 SubmissionConflictPolicy::from_replace_flag(
                     input.replace_in_progress.unwrap_or(false),
@@ -154,8 +156,8 @@ impl DownloadMutations {
         Ok(match outcome {
             QueueDownloadOutcome::Queued(queued) => QueueDownloadPayload {
                 status: QueueDownloadResultStatusValue::Queued,
-                job_id: Some(queued.job_id),
-                title_id: title.id,
+                job_id: Some(queued.job_id.into()),
+                title_id: title.id.into(),
                 title_name: title.name,
                 source_title: queued.queued_release.source_title,
                 source_kind: queued
@@ -167,7 +169,7 @@ impl DownloadMutations {
             QueueDownloadOutcome::Conflict(conflict) => QueueDownloadPayload {
                 status: QueueDownloadResultStatusValue::Conflict,
                 job_id: None,
-                title_id: title.id,
+                title_id: title.id.into(),
                 title_name: title.name,
                 source_title: None,
                 source_kind: None,
@@ -184,12 +186,13 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let download_client_item_id = input.download_client_item_id.clone();
-        let client_id = input.client_id.clone();
+        let client_id = input.client_id.clone().map(String::from);
         let client_type = input.client_type.clone();
+        let title_id = input.title_id.map(String::from);
         let import_id = app
             .queue_manual_import(
                 &actor,
-                input.title_id,
+                title_id,
                 client_id.clone(),
                 client_type.clone(),
                 download_client_item_id.clone(),
@@ -198,7 +201,7 @@ impl DownloadMutations {
                         .into_iter()
                         .map(|file| scryer_application::ManualImportFileMapping {
                             file_path: file.file_path,
-                            episode_id: file.episode_id,
+                            episode_id: file.episode_id.to_string(),
                             quality: file.quality,
                         })
                         .collect()
@@ -235,17 +238,18 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let source_path = input.path.clone();
+        let title_id = input.title_id.to_string();
         let import_id = app
             .queue_path_manual_import(
                 &actor,
-                input.title_id,
+                title_id,
                 source_path.clone(),
                 input
                     .files
                     .into_iter()
                     .map(|file| scryer_application::ManualImportFileMapping {
                         file_path: file.file_path,
-                        episode_id: file.episode_id,
+                        episode_id: file.episode_id.to_string(),
                         quality: file.quality,
                     })
                     .collect(),
@@ -277,20 +281,20 @@ impl DownloadMutations {
         let result = scryer_application::retry_failed_import(
             &app,
             &actor,
-            &input.import_id,
+            input.import_id.as_ref(),
             input.password.as_deref(),
         )
         .await
         .map_err(to_gql_error)?;
 
         Ok(ImportResultPayload {
-            import_id: result.import_id,
+            import_id: result.import_id.into(),
             decision: ImportDecisionValue::from_domain(result.decision),
             skip_reason: result.skip_reason.map(ImportSkipReasonValue::from_domain),
-            title_id: result.title_id,
+            title_id: result.title_id.map(Into::into),
             source_path: result.source_path,
             dest_path: result.dest_path,
-            file_size_bytes: result.file_size_bytes.map(|v| v.to_string()),
+            file_size_bytes: result.file_size_bytes.map(Long::from),
             link_type: result.link_type.map(|s| s.as_str().to_string()),
             error_message: result.error_message,
         })
@@ -304,11 +308,11 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let client_type = input.client_type.clone();
-        let client_id = input.client_id.clone();
+        let client_id = input.client_id.clone().map(String::from);
         let download_client_item_id = input.download_client_item_id.clone();
         app.ignore_tracked_download(
             &actor,
-            input.client_id.as_deref(),
+            client_id.as_deref(),
             &input.client_type,
             &input.download_client_item_id,
         )
@@ -343,11 +347,11 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let client_type = input.client_type.clone();
-        let client_id = input.client_id.clone();
+        let client_id = input.client_id.clone().map(String::from);
         let download_client_item_id = input.download_client_item_id.clone();
         app.mark_tracked_download_failed(
             &actor,
-            input.client_id.as_deref(),
+            client_id.as_deref(),
             &input.client_type,
             &input.download_client_item_id,
             input.skip_reacquire.unwrap_or(false),
@@ -389,6 +393,8 @@ impl DownloadMutations {
             title_id,
             scope,
         } = input;
+        let client_id = client_id.map(String::from);
+        let title_id = title_id.to_string();
         app.assign_tracked_download_title(
             &actor,
             client_id.as_deref(),
@@ -428,14 +434,10 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let download_client_item_id = input.download_client_item_id.clone();
-        let client_id = input.client_id.clone();
-        app.pause_download_queue_item(
-            &actor,
-            input.client_id.as_deref(),
-            &input.download_client_item_id,
-        )
-        .await
-        .map_err(to_gql_error)?;
+        let client_id = input.client_id.clone().map(String::from);
+        app.pause_download_queue_item(&actor, client_id.as_deref(), &input.download_client_item_id)
+            .await
+            .map_err(to_gql_error)?;
         let queue_item = queue_item_payload_for_action(
             &app,
             &actor,
@@ -465,10 +467,10 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let download_client_item_id = input.download_client_item_id.clone();
-        let client_id = input.client_id.clone();
+        let client_id = input.client_id.clone().map(String::from);
         app.resume_download_queue_item(
             &actor,
-            input.client_id.as_deref(),
+            client_id.as_deref(),
             &input.download_client_item_id,
         )
         .await
@@ -502,7 +504,7 @@ impl DownloadMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let client_type = input.client_type.clone();
-        let client_id = input.client_id.clone();
+        let client_id = input.client_id.clone().map(String::from);
         let download_client_item_id = input.download_client_item_id.clone();
         let existing_queue_item = queue_item_payload_for_action(
             &app,
@@ -515,7 +517,7 @@ impl DownloadMutations {
         let command = app
             .delete_download_queue_item(
                 &actor,
-                input.client_id.as_deref(),
+                client_id.as_deref(),
                 &input.client_type,
                 &input.download_client_item_id,
                 input.is_history,

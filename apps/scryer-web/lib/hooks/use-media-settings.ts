@@ -198,7 +198,7 @@ export function useMediaSettings({
   const [globalQualityProfileId, setGlobalQualityProfileId] =
     React.useState("");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("Balanced");
+    React.useState<ScoringPersonaId>("balanced");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] =
     React.useState<Record<ViewCategoryId, string>>({
       movie: QUALITY_PROFILE_INHERIT_VALUE,
@@ -516,9 +516,9 @@ export function useMediaSettings({
         current === resolvedGlobalId ? current : resolvedGlobalId,
       );
       setGlobalScoringPersona((current) =>
-        current === (qualityProfileSettings?.globalScoringPersona ?? "Balanced")
+        current === (qualityProfileSettings?.globalScoringPersona ?? "balanced")
           ? current
-          : (qualityProfileSettings?.globalScoringPersona ?? "Balanced"),
+          : (qualityProfileSettings?.globalScoringPersona ?? "balanced"),
       );
 
       setQualityProfiles((currentProfiles) =>

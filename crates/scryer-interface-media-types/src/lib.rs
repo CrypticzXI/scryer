@@ -1,9 +1,101 @@
-use async_graphql::{Enum, InputObject, Json, MaybeUndefined, OneofObject, SimpleObject};
+use async_graphql::{
+    Enum, ID, InputObject, InputValueError, InputValueResult, Json, MaybeUndefined, OneofObject,
+    Scalar, ScalarType, SimpleObject, Value,
+};
+use chrono::{DateTime, NaiveDate, Utc};
 use scryer_domain::{
-    AppPermission, DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode,
-    ImportSkipReason, ImportStatus, ImportType, LibraryPermission, MediaFacet, MediaRequestStatus,
+    AppPermission, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, DomainEventType,
+    DownloadQueueState, ImportDecision, ImportErrorCode, ImportSkipReason, ImportStatus,
+    ImportType, LibraryPermission, MediaFacet, MediaRequestStatus, TitleHistoryEventType,
     TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
 };
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Long(pub i64);
+
+impl Long {
+    pub fn from_u64_saturating(value: u64) -> Self {
+        Self(i64::try_from(value).unwrap_or(i64::MAX))
+    }
+}
+
+impl From<i64> for Long {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Long> for i64 {
+    fn from(value: Long) -> Self {
+        value.0
+    }
+}
+
+#[Scalar(name = "Long")]
+impl ScalarType for Long {
+    fn parse(value: Value) -> InputValueResult<Self> {
+        match value {
+            Value::Number(number) => number
+                .as_i64()
+                .map(Self)
+                .ok_or_else(|| InputValueError::custom("Long must be a signed 64-bit integer")),
+            other => Err(InputValueError::expected_type(other)),
+        }
+    }
+
+    fn is_valid(value: &Value) -> bool {
+        matches!(value, Value::Number(number) if number.as_i64().is_some())
+    }
+
+    fn to_value(&self) -> Value {
+        Value::Number(self.0.into())
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Date(pub NaiveDate);
+
+impl Date {
+    pub fn parse_iso(value: &str) -> Result<Self, chrono::ParseError> {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d").map(Self)
+    }
+
+    pub fn to_iso_string(self) -> String {
+        self.0.format("%Y-%m-%d").to_string()
+    }
+}
+
+impl From<NaiveDate> for Date {
+    fn from(value: NaiveDate) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Date> for NaiveDate {
+    fn from(value: Date) -> Self {
+        value.0
+    }
+}
+
+#[Scalar(name = "Date")]
+impl ScalarType for Date {
+    fn parse(value: Value) -> InputValueResult<Self> {
+        match value {
+            Value::String(value) => {
+                Self::parse_iso(&value).map_err(|error| InputValueError::custom(error.to_string()))
+            }
+            other => Err(InputValueError::expected_type(other)),
+        }
+    }
+
+    fn is_valid(value: &Value) -> bool {
+        matches!(value, Value::String(value) if Self::parse_iso(value).is_ok())
+    }
+
+    fn to_value(&self) -> Value {
+        Value::String(self.to_iso_string())
+    }
+}
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "lowercase")]
@@ -202,7 +294,7 @@ impl ContentScopeValue {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "PascalCase")]
+#[graphql(rename_items = "lowercase")]
 pub enum ScoringPersonaValue {
     Balanced,
     Audiophile,
@@ -939,14 +1031,14 @@ impl ExternalAccountStatusValue {
 
 #[derive(InputObject)]
 pub struct LoginWithPlexInput {
-    pub connection_id: String,
+    pub connection_id: ID,
     pub plex_auth_token: String,
     pub persist_session: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct LoginWithJellyfinInput {
-    pub connection_id: String,
+    pub connection_id: ID,
     pub username: String,
     pub password: String,
     pub totp_code: Option<String>,
@@ -955,13 +1047,13 @@ pub struct LoginWithJellyfinInput {
 
 #[derive(InputObject)]
 pub struct WebauthnCompleteInput {
-    pub challenge_id: String,
+    pub challenge_id: ID,
     pub response_json: String,
 }
 
 #[derive(InputObject)]
 pub struct WebauthnRegisterCompleteInput {
-    pub challenge_id: String,
+    pub challenge_id: ID,
     pub response_json: String,
     pub friendly_name: Option<String>,
 }
@@ -970,14 +1062,14 @@ pub struct WebauthnRegisterCompleteInput {
 pub struct LoginPayload {
     pub token: String,
     pub user: UserPayload,
-    pub expires_at: String,
-    pub mfa_verified_until: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub mfa_verified_until: Option<DateTime<Utc>>,
     pub mfa_enrollment_required: bool,
 }
 
 #[derive(InputObject)]
 pub struct TotpEnrollmentCompleteInput {
-    pub challenge_id: String,
+    pub challenge_id: ID,
     pub code: String,
 }
 
@@ -989,17 +1081,17 @@ pub struct TotpVerifyInput {
 #[derive(SimpleObject, Clone)]
 pub struct TotpStatusPayload {
     pub enabled: bool,
-    pub created_at: Option<String>,
-    pub last_used_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
     pub recovery_codes_remaining: i32,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct TotpEnrollmentStartPayload {
-    pub challenge_id: String,
+    pub challenge_id: ID,
     pub otpauth_url: String,
     pub secret_base32: String,
-    pub expires_at: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1017,25 +1109,37 @@ pub struct LoginMfaEnrollmentCompletePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct WebauthnChallengePayload {
-    pub challenge_id: String,
+    pub challenge_id: ID,
     pub options_json: String,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct PasskeySummaryPayload {
-    pub id: String,
+    pub id: ID,
     pub friendly_name: Option<String>,
-    pub created_at: String,
-    pub last_used_at: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteMyPasskeyPayload {
+    pub id: ID,
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct OAuthConnectedAppPayload {
-    pub grant_id: String,
+    pub grant_id: ID,
     pub client_id: String,
     pub client_name: String,
-    pub authorized_at: String,
-    pub last_used_at: Option<String>,
+    pub authorized_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct RevokeMyOauthAppPayload {
+    pub grant_id: ID,
+    pub revoked: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1046,16 +1150,16 @@ pub struct ExternalIdPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRequestRequesterPayload {
-    pub user_id: String,
+    pub user_id: ID,
     pub username: String,
     pub avatar_url: Option<String>,
-    pub requested_at: String,
+    pub requested_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRequestPayload {
-    pub id: String,
-    pub library_id: String,
+    pub id: ID,
+    pub library_id: ID,
     pub facet: MediaFacetValue,
     pub status: MediaRequestStatusValue,
     pub identity_fingerprint: String,
@@ -1068,19 +1172,46 @@ pub struct MediaRequestPayload {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
-    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_id: Option<ID>,
     pub requested_quality_profile_name: Option<String>,
     pub requested_monitor_type: Option<String>,
-    pub resolved_by_user_id: Option<String>,
-    pub resolved_at: Option<String>,
-    pub created_title_id: Option<String>,
-    pub approved_quality_profile_id: Option<String>,
+    pub resolved_by_user_id: Option<ID>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_title_id: Option<ID>,
+    pub approved_quality_profile_id: Option<ID>,
     pub approved_quality_profile_name: Option<String>,
     pub external_ids: Vec<ExternalIdPayload>,
     pub requesters: Vec<MediaRequestRequesterPayload>,
-    pub created_by_user_id: String,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_by_user_id: ID,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaRequestChangedPayload {
+    pub sequence: Long,
+    pub event_id: ID,
+    pub occurred_at: DateTime<Utc>,
+    pub event_type: DomainEventTypeValue,
+    pub request_id: ID,
+    pub library_id: ID,
+    pub facet: MediaFacetValue,
+    pub title_name: String,
+    pub created_title_id: Option<ID>,
+    pub requested_quality_profile_id: Option<ID>,
+    pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
+    pub approved_quality_profile_id: Option<ID>,
+    pub approved_quality_profile_name: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ProviderCatalogFamilyValue {
+    Subtitle,
+    Notification,
+    Indexer,
+    DownloadClient,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1141,18 +1272,18 @@ pub struct SmgScryerUpdateNoticePayload {
     pub latest_version: String,
     pub latest_tag: String,
     pub release_url: Option<String>,
-    pub published_at: Option<String>,
-    pub checked_at: String,
+    pub published_at: Option<DateTime<Utc>>,
+    pub checked_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct IndexerQueryStatsPayload {
-    pub indexer_id: String,
+    pub indexer_id: ID,
     pub indexer_name: String,
     pub queries_last_24h: i32,
     pub successful_last_24h: i32,
     pub failed_last_24h: i32,
-    pub last_query_at: Option<String>,
+    pub last_query_at: Option<DateTime<Utc>>,
     pub api_current: Option<i32>,
     pub api_max: Option<i32>,
     pub grab_current: Option<i32>,
@@ -1161,7 +1292,7 @@ pub struct IndexerQueryStatsPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct UserPayload {
-    pub id: String,
+    pub id: ID,
     pub username: String,
     pub has_password: bool,
     pub has_mfa: bool,
@@ -1173,67 +1304,67 @@ pub struct UserPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct LinkedAccountPayload {
-    pub id: String,
-    pub user_id: String,
+    pub id: ID,
+    pub user_id: ID,
     pub provider: ExternalAccountProviderValue,
-    pub connection_id: String,
+    pub connection_id: ID,
     pub external_user_id: Option<String>,
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub status: ExternalAccountStatusValue,
-    pub verified_at: Option<String>,
-    pub last_login_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct UserLibraryPermissionGrantPayload {
-    pub library_id: String,
+    pub library_id: ID,
     pub permissions: Vec<LibraryPermissionValue>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct EventPayload {
-    pub id: String,
+    pub id: ID,
     pub event_type: String,
     pub actor_kind: String,
-    pub actor_user_id: Option<String>,
+    pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub message: String,
-    pub occurred_at: String,
+    pub occurred_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ActivityEventPayload {
-    pub id: String,
+    pub id: ID,
     pub kind: ActivityKindValue,
     pub severity: ActivitySeverityValue,
     pub channels: Vec<ActivityChannelValue>,
     pub actor_kind: String,
-    pub actor_user_id: Option<String>,
+    pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub facet: Option<MediaFacetValue>,
     pub message: String,
-    pub occurred_at: String,
+    pub occurred_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct DomainEventEnvelopePayload {
-    pub sequence: i64,
-    pub event_id: String,
-    pub occurred_at: String,
+    pub sequence: Long,
+    pub event_id: ID,
+    pub occurred_at: DateTime<Utc>,
     pub actor_kind: String,
-    pub actor_user_id: Option<String>,
+    pub actor_user_id: Option<ID>,
     pub actor_display_name: String,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub facet: Option<MediaFacetValue>,
     pub event_type: DomainEventTypeValue,
     pub stream_kind: String,
-    pub stream_id: Option<String>,
+    pub stream_id: Option<ID>,
     pub payload_json: Json<serde_json::Value>,
 }
 
@@ -1335,13 +1466,13 @@ pub struct LibraryScanPhaseProgressPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct LibraryScanProgressPayload {
-    pub session_id: String,
+    pub session_id: ID,
     pub facet: MediaFacetValue,
-    pub library_id: Option<String>,
+    pub library_id: Option<ID>,
     pub mode: LibraryScanModeValue,
     pub status: LibraryScanStatusValue,
-    pub started_at: String,
-    pub updated_at: String,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub found_titles: i32,
     pub title_match_total_known: bool,
     pub title_match_progress: LibraryScanPhaseProgressPayload,
@@ -1362,7 +1493,7 @@ pub struct JobScheduleInfoPayload {
     pub description: String,
     pub interval_seconds: Option<i32>,
     pub initial_delay_seconds: Option<i32>,
-    pub next_run_at: Option<String>,
+    pub next_run_at: Option<DateTime<Utc>>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1379,15 +1510,15 @@ pub struct JobDefinitionPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct JobRunPayload {
-    pub id: String,
+    pub id: ID,
     pub job_key: JobKeyValue,
     pub display_name: String,
     pub category: JobCategoryValue,
     pub section: JobSectionValue,
     pub status: JobRunStatusValue,
     pub trigger_source: JobTriggerSourceValue,
-    pub started_at: String,
-    pub completed_at: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
     pub summary_json: Option<String>,
     pub summary_text: Option<String>,
     pub error_text: Option<String>,
@@ -1397,12 +1528,12 @@ pub struct JobRunPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct TitleReleaseBlocklistEntryPayload {
-    pub id: String,
+    pub id: ID,
     pub source_hint: Option<String>,
     pub source_title: Option<String>,
     pub error_message: Option<String>,
-    pub attempted_at: String,
-    pub episode_ids: Vec<String>,
+    pub attempted_at: DateTime<Utc>,
+    pub episode_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1412,8 +1543,8 @@ pub struct IndexerSearchResultPayload {
     pub link: Option<String>,
     pub download_url: Option<String>,
     pub source_kind: Option<DownloadSourceKindValue>,
-    pub size_bytes: Option<i64>,
-    pub published_at: Option<String>,
+    pub size_bytes: Option<Long>,
+    pub published_at: Option<DateTime<Utc>>,
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
     pub parsed_release: Option<ParsedReleasePayload>,
@@ -1434,10 +1565,10 @@ pub struct IndexerSearchResultPayload {
 #[derive(SimpleObject, Clone)]
 pub struct QueueDownloadScopePayload {
     pub kind: String,
-    pub episode_id: Option<String>,
-    pub episode_ids: Vec<String>,
-    pub series_movie_link_id: Option<String>,
-    pub collection_id: Option<String>,
+    pub episode_id: Option<ID>,
+    pub episode_ids: Vec<ID>,
+    pub series_movie_link_id: Option<ID>,
+    pub collection_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1496,36 +1627,66 @@ pub struct QualityProfileDecisionPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct ProviderConfigValuePayload {
+    pub key: String,
+    pub label: Option<String>,
+    pub field_type: Option<PluginConfigFieldTypeValue>,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub value_source: Option<PluginConfigValueSourceValue>,
+    pub role: Option<PluginConfigFieldRoleValue>,
+    pub host_binding: Option<String>,
+    pub options: Vec<PluginConfigFieldOptionPayload>,
+    pub help_text: Option<String>,
+    pub string_value: Option<String>,
+    pub bool_value: Option<bool>,
+    pub int_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub secret_stored: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct ProviderConfigValueInput {
+    pub key: String,
+    pub string_value: Option<String>,
+    pub bool_value: Option<bool>,
+    pub int_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub secret_value: Option<String>,
+    pub clear_secret: Option<bool>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct IndexerConfigPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub provider_type: String,
     pub base_url: String,
     pub has_api_key: bool,
     pub is_managed: bool,
-    pub managed_parent_config_id: Option<String>,
+    pub managed_parent_config_id: Option<ID>,
     pub supports_managed_children_sync: bool,
     pub stored_secret_keys: Vec<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
-    pub disabled_until: Option<String>,
+    pub disabled_until: Option<DateTime<Utc>>,
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub last_health_status: Option<String>,
-    pub last_error_at: Option<String>,
-    pub last_query_at: Option<String>,
-    pub config_json: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub last_error_at: Option<DateTime<Utc>>,
+    pub last_query_at: Option<DateTime<Utc>>,
+    pub config: Vec<ProviderConfigValuePayload>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct IndexerConfigSyncPayload {
-    pub parent_config_id: String,
-    pub created_ids: Vec<String>,
-    pub updated_ids: Vec<String>,
-    pub deleted_ids: Vec<String>,
+    pub parent_config_id: ID,
+    pub created_ids: Vec<ID>,
+    pub updated_ids: Vec<ID>,
+    pub deleted_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1536,7 +1697,7 @@ pub struct RootFolderPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct LibraryRootPayload {
-    pub id: String,
+    pub id: ID,
     pub path: String,
     pub is_default: bool,
 }
@@ -1545,11 +1706,11 @@ pub struct LibraryRootPayload {
 pub struct LibrarySettingsPayload {
     pub required_audio_languages_override: Option<Vec<String>>,
     pub required_audio_languages: Vec<String>,
-    pub quality_profile_id_override: Option<String>,
-    pub quality_profile_id: String,
-    pub request_quality_profile_ids_override: Option<Vec<String>>,
-    pub request_quality_profile_ids: Vec<String>,
-    pub request_quality_profile_default_id: String,
+    pub quality_profile_id_override: Option<ID>,
+    pub quality_profile_id: ID,
+    pub request_quality_profile_ids_override: Option<Vec<ID>>,
+    pub request_quality_profile_ids: Vec<ID>,
+    pub request_quality_profile_default_id: ID,
     pub scoring_persona_override: Option<ScoringPersonaValue>,
     pub scoring_persona: ScoringPersonaValue,
     pub filler_policy_override: Option<String>,
@@ -1574,22 +1735,23 @@ pub struct LibrarySettingsPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DownloadClientConfigPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub client_type: String,
     pub base_url: Option<String>,
-    pub config_json: String,
+    pub config: Vec<ProviderConfigValuePayload>,
+    pub stored_secret_keys: Vec<String>,
     pub is_enabled: bool,
     pub status: String,
     pub last_error: Option<String>,
-    pub last_seen_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct SubtitleProviderConfigPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub provider_type: String,
     pub has_config: bool,
@@ -1598,35 +1760,35 @@ pub struct SubtitleProviderConfigPayload {
     pub is_enabled: bool,
     pub last_health_status: Option<String>,
     pub last_error: Option<String>,
-    pub last_error_at: Option<String>,
-    pub disabled_until: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub last_error_at: Option<DateTime<Utc>>,
+    pub disabled_until: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct DownloadClientFilterOptionPayload {
-    pub client_id: String,
+    pub client_id: ID,
     pub client_name: String,
     pub client_type: String,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ImportResultPayload {
-    pub import_id: String,
+    pub import_id: ID,
     pub decision: ImportDecisionValue,
     pub skip_reason: Option<ImportSkipReasonValue>,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub source_path: String,
     pub dest_path: Option<String>,
-    pub file_size_bytes: Option<String>,
+    pub file_size_bytes: Option<Long>,
     pub link_type: Option<String>,
     pub error_message: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ImportRecordPayload {
-    pub id: String,
+    pub id: ID,
     pub source_system: String,
     pub source_ref: String,
     pub source_title: Option<String>,
@@ -1636,30 +1798,30 @@ pub struct ImportRecordPayload {
     pub error_message: Option<String>,
     pub decision: Option<ImportDecisionValue>,
     pub skip_reason: Option<ImportSkipReasonValue>,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub source_path: Option<String>,
     pub dest_path: Option<String>,
-    pub started_at: Option<String>,
-    pub finished_at: Option<String>,
-    pub created_at: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(InputObject)]
 pub struct RetryImportInput {
-    pub import_id: String,
+    pub import_id: ID,
     pub password: Option<String>,
 }
 
 #[derive(InputObject)]
 pub struct IgnoreTrackedDownloadInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_type: String,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct MarkTrackedDownloadFailedInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub skip_reacquire: Option<bool>,
@@ -1667,19 +1829,19 @@ pub struct MarkTrackedDownloadFailedInput {
 
 #[derive(OneofObject, Clone)]
 pub enum QueueDownloadScopeInput {
-    Episode(String),
-    EpisodeSet(Vec<String>),
-    SeriesMovie(String),
-    Collection(String),
+    Episode(ID),
+    EpisodeSet(Vec<ID>),
+    SeriesMovie(ID),
+    Collection(ID),
     Title(bool),
 }
 
 #[derive(InputObject)]
 pub struct AssignTrackedDownloadTitleInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_type: String,
     pub download_client_item_id: String,
-    pub title_id: String,
+    pub title_id: ID,
     pub scope: QueueDownloadScopeInput,
 }
 
@@ -1689,6 +1851,12 @@ pub enum AddTitleHydrationStateValue {
     Pending,
     Complete,
     NotRequired,
+}
+
+#[derive(InputObject)]
+pub struct ScanLibraryInput {
+    pub library_id: ID,
+    pub import_warmup_session_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1732,12 +1900,12 @@ pub struct PendingImportSearchAttemptPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct PendingImportItemPayload {
-    pub id: String,
-    pub library_id: String,
+    pub id: ID,
+    pub library_id: ID,
     pub library_slug: Option<String>,
     pub facet: MediaFacetValue,
     pub status: PendingImportStatusValue,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub title_name: Option<String>,
     pub title_slug: Option<String>,
     pub display_name: String,
@@ -1757,7 +1925,7 @@ pub struct PendingImportConnectionPayload {
 
 #[derive(InputObject)]
 pub struct ResolvePendingImportInput {
-    pub pending_import_id: String,
+    pub pending_import_id: ID,
     pub tvdb_id: String,
 }
 
@@ -1765,39 +1933,29 @@ pub struct ResolvePendingImportInput {
 pub struct PendingImportBindingFilePreviewPayload {
     pub file_path: String,
     pub file_name: String,
-    pub size_bytes: String,
+    pub size_bytes: Long,
     pub parsed_season: Option<i32>,
     pub parsed_episodes: Vec<i32>,
     pub parsed_absolute_numbers: Vec<i32>,
-    pub suggested_episode_ids: Vec<String>,
+    pub suggested_episode_ids: Vec<ID>,
 }
 
 #[derive(InputObject)]
 pub struct BindPendingImportInput {
-    pub pending_import_id: String,
-    pub collection_id: Option<String>,
-    pub episode_ids: Vec<String>,
-}
-
-#[derive(InputObject)]
-pub struct IgnorePendingImportInput {
-    pub pending_import_id: String,
-}
-
-#[derive(InputObject)]
-pub struct CancelLibraryScanInput {
-    pub session_id: String,
+    pub pending_import_id: ID,
+    pub collection_id: Option<ID>,
+    pub episode_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct IgnorePendingImportPayload {
-    pub id: String,
+    pub id: ID,
     pub status: PendingImportStatusValue,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct CancelLibraryScanPayload {
-    pub session_id: String,
+    pub session_id: ID,
     pub accepted: bool,
 }
 
@@ -1818,7 +1976,7 @@ pub struct DeletePreviewPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DeleteTitlePreviewResultPayload {
-    pub title_id: String,
+    pub title_id: ID,
     pub preview: Option<DeletePreviewPayload>,
     pub error: Option<String>,
 }
@@ -1833,28 +1991,28 @@ pub struct DeleteTitlesPreviewPayload {
 #[derive(SimpleObject, Clone)]
 pub struct DeleteTitlesPayload {
     pub job_run: JobRunPayload,
-    pub accepted_title_ids: Vec<String>,
+    pub accepted_title_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRenamePlanItemPayload {
-    pub collection_id: Option<String>,
-    pub media_file_id: Option<String>,
-    pub series_movie_link_ids: Vec<String>,
+    pub collection_id: Option<ID>,
+    pub media_file_id: Option<ID>,
+    pub series_movie_link_ids: Vec<ID>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub normalized_filename: Option<String>,
     pub collision: bool,
     pub reason_code: String,
     pub write_action: String,
-    pub source_size_bytes: Option<String>,
+    pub source_size_bytes: Option<Long>,
     pub source_mtime_unix_ms: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRenamePlanPayload {
     pub facet: MediaFacetValue,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub template: String,
     pub collision_policy: String,
     pub missing_metadata_policy: String,
@@ -1869,9 +2027,9 @@ pub struct MediaRenamePlanPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaRenameApplyItemPayload {
-    pub collection_id: Option<String>,
-    pub media_file_id: Option<String>,
-    pub series_movie_link_ids: Vec<String>,
+    pub collection_id: Option<ID>,
+    pub media_file_id: Option<ID>,
+    pub series_movie_link_ids: Vec<ID>,
     pub current_path: String,
     pub proposed_path: Option<String>,
     pub final_path: Option<String>,
@@ -1951,7 +2109,7 @@ pub struct AutoBackupSettingsPayload {
     pub daily_time_local: String,
     pub auto_backup_key_present: bool,
     pub auto_backup_disabled_missing_key_notice: bool,
-    pub next_run_at: Option<String>,
+    pub next_run_at: Option<DateTime<Utc>>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1980,7 +2138,7 @@ pub struct AuthRuntimeStatePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DelayProfilePayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub usenet_delay_minutes: i32,
     pub torrent_delay_minutes: i32,
@@ -1995,7 +2153,7 @@ pub struct DelayProfilePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DelayProfileDeletionPayload {
-    pub id: String,
+    pub id: ID,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2030,7 +2188,7 @@ pub struct QualityProfileCriteriaPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct QualityProfilePayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub criteria: QualityProfileCriteriaPayload,
 }
@@ -2038,8 +2196,8 @@ pub struct QualityProfilePayload {
 #[derive(SimpleObject, Clone)]
 pub struct QualityProfileSelectionPayload {
     pub scope: ContentScopeValue,
-    pub override_profile_id: Option<String>,
-    pub effective_profile_id: String,
+    pub override_profile_id: Option<ID>,
+    pub effective_profile_id: ID,
     pub inherits_global: bool,
 }
 
@@ -2054,7 +2212,7 @@ pub struct FacetScoringPersonaSelectionPayload {
 #[derive(SimpleObject, Clone)]
 pub struct QualityProfileSettingsPayload {
     pub profiles: Vec<QualityProfilePayload>,
-    pub global_profile_id: String,
+    pub global_profile_id: ID,
     pub global_scoring_persona: ScoringPersonaValue,
     pub category_selections: Vec<QualityProfileSelectionPayload>,
     pub category_persona_selections: Vec<FacetScoringPersonaSelectionPayload>,
@@ -2062,7 +2220,7 @@ pub struct QualityProfileSettingsPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DownloadClientRoutingEntryPayload {
-    pub client_id: String,
+    pub client_id: ID,
     pub enabled: bool,
     pub category: Option<String>,
     pub recent_queue_priority: Option<String>,
@@ -2073,7 +2231,7 @@ pub struct DownloadClientRoutingEntryPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct IndexerRoutingEntryPayload {
-    pub indexer_id: String,
+    pub indexer_id: ID,
     pub enabled: bool,
     pub categories: Vec<String>,
     pub priority: i32,
@@ -2121,7 +2279,7 @@ pub struct ExternalIdInput {
 
 #[derive(InputObject, Clone)]
 pub struct TitleOptionsInput {
-    pub quality_profile_id: Option<String>,
+    pub quality_profile_id: Option<ID>,
     pub root_folder_path: Option<String>,
     pub monitor_type: Option<MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
@@ -2135,7 +2293,7 @@ pub struct TitleOptionsInput {
 pub struct AddTitleInput {
     pub name: String,
     pub facet: MediaFacetValue,
-    pub library_id: Option<String>,
+    pub library_id: Option<ID>,
     pub monitored: bool,
     pub tags: Vec<String>,
     pub options: Option<TitleOptionsInput>,
@@ -2157,7 +2315,7 @@ pub struct AddTitleInput {
 
 #[derive(InputObject, Clone)]
 pub struct SubmitMediaRequestInput {
-    pub library_id: String,
+    pub library_id: ID,
     pub facet: MediaFacetValue,
     pub title: String,
     pub external_ids: Vec<ExternalIdInput>,
@@ -2168,26 +2326,21 @@ pub struct SubmitMediaRequestInput {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
-    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_id: Option<ID>,
     pub requested_monitor_type: Option<MonitorTypeValue>,
 }
 
 #[derive(InputObject, Clone)]
-pub struct MediaRequestActionInput {
-    pub request_id: String,
-}
-
-#[derive(InputObject, Clone)]
 pub struct ApproveMediaRequestInput {
-    pub request_id: String,
-    pub quality_profile_id: String,
+    pub request_id: ID,
+    pub quality_profile_id: ID,
     pub monitor_type: Option<MonitorTypeValue>,
 }
 
 #[derive(InputObject, Clone)]
 pub struct UpdateMediaRequestInput {
-    pub request_id: String,
-    pub requested_quality_profile_id: String,
+    pub request_id: ID,
+    pub requested_quality_profile_id: ID,
     pub requested_monitor_type: Option<MonitorTypeValue>,
 }
 
@@ -2199,15 +2352,15 @@ pub struct MediaRequestActionPayload {
 #[derive(SimpleObject, Clone)]
 pub struct ApproveMediaRequestPayload {
     pub accepted: bool,
-    pub title_id: String,
+    pub title_id: ID,
     pub wanted_search: Option<WantedSearchPayload>,
     pub search_error: Option<String>,
 }
 
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
-    pub title_id: String,
-    pub series_movie_link_id: Option<String>,
+    pub title_id: ID,
+    pub series_movie_link_id: Option<ID>,
     pub season: Option<String>,
     pub episode: Option<String>,
     pub limit: Option<i32>,
@@ -2215,7 +2368,7 @@ pub struct SearchReleasesInput {
 
 #[derive(InputObject)]
 pub struct QueueDownloadInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub candidate_token: String,
     pub scope: QueueDownloadScopeInput,
     pub replace_in_progress: Option<bool>,
@@ -2224,26 +2377,26 @@ pub struct QueueDownloadInput {
 
 #[derive(InputObject)]
 pub struct QueueBestReleaseInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub scope: QueueDownloadScopeInput,
     pub replace_in_progress: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct TriggerWantedSearchInput {
-    pub wanted_item_id: String,
+    pub wanted_item_id: ID,
     pub replace_in_progress: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct TriggerTitleWantedSearchInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub replace_in_progress: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct TriggerSeasonWantedSearchInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub season_number: i32,
 }
 
@@ -2256,9 +2409,9 @@ pub enum QueueDownloadResultStatusValue {
 
 #[derive(SimpleObject, Clone)]
 pub struct QueueDownloadConflictPayload {
-    pub title_id: String,
+    pub title_id: ID,
     pub title_name: String,
-    pub download_client_id: Option<String>,
+    pub download_client_id: Option<ID>,
     pub download_client_type: String,
     pub download_client_item_id: String,
     pub source_title: Option<String>,
@@ -2271,8 +2424,8 @@ pub struct QueueDownloadConflictPayload {
 #[derive(SimpleObject, Clone)]
 pub struct QueueDownloadPayload {
     pub status: QueueDownloadResultStatusValue,
-    pub job_id: Option<String>,
-    pub title_id: String,
+    pub job_id: Option<ID>,
+    pub title_id: ID,
     pub title_name: String,
     pub source_title: Option<String>,
     pub source_kind: Option<DownloadSourceKindValue>,
@@ -2301,22 +2454,29 @@ pub enum DownloadQueueActionKindValue {
 
 #[derive(InputObject)]
 pub struct QueueManualImportInput {
-    pub title_id: Option<String>,
-    pub client_id: Option<String>,
+    pub title_id: Option<ID>,
+    pub client_id: Option<ID>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub files: Option<Vec<ManualImportFileMappingInput>>,
 }
 
 #[derive(InputObject)]
+pub struct PreviewManualImportInput {
+    pub client_id: Option<ID>,
+    pub download_client_item_id: String,
+    pub title_id: ID,
+}
+
+#[derive(InputObject)]
 pub struct PreviewManualImportPathInput {
     pub path: String,
-    pub title_id: String,
+    pub title_id: ID,
 }
 
 #[derive(InputObject)]
 pub struct QueuePathManualImportInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub path: String,
     pub files: Vec<ManualImportFileMappingInput>,
 }
@@ -2324,14 +2484,14 @@ pub struct QueuePathManualImportInput {
 #[derive(InputObject, Clone)]
 pub struct MediaRenamePreviewInput {
     pub facet: MediaFacetValue,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub dry_run: Option<bool>,
 }
 
 #[derive(InputObject, Clone)]
 pub struct MediaRenameApplyInput {
     pub facet: MediaFacetValue,
-    pub title_id: String,
+    pub title_id: ID,
     pub fingerprint: String,
     pub idempotency_key: Option<String>,
 }
@@ -2352,7 +2512,7 @@ pub struct SubtitleLanguagePreferenceInput {
 
 #[derive(InputObject, Clone)]
 pub struct DelayProfileInput {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub usenet_delay_minutes: i32,
     pub torrent_delay_minutes: i32,
@@ -2432,7 +2592,7 @@ pub struct UpdateSecuritySettingsInput {
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalAuthRuntimeConnectionPayload {
-    pub id: String,
+    pub id: ID,
     pub provider: ExternalAccountProviderValue,
     pub display_name: String,
     pub login_enabled: bool,
@@ -2448,8 +2608,8 @@ pub struct ExternalAuthRuntimeSettingsPayload {
 
 #[derive(InputObject, Clone)]
 pub struct CreateExternalAccountInviteInput {
-    pub user_id: String,
-    pub connection_id: String,
+    pub user_id: ID,
+    pub connection_id: ID,
     pub provider: ExternalAccountProviderValue,
     pub provider_user_identifier: String,
     pub provider_user_id: Option<String>,
@@ -2469,19 +2629,19 @@ pub struct MediaServerPathMappingInput {
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaServerDefaultLibraryGrantPayload {
-    pub library_id: String,
+    pub library_id: ID,
     pub permissions: Vec<LibraryPermissionValue>,
 }
 
 #[derive(InputObject, Clone)]
 pub struct MediaServerDefaultLibraryGrantInput {
-    pub library_id: String,
+    pub library_id: ID,
     pub permissions: Vec<LibraryPermissionValue>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaServerConnectionPayload {
-    pub id: String,
+    pub id: ID,
     pub provider: MediaServerProviderValue,
     pub display_name: String,
     pub base_url: String,
@@ -2494,8 +2654,14 @@ pub struct MediaServerConnectionPayload {
     pub machine_id_present: bool,
     pub api_key_present: bool,
     pub path_mappings: Vec<MediaServerPathMappingPayload>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteMediaServerConnectionPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2524,7 +2690,7 @@ pub struct MediaServerUserPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct MediaServerUserGroupPayload {
-    pub connection_id: String,
+    pub connection_id: ID,
     pub connection_name: String,
     pub provider: ExternalAccountProviderValue,
     pub status: MediaServerUserGroupStatusValue,
@@ -2560,7 +2726,7 @@ pub struct CreateMediaServerConnectionInput {
 
 #[derive(InputObject, Clone)]
 pub struct UpdateMediaServerConnectionInput {
-    pub id: String,
+    pub id: ID,
     pub provider: Option<MediaServerProviderValue>,
     pub display_name: Option<String>,
     pub base_url: Option<String>,
@@ -2582,21 +2748,28 @@ pub struct UpdateMediaServerConnectionInput {
 }
 
 #[derive(InputObject, Clone)]
+pub struct TestMediaServerConnectionInput {
+    pub id: ID,
+    pub plex_auth_token: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
 pub struct LinkPlexAccountInput {
-    pub connection_id: String,
+    pub connection_id: ID,
     pub plex_auth_token: String,
 }
 
 #[derive(InputObject, Clone)]
 pub struct LinkJellyfinAccountInput {
-    pub connection_id: String,
+    pub connection_id: ID,
     pub username: String,
     pub password: String,
 }
 
-#[derive(InputObject, Clone)]
-pub struct UnlinkExternalAccountInput {
-    pub linked_account_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct UnlinkExternalAccountPayload {
+    pub linked_account_id: ID,
+    pub unlinked: bool,
 }
 
 #[derive(InputObject, Clone)]
@@ -2664,7 +2837,7 @@ pub struct QualityProfileCriteriaInput {
 
 #[derive(InputObject, Clone)]
 pub struct QualityProfileInput {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub criteria: QualityProfileCriteriaInput,
 }
@@ -2672,7 +2845,7 @@ pub struct QualityProfileInput {
 #[derive(InputObject, Clone)]
 pub struct QualityProfileSelectionInput {
     pub scope: ContentScopeValue,
-    pub profile_id: Option<String>,
+    pub profile_id: Option<ID>,
     pub inherit_global: bool,
 }
 
@@ -2686,21 +2859,16 @@ pub struct FacetScoringPersonaSelectionInput {
 #[derive(InputObject, Clone)]
 pub struct SaveQualityProfileSettingsInput {
     pub profiles: Vec<QualityProfileInput>,
-    pub global_profile_id: Option<String>,
+    pub global_profile_id: Option<ID>,
     pub global_scoring_persona: Option<ScoringPersonaValue>,
     pub category_selections: Vec<QualityProfileSelectionInput>,
     pub category_persona_selections: Vec<FacetScoringPersonaSelectionInput>,
     pub replace_existing: bool,
 }
 
-#[derive(InputObject)]
-pub struct DeleteQualityProfileInput {
-    pub profile_id: String,
-}
-
 #[derive(InputObject, Clone)]
 pub struct DownloadClientRoutingEntryInput {
-    pub client_id: String,
+    pub client_id: ID,
     pub enabled: bool,
     pub category: Option<String>,
     pub recent_queue_priority: Option<String>,
@@ -2717,7 +2885,7 @@ pub struct UpdateDownloadClientRoutingInput {
 
 #[derive(InputObject, Clone)]
 pub struct IndexerRoutingEntryInput {
-    pub indexer_id: String,
+    pub indexer_id: ID,
     pub enabled: bool,
     pub categories: Vec<String>,
     pub priority: i32,
@@ -2730,11 +2898,6 @@ pub struct UpdateIndexerRoutingInput {
 }
 
 #[derive(InputObject)]
-pub struct DeleteDelayProfileInput {
-    pub id: String,
-}
-
-#[derive(InputObject)]
 pub struct CreateIndexerConfigInput {
     pub name: String,
     pub provider_type: String,
@@ -2743,12 +2906,12 @@ pub struct CreateIndexerConfigInput {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
-    pub config_json: Option<String>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
 }
 
 #[derive(InputObject)]
 pub struct UpdateIndexerConfigInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
     pub provider_type: Option<String>,
     pub rate_limit_seconds: Option<i64>,
@@ -2756,92 +2919,107 @@ pub struct UpdateIndexerConfigInput {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
-    pub config_json: Option<String>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
 }
 
-#[derive(InputObject)]
-pub struct DeleteIndexerConfigInput {
-    pub id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteIndexerConfigPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
 pub struct CreateDownloadClientConfigInput {
     pub name: String,
     pub client_type: String,
-    pub config_json: String,
+    pub config: Vec<ProviderConfigValueInput>,
     pub is_enabled: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct UpdateDownloadClientConfigInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
     pub client_type: Option<String>,
-    pub config_json: Option<String>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
     pub is_enabled: Option<bool>,
 }
 
-#[derive(InputObject)]
-pub struct DeleteDownloadClientConfigInput {
-    pub id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteDownloadClientConfigPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
 pub struct ReorderDownloadClientConfigsInput {
-    pub ids: Vec<String>,
+    pub ids: Vec<ID>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ReorderDownloadClientConfigsPayload {
+    pub ids: Vec<ID>,
+    pub reordered: bool,
 }
 
 #[derive(InputObject)]
 pub struct TestDownloadClientConnectionInput {
     pub client_type: String,
-    pub config_json: String,
+    pub config: Vec<ProviderConfigValueInput>,
 }
 
 #[derive(InputObject)]
 pub struct CreateSubtitleProviderConfigInput {
     pub name: String,
     pub provider_type: String,
-    pub config_json: String,
+    pub config: Vec<ProviderConfigValueInput>,
     pub enabled_facets: Option<Vec<MediaFacetValue>>,
     pub is_enabled: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct UpdateSubtitleProviderConfigInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
     pub provider_type: Option<String>,
-    pub config_json: Option<String>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
     pub enabled_facets: Option<Vec<MediaFacetValue>>,
     pub is_enabled: Option<bool>,
-    pub disabled_until: MaybeUndefined<String>,
+    pub disabled_until: MaybeUndefined<DateTime<Utc>>,
 }
 
-#[derive(InputObject)]
-pub struct DeleteSubtitleProviderConfigInput {
-    pub id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteSubtitleProviderConfigPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
 pub struct TestSubtitleProviderConnectionInput {
-    pub id: Option<String>,
+    pub id: Option<ID>,
     pub provider_type: String,
-    pub config_json: String,
+    pub config: Vec<ProviderConfigValueInput>,
 }
 
 #[derive(InputObject)]
 pub struct TestIndexerConnectionInput {
     pub provider_type: String,
-    pub config_json: Option<String>,
-    pub indexer_id: Option<String>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
+    pub indexer_id: Option<ID>,
 }
 
 #[derive(InputObject)]
 pub struct DeleteTitleInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub delete_files_on_disk: Option<bool>,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteTitlePayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
@@ -2853,23 +3031,19 @@ pub struct DeleteTitlesInput {
 
 #[derive(InputObject)]
 pub struct DeleteTitlesItemInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub preview_fingerprint: Option<String>,
 }
 
-#[derive(InputObject)]
-pub struct ClearTitleReleaseBlocklistEntryInput {
-    pub id: String,
-}
-
-#[derive(InputObject)]
-pub struct DeleteTitlePreviewInput {
-    pub title_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct ClearTitleReleaseBlocklistEntryPayload {
+    pub id: async_graphql::ID,
+    pub cleared: bool,
 }
 
 #[derive(InputObject)]
 pub struct DeleteTitlesPreviewInput {
-    pub title_ids: Vec<String>,
+    pub title_ids: Vec<ID>,
 }
 
 #[derive(InputObject)]
@@ -2882,20 +3056,20 @@ pub struct CreateUserInput {
 
 #[derive(InputObject)]
 pub struct SetUserPasswordInput {
-    pub user_id: String,
+    pub user_id: ID,
     pub password: String,
     pub current_password: Option<String>,
 }
 
 #[derive(InputObject)]
 pub struct SetTitleMonitoredInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub monitored: bool,
 }
 
 #[derive(InputObject)]
 pub struct UpdateTitleInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub name: Option<String>,
     pub facet: Option<MediaFacetValue>,
     pub tags: Option<Vec<String>>,
@@ -2904,59 +3078,55 @@ pub struct UpdateTitleInput {
 
 #[derive(InputObject)]
 pub struct SetPrimaryMovieFileInput {
-    pub title_id: String,
-    pub file_id: String,
+    pub title_id: ID,
+    pub file_id: ID,
 }
 
 #[derive(InputObject)]
 pub struct FixTitleMatchInput {
-    pub title_id: String,
+    pub title_id: ID,
     pub tvdb_id: String,
 }
 
 #[derive(InputObject, Clone)]
 pub struct SetCollectionMonitoredInput {
-    pub collection_id: String,
+    pub collection_id: ID,
     pub monitored: bool,
 }
 
 #[derive(InputObject, Clone)]
 pub struct SetEpisodeMonitoredInput {
-    pub episode_id: String,
+    pub episode_id: ID,
     pub monitored: bool,
 }
 
 #[derive(InputObject, Clone)]
 pub struct SetSeriesMovieMonitoredInput {
-    pub series_movie_link_id: String,
+    pub series_movie_link_id: ID,
     pub monitored: bool,
 }
 
 #[derive(InputObject)]
 pub struct SetUserAppPermissionsInput {
-    pub user_id: String,
+    pub user_id: ID,
     pub permissions: Vec<AppPermissionValue>,
 }
 
-#[derive(InputObject)]
-pub struct DeleteUserInput {
-    pub user_id: String,
-}
-
-#[derive(InputObject)]
-pub struct ResetUserMfaInput {
-    pub user_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteUserPayload {
+    pub id: ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject, Clone)]
 pub struct LibraryPermissionGrantInput {
-    pub library_id: String,
+    pub library_id: ID,
     pub permissions: Vec<LibraryPermissionValue>,
 }
 
 #[derive(InputObject, Clone)]
 pub struct SetUserLibraryPermissionsInput {
-    pub user_id: String,
+    pub user_id: ID,
     pub grants: Vec<LibraryPermissionGrantInput>,
 }
 
@@ -2976,7 +3146,7 @@ pub struct CreateLibraryInput {
 
 #[derive(InputObject, Clone)]
 pub struct UpdateLibraryInput {
-    pub library_id: String,
+    pub library_id: ID,
     pub name: Option<String>,
     pub roots: Option<Vec<LibraryRootInput>>,
     pub settings: Option<LibrarySettingsInput>,
@@ -2985,8 +3155,8 @@ pub struct UpdateLibraryInput {
 #[derive(InputObject, Clone)]
 pub struct LibrarySettingsInput {
     pub required_audio_languages: Option<Vec<String>>,
-    pub quality_profile_id: Option<String>,
-    pub request_quality_profile_ids: Option<Vec<String>>,
+    pub quality_profile_id: Option<ID>,
+    pub request_quality_profile_ids: Option<Vec<ID>>,
     pub scoring_persona: Option<ScoringPersonaValue>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
@@ -3000,44 +3170,41 @@ pub struct LibrarySettingsInput {
     pub download_client_routing: Option<Vec<DownloadClientRoutingEntryInput>>,
 }
 
-#[derive(InputObject, Clone)]
-pub struct DeleteLibraryInput {
-    pub library_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteLibraryPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
 pub struct DeleteMediaFileInput {
-    pub file_id: String,
+    pub file_id: ID,
     pub delete_from_disk: Option<bool>,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
 }
 
-#[derive(InputObject)]
-pub struct DeleteMediaFilePreviewInput {
-    pub file_id: String,
-}
-
-#[derive(InputObject)]
-pub struct DeleteExternalSubtitlePreviewInput {
-    pub external_subtitle_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct DeleteMediaFilePayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(InputObject)]
 pub struct PauseDownloadInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct ResumeDownloadInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub download_client_item_id: String,
 }
 
 #[derive(InputObject)]
 pub struct DeleteDownloadInput {
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_type: String,
     pub download_client_item_id: String,
     pub is_history: bool,
@@ -3049,18 +3216,18 @@ pub struct DeleteDownloadInput {
 pub struct ManualImportFilePreviewPayload {
     pub file_path: String,
     pub file_name: String,
-    pub size_bytes: String,
+    pub size_bytes: Long,
     pub quality: Option<String>,
     pub parsed_season: Option<i32>,
     pub parsed_episodes: Vec<i32>,
-    pub suggested_episode_id: Option<String>,
+    pub suggested_episode_id: Option<ID>,
     pub suggested_episode_label: Option<String>,
 }
 
 #[derive(InputObject)]
 pub struct ManualImportFileMappingInput {
     pub file_path: String,
-    pub episode_id: String,
+    pub episode_id: ID,
     pub quality: Option<String>,
 }
 
@@ -3086,41 +3253,49 @@ pub struct PendingReleaseStatusCountPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct CutoffUnmetItemPayload {
-    pub title_id: String,
+    pub title_id: ID,
     pub title_name: String,
     pub title_slug: Option<String>,
     pub title_facet: MediaFacetValue,
-    pub library_id: String,
+    pub library_id: ID,
     pub library_name: Option<String>,
     pub library_slug: Option<String>,
-    pub episode_id: Option<String>,
+    pub episode_id: Option<ID>,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
 }
 
-#[derive(InputObject)]
-pub struct WantedItemIdInput {
-    pub wanted_item_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct PauseWantedItemPayload {
+    pub id: async_graphql::ID,
+    pub paused: bool,
 }
 
-#[derive(InputObject)]
-pub struct TitleIdInput {
-    pub title_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct ResumeWantedItemPayload {
+    pub id: async_graphql::ID,
+    pub resumed: bool,
 }
 
-#[derive(InputObject)]
-pub struct SeasonSearchInput {
-    pub title_id: String,
-    pub season_number: i32,
+#[derive(SimpleObject, Clone)]
+pub struct ResetWantedItemPayload {
+    pub id: async_graphql::ID,
+    pub reset: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TriggerTitleMismatchRecoverySearchPayload {
+    pub title_id: ID,
+    pub queued_count: i32,
 }
 
 // ── Rule Sets ──────────────────────────────────────────────────────────────
 
 #[derive(SimpleObject, Clone)]
 pub struct RuleSetPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub description: String,
     pub rego_source: String,
@@ -3129,8 +3304,14 @@ pub struct RuleSetPayload {
     pub applied_facets: Vec<String>,
     pub is_managed: bool,
     pub managed_key: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteRuleSetPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3150,7 +3331,7 @@ pub struct CreateRuleSetInput {
 
 #[derive(InputObject)]
 pub struct UpdateRuleSetInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
     pub description: Option<String>,
     pub rego_source: Option<String>,
@@ -3160,19 +3341,19 @@ pub struct UpdateRuleSetInput {
 
 #[derive(InputObject)]
 pub struct ToggleRuleSetInput {
-    pub id: String,
+    pub id: ID,
     pub enabled: bool,
 }
 
 #[derive(InputObject)]
 pub struct ValidateRuleSetInput {
     pub rego_source: String,
-    pub rule_set_id: Option<String>,
+    pub rule_set_id: Option<ID>,
 }
 
 #[derive(InputObject)]
 pub struct SetTitleRequiredAudioInput {
-    pub title_id: String,
+    pub title_id: ID,
     /// The facet of the title: "movie", "series", or "anime"
     pub facet: MediaFacetValue,
     /// `null` removes the override and inherits from the facet.
@@ -3181,13 +3362,34 @@ pub struct SetTitleRequiredAudioInput {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct SetTitleRequiredAudioPayload {
+    pub title_id: ID,
+    pub facet: MediaFacetValue,
+    pub languages: Option<Vec<String>>,
+    pub updated: bool,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct ServiceLogsPayload {
-    pub generated_at: String,
+    pub generated_at: DateTime<Utc>,
     pub lines: Vec<String>,
     pub count: i32,
 }
 
 // ── Metadata Gateway (proxied from SMG) ────────────────────────────────────
+
+#[derive(InputObject, Clone)]
+pub struct MetadataMovieInput {
+    pub tvdb_id: String,
+    pub language: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct MetadataSeriesInput {
+    pub tvdb_id: String,
+    pub include_episodes: Option<bool>,
+    pub language: Option<String>,
+}
 
 #[derive(SimpleObject, Clone)]
 pub struct MetadataSearchItemPayload {
@@ -3229,7 +3431,7 @@ pub struct MetadataMoviePayload {
     pub imdb_id: String,
     pub genres: Vec<String>,
     pub studio: String,
-    pub tmdb_release_date: Option<String>,
+    pub tmdb_release_date: Option<Date>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3240,7 +3442,7 @@ pub struct MetadataSeriesPayload {
     pub slug: String,
     pub year: Option<i32>,
     pub status: String,
-    pub first_aired: String,
+    pub first_aired: Date,
     pub overview: String,
     pub network: String,
     pub runtime_minutes: i32,
@@ -3266,7 +3468,7 @@ pub struct MetadataEpisodePayload {
     pub episode_number: i32,
     pub season_number: i32,
     pub name: String,
-    pub aired: String,
+    pub aired: Date,
     pub runtime_minutes: i32,
     pub is_filler: bool,
     pub image_url: String,
@@ -3274,9 +3476,9 @@ pub struct MetadataEpisodePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct CalendarEpisodePayload {
-    pub id: String,
-    pub title_id: String,
-    pub library_id: String,
+    pub id: ID,
+    pub title_id: ID,
+    pub library_id: ID,
     pub library_name: Option<String>,
     pub library_slug: Option<String>,
     pub title_name: String,
@@ -3285,7 +3487,7 @@ pub struct CalendarEpisodePayload {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub episode_title: Option<String>,
-    pub air_date: Option<String>,
+    pub air_date: Option<Date>,
     pub monitored: bool,
 }
 
@@ -3293,7 +3495,7 @@ pub struct CalendarEpisodePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct RegistryPluginPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -3311,7 +3513,7 @@ pub struct RegistryPluginPayload {
     pub source_url: Option<String>,
     pub source_kind: Option<String>,
     pub blocked_reason: Option<String>,
-    pub bytes: Option<i64>,
+    pub bytes: Option<Long>,
     pub is_installed: bool,
     pub is_enabled: bool,
     pub installed_version: Option<String>,
@@ -3343,8 +3545,8 @@ pub struct RulePackTemplatePayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct PluginInstallationPayload {
-    pub id: String,
-    pub plugin_id: String,
+    pub id: ID,
+    pub plugin_id: ID,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -3363,15 +3565,15 @@ pub struct PluginInstallationPayload {
     pub manifest_url: Option<String>,
     pub wasm_digest: Option<String>,
     pub artifact_digest: Option<String>,
-    pub installed_at: String,
-    pub updated_at: String,
+    pub installed_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject)]
 pub struct PluginCatalogStatusPayload {
     pub refresh_state: String,
     pub github_available: bool,
-    pub last_checked_at: Option<String>,
+    pub last_checked_at: Option<DateTime<Utc>>,
     pub outage_message: Option<String>,
     pub blocked_actions: Vec<String>,
     pub restore_warnings: Vec<String>,
@@ -3397,7 +3599,7 @@ pub enum PluginInstallStateValue {
 
 #[derive(SimpleObject, Clone)]
 pub struct PluginInstallProgressPayload {
-    pub plugin_id: String,
+    pub plugin_id: ID,
     pub operation_kind: PluginInstallOperationKindValue,
     pub state: PluginInstallStateValue,
     pub label: String,
@@ -3414,11 +3616,6 @@ pub struct ManualPluginPreviewPayload {
 }
 
 #[derive(InputObject)]
-pub struct InstallPluginInput {
-    pub plugin_id: String,
-}
-
-#[derive(InputObject)]
 pub struct ManualPluginRepoInput {
     pub github_repo_url: String,
 }
@@ -3430,20 +3627,16 @@ pub struct ManualPluginUploadInput {
     pub acknowledge_risk: bool,
 }
 
-#[derive(InputObject)]
-pub struct UninstallPluginInput {
-    pub plugin_id: String,
+#[derive(SimpleObject, Clone)]
+pub struct UninstallPluginPayload {
+    pub plugin_id: async_graphql::ID,
+    pub uninstalled: bool,
 }
 
 #[derive(InputObject)]
 pub struct TogglePluginInput {
-    pub plugin_id: String,
+    pub plugin_id: ID,
     pub enabled: bool,
-}
-
-#[derive(InputObject)]
-pub struct UpgradePluginInput {
-    pub plugin_id: String,
 }
 
 // ── Provider Type Config Schema ─────────────────────────────────────────
@@ -3454,15 +3647,69 @@ pub struct PluginConfigFieldOptionPayload {
     pub label: String,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum PluginConfigFieldTypeValue {
+    String,
+    Password,
+    Multiline,
+    Bool,
+    Select,
+    Number,
+}
+
+impl PluginConfigFieldTypeValue {
+    pub fn from_domain(value: ConfigFieldType) -> Self {
+        match value {
+            ConfigFieldType::String => Self::String,
+            ConfigFieldType::Password => Self::Password,
+            ConfigFieldType::Multiline => Self::Multiline,
+            ConfigFieldType::Bool => Self::Bool,
+            ConfigFieldType::Select => Self::Select,
+            ConfigFieldType::Number => Self::Number,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum PluginConfigValueSourceValue {
+    User,
+    HostBinding,
+}
+
+impl PluginConfigValueSourceValue {
+    pub fn from_domain(value: ConfigFieldValueSource) -> Self {
+        match value {
+            ConfigFieldValueSource::User => Self::User,
+            ConfigFieldValueSource::HostBinding => Self::HostBinding,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum PluginConfigFieldRoleValue {
+    ConnectionUrl,
+}
+
+impl PluginConfigFieldRoleValue {
+    pub fn from_domain(value: ConfigFieldRole) -> Self {
+        match value {
+            ConfigFieldRole::ConnectionUrl => Self::ConnectionUrl,
+        }
+    }
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct PluginConfigFieldPayload {
     pub key: String,
     pub label: String,
-    pub field_type: String,
+    pub field_type: PluginConfigFieldTypeValue,
     pub required: bool,
     pub default_value: Option<String>,
-    pub value_source: String,
-    pub role: Option<String>,
+    pub value_source: PluginConfigValueSourceValue,
+    pub role: Option<PluginConfigFieldRoleValue>,
     pub host_binding: Option<String>,
     pub options: Vec<PluginConfigFieldOptionPayload>,
     pub help_text: Option<String>,
@@ -3481,7 +3728,7 @@ pub struct ProviderTypePayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct SubtitleProviderValidationPayload {
+pub struct ProviderValidationPayload {
     pub status: String,
     pub message: Option<String>,
     pub retry_after_seconds: Option<i64>,
@@ -3491,38 +3738,59 @@ pub struct SubtitleProviderValidationPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct NotificationChannelPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub channel_type: String,
-    pub config_json: String,
-    pub media_server_connection_id: Option<String>,
+    pub config: Vec<ProviderConfigValuePayload>,
+    pub stored_secret_keys: Vec<String>,
+    pub media_server_connection_id: Option<ID>,
     pub is_enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct NotificationSubscriptionPayload {
-    pub id: String,
-    pub channel_id: Option<String>,
+    pub id: ID,
+    pub channel_id: Option<ID>,
     pub target_kind: String,
-    pub target_id: String,
+    pub target_id: ID,
     pub event_type: String,
     pub scope: String,
     pub scope_id: Option<String>,
     pub is_enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteNotificationChannelPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct NotificationChannelTestPayload {
+    pub id: async_graphql::ID,
+    pub status: String,
+    pub message: Option<String>,
+    pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteNotificationSubscriptionPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct NotificationTargetPayload {
-    pub id: String,
+    pub id: ID,
     pub target_kind: String,
     pub name: String,
     pub provider_type: String,
     pub media_server_provider: Option<MediaServerProviderValue>,
-    pub media_server_connection_id: Option<String>,
+    pub media_server_connection_id: Option<ID>,
     pub is_enabled: bool,
 }
 
@@ -3530,25 +3798,25 @@ pub struct NotificationTargetPayload {
 pub struct CreateNotificationChannelInput {
     pub name: String,
     pub channel_type: String,
-    pub config_json: String,
-    pub media_server_connection_id: Option<String>,
+    pub config: Vec<ProviderConfigValueInput>,
+    pub media_server_connection_id: Option<ID>,
     pub is_enabled: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct UpdateNotificationChannelInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
-    pub config_json: Option<String>,
-    pub media_server_connection_id: Option<Option<String>>,
+    pub config: Option<Vec<ProviderConfigValueInput>>,
+    pub media_server_connection_id: Option<Option<ID>>,
     pub is_enabled: Option<bool>,
 }
 
 #[derive(InputObject)]
 pub struct CreateNotificationSubscriptionInput {
-    pub channel_id: Option<String>,
+    pub channel_id: Option<ID>,
     pub target_kind: Option<String>,
-    pub target_id: Option<String>,
+    pub target_id: Option<ID>,
     pub event_type: String,
     pub scope: String,
     pub scope_id: Option<String>,
@@ -3557,9 +3825,9 @@ pub struct CreateNotificationSubscriptionInput {
 
 #[derive(InputObject)]
 pub struct UpdateNotificationSubscriptionInput {
-    pub id: String,
+    pub id: ID,
     pub target_kind: Option<String>,
-    pub target_id: Option<String>,
+    pub target_id: Option<ID>,
     pub event_type: Option<String>,
     pub scope: Option<String>,
     pub scope_id: Option<String>,
@@ -3577,14 +3845,14 @@ pub struct NotificationProviderTypePayload {
 #[derive(SimpleObject, Clone)]
 pub struct BackupRowCountPayload {
     pub table: String,
-    pub row_count: String,
+    pub row_count: Long,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct BackupInfoPayload {
     pub filename: String,
-    pub size_bytes: String,
-    pub created_at: String,
+    pub size_bytes: Long,
+    pub created_at: DateTime<Utc>,
     pub format_version: String,
     pub source_engine: String,
     pub source_migration_key: Option<String>,
@@ -3595,6 +3863,27 @@ pub struct BackupInfoPayload {
     pub error_message: Option<String>,
 }
 
+#[derive(InputObject)]
+pub struct CreateBackupInput {
+    pub password: String,
+}
+
+#[derive(InputObject)]
+pub struct PrepareBackupDownloadInput {
+    pub filename: String,
+}
+
+#[derive(InputObject)]
+pub struct DeleteBackupInput {
+    pub filename: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteBackupPayload {
+    pub filename: String,
+    pub deleted: bool,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct RssSyncReportPayload {
     pub releases_fetched: i32,
@@ -3603,24 +3892,31 @@ pub struct RssSyncReportPayload {
     pub releases_held: i32,
 }
 
-#[derive(InputObject)]
-pub struct PendingReleaseActionInput {
-    pub id: String,
+#[derive(SimpleObject, Clone)]
+pub struct ForceGrabPendingReleasePayload {
+    pub id: async_graphql::ID,
+    pub grabbed: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DismissPendingReleasePayload {
+    pub id: async_graphql::ID,
+    pub dismissed: bool,
 }
 
 // ── Recycle Bin ────────────────────────────────────────────────────────────
 
 #[derive(SimpleObject, Clone)]
 pub struct RecycledItemPayload {
-    pub id: String,
+    pub id: async_graphql::ID,
     pub original_path: String,
     pub file_name: String,
-    pub size_bytes: i64,
-    pub title_id: Option<String>,
+    pub size_bytes: Long,
+    pub title_id: Option<async_graphql::ID>,
     pub reason: String,
-    pub recycled_at: String,
+    pub recycled_at: DateTime<Utc>,
     pub media_root: String,
-    pub library_id: String,
+    pub library_id: async_graphql::ID,
     pub library_name: String,
 }
 
@@ -3628,6 +3924,33 @@ pub struct RecycledItemPayload {
 pub struct RecycledItemsPayload {
     pub items: Vec<RecycledItemPayload>,
     pub total_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct RestoreRecycledItemPayload {
+    pub id: async_graphql::ID,
+    pub restored: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeleteRecycledItemPayload {
+    pub id: async_graphql::ID,
+    pub deleted: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct EmptyRecycleBinPayload {
+    pub purged_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CompleteSetupPayload {
+    pub completed: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ClearTitleImageCachePayload {
+    pub accepted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3711,18 +4034,37 @@ pub struct StartExternalImportMonitorWarmupInput {
 }
 
 #[derive(InputObject)]
-pub struct CancelExternalImportMonitorWarmupInput {
-    pub session_id: String,
-}
-
-#[derive(InputObject)]
 pub struct FinalizeExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
-    pub monitor_warmup_session_id: Option<String>,
+    pub monitor_warmup_session_id: Option<ID>,
     pub selected_movies_paths: Vec<String>,
     pub selected_series_paths: Vec<String>,
     pub selected_anime_paths: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CancelExternalImportMonitorWarmupPayload {
+    pub session_id: ID,
+    pub canceled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FinalizeExternalImportPayload {
+    pub finalized: bool,
+    pub monitor_warmup_session_id: ID,
+}
+
+#[derive(InputObject)]
+pub struct RehydrateAllMetadataInput {
+    pub language: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct RehydrateAllMetadataPayload {
+    pub language: String,
+    pub titles_cleared: i64,
+    pub accepted: bool,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -3747,11 +4089,11 @@ pub enum ExternalImportMonitorWarmupPhaseValue {
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportMonitorWarmupProgressPayload {
-    pub session_id: String,
+    pub session_id: ID,
     pub status: ExternalImportMonitorWarmupStatusValue,
     pub phase: ExternalImportMonitorWarmupPhaseValue,
-    pub started_at: String,
-    pub updated_at: String,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub overall_total_known: bool,
     pub overall_progress: LibraryScanPhaseProgressPayload,
     pub movies_total_known: bool,
@@ -3806,7 +4148,7 @@ pub struct ExternalImportDownloadClientPayload {
     pub use_ssl: bool,
     pub url_base: Option<String>,
     pub username: Option<String>,
-    pub api_key: Option<String>,
+    pub api_key_present: bool,
     pub dedup_key: String,
     pub supported: bool,
     pub requires_password_override: bool,
@@ -3819,7 +4161,7 @@ pub struct ExternalImportIndexerPayload {
     pub implementation: String,
     pub scryer_provider_type: Option<String>,
     pub base_url: Option<String>,
-    pub api_key: Option<String>,
+    pub api_key_present: bool,
     pub dedup_key: String,
     pub supported: bool,
     pub child_count: i32,
@@ -3841,7 +4183,7 @@ pub struct ExternalImportResultPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct PostProcessingScriptPayload {
-    pub id: String,
+    pub id: ID,
     pub name: String,
     pub description: String,
     pub script_type: String,
@@ -3852,16 +4194,22 @@ pub struct PostProcessingScriptPayload {
     pub priority: i32,
     pub enabled: bool,
     pub debug: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DeletePostProcessingScriptPayload {
+    pub id: ID,
+    pub deleted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct PostProcessingScriptRunPayload {
-    pub id: String,
-    pub script_id: String,
+    pub id: ID,
+    pub script_id: ID,
     pub script_name: String,
-    pub title_id: Option<String>,
+    pub title_id: Option<ID>,
     pub title_name: Option<String>,
     pub facet: Option<MediaFacetValue>,
     pub file_path: Option<String>,
@@ -3871,8 +4219,8 @@ pub struct PostProcessingScriptRunPayload {
     pub stderr_tail: Option<String>,
     pub duration_ms: Option<i32>,
     pub env_payload_json: Option<String>,
-    pub started_at: String,
-    pub completed_at: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(InputObject)]
@@ -3890,7 +4238,7 @@ pub struct CreatePostProcessingScriptInput {
 
 #[derive(InputObject)]
 pub struct UpdatePostProcessingScriptInput {
-    pub id: String,
+    pub id: ID,
     pub name: Option<String>,
     pub description: Option<String>,
     pub script_type: Option<String>,
@@ -3907,10 +4255,10 @@ pub struct UpdatePostProcessingScriptInput {
 
 #[derive(async_graphql::SimpleObject)]
 pub struct ExternalSubtitlePayload {
-    pub id: String,
-    pub media_file_id: String,
-    pub title_id: String,
-    pub episode_id: Option<String>,
+    pub id: ID,
+    pub media_file_id: ID,
+    pub title_id: ID,
+    pub episode_id: Option<ID>,
     pub source_kind: String,
     pub language: String,
     pub provider: Option<String>,
@@ -3924,18 +4272,18 @@ pub struct ExternalSubtitlePayload {
     pub uploader: Option<String>,
     pub release_info: Option<String>,
     pub synced: bool,
-    pub downloaded_at: String,
+    pub downloaded_at: DateTime<Utc>,
 }
 
 #[derive(async_graphql::SimpleObject)]
 pub struct ExternalSubtitleBlocklistEntryPayload {
-    pub id: String,
-    pub media_file_id: String,
+    pub id: ID,
+    pub media_file_id: ID,
     pub provider: String,
     pub provider_file_id: String,
     pub language: String,
     pub reason: Option<String>,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3944,16 +4292,16 @@ pub struct ExternalSubtitleBlocklistEntryPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct TitleHistoryEventPayload {
-    pub id: String,
-    pub title_id: String,
+    pub id: ID,
+    pub title_id: ID,
     pub title_name: Option<String>,
     pub facet: Option<MediaFacetValue>,
-    pub episode_id: Option<String>,
-    pub episode_ids: Vec<String>,
-    pub collection_id: Option<String>,
+    pub episode_id: Option<ID>,
+    pub episode_ids: Vec<ID>,
+    pub collection_id: Option<ID>,
     pub event_type: String,
     pub actor_kind: Option<String>,
-    pub actor_user_id: Option<String>,
+    pub actor_user_id: Option<ID>,
     pub actor_display_name: Option<String>,
     pub source_title: Option<String>,
     pub display_title: Option<String>,
@@ -3962,9 +4310,9 @@ pub struct TitleHistoryEventPayload {
     pub source_hint: Option<String>,
     pub quality: Option<String>,
     pub download_id: Option<String>,
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_name: Option<String>,
-    pub import_id: Option<String>,
+    pub import_id: Option<ID>,
     pub skip_reason: Option<String>,
     pub retry_requires_password: bool,
     pub failure_reason: Option<String>,
@@ -3972,8 +4320,8 @@ pub struct TitleHistoryEventPayload {
     pub source_path: Option<String>,
     pub dest_path: Option<String>,
     pub data_json: Option<String>,
-    pub occurred_at: String,
-    pub created_at: String,
+    pub occurred_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3982,14 +4330,54 @@ pub struct TitleHistoryPagePayload {
     pub total_count: i64,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum TitleHistoryEventTypeValue {
+    Requested,
+    Grabbed,
+    DownloadFailed,
+    Blocklisted,
+    DownloadCompleted,
+    Imported,
+    ImportFailed,
+    ImportSkipped,
+    FileUpgraded,
+    FileRecycled,
+    FileDeleted,
+    FileRenamed,
+    DownloadIgnored,
+    Rematched,
+}
+
+impl TitleHistoryEventTypeValue {
+    pub fn into_domain(self) -> TitleHistoryEventType {
+        match self {
+            Self::Requested => TitleHistoryEventType::Requested,
+            Self::Grabbed => TitleHistoryEventType::Grabbed,
+            Self::DownloadFailed => TitleHistoryEventType::DownloadFailed,
+            Self::Blocklisted => TitleHistoryEventType::Blocklisted,
+            Self::DownloadCompleted => TitleHistoryEventType::DownloadCompleted,
+            Self::Imported => TitleHistoryEventType::Imported,
+            Self::ImportFailed => TitleHistoryEventType::ImportFailed,
+            Self::ImportSkipped => TitleHistoryEventType::ImportSkipped,
+            Self::FileUpgraded => TitleHistoryEventType::FileUpgraded,
+            Self::FileRecycled => TitleHistoryEventType::FileRecycled,
+            Self::FileDeleted => TitleHistoryEventType::FileDeleted,
+            Self::FileRenamed => TitleHistoryEventType::FileRenamed,
+            Self::DownloadIgnored => TitleHistoryEventType::DownloadIgnored,
+            Self::Rematched => TitleHistoryEventType::Rematched,
+        }
+    }
+}
+
 #[derive(InputObject)]
 pub struct TitleHistoryFilterInput {
-    pub event_types: Option<Vec<String>>,
-    pub title_ids: Option<Vec<String>>,
-    pub library_ids: Option<Vec<String>>,
+    pub event_types: Option<Vec<TitleHistoryEventTypeValue>>,
+    pub title_ids: Option<Vec<ID>>,
+    pub library_ids: Option<Vec<ID>>,
     pub title_search: Option<String>,
     pub download_id: Option<String>,
-    pub episode_id: Option<String>,
+    pub episode_id: Option<ID>,
     pub group_by_event: Option<bool>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,

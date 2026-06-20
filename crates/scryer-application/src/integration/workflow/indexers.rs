@@ -134,9 +134,7 @@ pub(crate) fn normalize_indexer_config_json(
 
     for field in fields {
         let should_restore_persisted = match field.field_type {
-            scryer_domain::ConfigFieldType::Password => {
-                config_value_is_empty(object.get(&field.key))
-            }
+            scryer_domain::ConfigFieldType::Password => !object.contains_key(&field.key),
             _ => !object.contains_key(&field.key),
         };
 

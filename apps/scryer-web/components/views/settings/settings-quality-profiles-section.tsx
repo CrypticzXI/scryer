@@ -41,7 +41,7 @@ type ParsedQualityProfile = {
   name: string;
 };
 
-type ScoringPersonaId = "Balanced" | "Audiophile" | "Efficient" | "Compatible";
+type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
 
 type ScoringOverridesPayload = {
   allow_x265_non4k?: boolean | null;
@@ -1336,10 +1336,10 @@ export function SettingsQualityProfilesSection({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="Balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
-                <SelectItem value="Audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
-                <SelectItem value="Efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
-                <SelectItem value="Compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
+                <SelectItem value="balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
+                <SelectItem value="audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
+                <SelectItem value="efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
+                <SelectItem value="compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
               </SelectContent>
             </Select>
           </label>
@@ -1408,10 +1408,10 @@ export function SettingsQualityProfilesSection({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__default__">{t("qualityProfile.facetPersonaUseDefault")}</SelectItem>
-                        <SelectItem value="Balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
-                        <SelectItem value="Audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
-                        <SelectItem value="Efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
-                        <SelectItem value="Compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
+                        <SelectItem value="balanced">{t("qualityProfile.personaBalanced")}</SelectItem>
+                        <SelectItem value="audiophile">{t("qualityProfile.personaAudiophile")}</SelectItem>
+                        <SelectItem value="efficient">{t("qualityProfile.personaEfficient")}</SelectItem>
+                        <SelectItem value="compatible">{t("qualityProfile.personaCompatible")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

@@ -604,6 +604,52 @@ pub enum SortDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleCatalogSortKey {
+    Title,
+    Monitored,
+    Quality,
+    Episodes,
+    Status,
+    Size,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TitleCatalogSort {
+    pub key: TitleCatalogSortKey,
+    pub direction: SortDirection,
+}
+
+impl Default for TitleCatalogSort {
+    fn default() -> Self {
+        Self {
+            key: TitleCatalogSortKey::Title,
+            direction: SortDirection::Asc,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogFilter {
+    pub monitored: Option<bool>,
+    pub content_statuses: Vec<TitleCatalogContentStatus>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleCatalogContentStatus {
+    Continuing,
+    Ended,
+}
+
+#[derive(Clone, Debug)]
+pub struct TitleCatalogResult {
+    pub items: Vec<Title>,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub total_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DownloadHistorySort {
     pub key: DownloadHistorySortKey,
     pub direction: SortDirection,

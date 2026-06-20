@@ -24,7 +24,7 @@ type ProfileCatalogParseResult = {
 };
 
 export function buildDefaultCategoryPersonaSelections(
-  globalPersona: ScoringPersonaId = "Balanced",
+  globalPersona: ScoringPersonaId = "balanced",
 ): Record<ViewCategoryId, FacetScoringPersonaSelectionRecord> {
   return {
     movie: {
@@ -217,7 +217,7 @@ export function qualityProfileSettingsToCategoryOverrides(
 export function qualityProfileSettingsToCategoryPersonaSelections(
   payload: QualityProfileSettingsPayload | null | undefined,
 ): Record<ViewCategoryId, FacetScoringPersonaSelectionRecord> {
-  const globalPersona = payload?.globalScoringPersona ?? "Balanced";
+  const globalPersona = payload?.globalScoringPersona ?? "balanced";
   const result = buildDefaultCategoryPersonaSelections(globalPersona);
 
   for (const selection of payload?.categoryPersonaSelections ?? []) {

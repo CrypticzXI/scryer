@@ -10947,7 +10947,7 @@ async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmat
     assert!(summary.skipped >= 1);
     assert!(unmatched_items.items().await.is_empty());
     let titles = app
-        .list_titles(&user, Some(MediaFacet::Movie), None, None)
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list movie titles");
     assert_eq!(titles.len(), 1);
@@ -11012,7 +11012,7 @@ async fn movie_full_scan_external_id_nfo_without_gateway_match_persists_unmatche
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.unmatched, 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
+        app.list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
             .await
             .expect("list titles")
             .is_empty()
@@ -11075,7 +11075,7 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.unmatched, 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
+        app.list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
             .await
             .expect("list titles")
             .is_empty()
@@ -13290,7 +13290,7 @@ async fn resolve_pending_import_failure_keeps_pending_item() {
     assert!(!error.to_string().trim().is_empty());
     assert_eq!(unmatched_items.items().await.len(), 1);
     assert!(
-        app.list_titles(&user, Some(MediaFacet::Movie), None, None)
+        app.list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
             .await
             .unwrap()
             .is_empty()
@@ -13380,7 +13380,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
     assert_eq!(hydrated.overview.as_deref(), Some("日本語概要"));
 
     let persisted = app
-        .list_titles(&user, Some(MediaFacet::Movie), None, None)
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list titles");
     assert_eq!(persisted[0].name, "デューン");
@@ -13705,7 +13705,7 @@ async fn add_title_with_outcome_returns_pending_and_reuses_existing_tvdb_title()
     assert!(second.reused_existing_title);
 
     let titles = app
-        .list_titles(&user, Some(MediaFacet::Movie), None, None)
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("titles should load");
     assert_eq!(titles.len(), 1);
@@ -16472,7 +16472,7 @@ async fn search_titles_supports_facet_filter() {
     .expect("create series");
 
     let tvs = app
-        .list_titles(&user, Some(MediaFacet::Series), None, None)
+        .list_titles_unpaged(&user, Some(MediaFacet::Series), None, None)
         .await
         .expect("list titles");
 
@@ -17140,7 +17140,7 @@ async fn delete_title_removes_title_from_catalog() {
         .expect("delete title");
 
     let titles = app
-        .list_titles(&user, Some(MediaFacet::Movie), None, None)
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list titles");
     assert!(titles.is_empty());
@@ -18665,15 +18665,17 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
 
     let (_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
     let token = tokio_util::sync::CancellationToken::new();
-    let poller = tokio::spawn(crate::integration::start_download_queue_poller_with_options(
-        app.clone(),
-        token.child_token(),
-        tracked_download_rx,
-        crate::integration::DownloadQueuePollerOptions {
-            interval: Duration::from_millis(50),
-            ..Default::default()
-        },
-    ));
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                ..Default::default()
+            },
+        ),
+    );
 
     timeout(Duration::from_secs(5), async {
         loop {

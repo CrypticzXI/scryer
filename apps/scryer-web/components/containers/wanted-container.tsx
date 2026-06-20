@@ -56,6 +56,8 @@ type WantedContainerProps = {
   ) => void;
 };
 
+const PENDING_RELEASE_PAGE_SIZE = 300;
+
 function cutoffItemKey(item: CutoffUnmetItem) {
   return item.episodeId?.trim() || item.titleId;
 }
@@ -134,16 +136,35 @@ export const WantedContainer = memo(function WantedContainer({
 
   // --- Pending releases state ---
   const [pendingItems, setPendingItems] = useState<PendingReleaseItem[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
+  const [pendingHasMore, setPendingHasMore] = useState(false);
+  const [pendingNextOffset, setPendingNextOffset] = useState(0);
   const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingLoadingMore, setPendingLoadingMore] = useState(false);
+  const pendingLoadInFlightRef = useRef(false);
   const [, executeForceGrab] = useMutation(forceGrabPendingReleaseMutation);
   const [, executeDismiss] = useMutation(dismissPendingReleaseMutation);
 
   const refreshPending = useCallback(async () => {
+    pendingLoadInFlightRef.current = false;
     setPendingLoading(true);
     try {
-      const { data, error } = await client.query(pendingReleasesQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(
+          pendingReleasesQuery,
+          { filter: null, limit: PENDING_RELEASE_PAGE_SIZE, offset: 0 },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
       if (error) throw error;
-      setPendingItems(data?.pendingReleases ?? []);
+      const page = data?.pendingReleases ?? {};
+      const nextItems = (page.items ?? []) as PendingReleaseItem[];
+      setPendingItems(nextItems);
+      setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : nextItems.length);
+      setPendingHasMore(Boolean(page.hasMore));
+      setPendingNextOffset(
+        typeof page.offset === "number" ? page.offset + nextItems.length : nextItems.length,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -151,6 +172,57 @@ export const WantedContainer = memo(function WantedContainer({
       setPendingLoading(false);
     }
   }, [client, t, setGlobalStatus]);
+
+  const loadMorePending = useCallback(async () => {
+    if (!pendingHasMore || pendingLoadingMore || pendingLoadInFlightRef.current) {
+      return;
+    }
+
+    pendingLoadInFlightRef.current = true;
+    setPendingLoadingMore(true);
+    try {
+      const { data, error } = await client
+        .query(
+          pendingReleasesQuery,
+          {
+            filter: null,
+            limit: PENDING_RELEASE_PAGE_SIZE,
+            offset: pendingNextOffset,
+          },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+
+      const page = data?.pendingReleases ?? {};
+      const nextItems = (page.items ?? []) as PendingReleaseItem[];
+      setPendingItems((current) => {
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...nextItems.filter((item) => !seen.has(item.id))];
+      });
+      setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : pendingTotal);
+      setPendingHasMore(Boolean(page.hasMore));
+      setPendingNextOffset(
+        typeof page.offset === "number"
+          ? page.offset + nextItems.length
+          : pendingNextOffset + nextItems.length,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("status.failedToLoad");
+      setGlobalStatus(message);
+    } finally {
+      pendingLoadInFlightRef.current = false;
+      setPendingLoadingMore(false);
+    }
+  }, [
+    client,
+    pendingHasMore,
+    pendingLoadingMore,
+    pendingNextOffset,
+    pendingTotal,
+    setGlobalStatus,
+    t,
+  ]);
 
   useEffect(() => {
     if (wantedSection === "pending") {
@@ -160,7 +232,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const forceGrabPending = useCallback(
     async (id: string) => {
-      const { error } = await executeForceGrab({ input: { id } });
+      const { error } = await executeForceGrab({ id });
       if (error) {
         setGlobalStatus(error.message);
       } else {
@@ -173,7 +245,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const dismissPending = useCallback(
     async (id: string) => {
-      const { error } = await executeDismiss({ input: { id } });
+      const { error } = await executeDismiss({ id });
       if (error) {
         setGlobalStatus(error.message);
       } else {
@@ -316,7 +388,7 @@ export const WantedContainer = memo(function WantedContainer({
           .query(releaseDecisionsQuery, { wantedItemId, limit: 20 })
           .toPromise();
         if (error) throw error;
-        setDecisions(data?.wantedItem?.releaseDecisions ?? []);
+        setDecisions(data?.wantedItem?.releaseDecisions?.items ?? []);
       } catch {
         setDecisions([]);
       } finally {
@@ -351,7 +423,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const pauseItem = useCallback(
     async (id: string) => {
-      const { error } = await executePause({ input: { wantedItemId: id } });
+      const { error } = await executePause({ id });
       if (error) {
         setGlobalStatus(error.message);
       } else {
@@ -363,7 +435,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const resumeItem = useCallback(
     async (id: string) => {
-      const { error } = await executeResume({ input: { wantedItemId: id } });
+      const { error } = await executeResume({ id });
       if (error) {
         setGlobalStatus(error.message);
       } else {
@@ -375,7 +447,7 @@ export const WantedContainer = memo(function WantedContainer({
 
   const resetItem = useCallback(
     async (id: string) => {
-      const { error } = await executeReset({ input: { wantedItemId: id } });
+      const { error } = await executeReset({ id });
       if (error) {
         setGlobalStatus(error.message);
       } else {
@@ -387,13 +459,13 @@ export const WantedContainer = memo(function WantedContainer({
 
   const triggerMismatchRecovery = useCallback(
     async (titleId: string) => {
-      const { data, error } = await executeMismatchRecovery({ input: { titleId } });
+      const { data, error } = await executeMismatchRecovery({ titleId });
       if (error) {
         setGlobalStatus(error.message);
       } else {
         setGlobalStatus(
           t("status.mismatchRecoveryQueued", {
-            count: data?.triggerTitleMismatchRecoverySearch ?? 0,
+            count: data?.triggerTitleMismatchRecoverySearch?.queuedCount ?? 0,
           }),
         );
         void refreshItems();
@@ -618,8 +690,12 @@ export const WantedContainer = memo(function WantedContainer({
         }}
         pendingState={{
           items: pendingItems,
+          total: pendingTotal,
           loading: pendingLoading,
+          hasMore: pendingHasMore,
+          loadingMore: pendingLoadingMore,
           refreshItems: refreshPending,
+          loadMoreItems: loadMorePending,
           forceGrab: forceGrabPending,
           dismiss: dismissPending,
         }}

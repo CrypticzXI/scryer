@@ -132,7 +132,7 @@ export type TitleMediaFile = {
   episodeId: string | null;
   role: string;
   filePath: string;
-  sizeBytes: string;
+  sizeBytes: number;
   qualityLabel: string | null;
   scanStatus: string;
   createdAt: string;
@@ -180,7 +180,7 @@ export type MediaRenamePlanItem = {
   collision: boolean;
   reasonCode: string;
   writeAction: string;
-  sourceSizeBytes: string | null;
+  sourceSizeBytes: number | null;
   sourceMtimeUnixMs: string | null;
 };
 
@@ -300,7 +300,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       title && deleteDialogOpen && deleteFilesOnDisk
-        ? { input: { titleId: title.id } }
+        ? { titleId: title.id }
         : null,
     [deleteDialogOpen, deleteFilesOnDisk, title],
   );
@@ -316,7 +316,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
   );
   const mediaFileDeletePreviewVariables = React.useMemo(
     () =>
-      mediaFileToDelete ? { input: { fileId: mediaFileToDelete.id } } : null,
+      mediaFileToDelete ? { fileId: mediaFileToDelete.id } : null,
     [mediaFileToDelete],
   );
   const {
@@ -358,7 +358,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         });
       }
       setCollections(nextTitle?.collections ?? []);
-      setEvents(snapshot.titleEvents);
+      setEvents(snapshot.titleHistory);
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
       setSubtitleDownloads(snapshot.externalSubtitles);
@@ -557,7 +557,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       try {
         const { error } = await client
           .mutation(clearTitleReleaseBlocklistEntryMutation, {
-            input: { id: entryId },
+            id: entryId,
           })
           .toPromise();
         if (error) {
@@ -615,7 +615,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setWantedActionLoading(action);
       try {
         const { error } = await client.mutation(mutation, {
-          input: { wantedItemId: wantedItem.id },
+          id: wantedItem.id,
         }).toPromise();
         if (error) throw error;
         if (successMessage) {
@@ -821,7 +821,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     setRefreshAndScanLoading(true);
     try {
       const { data, error } = await client.mutation(scanTitleLibraryMutation, {
-        input: { titleId: title.id },
+        titleId: title.id,
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(
@@ -843,7 +843,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     if (!title) return;
     const { data, error } = await client.mutation(
       triggerTitleMismatchRecoverySearchMutation,
-      { input: { titleId: title.id } },
+      { titleId: title.id },
     ).toPromise();
     if (error) {
       setGlobalStatus(error.message);
@@ -851,7 +851,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     }
     setGlobalStatus(
       t("status.mismatchRecoveryQueued", {
-        count: data?.triggerTitleMismatchRecoverySearch ?? 0,
+        count: data?.triggerTitleMismatchRecoverySearch?.queuedCount ?? 0,
       }),
     );
     await refreshTitleDetail();

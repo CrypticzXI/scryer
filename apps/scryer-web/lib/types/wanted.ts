@@ -47,7 +47,7 @@ export type PendingReleaseItem = {
   titleId: string;
   releaseTitle: string;
   releaseUrl: string | null;
-  releaseSizeBytes: string | null;
+  releaseSizeBytes: number | null;
   releaseScore: number;
   scoringLogJson: string | null;
   indexerSource: string | null;

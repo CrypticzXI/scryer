@@ -109,6 +109,51 @@ impl AppUseCase {
         facet: Option<MediaFacet>,
         requested_library_ids: Option<Vec<String>>,
         query: Option<String>,
+        filter: crate::TitleCatalogFilter,
+        sort: crate::TitleCatalogSort,
+        limit: usize,
+        offset: usize,
+        include_external_ids: bool,
+    ) -> AppResult<crate::TitleCatalogResult> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+        self.services
+            .catalog
+            .titles
+            .list_for_libraries_catalog(
+                facet,
+                &library_ids,
+                query,
+                filter,
+                sort,
+                limit,
+                offset,
+                include_external_ids,
+            )
+            .await
+    }
+
+    pub async fn list_titles_unpaged(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         let mut library_ids = self
             .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)

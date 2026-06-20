@@ -39,10 +39,8 @@ import {
 } from "@/lib/utils/dom-ids";
 import {
   bytesToReadable,
-  defaultSortDirectionForTitleKey,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
-  sortTitlesForTable,
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
@@ -56,6 +54,12 @@ type CompactTitleTableProps = {
   view: string;
   titles: TitleRecord[];
   titleLoading: boolean;
+  catalogHasMoreTitles?: boolean;
+  catalogLoadingMoreTitles?: boolean;
+  onCatalogEndReached?: () => Promise<void> | void;
+  sortKey: TitleTableSortKey;
+  sortDirection: TitleTableSortDirection;
+  onSortChange: (key: TitleTableSortKey) => void;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
@@ -86,6 +90,12 @@ export function CompactTitleTable({
   view,
   titles,
   titleLoading,
+  catalogHasMoreTitles = false,
+  catalogLoadingMoreTitles = false,
+  onCatalogEndReached,
+  sortKey,
+  sortDirection,
+  onSortChange,
   resolvedProfileName,
   qualityProfiles,
   qualityProfilesLoading,
@@ -152,32 +162,9 @@ export function CompactTitleTable({
   const [autoQueueLoadingByTitle, setAutoQueueLoadingByTitle] = React.useState<
     Record<string, boolean>
   >({});
-  const [sortKey, setSortKey] = React.useState<TitleTableSortKey>("name");
-  const [sortDirection, setSortDirection] =
-    React.useState<TitleTableSortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
-  const sortedTitles = React.useMemo(
-    () =>
-      sortTitlesForTable({
-        titles,
-        sortKey,
-        sortDirection,
-        qualityProfiles,
-        resolvedProfileName,
-        qualityProfilesLoading,
-        t,
-      }),
-    [
-      qualityProfiles,
-      qualityProfilesLoading,
-      resolvedProfileName,
-      sortDirection,
-      sortKey,
-      t,
-      titles,
-    ],
-  );
+  const sortedTitles = titles;
   const initialScrollOffset = React.useMemo(
     () => readOverviewSavedScroll(location.pathname, "compact") ?? 0,
     [location.pathname],
@@ -205,6 +192,27 @@ export function CompactTitleTable({
     restoreScrollTop: restoreTitleTableScroll,
   });
 
+  React.useEffect(() => {
+    const element = titleTableScrollRef.current;
+    if (!element || !catalogHasMoreTitles || catalogLoadingMoreTitles || !onCatalogEndReached) {
+      return;
+    }
+
+    const maybeLoadNextPage = () => {
+      const remaining =
+        element.scrollHeight - (element.scrollTop + element.clientHeight);
+      if (remaining <= 1200) {
+        void onCatalogEndReached();
+      }
+    };
+
+    maybeLoadNextPage();
+    element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", maybeLoadNextPage);
+    };
+  }, [catalogHasMoreTitles, catalogLoadingMoreTitles, onCatalogEndReached, titles.length]);
+
   const handleOpenOverview = React.useCallback(
     (item: OverviewTitleTarget) => {
       persistOverviewScrollValue(
@@ -219,17 +227,9 @@ export function CompactTitleTable({
 
   const handleSort = React.useCallback(
     (nextKey: TitleTableSortKey) => {
-      if (sortKey === nextKey) {
-        setSortDirection((currentDirection) =>
-          currentDirection === "asc" ? "desc" : "asc",
-        );
-        return;
-      }
-
-      setSortKey(nextKey);
-      setSortDirection(defaultSortDirectionForTitleKey(nextKey));
+      onSortChange(nextKey);
     },
-    [sortKey],
+    [onSortChange],
   );
 
   const renderSortIcon = React.useCallback(

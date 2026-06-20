@@ -305,7 +305,7 @@ async fn graphql_recycle_bin_settings_and_scoped_item_args_work() {
 
     let body = gql(
         &ctx,
-        r#"query($libraryIds: [String!]) {
+        r#"query($libraryIds: [ID!]) {
             recycledItems(libraryIds: $libraryIds) {
                 totalCount
                 items { id libraryId libraryName }
@@ -319,14 +319,16 @@ async fn graphql_recycle_bin_settings_and_scoped_item_args_work() {
 
     let body = gql(
         &ctx,
-        r#"mutation($libraryIds: [String!]) {
-            emptyRecycleBin(libraryIds: $libraryIds)
+        r#"mutation($libraryIds: [ID!]) {
+            emptyRecycleBin(libraryIds: $libraryIds) {
+                purgedCount
+            }
         }"#,
         json!({ "libraryIds": null }),
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["emptyRecycleBin"], 0);
+    assert_eq!(body["data"]["emptyRecycleBin"]["purgedCount"], 0);
 }
 
 #[tokio::test]

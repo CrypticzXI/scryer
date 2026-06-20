@@ -1,18 +1,18 @@
-use async_graphql::{Context, InputObject, Object, SimpleObject};
-use scryer_application::DownloadSubtitleForMediaFileRequest;
+use async_graphql::{Context, ID, InputObject, Object, SimpleObject};
+use scryer_application::{AppError, DownloadSubtitleForMediaFileRequest};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 #[derive(InputObject)]
 pub struct DeleteExternalSubtitleInput {
-    pub external_subtitle_id: String,
+    pub external_subtitle_id: ID,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
 }
 
 #[derive(InputObject)]
 pub struct BlocklistExternalSubtitleInput {
-    pub external_subtitle_id: String,
+    pub external_subtitle_id: ID,
     pub reason: Option<String>,
     pub preview_fingerprint: Option<String>,
     pub typed_confirmation: Option<String>,
@@ -25,13 +25,13 @@ pub struct SubtitleMutations;
 
 #[derive(InputObject)]
 pub struct SearchSubtitlesInput {
-    pub media_file_id: String,
+    pub media_file_id: ID,
     pub language: String,
 }
 
 #[derive(InputObject)]
 pub struct DownloadSubtitleInput {
-    pub media_file_id: String,
+    pub media_file_id: ID,
     pub provider: Option<String>,
     pub provider_file_id: String,
     pub language: String,
@@ -42,6 +42,25 @@ pub struct DownloadSubtitleInput {
     pub uploader: Option<String>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[derive(SimpleObject)]
+pub struct DownloadSubtitlePayload {
+    pub media_file_id: ID,
+    pub provider_file_id: String,
+    pub downloaded: bool,
+}
+
+#[derive(SimpleObject)]
+pub struct DeleteExternalSubtitlePayload {
+    pub id: ID,
+    pub deleted: bool,
+}
+
+#[derive(SimpleObject)]
+pub struct BlocklistExternalSubtitlePayload {
+    pub id: ID,
+    pub blocklisted: bool,
 }
 
 #[derive(SimpleObject)]
@@ -89,8 +108,9 @@ impl SubtitleMutations {
     ) -> GqlResult<Vec<SubtitleSearchResult>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let media_file_id = input.media_file_id.to_string();
         let results = app
-            .search_subtitles_for_media_file(&actor, &input.media_file_id, &input.language)
+            .search_subtitles_for_media_file(&actor, &media_file_id, &input.language)
             .await
             .map_err(to_gql_error)?;
         Ok(results.into_iter().map(from_subtitle_match).collect())
@@ -101,17 +121,20 @@ impl SubtitleMutations {
         &self,
         ctx: &Context<'_>,
         input: DownloadSubtitleInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<DownloadSubtitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let media_file_id = input.media_file_id;
+        let media_file_id_string = media_file_id.to_string();
+        let provider_file_id = input.provider_file_id;
         app.download_subtitle_for_media_file(
             &actor,
             DownloadSubtitleForMediaFileRequest {
-                media_file_id: input.media_file_id,
+                media_file_id: media_file_id_string,
                 provider_name: input
                     .provider
                     .unwrap_or_else(|| "opensubtitles".to_string()),
-                provider_file_id: input.provider_file_id,
+                provider_file_id: provider_file_id.clone(),
                 language: input.language,
                 forced: input.forced.unwrap_or(false),
                 hearing_impaired: input.hearing_impaired.unwrap_or(false),
@@ -124,7 +147,11 @@ impl SubtitleMutations {
         )
         .await
         .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(DownloadSubtitlePayload {
+            media_file_id,
+            provider_file_id,
+            downloaded: true,
+        })
     }
 
     /// Delete an external subtitle file and its tracked record.
@@ -132,25 +159,31 @@ impl SubtitleMutations {
         &self,
         ctx: &Context<'_>,
         input: DeleteExternalSubtitleInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<DeleteExternalSubtitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let external_subtitle_id = input.external_subtitle_id;
+        let external_subtitle_id_string = external_subtitle_id.to_string();
         let preview_fingerprint = input.preview_fingerprint.as_deref().ok_or_else(|| {
-            async_graphql::Error::new(
-                "delete preview confirmation is required before deleting subtitle files on disk",
-            )
+            to_gql_error(AppError::Validation(
+                "delete preview confirmation is required before deleting subtitle files on disk"
+                    .to_string(),
+            ))
         })?;
 
         app.delete_external_subtitle(
             &actor,
-            &input.external_subtitle_id,
+            &external_subtitle_id_string,
             preview_fingerprint,
             input.typed_confirmation.as_deref(),
         )
         .await
         .map_err(to_gql_error)?;
 
-        Ok(true)
+        Ok(DeleteExternalSubtitlePayload {
+            id: external_subtitle_id,
+            deleted: true,
+        })
     }
 
     /// Blocklist a downloaded provider-backed subtitle: delete the file and DB record, then add to the blocklist.
@@ -158,18 +191,21 @@ impl SubtitleMutations {
         &self,
         ctx: &Context<'_>,
         input: BlocklistExternalSubtitleInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<BlocklistExternalSubtitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let external_subtitle_id = input.external_subtitle_id;
+        let external_subtitle_id_string = external_subtitle_id.to_string();
         let preview_fingerprint = input.preview_fingerprint.as_deref().ok_or_else(|| {
-            async_graphql::Error::new(
-                "delete preview confirmation is required before deleting subtitle files on disk",
-            )
+            to_gql_error(AppError::Validation(
+                "delete preview confirmation is required before deleting subtitle files on disk"
+                    .to_string(),
+            ))
         })?;
 
         app.blocklist_external_subtitle(
             &actor,
-            &input.external_subtitle_id,
+            &external_subtitle_id_string,
             input.reason.as_deref(),
             preview_fingerprint,
             input.typed_confirmation.as_deref(),
@@ -177,6 +213,9 @@ impl SubtitleMutations {
         .await
         .map_err(to_gql_error)?;
 
-        Ok(true)
+        Ok(BlocklistExternalSubtitlePayload {
+            id: external_subtitle_id,
+            blocklisted: true,
+        })
     }
 }

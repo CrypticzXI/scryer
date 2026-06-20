@@ -237,50 +237,51 @@ pub fn restore_context_from_ctx(ctx: &Context<'_>) -> GqlResult<RestoreContext> 
     ctx.data_unchecked::<ApiContext>()
         .restore
         .clone()
-        .ok_or_else(|| Error::new("restore is not configured"))
+        .ok_or_else(|| to_gql_error(AppError::Validation("restore is not configured".into())))
 }
 
 pub fn to_gql_error(err: AppError) -> Error {
     match err {
+        AppError::Unauthorized(message) => {
+            coded_gql_error(format!("unauthorized: {message}"), "UNAUTHORIZED")
+        }
+        AppError::Validation(message) => {
+            coded_gql_error(format!("validation: {message}"), "VALIDATION_ERROR")
+        }
         AppError::DownloadFeedbackTimeout(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "DOWNLOAD_FEEDBACK_TIMEOUT");
-            })
+            coded_gql_error(message, "DOWNLOAD_FEEDBACK_TIMEOUT")
         }
         AppError::DownloadSubmitUnavailable(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "DOWNLOAD_SUBMIT_UNAVAILABLE");
-            })
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
         AppError::PluginInstallInProgress(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
-            })
+            coded_gql_error(message, "PLUGIN_INSTALL_IN_PROGRESS")
         }
-        AppError::MfaStepUpRequired(message) => Error::new(message).extend_with(|_, extensions| {
-            extensions.set("code", "MFA_STEP_UP_REQUIRED");
-        }),
+        AppError::NotFound(message) => {
+            coded_gql_error(format!("not found: {message}"), "NOT_FOUND")
+        }
+        AppError::DownloadSubmitAmbiguous(message) => {
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
+        }
+        AppError::MfaStepUpRequired(message) => coded_gql_error(message, "MFA_STEP_UP_REQUIRED"),
         AppError::TotpEnrollmentRequired(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "TOTP_ENROLLMENT_REQUIRED");
-            })
+            coded_gql_error(message, "TOTP_ENROLLMENT_REQUIRED")
         }
         AppError::MfaEnrollmentRequired(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "MFA_ENROLLMENT_REQUIRED");
-            })
+            coded_gql_error(message, "MFA_ENROLLMENT_REQUIRED")
         }
-        AppError::TotpInvalidCode(message) => Error::new(message).extend_with(|_, extensions| {
-            extensions.set("code", "TOTP_INVALID_CODE");
-        }),
+        AppError::TotpInvalidCode(message) => coded_gql_error(message, "TOTP_INVALID_CODE"),
         AppError::TotpRecoveryCodeUsed(message) => {
-            Error::new(message).extend_with(|_, extensions| {
-                extensions.set("code", "TOTP_RECOVERY_CODE_USED");
-            })
+            coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
         }
         AppError::Repository(message) => repository_gql_error(message),
-        _ => Error::new(err.to_string()),
     }
+}
+
+fn coded_gql_error(message: impl Into<String>, code: &'static str) -> Error {
+    Error::new(message).extend_with(|_, extensions| {
+        extensions.set("code", code);
+    })
 }
 
 fn repository_gql_error(message: String) -> Error {
@@ -516,6 +517,76 @@ mod tests {
         );
         assert_eq!(error.message, "MFA code is required for password login");
         assert_eq!(graphql_error_code(&error), Some("MFA_STEP_UP_REQUIRED"));
+    }
+
+    #[test]
+    fn app_errors_have_stable_graphql_codes() {
+        for (err, expected_message, expected_code) in [
+            (
+                AppError::Unauthorized("settings access is restricted".into()),
+                "unauthorized: settings access is restricted",
+                "UNAUTHORIZED",
+            ),
+            (
+                AppError::Validation("invalid title id".into()),
+                "validation: invalid title id",
+                "VALIDATION_ERROR",
+            ),
+            (
+                AppError::PluginInstallInProgress("plugin-a".into()),
+                "plugin-a",
+                "PLUGIN_INSTALL_IN_PROGRESS",
+            ),
+            (
+                AppError::NotFound("title title-1".into()),
+                "not found: title title-1",
+                "NOT_FOUND",
+            ),
+            (
+                AppError::DownloadFeedbackTimeout("download feedback timed out".into()),
+                "download feedback timed out",
+                "DOWNLOAD_FEEDBACK_TIMEOUT",
+            ),
+            (
+                AppError::DownloadSubmitAmbiguous("download submission is ambiguous".into()),
+                "download submission is ambiguous",
+                "DOWNLOAD_SUBMIT_AMBIGUOUS",
+            ),
+            (
+                AppError::DownloadSubmitUnavailable("download submitter unavailable".into()),
+                "download submitter unavailable",
+                "DOWNLOAD_SUBMIT_UNAVAILABLE",
+            ),
+            (
+                AppError::MfaStepUpRequired("MFA code is required".into()),
+                "MFA code is required",
+                "MFA_STEP_UP_REQUIRED",
+            ),
+            (
+                AppError::TotpEnrollmentRequired("TOTP enrollment is required".into()),
+                "TOTP enrollment is required",
+                "TOTP_ENROLLMENT_REQUIRED",
+            ),
+            (
+                AppError::MfaEnrollmentRequired("MFA enrollment is required".into()),
+                "MFA enrollment is required",
+                "MFA_ENROLLMENT_REQUIRED",
+            ),
+            (
+                AppError::TotpInvalidCode("invalid MFA code".into()),
+                "invalid MFA code",
+                "TOTP_INVALID_CODE",
+            ),
+            (
+                AppError::TotpRecoveryCodeUsed("recovery code used".into()),
+                "recovery code used",
+                "TOTP_RECOVERY_CODE_USED",
+            ),
+        ] {
+            let error = to_gql_error(err);
+            assert_eq!(error.message, expected_message);
+            assert_eq!(graphql_error_code(&error), Some(expected_code));
+        }
     }
 
     #[test]

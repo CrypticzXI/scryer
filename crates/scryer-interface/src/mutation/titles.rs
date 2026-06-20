@@ -1,4 +1,4 @@
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_application::{
     DeleteExecutionConfirmation, DeleteTitlesJobItem, DeleteTitlesJobRequest,
     QueuedReleaseSelection,
@@ -22,8 +22,8 @@ fn queued_download_payload(
 ) -> QueueDownloadPayload {
     QueueDownloadPayload {
         status: QueueDownloadResultStatusValue::Queued,
-        job_id: Some(job_id),
-        title_id: title.id.clone(),
+        job_id: Some(job_id.into()),
+        title_id: title.id.clone().into(),
         title_name: title.name.clone(),
         source_title,
         source_kind: source_kind.map(DownloadSourceKindValue::from_application),
@@ -40,7 +40,7 @@ impl TitleMutations {
     ) -> GqlResult<AddTitleResult> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let library_id = input.library_id.clone();
+        let library_id = input.library_id.clone().map(String::from);
         let request = map_add_input(input)?;
         let result = if let Some(library_id) = library_id {
             app.add_title_with_outcome_in_library(&actor, request, library_id)
@@ -72,7 +72,7 @@ impl TitleMutations {
         let source_hint = input.source_hint.clone();
         let source_kind = parse_download_source_kind(input.source_kind);
         let source_title = input.source_title.clone();
-        let library_id = input.library_id.clone();
+        let library_id = input.library_id.clone().map(String::from);
         let request = map_add_input(input)?;
         let queued_release = QueuedReleaseSelection {
             source_hint,
@@ -107,7 +107,7 @@ impl TitleMutations {
             ),
             reused_existing_title: result.reused_existing_title,
             reused_queued_download: result.reused_queued_download,
-            download_job_id: Some(result.download_job_id),
+            download_job_id: Some(result.download_job_id.into()),
             queued_download: Some(queued_download),
         })
     }
@@ -126,6 +126,7 @@ impl TitleMutations {
             tags,
             options,
         } = input;
+        let title_id = title_id.to_string();
         let facet = facet.map(MediaFacetValue::into_domain);
         let mut tags = tags.map(normalize_title_tags);
 
@@ -154,8 +155,10 @@ impl TitleMutations {
     ) -> GqlResult<TitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = input.title_id.to_string();
+        let file_id = input.file_id.to_string();
         let title = app
-            .set_primary_movie_file(&actor, &input.title_id, &input.file_id)
+            .set_primary_movie_file(&actor, &title_id, &file_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_title(title))
@@ -168,8 +171,9 @@ impl TitleMutations {
     ) -> GqlResult<FixTitleMatchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = input.title_id.to_string();
         let result = app
-            .fix_title_match(&actor, &input.title_id, &input.tvdb_id)
+            .fix_title_match(&actor, &title_id, &input.tvdb_id)
             .await
             .map_err(to_gql_error)?;
 
@@ -181,12 +185,17 @@ impl TitleMutations {
         })
     }
 
-    async fn delete_title(&self, ctx: &Context<'_>, input: DeleteTitleInput) -> GqlResult<bool> {
+    async fn delete_title(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteTitleInput,
+    ) -> GqlResult<DeleteTitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = input.title_id.to_string();
         app.delete_title(
             &actor,
-            &input.title_id,
+            &title_id,
             input.delete_files_on_disk.unwrap_or(false),
             input
                 .preview_fingerprint
@@ -196,8 +205,11 @@ impl TitleMutations {
                 }),
         )
         .await
-        .map(|_| true)
-        .map_err(to_gql_error)
+        .map_err(to_gql_error)?;
+        Ok(DeleteTitlePayload {
+            id: ID::from(title_id),
+            deleted: true,
+        })
     }
 
     async fn delete_titles(
@@ -215,7 +227,7 @@ impl TitleMutations {
                         .items
                         .into_iter()
                         .map(|item| DeleteTitlesJobItem {
-                            title_id: item.title_id,
+                            title_id: item.title_id.to_string(),
                             preview_fingerprint: item.preview_fingerprint,
                         })
                         .collect(),
@@ -227,21 +239,29 @@ impl TitleMutations {
             .map_err(to_gql_error)?;
         Ok(DeleteTitlesPayload {
             job_run: from_job_run(accepted.job_run),
-            accepted_title_ids: accepted.accepted_title_ids,
+            accepted_title_ids: accepted
+                .accepted_title_ids
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         })
     }
 
     async fn clear_title_release_blocklist_entry(
         &self,
         ctx: &Context<'_>,
-        input: ClearTitleReleaseBlocklistEntryInput,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<ClearTitleReleaseBlocklistEntryPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.clear_title_release_blocklist_entry(&actor, &input.id)
+        let id = id.to_string();
+        app.clear_title_release_blocklist_entry(&actor, &id)
             .await
-            .map(|_| true)
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(ClearTitleReleaseBlocklistEntryPayload {
+            id: ID::from(id),
+            cleared: true,
+        })
     }
 
     async fn set_title_monitored(
@@ -251,8 +271,9 @@ impl TitleMutations {
     ) -> GqlResult<TitlePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = input.title_id.to_string();
         let title = app
-            .set_title_monitored(&actor, &input.title_id, input.monitored)
+            .set_title_monitored(&actor, &title_id, input.monitored)
             .await
             .map_err(to_gql_error)?;
         Ok(from_title(title))

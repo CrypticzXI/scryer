@@ -13,7 +13,7 @@ export type ExternalImportDownloadClient = {
   useSsl: boolean;
   urlBase: string | null;
   username: string | null;
-  apiKey: string | null;
+  apiKeyPresent: boolean;
   dedupKey: string;
   supported: boolean;
   requiresPasswordOverride: boolean;
@@ -25,7 +25,7 @@ export type ExternalImportIndexer = {
   implementation: string;
   scryerProviderType: string | null;
   baseUrl: string | null;
-  apiKey: string | null;
+  apiKeyPresent: boolean;
   dedupKey: string;
   supported: boolean;
   childCount: number;

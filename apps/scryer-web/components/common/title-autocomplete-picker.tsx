@@ -156,9 +156,10 @@ export function TitleAutocompletePicker({
       setSearchPerformed(true);
 
       void client
-        .query<{ titles?: TitleRecord[] }>(titlesQuery, {
+        .query<{ titles?: { items?: TitleRecord[] } }>(titlesQuery, {
           facet: null,
           query: trimmed,
+          limit: MAX_RESULTS,
         })
         .toPromise()
         .then(({ data, error }) => {
@@ -168,7 +169,7 @@ export function TitleAutocompletePicker({
           if (error) {
             throw error;
           }
-          setResults(((data?.titles ?? []) as TitleRecord[]).slice(0, MAX_RESULTS));
+          setResults(((data?.titles?.items ?? []) as TitleRecord[]).slice(0, MAX_RESULTS));
           setOpen(true);
           refreshMenuWidth();
         })

@@ -2,6 +2,7 @@ import {
   BACKUP_INFO_FIELDS,
   JOB_RUN_FIELDS,
   MEDIA_SERVER_CONNECTION_FIELDS,
+  PROVIDER_CONFIG_VALUE_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_CORE_FIELDS,
@@ -63,12 +64,18 @@ ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
 
-export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
-  deleteMyPasskey(id: $id)
+export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: ID!) {
+  deleteMyPasskey(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: String!) {
-  revokeMyOauthApp(grantId: $grantId)
+export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: ID!) {
+  revokeMyOauthApp(grantId: $grantId) {
+    grantId
+    revoked
+  }
 }`;
 
 export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
@@ -198,12 +205,15 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
   }
 }`;
 
-export const deleteUserMutation = `mutation DeleteUser($input: DeleteUserInput!) {
-  deleteUser(input: $input)
+export const deleteUserMutation = `mutation DeleteUser($id: ID!) {
+  deleteUser(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const resetUserMfaMutation = `mutation ResetUserMfa($input: ResetUserMfaInput!) {
-  resetUserMfa(input: $input) {
+export const resetUserMfaMutation = `mutation ResetUserMfa($id: ID!) {
+  resetUserMfa(id: $id) {
     id
     username
     hasPassword
@@ -219,7 +229,10 @@ export const resetUserMfaMutation = `mutation ResetUserMfa($input: ResetUserMfaI
 }`;
 
 export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInput!) {
-  deleteTitle(input: $input)
+  deleteTitle(input: $input) {
+    id
+    deleted
+  }
 }`;
 
 export const deleteTitlesMutation = `mutation DeleteTitles($input: DeleteTitlesInput!) {
@@ -262,7 +275,8 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     enableAutoSearch
     lastHealthStatus
     lastErrorAt
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
     createdAt
     updatedAt
   }
@@ -287,17 +301,21 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     enableAutoSearch
     lastHealthStatus
     lastErrorAt
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
     createdAt
     updatedAt
   }
 }`;
 
-export const deleteIndexerMutation = `mutation DeleteIndexer($input: DeleteIndexerConfigInput!) {
-  deleteIndexerConfig(input: $input)
+export const deleteIndexerMutation = `mutation DeleteIndexer($id: ID!) {
+  deleteIndexerConfig(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const syncIndexerConfigMutation = `mutation SyncIndexerConfig($id: String!) {
+export const syncIndexerConfigMutation = `mutation SyncIndexerConfig($id: ID!) {
   syncIndexerConfig(id: $id) {
     parentConfigId
     createdIds
@@ -307,7 +325,11 @@ export const syncIndexerConfigMutation = `mutation SyncIndexerConfig($id: String
 }`;
 
 export const testIndexerConnectionMutation = `mutation TestIndexerConnection($input: TestIndexerConnectionInput!) {
-  testIndexerConnection(input: $input)
+  testIndexerConnection(input: $input) {
+    status
+    message
+    retryAfterSeconds
+  }
 }`;
 
 export const createDownloadClientMutation = `mutation CreateDownloadClient($input: CreateDownloadClientConfigInput!) {
@@ -316,7 +338,9 @@ export const createDownloadClientMutation = `mutation CreateDownloadClient($inpu
     name
     clientType
     baseUrl
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     status
     lastError
@@ -332,7 +356,9 @@ export const updateDownloadClientMutation = `mutation UpdateDownloadClient($inpu
     name
     clientType
     baseUrl
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     status
     lastError
@@ -343,15 +369,25 @@ export const updateDownloadClientMutation = `mutation UpdateDownloadClient($inpu
 }`;
 
 export const testDownloadClientConnectionMutation = `mutation TestDownloadClientConnection($input: TestDownloadClientConnectionInput!) {
-  testDownloadClientConnection(input: $input)
+  testDownloadClientConnection(input: $input) {
+    status
+    message
+    retryAfterSeconds
+  }
 }`;
 
-export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($input: DeleteDownloadClientConfigInput!) {
-  deleteDownloadClientConfig(input: $input)
+export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($id: ID!) {
+  deleteDownloadClientConfig(id: $id) {
+    id
+    deleted
+  }
 }`;
 
 export const reorderDownloadClientsMutation = `mutation ReorderDownloadClients($input: ReorderDownloadClientConfigsInput!) {
-  reorderDownloadClientConfigs(input: $input)
+  reorderDownloadClientConfigs(input: $input) {
+    ids
+    reordered
+  }
 }`;
 
 export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
@@ -408,8 +444,8 @@ export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input:
   }
 }`;
 
-export const dismissMediaRequestMutation = `mutation DismissMediaRequest($input: MediaRequestActionInput!) {
-  dismissMediaRequest(input: $input) {
+export const dismissMediaRequestMutation = `mutation DismissMediaRequest($requestId: ID!) {
+  dismissMediaRequest(requestId: $requestId) {
     accepted
   }
 }`;
@@ -429,18 +465,21 @@ export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($inpu
   }
 }`;
 
-export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($input: MediaRequestActionInput!) {
-  cancelMyMediaRequest(input: $input) {
+export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($requestId: ID!) {
+  cancelMyMediaRequest(requestId: $requestId) {
     accepted
   }
 }`;
 
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
-  deleteMediaFile(input: $input)
+  deleteMediaFile(input: $input) {
+    id
+    deleted
+  }
 }`;
 
-export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!, $importWarmupSessionId: String) {
-  scanLibrary(libraryId: $libraryId, importWarmupSessionId: $importWarmupSessionId) {
+export const scanLibraryMutation = `mutation ScanLibrary($input: ScanLibraryInput!) {
+  scanLibrary(input: $input) {
     sessionId
     facet
     mode
@@ -472,19 +511,22 @@ export const updateLibraryMutation = `mutation UpdateLibrary($input: UpdateLibra
   }
 }`;
 
-export const deleteLibraryMutation = `mutation DeleteLibrary($input: DeleteLibraryInput!) {
-  deleteLibrary(input: $input)
+export const deleteLibraryMutation = `mutation DeleteLibrary($id: ID!) {
+  deleteLibrary(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const cancelLibraryScanMutation = `mutation CancelLibraryScan($input: CancelLibraryScanInput!) {
-  cancelLibraryScan(input: $input) {
+export const cancelLibraryScanMutation = `mutation CancelLibraryScan($sessionId: ID!) {
+  cancelLibraryScan(sessionId: $sessionId) {
     sessionId
     accepted
   }
 }`;
 
-export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($input: TitleIdInput!) {
-  scanTitleLibrary(input: $input) {
+export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($titleId: ID!) {
+  scanTitleLibrary(titleId: $titleId) {
     scanned
     matched
     imported
@@ -531,8 +573,8 @@ export const bindPendingImportMutation = `mutation BindPendingImport($input: Bin
   }
 }`;
 
-export const ignorePendingImportMutation = `mutation IgnorePendingImport($input: IgnorePendingImportInput!) {
-  ignorePendingImport(input: $input) {
+export const ignorePendingImportMutation = `mutation IgnorePendingImport($pendingImportId: ID!) {
+  ignorePendingImport(pendingImportId: $pendingImportId) {
     id
     status
   }
@@ -601,8 +643,11 @@ export const updateSubtitleProviderConfigMutation = `mutation UpdateSubtitleProv
   }
 }`;
 
-export const deleteSubtitleProviderConfigMutation = `mutation DeleteSubtitleProviderConfig($input: DeleteSubtitleProviderConfigInput!) {
-  deleteSubtitleProviderConfig(input: $input)
+export const deleteSubtitleProviderConfigMutation = `mutation DeleteSubtitleProviderConfig($id: ID!) {
+  deleteSubtitleProviderConfig(id: $id) {
+    id
+    deleted
+  }
 }`;
 
 export const testSubtitleProviderConnectionMutation = `mutation TestSubtitleProviderConnection($input: TestSubtitleProviderConnectionInput!) {
@@ -639,24 +684,29 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
 }`;
 
 export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
-  clearTitleImageCache
-}`;
-
-export const createBackupMutation = `mutation CreateBackup($password: String!) {
-  createBackup(password: $password) {${BACKUP_INFO_FIELDS}
+  clearTitleImageCache {
+    accepted
   }
 }`;
 
-export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($filename: String!) {
-  prepareBackupDownload(filename: $filename) {
+export const createBackupMutation = `mutation CreateBackup($input: CreateBackupInput!) {
+  createBackup(input: $input) {${BACKUP_INFO_FIELDS}
+  }
+}`;
+
+export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($input: PrepareBackupDownloadInput!) {
+  prepareBackupDownload(input: $input) {
     downloadUrl
     downloadAuthorizationToken
     expiresAt
   }
 }`;
 
-export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
-  deleteBackup(filename: $filename)
+export const deleteBackupMutation = `mutation DeleteBackup($input: DeleteBackupInput!) {
+  deleteBackup(input: $input) {
+    filename
+    deleted
+  }
 }`;
 
 const AUTO_BACKUP_SETTINGS_FIELDS = `
@@ -715,12 +765,19 @@ export const updateMediaServerConnectionMutation = `mutation UpdateMediaServerCo
   }
 }`;
 
-export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: String!) {
-  deleteMediaServerConnection(id: $id)
+export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: ID!) {
+  deleteMediaServerConnection(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($id: String!, $plexAuthToken: String) {
-  testMediaServerConnection(id: $id, plexAuthToken: $plexAuthToken)
+export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($input: TestMediaServerConnectionInput!) {
+  testMediaServerConnection(input: $input) {
+    status
+    message
+    retryAfterSeconds
+  }
 }`;
 
 export const discoverPlexMediaServersMutation = `mutation DiscoverPlexMediaServers($plexAuthToken: String!) {
@@ -745,8 +802,11 @@ export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input:
   }
 }`;
 
-export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($input: UnlinkExternalAccountInput!) {
-  unlinkExternalAccount(input: $input)
+export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($linkedAccountId: ID!) {
+  unlinkExternalAccount(linkedAccountId: $linkedAccountId) {
+    linkedAccountId
+    unlinked
+  }
 }`;
 
 export const loginWithPlexMutation = `mutation LoginWithPlex($input: LoginWithPlexInput!) {
@@ -777,8 +837,8 @@ export const upsertDelayProfileMutation = `mutation UpsertDelayProfile($input: D
   }
 }`;
 
-export const deleteDelayProfileMutation = `mutation DeleteDelayProfile($input: DeleteDelayProfileInput!) {
-  deleteDelayProfile(input: $input) {
+export const deleteDelayProfileMutation = `mutation DeleteDelayProfile($id: ID!) {
+  deleteDelayProfile(id: $id) {
     id
   }
 }`;
@@ -880,8 +940,8 @@ export const saveQualityProfileSettingsMutation = `mutation SaveQualityProfileSe
   }
 }`;
 
-export const deleteQualityProfileMutation = `mutation DeleteQualityProfile($input: DeleteQualityProfileInput!) {
-  deleteQualityProfile(input: $input) {
+export const deleteQualityProfileMutation = `mutation DeleteQualityProfile($id: ID!) {
+  deleteQualityProfile(id: $id) {
 ${qualityProfileSettingsFieldSelection}
   }
 }`;
@@ -939,8 +999,11 @@ export const queueExistingMutation = `mutation QueueExisting($input: QueueDownlo
   }
 }`;
 
-export const triggerTitleMismatchRecoverySearchMutation = `mutation TriggerTitleMismatchRecoverySearch($input: TitleIdInput!) {
-  triggerTitleMismatchRecoverySearch(input: $input)
+export const triggerTitleMismatchRecoverySearchMutation = `mutation TriggerTitleMismatchRecoverySearch($titleId: ID!) {
+  triggerTitleMismatchRecoverySearch(titleId: $titleId) {
+    titleId
+    queuedCount
+  }
 }`;
 
 export const queueBestReleaseMutation = `mutation QueueBestRelease($input: QueueBestReleaseInput!) {
@@ -1186,7 +1249,10 @@ export function buildDeleteTitleBatchMutation(count: number): string {
   ).join(", ");
   const fields = Array.from(
     { length: count },
-    (_, index) => `item${index}: deleteTitle(input: $input${index})`,
+    (_, index) => `item${index}: deleteTitle(input: $input${index}) {
+    id
+    deleted
+  }`,
   ).join("\n");
 
   return `mutation DeleteTitleBatch(${variables}) {
@@ -1262,16 +1328,25 @@ export const triggerSeasonWantedSearchMutation = `mutation TriggerSeasonWantedSe
   }
 }`;
 
-export const pauseWantedItemMutation = `mutation PauseWantedItem($input: WantedItemIdInput!) {
-  pauseWantedItem(input: $input)
+export const pauseWantedItemMutation = `mutation PauseWantedItem($id: ID!) {
+  pauseWantedItem(id: $id) {
+    id
+    paused
+  }
 }`;
 
-export const resumeWantedItemMutation = `mutation ResumeWantedItem($input: WantedItemIdInput!) {
-  resumeWantedItem(input: $input)
+export const resumeWantedItemMutation = `mutation ResumeWantedItem($id: ID!) {
+  resumeWantedItem(id: $id) {
+    id
+    resumed
+  }
 }`;
 
-export const resetWantedItemMutation = `mutation ResetWantedItem($input: WantedItemIdInput!) {
-  resetWantedItem(input: $input)
+export const resetWantedItemMutation = `mutation ResetWantedItem($id: ID!) {
+  resetWantedItem(id: $id) {
+    id
+    reset
+  }
 }`;
 
 // ── RSS Sync ─────────────────────────────────────────────────────────────
@@ -1287,44 +1362,21 @@ export const triggerRssSyncMutation = `mutation TriggerRssSync {
 
 // ── Pending Releases ─────────────────────────────────────────────────────
 
-export const forceGrabPendingReleaseMutation = `mutation ForceGrabPendingRelease($input: PendingReleaseActionInput!) {
-  forceGrabPendingRelease(input: $input)
+export const forceGrabPendingReleaseMutation = `mutation ForceGrabPendingRelease($id: ID!) {
+  forceGrabPendingRelease(id: $id) {
+    id
+    grabbed
+  }
 }`;
 
-export const dismissPendingReleaseMutation = `mutation DismissPendingRelease($input: PendingReleaseActionInput!) {
-  dismissPendingRelease(input: $input)
+export const dismissPendingReleaseMutation = `mutation DismissPendingRelease($id: ID!) {
+  dismissPendingRelease(id: $id) {
+    id
+    dismissed
+  }
 }`;
 
 // ── Plugins ──────────────────────────────────────────────────────────────
-
-export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
-  refreshPluginRegistry {
-    id
-    name
-    description
-    version
-    latestVersion
-    pluginType
-    providerType
-    author
-    official
-    publisher
-    supportTier
-    status
-    docsUrl
-    sourceRepo
-    builtin
-    sourceUrl
-    sourceKind
-    blockedReason
-    bytes
-    isInstalled
-    isEnabled
-    installedVersion
-    updateAvailable
-    defaultBaseUrl
-  }
-}`;
 
 export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
   refreshPluginCatalog {
@@ -1356,35 +1408,8 @@ export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
   }
 }`;
 
-export const installPluginMutation = `mutation InstallPlugin($input: InstallPluginInput!) {
-  installPlugin(input: $input) {
-    id
-    pluginId
-    name
-    description
-    version
-    sdkVersion
-    sdkConstraint
-    pluginType
-    providerType
-    isEnabled
-    isBuiltin
-    sourceKind
-    sourceUrl
-    publisher
-    supportTier
-    docsUrl
-    sourceRepo
-    manifestUrl
-    wasmDigest
-    artifactDigest
-    installedAt
-    updatedAt
-  }
-}`;
-
-export const beginInstallPluginMutation = `mutation BeginInstallPlugin($input: InstallPluginInput!) {
-  beginInstallPlugin(input: $input) {
+export const beginInstallPluginMutation = `mutation BeginInstallPlugin($pluginId: ID!) {
+  beginInstallPlugin(pluginId: $pluginId) {
     pluginId
     operationKind
     state
@@ -1396,8 +1421,11 @@ export const beginInstallPluginMutation = `mutation BeginInstallPlugin($input: I
   }
 }`;
 
-export const uninstallPluginMutation = `mutation UninstallPlugin($input: UninstallPluginInput!) {
-  uninstallPlugin(input: $input)
+export const uninstallPluginMutation = `mutation UninstallPlugin($pluginId: ID!) {
+  uninstallPlugin(pluginId: $pluginId) {
+    pluginId
+    uninstalled
+  }
 }`;
 
 export const togglePluginMutation = `mutation TogglePlugin($input: TogglePluginInput!) {
@@ -1427,35 +1455,8 @@ export const togglePluginMutation = `mutation TogglePlugin($input: TogglePluginI
   }
 }`;
 
-export const upgradePluginMutation = `mutation UpgradePlugin($input: UpgradePluginInput!) {
-  upgradePlugin(input: $input) {
-    id
-    pluginId
-    name
-    description
-    version
-    sdkVersion
-    sdkConstraint
-    pluginType
-    providerType
-    isEnabled
-    isBuiltin
-    sourceKind
-    sourceUrl
-    publisher
-    supportTier
-    docsUrl
-    sourceRepo
-    manifestUrl
-    wasmDigest
-    artifactDigest
-    installedAt
-    updatedAt
-  }
-}`;
-
-export const beginUpgradePluginMutation = `mutation BeginUpgradePlugin($input: UpgradePluginInput!) {
-  beginUpgradePlugin(input: $input) {
+export const beginUpgradePluginMutation = `mutation BeginUpgradePlugin($pluginId: ID!) {
+  beginUpgradePlugin(pluginId: $pluginId) {
     pluginId
     operationKind
     state
@@ -1556,16 +1557,24 @@ export const installUploadedPluginMutation = `mutation InstallUploadedPlugin($in
 
 // ── Recycle Bin ─────────────────────────────────────────────────────────
 
-export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: String!) {
-  restoreRecycledItem(id: $id)
+export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: ID!) {
+  restoreRecycledItem(id: $id) {
+    id
+    restored
+  }
 }`;
 
-export const deleteRecycledItemMutation = `mutation DeleteRecycledItem($id: String!) {
-  deleteRecycledItem(id: $id)
+export const deleteRecycledItemMutation = `mutation DeleteRecycledItem($id: ID!) {
+  deleteRecycledItem(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const emptyRecycleBinMutation = `mutation EmptyRecycleBin($libraryIds: [String!]) {
-  emptyRecycleBin(libraryIds: $libraryIds)
+export const emptyRecycleBinMutation = `mutation EmptyRecycleBin($libraryIds: [ID!]) {
+  emptyRecycleBin(libraryIds: $libraryIds) {
+    purgedCount
+  }
 }`;
 
 export const updateRecycleBinSettingsMutation = `mutation UpdateRecycleBinSettings($input: UpdateRecycleBinSettingsInput!) {
@@ -1582,7 +1591,9 @@ export const createNotificationChannelMutation = `mutation CreateNotificationCha
     name
     channelType
     mediaServerConnectionId
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     createdAt
     updatedAt
@@ -1595,19 +1606,29 @@ export const updateNotificationChannelMutation = `mutation UpdateNotificationCha
     name
     channelType
     mediaServerConnectionId
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     createdAt
     updatedAt
   }
 }`;
 
-export const deleteNotificationChannelMutation = `mutation DeleteNotificationChannel($id: String!) {
-  deleteNotificationChannel(id: $id)
+export const deleteNotificationChannelMutation = `mutation DeleteNotificationChannel($id: ID!) {
+  deleteNotificationChannel(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const testNotificationChannelMutation = `mutation TestNotificationChannel($id: String!) {
-  testNotificationChannel(id: $id)
+export const testNotificationChannelMutation = `mutation TestNotificationChannel($id: ID!) {
+  testNotificationChannel(id: $id) {
+    id
+    status
+    message
+    retryAfterSeconds
+  }
 }`;
 
 export const createNotificationSubscriptionMutation = `mutation CreateNotificationSubscription($input: CreateNotificationSubscriptionInput!) {
@@ -1640,8 +1661,11 @@ export const updateNotificationSubscriptionMutation = `mutation UpdateNotificati
   }
 }`;
 
-export const deleteNotificationSubscriptionMutation = `mutation DeleteNotificationSubscription($id: String!) {
-  deleteNotificationSubscription(id: $id)
+export const deleteNotificationSubscriptionMutation = `mutation DeleteNotificationSubscription($id: ID!) {
+  deleteNotificationSubscription(id: $id) {
+    id
+    deleted
+  }
 }`;
 
 // ── Rule Sets ────────────────────────────────────────────────────────────
@@ -1678,8 +1702,11 @@ export const updateRuleSetMutation = `mutation UpdateRuleSet($input: UpdateRuleS
   }
 }`;
 
-export const deleteRuleSetMutation = `mutation DeleteRuleSet($id: String!) {
-  deleteRuleSet(id: $id)
+export const deleteRuleSetMutation = `mutation DeleteRuleSet($id: ID!) {
+  deleteRuleSet(id: $id) {
+    id
+    deleted
+  }
 }`;
 
 export const toggleRuleSetMutation = `mutation ToggleRuleSet($input: ToggleRuleSetInput!) {
@@ -1706,13 +1733,20 @@ export const validateRuleSetMutation = `mutation ValidateRuleSet($input: Validat
 }`;
 
 export const setTitleRequiredAudioMutation = `mutation SetTitleRequiredAudio($input: SetTitleRequiredAudioInput!) {
-  setTitleRequiredAudio(input: $input)
+  setTitleRequiredAudio(input: $input) {
+    titleId
+    facet
+    languages
+    updated
+  }
 }`;
 
 // ── Setup Wizard ──────────────────────────────────────────────────────
 
 export const completeSetupMutation = `mutation CompleteSetup {
-  completeSetup
+  completeSetup {
+    completed
+  }
 }`;
 
 // ── External Import (Sonarr/Radarr) ──────────────────────────────────
@@ -1758,12 +1792,12 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
     rootFolders { source path }
     downloadClients {
       sources name implementation scryerClientType
-      host port useSsl urlBase username apiKey
+      host port useSsl urlBase username apiKeyPresent
       dedupKey supported requiresPasswordOverride
     }
     indexers {
       sources name implementation scryerProviderType
-      baseUrl apiKey dedupKey supported
+      baseUrl apiKeyPresent dedupKey supported
       childCount childNames requiresApiKeyOverride apiKeyHelpUrl
     }
   }
@@ -1774,8 +1808,11 @@ export const startExternalImportMonitorWarmupMutation = `mutation StartExternalI
   }
 }`;
 
-export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($input: CancelExternalImportMonitorWarmupInput!) {
-  cancelExternalImportMonitorWarmup(input: $input)
+export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($sessionId: ID!) {
+  cancelExternalImportMonitorWarmup(sessionId: $sessionId) {
+    sessionId
+    canceled
+  }
 }`;
 
 export const executeExternalImportMutation = `mutation ExecuteExternalImport($input: ExecuteExternalImportInput!) {
@@ -1789,11 +1826,18 @@ export const executeExternalImportMutation = `mutation ExecuteExternalImport($in
 }`;
 
 export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($input: FinalizeExternalImportInput!) {
-  finalizeExternalImport(input: $input)
+  finalizeExternalImport(input: $input) {
+    finalized
+    monitorWarmupSessionId
+  }
 }`;
 
-export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($language: String!) {
-  rehydrateAllMetadata(language: $language)
+export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($input: RehydrateAllMetadataInput!) {
+  rehydrateAllMetadata(input: $input) {
+    language
+    titlesCleared
+    accepted
+  }
 }`;
 
 const ppScriptFields = `
@@ -1809,11 +1853,14 @@ export const updatePostProcessingScriptMutation = `mutation UpdatePostProcessing
   updatePostProcessingScript(input: $input) {${ppScriptFields}}
 }`;
 
-export const deletePostProcessingScriptMutation = `mutation DeletePostProcessingScript($id: String!) {
-  deletePostProcessingScript(id: $id)
+export const deletePostProcessingScriptMutation = `mutation DeletePostProcessingScript($id: ID!) {
+  deletePostProcessingScript(id: $id) {
+    id
+    deleted
+  }
 }`;
 
-export const togglePostProcessingScriptMutation = `mutation TogglePostProcessingScript($id: String!) {
+export const togglePostProcessingScriptMutation = `mutation TogglePostProcessingScript($id: ID!) {
   togglePostProcessingScript(id: $id) {${ppScriptFields}}
 }`;
 
@@ -1853,19 +1900,32 @@ export const searchSubtitlesMutation = `mutation SearchSubtitles($input: SearchS
 }`;
 
 export const downloadSubtitleMutation = `mutation DownloadSubtitle($input: DownloadSubtitleInput!) {
-  downloadSubtitle(input: $input)
+  downloadSubtitle(input: $input) {
+    mediaFileId
+    providerFileId
+    downloaded
+  }
 }`;
 
 export const deleteExternalSubtitleMutation = `mutation DeleteExternalSubtitle($input: DeleteExternalSubtitleInput!) {
-  deleteExternalSubtitle(input: $input)
+  deleteExternalSubtitle(input: $input) {
+    id
+    deleted
+  }
 }`;
 
 export const blocklistExternalSubtitleMutation = `mutation BlocklistExternalSubtitle($input: BlocklistExternalSubtitleInput!) {
-  blocklistExternalSubtitle(input: $input)
+  blocklistExternalSubtitle(input: $input) {
+    id
+    blocklisted
+  }
 }`;
 
-export const clearTitleReleaseBlocklistEntryMutation = `mutation ClearTitleReleaseBlocklistEntry($input: ClearTitleReleaseBlocklistEntryInput!) {
-  clearTitleReleaseBlocklistEntry(input: $input)
+export const clearTitleReleaseBlocklistEntryMutation = `mutation ClearTitleReleaseBlocklistEntry($id: ID!) {
+  clearTitleReleaseBlocklistEntry(id: $id) {
+    id
+    cleared
+  }
 }`;
 
 // ── Import retry mutations ────────────────────────────────────────────────

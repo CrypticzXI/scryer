@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{AppError, LoginFailureTimingClass};
 use scryer_domain::AppPermission;
@@ -40,12 +40,12 @@ async fn login_payload_from_user(
         .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
         .await
         .map_err(to_gql_error)?;
-    let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
+    let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
     Ok(LoginPayload {
         token,
         user: user_payload_from_user(app, user).await?,
         expires_at,
-        mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
+        mfa_verified_until,
         mfa_enrollment_required: false,
     })
 }
@@ -62,8 +62,7 @@ async fn login_mfa_enrollment_payload_from_user(
         .issue_mfa_enrollment_token(&user)
         .await
         .map_err(to_gql_error)?;
-    let expires_at =
-        (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
+    let expires_at = Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime());
     Ok(LoginPayload {
         token,
         user: user_payload_from_user(app, user).await?,
@@ -101,7 +100,7 @@ impl UserMutations {
                 .normalized_for_storage();
                 scryer_domain::LibraryGrant {
                     user_id: String::new(),
-                    library_id: grant.library_id,
+                    library_id: String::from(grant.library_id),
                     permissions,
                 }
             })
@@ -130,12 +129,13 @@ impl UserMutations {
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let actor = if input.user_id != actor.id {
+        let user_id = String::from(input.user_id);
+        let actor = if user_id != actor.id {
             require_config_app_permission(ctx, AppPermission::ManageUsers).await?
         } else {
             actor
         };
-        let user = if input.user_id == actor.id {
+        let user = if user_id == actor.id {
             if let Some(current_password) = input.current_password {
                 app.change_own_password(&actor, input.password, current_password)
                     .await
@@ -146,7 +146,7 @@ impl UserMutations {
                     .map_err(to_gql_error)?
             }
         } else {
-            app.set_user_password(&actor, &input.user_id, input.password)
+            app.set_user_password(&actor, &user_id, input.password)
                 .await
                 .map_err(to_gql_error)?
         };
@@ -164,6 +164,7 @@ impl UserMutations {
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManagePermissions).await?;
+        let user_id = String::from(input.user_id);
         let permissions = scryer_domain::AppPermissionMask::from_permissions(
             input
                 .permissions
@@ -171,7 +172,7 @@ impl UserMutations {
                 .map(|permission| permission.into_domain()),
         );
         let user = app
-            .set_user_app_permissions(&actor, &input.user_id, permissions)
+            .set_user_app_permissions(&actor, &user_id, permissions)
             .await
             .map_err(to_gql_error)?;
         let user = app
@@ -188,6 +189,7 @@ impl UserMutations {
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManagePermissions).await?;
+        let user_id = String::from(input.user_id);
         let grants = input
             .grants
             .into_iter()
@@ -200,14 +202,14 @@ impl UserMutations {
                 )
                 .normalized_for_storage();
                 scryer_domain::LibraryGrant {
-                    user_id: input.user_id.clone(),
-                    library_id: grant.library_id,
+                    user_id: user_id.clone(),
+                    library_id: String::from(grant.library_id),
                     permissions,
                 }
             })
             .collect();
         let user = app
-            .set_user_library_permissions(&actor, &input.user_id, grants)
+            .set_user_library_permissions(&actor, &user_id, grants)
             .await
             .map_err(to_gql_error)?;
         let user = app
@@ -217,24 +219,22 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
-    async fn delete_user(&self, ctx: &Context<'_>, input: DeleteUserInput) -> GqlResult<bool> {
+    async fn delete_user(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteUserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
-        app.delete_user(&actor, &input.user_id)
+        let id_string = id.to_string();
+        app.delete_user(&actor, &id_string)
             .await
-            .map(|_| true)
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(DeleteUserPayload { id, deleted: true })
     }
 
-    async fn reset_user_mfa(
-        &self,
-        ctx: &Context<'_>,
-        input: ResetUserMfaInput,
-    ) -> GqlResult<UserPayload> {
+    async fn reset_user_mfa(&self, ctx: &Context<'_>, id: ID) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
+        let id = id.to_string();
         let user = app
-            .reset_user_mfa(&actor, &input.user_id)
+            .reset_user_mfa(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         let user = app
@@ -251,11 +251,13 @@ impl UserMutations {
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
+        let user_id = input.user_id.to_string();
+        let connection_id = input.connection_id.to_string();
         app.create_external_account_invite(
             &actor,
-            &input.user_id,
+            &user_id,
             input.provider.into_domain(),
-            input.connection_id,
+            connection_id,
             input.provider_user_identifier,
             input.provider_user_id,
         )
@@ -271,10 +273,14 @@ impl UserMutations {
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.link_plex_account(&actor, input.connection_id, input.plex_auth_token)
-            .await
-            .map(from_linked_account)
-            .map_err(to_gql_error)
+        app.link_plex_account(
+            &actor,
+            input.connection_id.to_string(),
+            input.plex_auth_token,
+        )
+        .await
+        .map(from_linked_account)
+        .map_err(to_gql_error)
     }
 
     async fn link_jellyfin_account(
@@ -284,23 +290,32 @@ impl UserMutations {
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.link_jellyfin_account(&actor, input.connection_id, input.username, input.password)
-            .await
-            .map(from_linked_account)
-            .map_err(to_gql_error)
+        app.link_jellyfin_account(
+            &actor,
+            input.connection_id.to_string(),
+            input.username,
+            input.password,
+        )
+        .await
+        .map(from_linked_account)
+        .map_err(to_gql_error)
     }
 
     async fn unlink_external_account(
         &self,
         ctx: &Context<'_>,
-        input: UnlinkExternalAccountInput,
-    ) -> GqlResult<bool> {
+        linked_account_id: ID,
+    ) -> GqlResult<UnlinkExternalAccountPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.unlink_external_account(&actor, &input.linked_account_id)
+        let linked_account_id_string = linked_account_id.to_string();
+        app.unlink_external_account(&actor, &linked_account_id_string)
             .await
-            .map(|_| true)
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(UnlinkExternalAccountPayload {
+            linked_account_id,
+            unlinked: true,
+        })
     }
 
     async fn login_with_plex(
@@ -311,7 +326,7 @@ impl UserMutations {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
         let user = match app
-            .federated_login_with_plex(input.connection_id, input.plex_auth_token)
+            .federated_login_with_plex(input.connection_id.to_string(), input.plex_auth_token)
             .await
         {
             Ok(user) => user,
@@ -336,7 +351,11 @@ impl UserMutations {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
         let user = match app
-            .federated_login_with_jellyfin(input.connection_id, input.username, input.password)
+            .federated_login_with_jellyfin(
+                input.connection_id.to_string(),
+                input.username,
+                input.password,
+            )
             .await
         {
             Ok(user) => user,

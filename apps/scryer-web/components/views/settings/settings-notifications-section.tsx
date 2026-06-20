@@ -333,7 +333,7 @@ function DynamicConfigField({
         onChange={(e) => onChange(field.key, e.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password" || field.fieldType === "secret"
+          field.fieldType === "password"
             ? "password"
             : field.fieldType === "number"
               ? "number"

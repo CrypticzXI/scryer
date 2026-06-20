@@ -639,11 +639,11 @@ function ActivityQueueDetailsPanel({
   );
 }
 
-function parseByteCount(sizeBytes: string | null): number | null {
-  if (!sizeBytes) {
+function parseByteCount(sizeBytes: number | string | null): number | null {
+  if (sizeBytes === null || sizeBytes === "") {
     return null;
   }
-  const bytes = Number.parseFloat(sizeBytes);
+  const bytes = typeof sizeBytes === "number" ? sizeBytes : Number.parseFloat(sizeBytes);
   if (!Number.isFinite(bytes) || bytes < 0) {
     return null;
   }
@@ -667,7 +667,7 @@ function formatByteCount(bytes: number): string {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function formatBytes(sizeBytes: string | null): string {
+function formatBytes(sizeBytes: number | string | null): string {
   const bytes = parseByteCount(sizeBytes);
   return bytes === null ? "\u2014" : formatByteCount(bytes);
 }
@@ -1026,8 +1026,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           break;
         }
         case "size": {
-          const leftSize = Number.parseFloat(leftItem.sizeBytes ?? "0");
-          const rightSize = Number.parseFloat(rightItem.sizeBytes ?? "0");
+          const leftSize = parseByteCount(leftItem.sizeBytes) ?? 0;
+          const rightSize = parseByteCount(rightItem.sizeBytes) ?? 0;
           comparison = leftSize - rightSize;
           break;
         }

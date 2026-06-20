@@ -4,10 +4,12 @@ use scryer_domain::{
     ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
 };
 use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
+const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
 
 #[derive(Clone, Debug)]
 pub struct TitleArtworkUrlUpdate {
@@ -87,6 +89,52 @@ pub trait TitleRepository: Send + Sync {
             .into_iter()
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
+    }
+    async fn list_for_libraries_catalog(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+        filter: TitleCatalogFilter,
+        sort: TitleCatalogSort,
+        limit: usize,
+        offset: usize,
+        include_external_ids: bool,
+    ) -> AppResult<TitleCatalogResult> {
+        if library_ids.is_empty() {
+            return Ok(TitleCatalogResult {
+                items: Vec::new(),
+                limit,
+                offset,
+                has_more: false,
+                total_count: 0,
+            });
+        }
+
+        let mut titles = if include_external_ids {
+            self.list_for_libraries(facet, library_ids, query).await?
+        } else {
+            self.list_for_libraries_without_external_ids(facet, library_ids, query)
+                .await?
+        };
+        titles.retain(|title| title_matches_catalog_filter(title, &filter));
+        sort_titles_for_catalog(&mut titles, sort);
+
+        let total_count = titles.len();
+        let items = titles
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let has_more = offset.saturating_add(items.len()) < total_count;
+
+        Ok(TitleCatalogResult {
+            items,
+            limit,
+            offset,
+            has_more,
+            total_count,
+        })
     }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
@@ -211,6 +259,110 @@ pub trait TitleRepository: Send + Sync {
         _updates: &[TitleArtworkUrlUpdate],
     ) -> AppResult<u64> {
         Ok(0)
+    }
+}
+
+fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
+    titles.sort_by(|left, right| {
+        let ordering = match sort.key {
+            TitleCatalogSortKey::Title => compare_titles_by_catalog_title(left, right),
+            TitleCatalogSortKey::Monitored => left
+                .monitored
+                .cmp(&right.monitored)
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Quality => title_catalog_quality_profile_id(left)
+                .cmp(&title_catalog_quality_profile_id(right))
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Status => title_catalog_status_sort_value(left)
+                .cmp(&title_catalog_status_sort_value(right))
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Episodes | TitleCatalogSortKey::Size => {
+                compare_titles_by_catalog_title(left, right)
+            }
+        };
+        match sort.direction {
+            SortDirection::Asc => ordering,
+            SortDirection::Desc => ordering.reverse(),
+        }
+    });
+}
+
+fn compare_titles_by_catalog_title(left: &Title, right: &Title) -> Ordering {
+    title_catalog_sort_value(left)
+        .cmp(&title_catalog_sort_value(right))
+        .then_with(|| left.year.cmp(&right.year))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn title_catalog_sort_value(title: &Title) -> String {
+    title
+        .sort_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&title.name)
+        .trim()
+        .to_lowercase()
+}
+
+fn title_catalog_quality_profile_id(title: &Title) -> String {
+    title
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix(TITLE_QUALITY_PROFILE_TAG_PREFIX))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+fn title_catalog_status_sort_value(title: &Title) -> String {
+    title
+        .content_status
+        .as_deref()
+        .map(normalize_catalog_status)
+        .unwrap_or_default()
+}
+
+fn title_matches_catalog_filter(title: &Title, filter: &TitleCatalogFilter) -> bool {
+    if let Some(monitored) = filter.monitored
+        && title.monitored != monitored
+    {
+        return false;
+    }
+
+    if !filter.content_statuses.is_empty() {
+        let status = title
+            .content_status
+            .as_deref()
+            .map(normalize_catalog_status)
+            .unwrap_or_default();
+        if !filter
+            .content_statuses
+            .iter()
+            .any(|candidate| title_catalog_status_filter_matches(*candidate, &status))
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn title_catalog_status_filter_matches(
+    candidate: TitleCatalogContentStatus,
+    normalized_status: &str,
+) -> bool {
+    match candidate {
+        TitleCatalogContentStatus::Continuing => normalized_status == "continuing",
+        TitleCatalogContentStatus::Ended => normalized_status == "ended",
+    }
+}
+
+fn normalize_catalog_status(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "returning" => "continuing".to_string(),
+        "finished" => "ended".to_string(),
+        other => other.to_string(),
     }
 }
 

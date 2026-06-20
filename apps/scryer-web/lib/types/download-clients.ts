@@ -1,11 +1,13 @@
 import type { JsonValue, ViewCategoryId } from "./quality-profiles";
+import type { ProviderConfigValue } from "@/lib/utils/provider-config";
 
 export type DownloadClientRecord = {
   id: string;
   name: string;
   clientType: string;
   baseUrl: string | null;
-  configJson: string;
+  config: ProviderConfigValue[];
+  storedSecretKeys: string[];
   isEnabled: boolean;
   status: string;
   lastError: string | null;

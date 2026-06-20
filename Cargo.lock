@@ -5799,6 +5799,7 @@ name = "scryer-interface-media"
 version = "0.16.1"
 dependencies = [
  "async-graphql",
+ "chrono",
  "scryer-application",
  "scryer-domain",
  "scryer-interface-core",
@@ -5814,6 +5815,7 @@ name = "scryer-interface-media-types"
 version = "0.16.1"
 dependencies = [
  "async-graphql",
+ "chrono",
  "scryer-domain",
  "serde_json",
 ]

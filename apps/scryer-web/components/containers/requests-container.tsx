@@ -383,7 +383,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       setActionRequestId(request.id);
       try {
         const { error } = await client
-          .mutation(dismissMediaRequestMutation, { input: { requestId: request.id } })
+          .mutation(dismissMediaRequestMutation, { requestId: request.id })
           .toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.requestDismissed", { name: request.title }));
@@ -437,7 +437,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       setActionRequestId(request.id);
       try {
         const { error } = await client
-          .mutation(cancelMyMediaRequestMutation, { input: { requestId: request.id } })
+          .mutation(cancelMyMediaRequestMutation, { requestId: request.id })
           .toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.requestCanceled", { name: request.title }));

@@ -33,7 +33,11 @@ import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
-import { TitleTableActionButton } from "./media-content/title-table-shared";
+import {
+  TitleTableActionButton,
+  type TitleTableSortDirection,
+  type TitleTableSortKey,
+} from "./media-content/title-table-shared";
 import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
 import {
   hasActiveTitleQuickFilters,
@@ -209,6 +213,12 @@ export function MediaContentView({
     setTitleFilter: (value: string) => void;
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
+    catalogHasMoreTitles: boolean;
+    catalogLoadingMoreTitles: boolean;
+    loadMoreCatalogTitles: () => Promise<void> | void;
+    titleCatalogSortKey: TitleTableSortKey;
+    titleCatalogSortDirection: TitleTableSortDirection;
+    updateTitleCatalogSort: (key: TitleTableSortKey) => void;
     catalogBootstrapLoading: boolean;
     catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
@@ -355,6 +365,12 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    loadMoreCatalogTitles,
+    titleCatalogSortKey,
+    titleCatalogSortDirection,
+    updateTitleCatalogSort,
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
     monitoredTitles,
@@ -977,6 +993,12 @@ export function MediaContentView({
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}
+                      catalogHasMoreTitles={catalogHasMoreTitles}
+                      catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                      onCatalogEndReached={loadMoreCatalogTitles}
+                      sortKey={titleCatalogSortKey}
+                      sortDirection={titleCatalogSortDirection}
+                      onSortChange={updateTitleCatalogSort}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
@@ -1012,9 +1034,12 @@ export function MediaContentView({
                     view={view}
                     titles={deferredMonitoredTitles}
                     titleLoading={titleLoading || catalogBootstrapLoading}
-                    resolvedProfileName={resolvedProfileName}
-                    qualityProfiles={qualityProfiles}
-                    qualityProfilesLoading={mediaSettingsLoading}
+                    catalogHasMoreTitles={catalogHasMoreTitles}
+                    catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                    onCatalogEndReached={loadMoreCatalogTitles}
+                    sortKey={titleCatalogSortKey}
+                    sortDirection={titleCatalogSortDirection}
+                    onSortChange={updateTitleCatalogSort}
                     onOpenOverview={onOpenOverview}
                     onDelete={handleDeleteCatalogTitle}
                     onAutoQueue={queueExisting}

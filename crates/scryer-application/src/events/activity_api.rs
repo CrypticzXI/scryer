@@ -1352,6 +1352,37 @@ impl AppUseCase {
             .collect())
     }
 
+    pub async fn library_scan_session(
+        &self,
+        actor: &User,
+        session_id: &str,
+    ) -> AppResult<Option<LibraryScanSession>> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Ok(None);
+        }
+
+        let visibility = load_library_scan_visibility(self, actor).await?;
+        if let Some(session) = self
+            .runtime
+            .library
+            .library_scan_tracker
+            .get_session(session_id)
+            .await
+        {
+            return Ok(library_scan_session_visible(&session, &visibility).then_some(session));
+        }
+
+        let Some(session) =
+            crate::library_scan_coordinator::load_projected_library_scan_session(self, session_id)
+                .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(library_scan_session_visible(&session, &visibility).then_some(session))
+    }
+
     pub async fn subscribe_library_scan_progress(
         &self,
         actor: &User,

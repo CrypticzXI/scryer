@@ -27,10 +27,12 @@ export type SubtitleProviderDraft = {
   configDirty: boolean;
 };
 
-export type SubtitleProviderValidationResult = {
+export type ProviderValidationResult = {
   status: string;
   message: string | null;
   retryAfterSeconds: number | null;
 };
+
+export type SubtitleProviderValidationResult = ProviderValidationResult;
 
 export type SubtitleProviderTypeInfo = ProviderTypeInfo;

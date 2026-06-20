@@ -155,7 +155,7 @@ function DynamicConfigField({
         onChange={(event) => onChange(field.key, event.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password" || field.fieldType === "secret"
+          field.fieldType === "password"
             ? "password"
             : field.fieldType === "number"
               ? "number"
@@ -163,7 +163,7 @@ function DynamicConfigField({
         }
         required={field.required}
         placeholder={
-          field.fieldType === "password" || field.fieldType === "secret"
+          field.fieldType === "password"
             ? t("form.apiKeyInputPlaceholder")
             : field.defaultValue ?? ""
         }

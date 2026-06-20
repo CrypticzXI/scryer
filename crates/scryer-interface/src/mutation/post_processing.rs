@@ -1,5 +1,6 @@
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
+use scryer_application::AppError;
 use scryer_domain::{AppPermission, Id, PostProcessingScript};
 
 use crate::context::{app_from_ctx, require_config_app_permission, to_gql_error};
@@ -58,12 +59,13 @@ impl PostProcessingMutations {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let script_id = input.id.to_string();
 
         let mut script = app
-            .get_post_processing_script(&actor, &input.id)
+            .get_post_processing_script(&actor, &script_id)
             .await
             .map_err(to_gql_error)?
-            .ok_or_else(|| async_graphql::Error::new(format!("script {} not found", input.id)))?;
+            .ok_or_else(|| to_gql_error(AppError::NotFound(format!("script {script_id}"))))?;
 
         if let Some(name) = input.name {
             script.name = name;
@@ -114,27 +116,29 @@ impl PostProcessingMutations {
     async fn delete_post_processing_script(
         &self,
         ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<DeletePostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
 
-        app.delete_post_processing_script(&actor, &id)
+        let id_string = id.to_string();
+        app.delete_post_processing_script(&actor, &id_string)
             .await
             .map_err(to_gql_error)?;
 
-        Ok(true)
+        Ok(DeletePostProcessingScriptPayload { id, deleted: true })
     }
 
     async fn toggle_post_processing_script(
         &self,
         ctx: &Context<'_>,
-        id: String,
+        id: ID,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let id = id.to_string();
 
         let updated = app
             .toggle_post_processing_script(&actor, &id)

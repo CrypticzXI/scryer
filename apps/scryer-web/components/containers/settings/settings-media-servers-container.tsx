@@ -424,15 +424,20 @@ export function SettingsMediaServersContainer() {
             connection.provider === "plex" ? await authenticateWithPlexPin() : null;
           const { data, error } = await client
             .mutation(testMediaServerConnectionMutation, {
-              id: connection.id,
-              plexAuthToken,
+              input: {
+                id: connection.id,
+                plexAuthToken,
+              },
             })
             .toPromise();
           if (error) throw error;
-          if (!data?.testMediaServerConnection) {
-            throw new Error(t("status.mediaServerConnectionTestFailed", {
-              server: connection.displayName,
-            }));
+          const validation = data?.testMediaServerConnection;
+          if (validation?.status !== "ok") {
+            throw new Error(
+              validation?.message ?? t("status.mediaServerConnectionTestFailed", {
+                server: connection.displayName,
+              }),
+            );
           }
         },
       });

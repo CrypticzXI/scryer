@@ -205,7 +205,7 @@ export type EpisodeMediaFile = {
   seriesMovieLinkIds: string[];
   role: string;
   filePath: string;
-  sizeBytes: string;
+  sizeBytes: number;
   qualityLabel: string | null;
   scanStatus: string;
   createdAt: string;
@@ -366,7 +366,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       title && deleteDialogOpen && deleteFilesOnDisk
-        ? { input: { titleId: title.id } }
+        ? { titleId: title.id }
         : null,
     [deleteDialogOpen, deleteFilesOnDisk, title],
   );
@@ -382,7 +382,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   );
   const mediaFileDeletePreviewVariables = React.useMemo(
     () =>
-      mediaFileToDelete ? { input: { fileId: mediaFileToDelete.id } } : null,
+      mediaFileToDelete ? { fileId: mediaFileToDelete.id } : null,
     [mediaFileToDelete],
   );
   const {
@@ -440,7 +440,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       );
       setMediaFilesByEpisode(groupMediaFilesByEpisode(nextMediaFiles));
       setMediaFilesBySeriesMovieLink(groupMediaFilesBySeriesMovieLink(nextMediaFiles));
-      setEvents(snapshot.titleEvents);
+      setEvents(snapshot.titleHistory);
       setReleaseBlocklistEntries(snapshot.titleReleaseBlocklist);
       setSubtitleDownloads(snapshot.externalSubtitles);
       setHasDownloadClients(snapshot.hasDownloadClients);
@@ -528,7 +528,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     setClearingReleaseBlocklistEntryId(entryId);
     try {
       const { error } = await client
-        .mutation(clearTitleReleaseBlocklistEntryMutation, { input: { id: entryId } })
+        .mutation(clearTitleReleaseBlocklistEntryMutation, { id: entryId })
         .toPromise();
       if (error) {
         throw error;
@@ -802,7 +802,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     setRefreshAndScanLoading(true);
     try {
       const { data, error } = await client.mutation(scanTitleLibraryMutation, {
-        input: { titleId: title.id },
+        titleId: title.id,
       }).toPromise();
       if (error) throw error;
 

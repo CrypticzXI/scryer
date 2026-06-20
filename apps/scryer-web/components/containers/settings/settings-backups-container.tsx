@@ -56,7 +56,7 @@ type BackupTrigger = "manual" | "auto";
 
 type BackupInfoRecord = {
   filename: string;
-  sizeBytes: string;
+  sizeBytes: number;
   createdAt: string;
   formatVersion: string;
   sourceEngine: string;
@@ -77,7 +77,10 @@ type CreateBackupMutationResult = {
 };
 
 type DeleteBackupMutationResult = {
-  deleteBackup?: boolean;
+  deleteBackup?: {
+    filename: string;
+    deleted: boolean;
+  };
 };
 
 type PrepareBackupDownloadMutationResult = {
@@ -207,10 +210,10 @@ function autoBackupSettingsEqual(
   );
 }
 
-function formatBytes(sizeBytes: string): string {
-  const value = Number(sizeBytes);
+function formatBytes(sizeBytes: number): string {
+  const value = sizeBytes;
   if (!Number.isFinite(value) || value < 0) {
-    return sizeBytes;
+    return String(sizeBytes);
   }
 
   if (value < 1024) {
@@ -439,7 +442,7 @@ export function SettingsBackupsContainer() {
       const nextPassword = password;
       const { data, error } = await client
         .mutation<CreateBackupMutationResult>(createBackupMutation, {
-          password: nextPassword,
+          input: { password: nextPassword },
         })
         .toPromise();
       if (error || !data?.createBackup) {
@@ -467,10 +470,10 @@ export function SettingsBackupsContainer() {
     try {
       const { data, error } = await client
         .mutation<DeleteBackupMutationResult>(deleteBackupMutation, {
-          filename: pendingDelete.filename,
+          input: { filename: pendingDelete.filename },
         })
         .toPromise();
-      if (error || data?.deleteBackup !== true) {
+      if (error || data?.deleteBackup?.deleted !== true) {
         throw error ?? new Error(t("status.failedToDelete"));
       }
 
@@ -491,7 +494,7 @@ export function SettingsBackupsContainer() {
     try {
       const { data, error } = await client
         .mutation<PrepareBackupDownloadMutationResult>(prepareBackupDownloadMutation, {
-          filename: backup.filename,
+          input: { filename: backup.filename },
         })
         .toPromise();
       const downloadUrl = data?.prepareBackupDownload?.downloadUrl;

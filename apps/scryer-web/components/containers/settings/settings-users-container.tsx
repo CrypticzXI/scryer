@@ -292,7 +292,7 @@ export function SettingsUsersContainer() {
     setMutatingUserId(user.id);
     try {
       const { error } = await client.mutation(deleteUserMutation, {
-        input: { userId: user.id },
+        id: user.id,
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(t("status.deletingUser", { name: user.username }));
@@ -328,7 +328,7 @@ export function SettingsUsersContainer() {
     setMutatingUserId(user.id);
     try {
       const { error } = await client.mutation(resetUserMfaMutation, {
-        input: { userId: user.id },
+        id: user.id,
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(t("user.mfaReset", { name: user.username }));

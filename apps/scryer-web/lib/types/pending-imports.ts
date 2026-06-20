@@ -59,7 +59,7 @@ export type PendingImportBindingPreview = {
   file: {
     filePath: string;
     fileName: string;
-    sizeBytes: string;
+    sizeBytes: number;
     parsedSeason?: number | null;
     parsedEpisodes: number[];
     parsedAbsoluteNumbers: number[];

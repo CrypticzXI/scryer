@@ -826,6 +826,38 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_collections_for_titles(
+        &self,
+        actor: &User,
+        titles: &[Title],
+    ) -> AppResult<HashMap<String, Vec<Collection>>> {
+        if titles.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut library_ids = HashSet::new();
+        for title in titles {
+            if library_ids.insert(title.library_id.as_str()) {
+                self.require_library_permission(
+                    actor,
+                    &title.library_id,
+                    scryer_domain::LibraryPermission::View,
+                )
+                .await?;
+            }
+        }
+
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        self.services
+            .catalog
+            .shows
+            .list_collections_for_titles(&title_ids)
+            .await
+    }
+
     pub async fn list_series_movie_links(
         &self,
         actor: &User,
@@ -862,7 +894,6 @@ impl AppUseCase {
         }
         Ok(collection)
     }
-
 }
 impl AppUseCase {
     #[expect(
@@ -919,7 +950,6 @@ impl AppUseCase {
             .await?;
         Ok(collection)
     }
-
 }
 impl AppUseCase {
     #[expect(
@@ -983,7 +1013,6 @@ impl AppUseCase {
         let episode = self.services.catalog.shows.create_episode(episode).await?;
         Ok(episode)
     }
-
 }
 impl AppUseCase {
     pub async fn list_episodes(

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::external_import::{
     self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::context::{
     actor_from_ctx, app_from_ctx, require_app_permission, require_config_app_permission,
+    to_gql_error,
 };
 use crate::mappers::from_external_import_monitor_warmup_progress;
 use crate::types::*;
@@ -179,7 +180,7 @@ impl ProwlarrImportGroup {
             implementation: "Prowlarr".to_string(),
             scryer_provider_type: Some("prowlarr".to_string()),
             base_url: Some(self.base_url.clone()),
-            api_key: self.api_key.clone(),
+            api_key_present: self.api_key.is_some(),
             dedup_key: self.dedup_key(),
             supported: true,
             child_count: i32::try_from(self.child_names.len()).unwrap_or(i32::MAX),
@@ -354,9 +355,9 @@ impl ExternalImportMutations {
         let app = app_from_ctx(ctx)?;
 
         if input.sonarr.is_none() && input.radarr.is_none() && input.prowlarr.is_none() {
-            return Err(async_graphql::Error::new(
-                "at least one of sonarr, radarr, or prowlarr must be provided",
-            ));
+            return Err(to_gql_error(AppError::Validation(
+                "at least one of sonarr, radarr, or prowlarr must be provided".to_string(),
+            )));
         }
 
         let mut payload = ExternalImportPreviewPayload {
@@ -554,27 +555,31 @@ impl ExternalImportMutations {
     async fn cancel_external_import_monitor_warmup(
         &self,
         ctx: &Context<'_>,
-        input: CancelExternalImportMonitorWarmupInput,
-    ) -> GqlResult<bool> {
+        session_id: ID,
+    ) -> GqlResult<CancelExternalImportMonitorWarmupPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
 
+        let session_id_string = session_id.to_string();
         let canceled = app
-            .cancel_external_import_monitor_warmup(&actor, &input.session_id)
+            .cancel_external_import_monitor_warmup(&actor, &session_id_string)
             .await?;
         if canceled {
             let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
         }
 
-        Ok(canceled)
+        Ok(CancelExternalImportMonitorWarmupPayload {
+            session_id,
+            canceled,
+        })
     }
 
     async fn finalize_external_import(
         &self,
         ctx: &Context<'_>,
         input: FinalizeExternalImportInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<FinalizeExternalImportPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
@@ -583,11 +588,12 @@ impl ExternalImportMutations {
             sonarr: input.sonarr.clone(),
             radarr: input.radarr.clone(),
         };
-        let _session_id = ensure_external_import_monitor_warmup_completed(
+        let monitor_warmup_session_id = input.monitor_warmup_session_id.map(String::from);
+        let session_id = ensure_external_import_monitor_warmup_completed(
             &app,
             &actor,
             connections,
-            input.monitor_warmup_session_id.as_deref(),
+            monitor_warmup_session_id.as_deref(),
         )
         .await?;
 
@@ -603,7 +609,10 @@ impl ExternalImportMutations {
             clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Anime).await?;
         }
 
-        Ok(true)
+        Ok(FinalizeExternalImportPayload {
+            finalized: true,
+            monitor_warmup_session_id: ID::from(session_id),
+        })
     }
 
     /// Re-connect to Sonarr/Radarr, fetch configs, and create selected items in Scryer.
@@ -1620,7 +1629,7 @@ fn map_download_client(
     let username = external_import::field_str(&dc.fields, "username");
     // Use field_str_sensitive so that Sonarr/Radarr's "********" mask becomes
     // None — callers can then detect that the key must be entered manually.
-    let api_key = external_import::field_str_sensitive(&dc.fields, "apiKey");
+    let api_key_present = external_import::field_str_sensitive(&dc.fields, "apiKey").is_some();
     let password = external_import::field_str_sensitive(&dc.fields, "password");
 
     let dedup_key = format!(
@@ -1640,7 +1649,7 @@ fn map_download_client(
         use_ssl,
         url_base,
         username,
-        api_key,
+        api_key_present,
         dedup_key,
         supported: scryer_type.is_some(),
         requires_password_override: password.is_none()
@@ -1651,7 +1660,7 @@ fn map_download_client(
 fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
     let scryer_type = external_import::map_indexer_provider_type(&idx.implementation, &idx.fields);
     let base_url = external_import::field_str(&idx.fields, "baseUrl");
-    let api_key = external_import::field_str_sensitive(&idx.fields, "apiKey");
+    let api_key_present = external_import::field_str_sensitive(&idx.fields, "apiKey").is_some();
 
     let dedup_key = format!(
         "{}:{}",
@@ -1665,7 +1674,7 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
         implementation: idx.implementation.clone(),
         scryer_provider_type: scryer_type.map(str::to_string),
         base_url,
-        api_key,
+        api_key_present,
         dedup_key,
         supported: scryer_type.is_some(),
         child_count: 0,

@@ -7,8 +7,12 @@ use crate::context::{
     app_from_ctx, require_config_app_permission, restore_context_from_ctx, to_gql_error,
 };
 use crate::mappers::from_backup_info;
-use crate::types::{BackupInfoPayload, BackupRowCountPayload};
-use async_graphql::{Context, Error, Object, Result as GqlResult, SimpleObject, Upload};
+use crate::types::{
+    BackupInfoPayload, BackupRowCountPayload, CreateBackupInput, DeleteBackupInput,
+    DeleteBackupPayload, Long, PrepareBackupDownloadInput,
+};
+use async_graphql::{Context, ID, Object, Result as GqlResult, SimpleObject, Upload};
+use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppUseCase, BackupBundleInspectSummary, inspect_backup_bundle,
     prepare_backup_restore_payload,
@@ -31,18 +35,18 @@ const STAGED_BUNDLE_FILENAME: &str = "bundle.upload";
 #[derive(Clone, SimpleObject)]
 struct RestoreSummaryPayload {
     format_version: String,
-    created_at: String,
+    created_at: DateTime<Utc>,
     source_scryer_version: String,
     source_engine: String,
     source_migration_key: Option<String>,
     encrypted: bool,
     row_counts: Vec<BackupRowCountPayload>,
-    total_rows: String,
+    total_rows: Long,
 }
 
 #[derive(Clone, SimpleObject)]
 struct RestoreInspectPayload {
-    upload_id: String,
+    upload_id: ID,
     summary: RestoreSummaryPayload,
 }
 
@@ -55,7 +59,7 @@ struct RestoreApplyPayload {
 struct BackupDownloadUrlPayload {
     download_url: String,
     download_authorization_token: String,
-    expires_at: String,
+    expires_at: DateTime<Utc>,
 }
 
 #[derive(Default)]
@@ -66,43 +70,51 @@ impl BackupMutations {
     async fn create_backup(
         &self,
         ctx: &Context<'_>,
-        password: String,
+        input: CreateBackupInput,
     ) -> GqlResult<BackupInfoPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let info = app
-            .create_backup(&actor, &password)
+            .create_backup(&actor, &input.password)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_backup_info(info))
+        from_backup_info(info).map_err(|error| to_gql_error(AppError::Validation(error)))
     }
 
     async fn prepare_backup_download(
         &self,
         ctx: &Context<'_>,
-        filename: String,
+        input: PrepareBackupDownloadInput,
     ) -> GqlResult<BackupDownloadUrlPayload> {
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         let ticket = app
-            .prepare_backup_download(&actor, &filename)
+            .prepare_backup_download(&actor, &input.filename)
             .await
             .map_err(to_gql_error)?;
-        let encoded_filename = encode_path_segment(&filename);
+        let encoded_filename = encode_path_segment(&input.filename);
 
         Ok(BackupDownloadUrlPayload {
             download_url: format!("/backups/{encoded_filename}/download"),
             download_authorization_token: ticket.token,
-            expires_at: ticket.expires_at,
+            expires_at: parse_datetime(&ticket.expires_at, "backup download expires_at")
+                .map_err(to_gql_error)?,
         })
     }
 
-    async fn delete_backup(&self, ctx: &Context<'_>, filename: String) -> GqlResult<bool> {
+    async fn delete_backup(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteBackupInput,
+    ) -> GqlResult<DeleteBackupPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.delete_backup(&actor, &filename)
+        let filename = input.filename;
+        let deleted = app
+            .delete_backup(&actor, &filename)
             .await
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(DeleteBackupPayload { filename, deleted })
     }
 
     async fn inspect_restore_bundle(
@@ -118,9 +130,9 @@ impl BackupMutations {
         let restore = restore_context_from_ctx(ctx)?;
         ensure_restore_supported(&restore.datastore_config).map_err(to_gql_error)?;
 
-        let upload = bundle_upload
-            .value(ctx)
-            .map_err(|error| Error::new(format!("invalid upload: {error}")))?;
+        let upload = bundle_upload.value(ctx).map_err(|error| {
+            to_gql_error(AppError::Validation(format!("invalid upload: {error}")))
+        })?;
         let password = normalize_password(password);
 
         prune_stale_restore_uploads(&restore.data_dir);
@@ -166,15 +178,15 @@ impl BackupMutations {
         };
 
         Ok(RestoreInspectPayload {
-            upload_id,
-            summary: restore_summary_payload(&summary),
+            upload_id: upload_id.into(),
+            summary: restore_summary_payload(&summary).map_err(to_gql_error)?,
         })
     }
 
     async fn apply_restore_bundle(
         &self,
         ctx: &Context<'_>,
-        upload_id: String,
+        upload_id: ID,
         password: Option<String>,
     ) -> GqlResult<RestoreApplyPayload> {
         require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -184,7 +196,7 @@ impl BackupMutations {
         let restore = restore_context_from_ctx(ctx)?;
         ensure_restore_supported(&restore.datastore_config).map_err(to_gql_error)?;
 
-        let upload_id = upload_id.trim();
+        let upload_id = upload_id.as_ref().trim();
         if upload_id.is_empty() || upload_id.contains('/') || upload_id.contains('\\') {
             return Err(to_gql_error(AppError::Validation(
                 "invalid restore upload id".into(),
@@ -297,10 +309,18 @@ fn ensure_restore_supported(_datastore_config: &RestoreDatastoreConfig) -> Resul
     Ok(())
 }
 
-fn restore_summary_payload(summary: &BackupBundleInspectSummary) -> RestoreSummaryPayload {
-    RestoreSummaryPayload {
+fn parse_datetime(value: &str, field: &str) -> Result<DateTime<Utc>, AppError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| AppError::Validation(format!("invalid {field} timestamp: {error}")))
+}
+
+fn restore_summary_payload(
+    summary: &BackupBundleInspectSummary,
+) -> Result<RestoreSummaryPayload, AppError> {
+    Ok(RestoreSummaryPayload {
         format_version: summary.format_version.clone(),
-        created_at: summary.created_at.clone(),
+        created_at: parse_datetime(&summary.created_at, "restore summary created_at")?,
         source_scryer_version: summary.source_scryer_version.clone(),
         source_engine: summary.source_engine.clone(),
         source_migration_key: summary.source_migration_key.clone(),
@@ -310,11 +330,11 @@ fn restore_summary_payload(summary: &BackupBundleInspectSummary) -> RestoreSumma
             .iter()
             .map(|(table, row_count)| BackupRowCountPayload {
                 table: table.clone(),
-                row_count: row_count.to_string(),
+                row_count: Long::from_u64_saturating(*row_count),
             })
             .collect(),
-        total_rows: summary.total_rows().to_string(),
-    }
+        total_rows: Long::from_u64_saturating(summary.total_rows()),
+    })
 }
 
 fn prune_stale_restore_uploads(data_dir: &Path) {
@@ -402,7 +422,7 @@ fn stage_restore_bundle(
     let result = (|| match datastore_config.engine {
         RestoreDatastoreEngine::Postgres => {
             let prepared = prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
-            let summary = restore_summary_payload(&prepared.summary());
+            let summary = restore_summary_payload(&prepared.summary())?;
             let instance_secrets_env = prepared.instance_secrets_env()?;
             write_owner_only_file_atomically(&pending_secrets_path, &instance_secrets_env)?;
             prepared.persist_extracted_dir(&pending_prepared_bundle_dir)?;
@@ -422,7 +442,7 @@ fn stage_restore_bundle(
                 &prepared.instance_secrets_env(),
             )?;
 
-            let summary = restore_summary_payload(prepared.summary());
+            let summary = restore_summary_payload(prepared.summary())?;
             ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
                 AppError::Repository(format!(
                     "failed to protect pending restore database: {error}"
@@ -557,13 +577,15 @@ mod tests {
     fn test_restore_summary_payload() -> RestoreSummaryPayload {
         RestoreSummaryPayload {
             format_version: "scryer-backup-bundle-v1".to_string(),
-            created_at: "2026-05-14T00:00:00Z".to_string(),
+            created_at: DateTime::parse_from_rfc3339("2026-05-14T00:00:00Z")
+                .expect("test timestamp")
+                .with_timezone(&Utc),
             source_scryer_version: "0.15.0".to_string(),
             source_engine: "sqlite".to_string(),
             source_migration_key: Some("0112".to_string()),
             encrypted: true,
             row_counts: vec![],
-            total_rows: "0".to_string(),
+            total_rows: Long::from(0),
         }
     }
 
@@ -586,7 +608,7 @@ mod tests {
         let payload =
             finish_restore_apply(&restore, test_restore_summary_payload()).expect("finish restore");
 
-        assert_eq!(payload.summary.total_rows, "0");
+        assert_eq!(payload.summary.total_rows, Long::from(0));
         assert_eq!(restart_calls.load(Ordering::SeqCst), 1);
     }
 

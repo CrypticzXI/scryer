@@ -6,7 +6,12 @@ import { useClient } from "urql";
 import { toast } from "sonner";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  providerConfigRecordToValues,
+  providerConfigValuesToRecord,
+} from "@/lib/utils/provider-config";
 import type {
+  ConfigFieldDef,
   NotificationChannel,
   NotificationChannelDraft,
   NotificationProviderType,
@@ -176,20 +181,17 @@ function buildNotificationSubscriptionSpecs(
   }));
 }
 
-function serializeConfigJson(configValues: Record<string, string>): string | undefined {
+function serializeConfigValues(
+  configValues: Record<string, string>,
+  fields: ConfigFieldDef[],
+) {
   const nonEmpty = Object.fromEntries(
     Object.entries(configValues).filter(([, v]) => v !== ""),
   );
-  return Object.keys(nonEmpty).length > 0 ? JSON.stringify(nonEmpty) : undefined;
-}
-
-function parseConfigJson(configJson: string | null): Record<string, string> {
-  if (!configJson) return {};
-  try {
-    return JSON.parse(configJson) as Record<string, string>;
-  } catch {
-    return {};
-  }
+  const secretInputKeys = fields
+    .filter((field) => field.fieldType === "password")
+    .map((field) => field.key);
+  return providerConfigRecordToValues(nonEmpty, secretInputKeys);
 }
 
 type SettingsNotificationsContainerProps = {
@@ -448,11 +450,16 @@ export function SettingsNotificationsContainer({
 
   const submitChannel = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const selectedProvider =
+      providerTypes.find((pt) => pt.providerType === channelDraft.channelType.trim()) ?? null;
     const payload = {
       name: channelDraft.name.trim(),
       channelType: channelDraft.channelType.trim(),
       mediaServerConnectionId: undefined,
-      configJson: serializeConfigJson(channelDraft.configValues) ?? "{}",
+      config: serializeConfigValues(
+        channelDraft.configValues,
+        selectedProvider?.configFields ?? [],
+      ),
       isEnabled: channelDraft.isEnabled,
     };
 
@@ -469,7 +476,7 @@ export function SettingsNotificationsContainer({
             id: editingChannelId,
             name: payload.name,
             mediaServerConnectionId: payload.mediaServerConnectionId ?? null,
-            configJson: payload.configJson,
+            config: payload.config,
             isEnabled: payload.isEnabled,
           },
         }).toPromise();
@@ -481,7 +488,7 @@ export function SettingsNotificationsContainer({
             name: payload.name,
             channelType: payload.channelType,
             mediaServerConnectionId: payload.mediaServerConnectionId,
-            configJson: payload.configJson,
+            config: payload.config,
             isEnabled: payload.isEnabled,
           },
         }).toPromise();
@@ -509,7 +516,7 @@ export function SettingsNotificationsContainer({
       channelType: channel.channelType,
       mediaServerConnectionId: channel.mediaServerConnectionId ?? "",
       isEnabled: channel.isEnabled,
-      configValues: parseConfigJson(channel.configJson),
+      configValues: providerConfigValuesToRecord(channel.config),
     });
     setGlobalStatus(t("status.editingNotificationChannel", { name: channel.name }));
   }, [providerTypes, setGlobalStatus, t]);
@@ -663,12 +670,13 @@ export function SettingsNotificationsContainer({
         id: channel.id,
       }).toPromise();
       if (error) throw error;
-      if (data?.testNotificationChannel) {
+      const validation = data?.testNotificationChannel;
+      if (validation?.status === "ok") {
         const message = t("settings.notificationTestSuccess");
         setGlobalStatus(message);
         toast.success(message);
       } else {
-        setGlobalStatus(t("settings.notificationTestFailed"));
+        setGlobalStatus(validation?.message ?? t("settings.notificationTestFailed"));
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("settings.notificationTestFailed"));

@@ -169,14 +169,14 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($libraryId: String!) {
-                scanLibrary(libraryId: $libraryId) {
+            "query": r#"mutation ScanLibrary($input: ScanLibraryInput!) {
+                scanLibrary(input: $input) {
                     sessionId
                     facet
                     status
                 }
             }"#,
-            "variables": { "libraryId": "series_default_library" }
+            "variables": { "input": { "libraryId": "series_default_library" } }
         }))
         .send()
         .await
@@ -255,15 +255,15 @@ async fn scan_library_mutation_returns_ok_status_and_started_session() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($libraryId: String!) {
-                scanLibrary(libraryId: $libraryId) {
+            "query": r#"mutation ScanLibrary($input: ScanLibraryInput!) {
+                scanLibrary(input: $input) {
                     sessionId
                     facet
                     mode
                     status
                 }
             }"#,
-            "variables": { "libraryId": "movie_default_library" }
+            "variables": { "input": { "libraryId": "movie_default_library" } }
         }))
         .send()
         .await
@@ -307,15 +307,15 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($libraryId: String!) {
-                scanLibrary(libraryId: $libraryId) {
+            "query": r#"mutation ScanLibrary($input: ScanLibraryInput!) {
+                scanLibrary(input: $input) {
                     sessionId
                     facet
                     mode
                     status
                 }
             }"#,
-            "variables": { "libraryId": "anime_default_library" }
+            "variables": { "input": { "libraryId": "anime_default_library" } }
         }))
         .send()
         .await
@@ -335,6 +335,34 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         wait_for_scan_status(&mut progress_rx, &session_id, LibraryScanStatus::Failed).await;
     assert_eq!(failed_session.facet, MediaFacet::Anime);
     assert_eq!(failed_session.status, LibraryScanStatus::Failed);
+
+    let projected = gql(
+        &ctx,
+        r#"query LibraryScanSession($sessionId: ID!) {
+            libraryScanSession(sessionId: $sessionId) {
+                sessionId
+                facet
+                mode
+                status
+                summary {
+                    scanned
+                    matched
+                    imported
+                    skipped
+                    unmatched
+                }
+            }
+        }"#,
+        json!({ "sessionId": session_id }),
+    )
+    .await;
+    assert_no_errors(&projected);
+    let session = &projected["data"]["libraryScanSession"];
+    assert_eq!(session["sessionId"], session_id);
+    assert_eq!(session["facet"], "anime");
+    assert_eq!(session["mode"], "full");
+    assert_eq!(session["status"], "failed");
+    assert!(session["summary"].is_null());
 }
 
 #[tokio::test]
@@ -377,13 +405,13 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
         .http_client()
         .post(ctx.graphql_url())
         .json(&json!({
-            "query": r#"mutation ScanLibrary($libraryId: String!) {
-                scanLibrary(libraryId: $libraryId) {
+            "query": r#"mutation ScanLibrary($input: ScanLibraryInput!) {
+                scanLibrary(input: $input) {
                     sessionId
                     status
                 }
             }"#,
-            "variables": { "libraryId": "series_default_library" }
+            "variables": { "input": { "libraryId": "series_default_library" } }
         }))
         .send()
         .await
@@ -400,16 +428,14 @@ async fn cancel_library_scan_mutation_marks_active_full_scan_canceled() {
 
     let cancel_body = gql(
         &ctx,
-        r#"mutation CancelLibraryScan($input: CancelLibraryScanInput!) {
-            cancelLibraryScan(input: $input) {
+        r#"mutation CancelLibraryScan($sessionId: ID!) {
+            cancelLibraryScan(sessionId: $sessionId) {
                 sessionId
                 accepted
             }
         }"#,
         json!({
-            "input": {
-                "sessionId": session_id,
-            }
+            "sessionId": session_id,
         }),
     )
     .await;

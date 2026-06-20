@@ -12,6 +12,10 @@ import {
   DEFAULT_DOWNLOAD_CLIENT_DRAFT,
   WEAVER_API_KEY_SETUP_PATH,
 } from "@/lib/constants/download-clients";
+import {
+  type ProviderConfigValueInput,
+  providerConfigValuesToRecord,
+} from "@/lib/utils/provider-config";
 
 type BuiltInDownloadClientType = (typeof BUILT_IN_DOWNLOAD_CLIENT_TYPES)[number];
 
@@ -220,7 +224,7 @@ export function cleanPayloadObject(payload: Record<string, unknown>) {
   }, {});
 }
 
-export function buildDownloadClientConfigJson(draft: DownloadClientDraft) {
+export function buildDownloadClientConfigValues(draft: DownloadClientDraft) {
   const normalizedClientType = normalizeDownloadClientType(draft.clientType);
   const payload: DownloadClientConfigPayloadRecord = {
     host: draft.host.trim(),
@@ -238,12 +242,34 @@ export function buildDownloadClientConfigJson(draft: DownloadClientDraft) {
   }
 
   const cleaned = cleanPayloadObject(payload);
-  return JSON.stringify(cleaned);
+  return Object.entries(cleaned).map(([key, value]): ProviderConfigValueInput => {
+    const normalizedKey = key.trim().toLowerCase();
+    const isSecretKey =
+      normalizedKey === "api_key" ||
+      normalizedKey === "apikey" ||
+      normalizedKey.includes("api_key") ||
+      normalizedKey.includes("password") ||
+      normalizedKey.includes("secret") ||
+      normalizedKey.includes("token");
+    if (typeof value === "boolean") {
+      return { key, boolValue: value };
+    }
+    if (typeof value === "number" && Number.isInteger(value)) {
+      return { key, intValue: value };
+    }
+    if (typeof value === "number") {
+      return { key, floatValue: value };
+    }
+    if (isSecretKey) {
+      return { key, secretValue: String(value) };
+    }
+    return { key, stringValue: String(value) };
+  });
 }
 
 export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord): DownloadClientDraft {
   const baseUrlParts = splitBaseUrlForDraft(record.baseUrl);
-  const config = parseJsonPayload(record.configJson);
+  const config = providerConfigValuesToRecord(record.config);
 
   // Fall back to config JSON fields when baseUrl is absent (e.g. weaver
   // entries that resolve host/port/ssl from config rather than a full URL).

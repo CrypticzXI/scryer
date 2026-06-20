@@ -949,7 +949,7 @@ function getSeriesMovieMediaFiles(
 function getMediaFilesSizeLabel(mediaFiles: EpisodeMediaFile[]) {
   let matchedSizeBytes = 0;
   for (const file of mediaFiles) {
-    const sizeBytes = Number(file.sizeBytes);
+    const sizeBytes = file.sizeBytes;
     if (Number.isFinite(sizeBytes) && sizeBytes > 0) {
       matchedSizeBytes += sizeBytes;
     }
@@ -1256,7 +1256,7 @@ export function SeasonSection({
 
     let matchedSizeBytes = 0;
     for (const file of uniqueFiles.values()) {
-      const sizeBytes = Number(file.sizeBytes);
+      const sizeBytes = file.sizeBytes;
       if (Number.isFinite(sizeBytes) && sizeBytes > 0) {
         matchedSizeBytes += sizeBytes;
       }

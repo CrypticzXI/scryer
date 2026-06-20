@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 export type MediaFileOnDisk = MediaInfoFile & {
   id: string;
   filePath: string;
-  sizeBytes: string | number | null | undefined;
+  sizeBytes: number | null | undefined;
   role?: string | null;
   createdAt?: string | null;
 };
@@ -304,11 +304,8 @@ function formatMediaFileDate(iso: string | null | undefined) {
   }
 }
 
-function formatMediaFileSize(sizeBytes: string | number | null | undefined) {
-  const bytes =
-    typeof sizeBytes === "number"
-      ? sizeBytes
-      : Number.parseFloat(sizeBytes ?? "");
+function formatMediaFileSize(sizeBytes: number | null | undefined) {
+  const bytes = sizeBytes ?? Number.NaN;
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return "-";
   }

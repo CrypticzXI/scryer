@@ -1,4 +1,5 @@
 import type { ViewCategoryId } from "./quality-profiles";
+import type { ProviderConfigValue } from "@/lib/utils/provider-config";
 
 export type IndexerRecord = {
   id: string;
@@ -19,7 +20,7 @@ export type IndexerRecord = {
   lastHealthStatus: string | null;
   lastErrorAt: string | null;
   lastQueryAt: string | null;
-  configJson: string | null;
+  config: ProviderConfigValue[];
   createdAt: string;
   updatedAt: string;
 };
@@ -39,14 +40,25 @@ export type ConfigFieldOption = {
   label: string;
 };
 
+export type ConfigFieldTypeValue =
+  | "string"
+  | "password"
+  | "multiline"
+  | "bool"
+  | "select"
+  | "number";
+
+export type ConfigFieldValueSourceValue = "user" | "host_binding";
+export type ConfigFieldRoleValue = "connection_url";
+
 export type ConfigFieldDef = {
   key: string;
   label: string;
-  fieldType: string;
+  fieldType: ConfigFieldTypeValue;
   required: boolean;
   defaultValue: string | null;
-  valueSource: "user" | "host_binding";
-  role: "connection_url" | null;
+  valueSource: ConfigFieldValueSourceValue;
+  role: ConfigFieldRoleValue | null;
   hostBinding: string | null;
   options: ConfigFieldOption[];
   helpText: string | null;

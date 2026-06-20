@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { FilterChipButton } from "@/components/common/filter-chip-button";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
@@ -512,8 +512,12 @@ function formatSignedDelta(delta: number) {
 
 type PendingViewState = {
   items: PendingReleaseItem[];
+  total: number;
   loading: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
   refreshItems: () => Promise<void>;
+  loadMoreItems: () => Promise<void>;
   forceGrab: (id: string) => Promise<void>;
   dismiss: (id: string) => Promise<void>;
 };
@@ -1151,7 +1155,42 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
 function PendingReleasesCard({ state }: { state: PendingViewState }) {
   const t = useTranslate();
   const isMobile = useIsMobile();
-  const { items, loading, refreshItems, forceGrab, dismiss } = state;
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const {
+    items,
+    loading,
+    hasMore,
+    loadingMore,
+    refreshItems,
+    loadMoreItems,
+    forceGrab,
+    dismiss,
+  } = state;
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || !hasMore || loadingMore) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      void loadMoreItems();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMoreItems();
+        }
+      },
+      { rootMargin: "900px 0px" },
+    );
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [hasMore, items.length, loadMoreItems, loadingMore]);
 
   return (
     <Card>
@@ -1186,7 +1225,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                     <div>
                       <span className="block">{t("pending.colSize")}</span>
-                      <span className="text-foreground">{item.releaseSizeBytes ? formatBytes(Number(item.releaseSizeBytes)) : "—"}</span>
+                      <span className="text-foreground">{item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}</span>
                     </div>
                     <div>
                       <span className="block">{t("pending.colIndexer")}</span>
@@ -1236,7 +1275,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </TableCell>
                     <TableCell>{item.releaseScore}</TableCell>
                     <TableCell className="text-xs">
-                      {item.releaseSizeBytes ? formatBytes(Number(item.releaseSizeBytes)) : "—"}
+                      {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
                     </TableCell>
                     <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
                     <TableCell className="text-xs">{formatDate(item.addedAt)}</TableCell>
@@ -1275,12 +1314,18 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                       {t("pending.noItems")}
                     </TableCell>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+	                )}
+	              </TableBody>
+	            </Table>
+	          </div>
+	        )}
+	        <div ref={loadMoreRef} aria-hidden="true" className="h-px" />
+	        {loadingMore ? (
+	          <p className="mt-3 text-center text-sm text-muted-foreground">
+	            {t("wanted.refreshing")}
+	          </p>
+	        ) : null}
+	      </CardContent>
+	    </Card>
+	  );
+	}

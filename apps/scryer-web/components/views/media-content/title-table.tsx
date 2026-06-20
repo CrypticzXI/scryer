@@ -21,7 +21,6 @@ import {
 } from "@/components/ui/table";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { Release, TitleRecord } from "@/lib/types";
-import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import {
@@ -31,9 +30,7 @@ import {
 } from "@/lib/utils/dom-ids";
 import {
   bytesToReadable,
-  defaultSortDirectionForTitleKey,
   resolveOverviewTargetView,
-  sortTitlesForTable,
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
@@ -47,9 +44,12 @@ type TitleTableProps = {
   view: string;
   titles: TitleRecord[];
   titleLoading: boolean;
-  resolvedProfileName: string | null;
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
+  catalogHasMoreTitles?: boolean;
+  catalogLoadingMoreTitles?: boolean;
+  onCatalogEndReached?: () => Promise<void> | void;
+  sortKey: TitleTableSortKey;
+  sortDirection: TitleTableSortDirection;
+  onSortChange: (key: TitleTableSortKey) => void;
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
@@ -73,9 +73,12 @@ export function TitleTable({
   view,
   titles,
   titleLoading,
-  resolvedProfileName,
-  qualityProfiles,
-  qualityProfilesLoading,
+  catalogHasMoreTitles = false,
+  catalogLoadingMoreTitles = false,
+  onCatalogEndReached,
+  sortKey,
+  sortDirection,
+  onSortChange,
   onOpenOverview,
   onDelete,
   onAutoQueue,
@@ -120,32 +123,9 @@ export function TitleTable({
     Record<string, boolean>
   >({});
   const [autoQueueLoadingByTitle, setAutoQueueLoadingByTitle] = React.useState<Record<string, boolean>>({});
-  const [sortKey, setSortKey] = React.useState<TitleTableSortKey>("name");
-  const [sortDirection, setSortDirection] =
-    React.useState<TitleTableSortDirection>("asc");
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
-  const sortedTitles = React.useMemo(
-    () =>
-      sortTitlesForTable({
-        titles,
-        sortKey,
-        sortDirection,
-        qualityProfiles,
-        resolvedProfileName,
-        qualityProfilesLoading,
-        t,
-      }),
-    [
-      qualityProfiles,
-      qualityProfilesLoading,
-      resolvedProfileName,
-      sortDirection,
-      sortKey,
-      t,
-      titles,
-    ],
-  );
+  const sortedTitles = titles;
   const initialScrollOffset = React.useMemo(
     () => readOverviewSavedScroll(location.pathname, "poster-table") ?? 0,
     [location.pathname],
@@ -173,6 +153,27 @@ export function TitleTable({
     restoreScrollTop: restoreTitleTableScroll,
   });
 
+  React.useEffect(() => {
+    const element = titleTableScrollRef.current;
+    if (!element || !catalogHasMoreTitles || catalogLoadingMoreTitles || !onCatalogEndReached) {
+      return;
+    }
+
+    const maybeLoadNextPage = () => {
+      const remaining =
+        element.scrollHeight - (element.scrollTop + element.clientHeight);
+      if (remaining <= 1200) {
+        void onCatalogEndReached();
+      }
+    };
+
+    maybeLoadNextPage();
+    element.addEventListener("scroll", maybeLoadNextPage, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", maybeLoadNextPage);
+    };
+  }, [catalogHasMoreTitles, catalogLoadingMoreTitles, onCatalogEndReached, titles.length]);
+
   const handleOpenOverview = React.useCallback(
     (item: OverviewTitleTarget) => {
       persistOverviewScrollValue(
@@ -186,14 +187,8 @@ export function TitleTable({
   );
 
   const handleSort = React.useCallback((nextKey: TitleTableSortKey) => {
-    if (sortKey === nextKey) {
-      setSortDirection((currentDirection) => (currentDirection === "asc" ? "desc" : "asc"));
-      return;
-    }
-
-    setSortKey(nextKey);
-    setSortDirection(defaultSortDirectionForTitleKey(nextKey));
-  }, [sortKey]);
+    onSortChange(nextKey);
+  }, [onSortChange]);
 
   const renderSortIcon = React.useCallback((key: TitleTableSortKey) => {
     if (sortKey !== key) {

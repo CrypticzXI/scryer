@@ -256,7 +256,7 @@ export function SettingsRecycleBinContainer() {
         })
         .toPromise();
       if (error) throw error;
-      const count = data?.emptyRecycleBin ?? 0;
+      const count = data?.emptyRecycleBin?.purgedCount ?? 0;
       setGlobalStatus(t("status.recycleBinEmptied", { count }));
       await fetchItems();
     } catch (error) {

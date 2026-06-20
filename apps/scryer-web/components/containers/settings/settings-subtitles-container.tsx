@@ -26,6 +26,7 @@ import {
   updateSubtitleProviderConfigMutation,
   updateSubtitleSettingsMutation,
 } from "@/lib/graphql/mutations";
+import { providerConfigRecordToValues } from "@/lib/utils/provider-config";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { wsClient } from "@/lib/graphql/ws-client";
@@ -115,11 +116,11 @@ function buildDraftConfigValues(
   return nextValues;
 }
 
-function serializeProviderConfigJson(
+function serializeProviderConfigValues(
   fields: ConfigFieldDef[],
   configValues: Record<string, string>,
   persistedConfigValues: Record<string, string>,
-): string {
+): ReturnType<typeof providerConfigRecordToValues> {
   const entries: Record<string, string> = {};
 
   if (fields.length === 0) {
@@ -128,10 +129,13 @@ function serializeProviderConfigJson(
         entries[key] = value;
       }
     }
-    return JSON.stringify(entries);
+    return providerConfigRecordToValues(entries);
   }
 
   const fieldKeySet = new Set(fields.map((field) => field.key));
+  const secretInputKeys = fields
+    .filter((field) => field.fieldType === "password")
+    .map((field) => field.key);
   for (const [key, value] of Object.entries(persistedConfigValues)) {
     if (!fieldKeySet.has(key) && value.trim() !== "") {
       entries[key] = value;
@@ -144,8 +148,7 @@ function serializeProviderConfigJson(
     }
 
     let nextValue = configValues[field.key] ?? "";
-    const isSecretField =
-      field.fieldType === "password" || field.fieldType === "secret";
+    const isSecretField = field.fieldType === "password";
 
     if (isSecretField && nextValue.trim() === "") {
       continue;
@@ -166,7 +169,7 @@ function serializeProviderConfigJson(
     }
   }
 
-  return JSON.stringify(entries);
+  return providerConfigRecordToValues(entries, secretInputKeys);
 }
 
 type SettingsSubtitlesContainerProps = {
@@ -547,10 +550,8 @@ export function SettingsSubtitlesContainer({
     setSyncPluginInstallError(null);
     setSyncPluginProgress(null);
     try {
-      const { data, error } = await client
-        .mutation(beginInstallPluginMutation, {
-          input: { pluginId: syncPlugin.id },
-        })
+	      const { data, error } = await client
+	        .mutation(beginInstallPluginMutation, { pluginId: syncPlugin.id })
         .toPromise();
       if (error) {
         throw error;
@@ -644,7 +645,7 @@ export function SettingsSubtitlesContainer({
         isEnabled: providerDraft.isEnabled,
         enabledFacets: providerDraft.enabledFacets,
       };
-      const configJson = serializeProviderConfigJson(
+      const config = serializeProviderConfigValues(
         selectedProvider?.configFields ?? [],
         providerDraft.configValues,
         persistedConfigValues,
@@ -664,7 +665,7 @@ export function SettingsSubtitlesContainer({
                 id: editingProviderId,
                 name: payload.name,
                 providerType: payload.providerType,
-                configJson: providerDraft.configDirty ? configJson : undefined,
+                config: providerDraft.configDirty ? config : undefined,
                 enabledFacets: payload.enabledFacets,
                 isEnabled: payload.isEnabled,
               },
@@ -680,7 +681,7 @@ export function SettingsSubtitlesContainer({
               input: {
                 name: payload.name,
                 providerType: payload.providerType,
-                configJson,
+                config,
                 enabledFacets: payload.enabledFacets,
                 isEnabled: payload.isEnabled,
               },
@@ -874,7 +875,7 @@ export function SettingsSubtitlesContainer({
     try {
       const { error } = await client
         .mutation(deleteSubtitleProviderConfigMutation, {
-          input: { id: pendingDeleteProvider.id },
+          id: pendingDeleteProvider.id,
         })
         .toPromise();
       if (error) {
@@ -938,7 +939,7 @@ export function SettingsSubtitlesContainer({
               input: {
                 id: editingProviderId ?? undefined,
                 providerType: normalizedProviderType,
-                configJson: serializeProviderConfigJson(
+                config: serializeProviderConfigValues(
                   selectedProvider?.configFields ?? [],
                   providerDraft.configValues,
                   persistedConfigValues,

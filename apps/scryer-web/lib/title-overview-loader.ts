@@ -13,7 +13,7 @@ import {
 export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   acquisitionDiagnostics: TDiagnostics | null;
-  titleEvents: TEvent[];
+  titleHistory: TEvent[];
   titleReleaseBlocklist: TBlocklist[];
   externalSubtitles: TSubtitle[];
   hasDownloadClients: boolean;
@@ -57,7 +57,7 @@ function isTitleOverviewPartialOverviewError(
   return error.graphQLErrors.every(
     (graphQlError) => {
       const alias = graphQlErrorAlias(graphQlError);
-      return alias === "titleEvents" || alias === "setupStatus";
+      return alias === "titleHistory" || alias === "setupStatus";
     },
   );
 }
@@ -91,7 +91,7 @@ export async function fetchTitleOverviewNativeSnapshot<
   return {
     title: (data?.title ?? null) as TTitle | null,
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
-    titleEvents: (data?.titleEvents ?? []) as TEvent[],
+    titleHistory: (data?.titleHistory?.records ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
     hasDownloadClients: data?.setupStatus?.hasDownloadClients !== false,
