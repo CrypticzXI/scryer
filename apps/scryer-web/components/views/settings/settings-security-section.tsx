@@ -15,6 +15,7 @@ type SettingsSecuritySectionProps = {
   loading: boolean;
   enableConfirmOpen: boolean;
   disableConfirmOpen: boolean;
+  adminPasswordRequiredOpen: boolean;
   confirmBusy: boolean;
   confirmUsername: string;
   confirmPassword: string;
@@ -28,6 +29,8 @@ type SettingsSecuritySectionProps = {
   onCancelEnable: () => void;
   onConfirmDisable: () => Promise<void> | void;
   onCancelDisable: () => void;
+  onConfirmAdminPasswordRequired: () => void;
+  onCancelAdminPasswordRequired: () => void;
   onPasswordMinLengthDraftChange: (value: string) => void;
   onPasswordMinLengthSubmit: (value?: string) => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
@@ -42,6 +45,7 @@ export function SettingsSecuritySection({
   loading,
   enableConfirmOpen,
   disableConfirmOpen,
+  adminPasswordRequiredOpen,
   confirmBusy,
   confirmUsername,
   confirmPassword,
@@ -55,6 +59,8 @@ export function SettingsSecuritySection({
   onCancelEnable,
   onConfirmDisable,
   onCancelDisable,
+  onConfirmAdminPasswordRequired,
+  onCancelAdminPasswordRequired,
   onPasswordMinLengthDraftChange,
   onPasswordMinLengthSubmit,
   onSkipLocalIpsChange,
@@ -285,6 +291,20 @@ export function SettingsSecuritySection({
       </div>
 
       {externalAccountInvitesPanel}
+
+      <ConfirmDialog
+        open={adminPasswordRequiredOpen}
+        contentId="settings-security-admin-password-required-dialog"
+        title={t("settings.securityAdminPasswordRequiredTitle")}
+        description={t("settings.securityAdminPasswordRequiredDescription")}
+        confirmLabel={t("settings.securityAdminPasswordRequiredAction")}
+        cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-security-admin-password-required-confirm"
+        cancelButtonId="settings-security-admin-password-required-cancel"
+        confirmButtonVariant="default"
+        onConfirm={onConfirmAdminPasswordRequired}
+        onCancel={onCancelAdminPasswordRequired}
+      />
 
       <ConfirmDialog
         open={enableConfirmOpen}

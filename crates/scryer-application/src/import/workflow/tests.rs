@@ -6,7 +6,7 @@ mod tests {
         ManualImportFileMapping, completed_import_status_for_result, is_sample_file,
         resolve_completed_download_origin, resolved_episode_ids_are_within_expected,
         sanitized_title_folder_component, skip_reason_for_import_check_code,
-        validate_path_manual_import_mappings,
+        validate_manual_import_mapping_targets, validate_path_manual_import_mappings,
     };
     use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
     use chrono::Utc;
@@ -335,7 +335,8 @@ mod tests {
 
         let inside_mapping = ManualImportFileMapping {
             file_path: inside.to_string_lossy().into_owned(),
-            episode_id: "ep-1".to_string(),
+            episode_id: Some("ep-1".to_string()),
+            series_movie_link_id: None,
             quality: None,
         };
         assert!(
@@ -348,7 +349,8 @@ mod tests {
 
         let outside_mapping = ManualImportFileMapping {
             file_path: outside.to_string_lossy().into_owned(),
-            episode_id: "ep-1".to_string(),
+            episode_id: Some("ep-1".to_string()),
+            series_movie_link_id: None,
             quality: None,
         };
         let err = validate_path_manual_import_mappings(
@@ -357,6 +359,38 @@ mod tests {
         )
         .expect_err("outside file should be rejected");
         assert!(err.to_string().contains("outside the selected source path"));
+    }
+
+    #[test]
+    fn manual_import_mapping_validation_requires_exactly_one_target() {
+        let neither = ManualImportFileMapping {
+            file_path: "/downloads/case3.mkv".to_string(),
+            episode_id: None,
+            series_movie_link_id: None,
+            quality: None,
+        };
+        let err = validate_manual_import_mapping_targets(&[neither])
+            .expect_err("missing target should be rejected");
+        assert!(err.to_string().contains("requires episode_id"));
+
+        let both = ManualImportFileMapping {
+            file_path: "/downloads/case3.mkv".to_string(),
+            episode_id: Some("episode-1".to_string()),
+            series_movie_link_id: Some("series-movie-link-1".to_string()),
+            quality: None,
+        };
+        let err = validate_manual_import_mapping_targets(&[both])
+            .expect_err("ambiguous target should be rejected");
+        assert!(err.to_string().contains("cannot include both"));
+
+        let series_movie = ManualImportFileMapping {
+            file_path: "/downloads/case3.mkv".to_string(),
+            episode_id: None,
+            series_movie_link_id: Some("series-movie-link-1".to_string()),
+            quality: None,
+        };
+        validate_manual_import_mapping_targets(&[series_movie])
+            .expect("series movie target should be accepted");
     }
 
     #[cfg(unix)]

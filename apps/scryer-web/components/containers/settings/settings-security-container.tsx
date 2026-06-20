@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useClient } from "urql";
 import { toast } from "sonner";
 import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
@@ -14,6 +15,8 @@ import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
 import { LatestWinsSaveQueue } from "@/lib/utils/latest-wins-save-queue";
 
 const MIN_PASSWORD_LENGTH = 8;
+const DEFAULT_ADMIN_PASSWORD_FORM_LOGIN_ERROR =
+  "change the default admin password before enabling form login";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
@@ -46,6 +49,7 @@ function parsePasswordMinLengthDraft(value: string): number | null {
 }
 
 export function SettingsSecurityContainer() {
+  const navigate = useNavigate();
   const client = useClient();
   const t = useTranslate();
   const { token, user, login, adoptSession, logout } = useAuth();
@@ -55,6 +59,7 @@ export function SettingsSecurityContainer() {
   const [loading, setLoading] = React.useState(true);
   const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = React.useState(false);
+  const [adminPasswordRequiredOpen, setAdminPasswordRequiredOpen] = React.useState(false);
   const [confirmBusy, setConfirmBusy] = React.useState(false);
   const [saveBusy, setSaveBusy] = React.useState(false);
   const [confirmUsername, setConfirmUsername] = React.useState("");
@@ -86,6 +91,14 @@ export function SettingsSecurityContainer() {
   );
   const effectivePasswordMinLength =
     draftPasswordMinLength ?? settings.passwordMinLength;
+
+  const openAdminPasswordRequiredDialog = React.useCallback(() => {
+    setEnableConfirmOpen(false);
+    setConfirmUsername("");
+    setConfirmPassword("");
+    setConfirmError(null);
+    setAdminPasswordRequiredOpen(true);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -224,6 +237,11 @@ export function SettingsSecurityContainer() {
     }
 
     if (enabled) {
+      if (user?.hasPassword === false) {
+        openAdminPasswordRequiredDialog();
+        return;
+      }
+
       setConfirmError(null);
       setEnableConfirmOpen(true);
       return;
@@ -232,8 +250,10 @@ export function SettingsSecurityContainer() {
     setDisableConfirmOpen(true);
   }, [
     confirmBusy,
+    openAdminPasswordRequiredDialog,
     saveBusy,
     settings.formLoginEnabled,
+    user?.hasPassword,
   ]);
 
   const handleConfirmEnable = React.useCallback(async () => {
@@ -289,8 +309,14 @@ export function SettingsSecurityContainer() {
       setConfirmPassword("");
       setConfirmError(null);
     } catch (error) {
-      setConfirmError(errorMessage(error, t("settings.securitySaveFailed")));
-      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+      const saveErrorMessage = errorMessage(error, t("settings.securitySaveFailed"));
+      if (saveErrorMessage === DEFAULT_ADMIN_PASSWORD_FORM_LOGIN_ERROR) {
+        openAdminPasswordRequiredDialog();
+        return;
+      }
+
+      setConfirmError(saveErrorMessage);
+      toast.error(saveErrorMessage);
     } finally {
       setConfirmBusy(false);
     }
@@ -300,6 +326,7 @@ export function SettingsSecurityContainer() {
     confirmPassword,
     confirmUsername,
     login,
+    openAdminPasswordRequiredDialog,
     settings.effectiveFormLoginEnabled,
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
@@ -321,6 +348,15 @@ export function SettingsSecurityContainer() {
     setConfirmPassword("");
     setConfirmError(null);
   }, [confirmBusy]);
+
+  const handleConfirmAdminPasswordRequired = React.useCallback(() => {
+    setAdminPasswordRequiredOpen(false);
+    navigate("/settings/profile");
+  }, [navigate]);
+
+  const handleCancelAdminPasswordRequired = React.useCallback(() => {
+    setAdminPasswordRequiredOpen(false);
+  }, []);
 
   const handleConfirmDisable = React.useCallback(async () => {
     const effectiveChangesNow =
@@ -553,6 +589,7 @@ export function SettingsSecurityContainer() {
       loading={loading || saveBusy}
       enableConfirmOpen={enableConfirmOpen}
       disableConfirmOpen={disableConfirmOpen}
+      adminPasswordRequiredOpen={adminPasswordRequiredOpen}
       confirmBusy={confirmBusy}
       confirmUsername={confirmUsername}
       confirmPassword={confirmPassword}
@@ -566,6 +603,8 @@ export function SettingsSecurityContainer() {
       onCancelEnable={handleCancelEnable}
       onConfirmDisable={handleConfirmDisable}
       onCancelDisable={handleCancelDisable}
+      onConfirmAdminPasswordRequired={handleConfirmAdminPasswordRequired}
+      onCancelAdminPasswordRequired={handleCancelAdminPasswordRequired}
       onPasswordMinLengthDraftChange={setPasswordMinLengthDraft}
       onPasswordMinLengthSubmit={handlePasswordMinLengthSubmit}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}

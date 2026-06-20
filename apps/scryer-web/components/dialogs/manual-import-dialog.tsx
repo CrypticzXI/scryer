@@ -55,6 +55,19 @@ type AvailableEpisode = {
   monitored: boolean;
 };
 
+type AvailableSeriesMovie = {
+  seriesMovieLinkId: string;
+  movieTitle: string;
+  year: number | null;
+  runtimeMinutes: number | null;
+};
+
+type ManualImportFileMapping = {
+  filePath: string;
+  episodeId?: string;
+  seriesMovieLinkId?: string;
+};
+
 function formatFileSize(bytes: number) {
   if (bytes <= 0) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -68,6 +81,12 @@ function episodeLabel(ep: AvailableEpisode): string {
   const epNum = ep.episodeNumber?.replace(/\D/g, "") ?? "?";
   const tag = `S${season.padStart(2, "0")}E${epNum.padStart(2, "0")}`;
   return ep.title ? `${tag} - ${ep.title}` : tag;
+}
+
+function seriesMovieLabel(movie: AvailableSeriesMovie): string {
+  const year = movie.year ? ` (${movie.year})` : "";
+  const runtime = movie.runtimeMinutes ? ` • ${movie.runtimeMinutes} min` : "";
+  return `${movie.movieTitle}${year}${runtime}`;
 }
 
 function groupEpisodesBySeason(episodes: AvailableEpisode[]): Map<string, AvailableEpisode[]> {
@@ -94,6 +113,16 @@ function groupEpisodesBySeason(episodes: AvailableEpisode[]): Map<string, Availa
 }
 
 const UNASSIGNED = "__unassigned__";
+const EPISODE_TARGET_PREFIX = "episode:";
+const SERIES_MOVIE_TARGET_PREFIX = "series-movie:";
+
+function episodeTargetValue(episodeId: string): string {
+  return `${EPISODE_TARGET_PREFIX}${episodeId}`;
+}
+
+function seriesMovieTargetValue(seriesMovieLinkId: string): string {
+  return `${SERIES_MOVIE_TARGET_PREFIX}${seriesMovieLinkId}`;
+}
 
 type Props = {
   open: boolean;
@@ -123,6 +152,7 @@ export function ManualImportDialog({
   const [error, setError] = React.useState<string | null>(null);
   const [files, setFiles] = React.useState<FilePreview[]>([]);
   const [episodes, setEpisodes] = React.useState<AvailableEpisode[]>([]);
+  const [seriesMovies, setSeriesMovies] = React.useState<AvailableSeriesMovie[]>([]);
   const [mappings, setMappings] = React.useState<Record<string, string>>({});
   const [importing, setImporting] = React.useState(false);
 
@@ -131,6 +161,7 @@ export function ManualImportDialog({
     if (!open) {
       setFiles([]);
       setEpisodes([]);
+      setSeriesMovies([]);
       setMappings({});
       setError(null);
       return;
@@ -148,10 +179,13 @@ export function ManualImportDialog({
         const preview = data.previewManualImport;
         setFiles(preview.files);
         setEpisodes(preview.availableEpisodes);
+        setSeriesMovies(preview.availableSeriesMovies ?? []);
         // Initialize mappings from suggested matches
         const initial: Record<string, string> = {};
         for (const file of preview.files) {
-          initial[file.filePath] = file.suggestedEpisodeId ?? UNASSIGNED;
+          initial[file.filePath] = file.suggestedEpisodeId
+            ? episodeTargetValue(file.suggestedEpisodeId)
+            : UNASSIGNED;
         }
         setMappings(initial);
       })
@@ -170,8 +204,22 @@ export function ManualImportDialog({
 
   const handleImport = React.useCallback(async () => {
     const fileMappings = Object.entries(mappings)
-      .filter(([, episodeId]) => episodeId !== UNASSIGNED)
-      .map(([filePath, episodeId]) => ({ filePath, episodeId }));
+      .filter(([, target]) => target !== UNASSIGNED)
+      .flatMap<ManualImportFileMapping>(([filePath, target]) => {
+        if (target.startsWith(EPISODE_TARGET_PREFIX)) {
+          return [{
+            filePath,
+            episodeId: target.slice(EPISODE_TARGET_PREFIX.length),
+          }];
+        }
+        if (target.startsWith(SERIES_MOVIE_TARGET_PREFIX)) {
+          return [{
+            filePath,
+            seriesMovieLinkId: target.slice(SERIES_MOVIE_TARGET_PREFIX.length),
+          }];
+        }
+        return [];
+      });
 
     if (fileMappings.length === 0) return;
 
@@ -217,7 +265,7 @@ export function ManualImportDialog({
         <DialogHeader>
           <DialogTitle>Manual Import</DialogTitle>
           <DialogDescription>
-            Match files to episodes for {titleName}
+            Match files to episodes or series movies for {titleName}
           </DialogDescription>
         </DialogHeader>
 
@@ -252,7 +300,7 @@ export function ManualImportDialog({
                     <TableHead>File</TableHead>
                     <TableHead className="w-24 text-right">Size</TableHead>
                     <TableHead className="w-24 text-center">Quality</TableHead>
-                    <TableHead className="w-[280px]">Episode</TableHead>
+                    <TableHead className="w-[280px]">Target</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -292,19 +340,42 @@ export function ManualImportDialog({
                             id={selectorId("activity-manual-import-assign", file.filePath)}
                             className="h-8 w-full text-xs"
                           >
-                            <SelectValue placeholder="Select episode..." />
+                            <SelectValue placeholder="Select target..." />
                           </SelectTrigger>
                           <SelectContent className="max-h-[300px]">
                             <SelectItem value={UNASSIGNED}>
                               <span className="text-muted-foreground/60">Skip (unassigned)</span>
                             </SelectItem>
+                            {seriesMovies.length > 0 && (
+                              <>
+                                <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                                  Series movies
+                                </div>
+                                {seriesMovies.map((movie) => (
+                                  <SelectItem
+                                    key={movie.seriesMovieLinkId}
+                                    id={selectorId(
+                                      "activity-manual-import-series-movie-option",
+                                      movie.seriesMovieLinkId,
+                                    )}
+                                    value={seriesMovieTargetValue(movie.seriesMovieLinkId)}
+                                  >
+                                    {seriesMovieLabel(movie)}
+                                  </SelectItem>
+                                ))}
+                              </>
+                            )}
                             {Array.from(groupedEpisodes.entries()).map(([seasonLabel, eps]) => (
                               <React.Fragment key={seasonLabel}>
                                 <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
                                   {seasonLabel}
                                 </div>
                                 {eps.map((ep) => (
-                                  <SelectItem key={ep.id} value={ep.id}>
+                                  <SelectItem
+                                    key={ep.id}
+                                    id={selectorId("activity-manual-import-episode-option", ep.id)}
+                                    value={episodeTargetValue(ep.id)}
+                                  >
                                     {episodeLabel(ep)}
                                   </SelectItem>
                                 ))}

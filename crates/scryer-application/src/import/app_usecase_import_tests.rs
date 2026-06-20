@@ -172,7 +172,8 @@ fn extract_parameter_first_match() {
 fn queued_mapped_manual_import_allows_missing_source() {
     let payload = test_manual_import_payload(vec![ManualImportFileMapping {
         file_path: "/downloads/episode.mkv".to_string(),
-        episode_id: "ep-1".to_string(),
+        episode_id: Some("ep-1".to_string()),
+        series_movie_link_id: None,
         quality: None,
     }]);
 

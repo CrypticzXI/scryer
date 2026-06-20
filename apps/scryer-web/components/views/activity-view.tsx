@@ -409,6 +409,21 @@ function deriveQueueRowPresentation(
   };
 }
 
+function downloadQueueItemRowSelectorKey(
+  queueItem: DownloadQueueItem,
+  fallbackKey: string,
+): string {
+  if (queueItem.downloadId?.trim()) {
+    return queueItem.downloadId.trim();
+  }
+
+  const ownerKey = queueItem.clientId.trim() || queueItem.clientType.trim();
+  const itemKey = queueItem.downloadClientItemId.trim() || queueItem.id.trim();
+  const queuedAt = queueItem.queuedAt?.trim();
+  const selectorParts = [ownerKey, itemKey, queuedAt].filter(Boolean);
+  return selectorParts.length >= 2 ? selectorParts.join("::") : fallbackKey;
+}
+
 function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const displayStateKey = normalizeQueueState(queueItem.displayState);
@@ -1237,8 +1252,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
         const rowSelectorKey = selectorId(
-          row.displayTitle || row.releaseTitle || rowId,
-          queueItem.clientName || queueItem.clientType,
+          downloadQueueItemRowSelectorKey(queueItem, rowId),
         );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy = rowActionBusy[rowId] ?? false;
@@ -1565,8 +1579,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
         const rowSelectorKey = selectorId(
-          row.displayTitle || row.releaseTitle || rowId,
-          queueItem.clientName || queueItem.clientType,
+          downloadQueueItemRowSelectorKey(queueItem, rowId),
         );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy = rowActionBusy[rowId] ?? false;

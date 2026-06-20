@@ -23,6 +23,7 @@ import {
   myPasskeysQuery,
   myTotpQuery,
 } from "@/lib/graphql/queries";
+import { normalizeGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import {
   VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS,
   isVisibleExternalAccountProvider,
@@ -64,6 +65,8 @@ const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
 };
 
 const TOTP_CODE_LENGTH = 6;
+const PASSKEY_FORM_LOGIN_DISABLED_ERROR =
+  "passkey authentication is unavailable while form login is disabled";
 
 function connectionsForProvider(
   settings: ExternalAuthRuntimeSettings,
@@ -74,6 +77,10 @@ function connectionsForProvider(
 
 function connectionLabelForDisplay(connection: ExternalAuthRuntimeConnection): string {
   return connection.displayName;
+}
+
+function isPasskeyFormLoginDisabledError(message: string): boolean {
+  return normalizeGraphQlErrorMessage(message) === PASSKEY_FORM_LOGIN_DISABLED_ERROR;
 }
 
 export function SettingsProfileContainer({ userId, username }: Props) {
@@ -228,6 +235,11 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     try {
       const result = await client.query<{ myPasskeys?: PasskeySummary[] }>(myPasskeysQuery, {}).toPromise();
       if (result.error) {
+        if (isPasskeyFormLoginDisabledError(result.error.message)) {
+          setPasskeys([]);
+          return;
+        }
+
         setGlobalStatus(result.error.message);
         return;
       }

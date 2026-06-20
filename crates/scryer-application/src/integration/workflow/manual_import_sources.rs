@@ -156,6 +156,9 @@ impl AppUseCase {
                 "title id is required for mapped manual import".to_string(),
             ));
         }
+        if !files.is_empty() {
+            crate::import_workflow::validate_manual_import_mapping_targets(&files)?;
+        }
 
         if let Some(title_id) = title_id.as_deref() {
             self.require_title_library_permission(

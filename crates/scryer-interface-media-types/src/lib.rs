@@ -3057,10 +3057,19 @@ pub struct ManualImportFilePreviewPayload {
     pub suggested_episode_label: Option<String>,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct ManualImportSeriesMovieTargetPayload {
+    pub series_movie_link_id: String,
+    pub movie_title: String,
+    pub year: Option<i32>,
+    pub runtime_minutes: Option<i32>,
+}
+
 #[derive(InputObject)]
 pub struct ManualImportFileMappingInput {
     pub file_path: String,
-    pub episode_id: String,
+    pub episode_id: Option<String>,
+    pub series_movie_link_id: Option<String>,
     pub quality: Option<String>,
 }
 

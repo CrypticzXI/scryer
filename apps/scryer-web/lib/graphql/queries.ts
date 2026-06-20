@@ -2213,6 +2213,12 @@ export const previewManualImportQuery = `query PreviewManualImport($clientId: St
       title
       monitored
     }
+    availableSeriesMovies {
+      seriesMovieLinkId
+      movieTitle
+      year
+      runtimeMinutes
+    }
   }
 }`;
 
@@ -2238,6 +2244,12 @@ export const previewManualImportPathQuery = `query PreviewManualImportPath($inpu
       episodeLabel
       title
       monitored
+    }
+    availableSeriesMovies {
+      seriesMovieLinkId
+      movieTitle
+      year
+      runtimeMinutes
     }
   }
 }`;

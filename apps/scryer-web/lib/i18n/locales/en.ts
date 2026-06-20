@@ -136,6 +136,10 @@ const en: LocaleDictionary = {
   "settings.securityConfirmUsername": "Username",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
+  "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
+  "settings.securityAdminPasswordRequiredDescription":
+    "Form login requires the admin account to have a password. Open your profile to set the initial password, then return here to enable form login.",
+  "settings.securityAdminPasswordRequiredAction": "Open Profile",
   "settings.securityDisableConfirmTitle": "Disable form login?",
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
@@ -2752,9 +2756,11 @@ const en: LocaleDictionary = {
     "Removes the stored key after you save. Disable automatic backups before clearing the key.",
   "settings.autoBackupsKeySummary": "Required automatic backup encryption",
   "settings.autoBackupsKeyHelp":
-    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. Automatic backups require a saved key.",
+    "Leave the field blank to keep the existing saved key. Enter a new value of at least {{count}} non-whitespace characters to replace it.",
   "settings.autoBackupsKeyRequired":
-    "Automatic backups require a saved backup key.",
+    "Automatic backups require a saved backup key of at least {{count}} non-whitespace characters.",
+  "settings.autoBackupsKeyTooShort":
+    "Automatic backup keys must be at least {{count}} non-whitespace characters.",
   "settings.autoBackupsShowKey": "Show automatic backup key",
   "settings.autoBackupsHideKey": "Hide automatic backup key",
   "settings.autoBackupsSaved": "Automatic backup settings saved.",
