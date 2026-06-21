@@ -413,8 +413,7 @@ impl AppUseCase {
         actor: &User,
         scope_id: &str,
     ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
-            .await?;
+        self.require_library_settings_read_permission(actor).await?;
 
         let raw_json = self.load_download_client_routing_json(scope_id).await?;
         let Some(raw_json) = raw_json else {

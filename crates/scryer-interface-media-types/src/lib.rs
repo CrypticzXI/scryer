@@ -357,6 +357,13 @@ pub enum QueueDownloadPurposeValue {
     AdditionalFile,
 }
 
+#[derive(Enum, Copy, Clone, Debug, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum RuntimePathStyleValue {
+    Unix,
+    Windows,
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "lowercase")]
 pub enum DelayProfilePreferredProtocolValue {
@@ -1243,6 +1250,7 @@ pub struct SystemHealthPayload {
     pub db_path: String,
     pub datastore_engine: String,
     pub datastore_migration_key: Option<String>,
+    pub runtime_path_style: RuntimePathStyleValue,
     pub total_titles: i32,
     pub monitored_titles: i32,
     pub total_users: i32,
@@ -1254,6 +1262,11 @@ pub struct SystemHealthPayload {
     pub recent_event_preview: Vec<String>,
     pub db_migration_version: Option<String>,
     pub indexer_stats: Vec<IndexerQueryStatsPayload>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+pub struct RuntimeInfoPayload {
+    pub runtime_path_style: RuntimePathStyleValue,
 }
 
 #[derive(SimpleObject, Clone)]

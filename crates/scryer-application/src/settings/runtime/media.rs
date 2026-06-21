@@ -308,8 +308,7 @@ impl AppUseCase {
         actor: &User,
         facet: MediaFacet,
     ) -> AppResult<MediaSettings> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
-            .await?;
+        self.require_library_settings_read_permission(actor).await?;
 
         let root_folders = self.root_folders_for_facet(&facet).await?;
         let library_path = default_path_from_root_folders(&facet, &root_folders);

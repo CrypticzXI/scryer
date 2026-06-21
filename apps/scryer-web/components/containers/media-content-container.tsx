@@ -20,10 +20,10 @@ import {
   deleteTitlePreviewQuery,
   deleteTitlesPreviewQuery,
   downloadClientRoutingQuery,
-  downloadClientsInitQuery,
   jobRunEventsSubscription,
   jobRunsQuery,
   librariesQuery,
+  libraryDownloadClientsQuery,
   librarySettingsQuery,
   ruleSetsQuery,
   routingPageInitQuery,
@@ -119,6 +119,7 @@ type MediaContentContainerProps = {
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
   canManageConfig: boolean;
+  canManageLibrarySettings: boolean;
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
 
@@ -571,6 +572,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   view,
   contentSettingsSection,
   canManageConfig,
+  canManageLibrarySettings,
   onOpenOverview,
 }: MediaContentContainerProps) {
   const searchState = useSearchContext();
@@ -950,6 +952,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setPlexmatchWriteOnImport,
     importMode,
     setImportMode,
+    localPathStyle,
     saveCategoryQualityProfileOverride,
     saveCategoryScoringPersonaOverride,
     updateCategoryMediaProfileSettings,
@@ -2517,12 +2520,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setLibraries([]);
       return [];
     }
+    const permission =
+      contentSettingsSection === "library" && !canManageConfig ? "manageLibrary" : "view";
     setLibrariesLoading(true);
     try {
       const { data, error } = await client
         .query(
           librariesQuery,
-          { facet: activeFacet, permission: "view" },
+          { facet: activeFacet, permission },
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -2541,7 +2546,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     } finally {
       setLibrariesLoading(false);
     }
-  }, [activeFacet, client, isMediaView, setGlobalStatus, t]);
+  }, [
+    activeFacet,
+    canManageConfig,
+    client,
+    contentSettingsSection,
+    isMediaView,
+    setGlobalStatus,
+    t,
+  ]);
 
   const refreshRootValidationLibraries = React.useCallback(
     async (): Promise<LibraryRecord[] | null> => {
@@ -2549,12 +2562,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setRootValidationLibraries([]);
         return [];
       }
+      const permission =
+        contentSettingsSection === "library" && !canManageConfig ? "manageLibrary" : "view";
       setRootValidationLibrariesLoading(true);
       try {
         const { data, error } = await client
           .query(
             librariesQuery,
-            { facet: null, permission: "view" },
+            { facet: null, permission },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -2571,7 +2586,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setRootValidationLibrariesLoading(false);
       }
     },
-    [client, isMediaView, setGlobalStatus, t],
+    [canManageConfig, client, contentSettingsSection, isMediaView, setGlobalStatus, t],
   );
 
   const loadLibrarySettings = React.useCallback(
@@ -2620,7 +2635,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setLibraryDownloadClientsLoading(true);
     void client
       .query<{ downloadClientConfigs: DownloadClientRecord[] }>(
-        downloadClientsInitQuery,
+        libraryDownloadClientsQuery,
         {},
         { requestPolicy: "network-only" },
       )
@@ -3001,7 +3016,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       };
     }
     setRoutingInitLoading(false);
-    if (isGeneralSettingsSection) {
+    if (isGeneralSettingsSection && canManageConfig) {
       void refreshRuleSets();
     }
   }, [
@@ -3010,6 +3025,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     catalogBootstrapInFlight,
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
+    canManageConfig,
     client,
     contentSettingsSection,
     refreshLibraries,
@@ -3036,12 +3052,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           view,
           contentSettingsSection,
           canManageConfig,
+          canManageLibrarySettings,
           contentSettingsLabel,
           moviesPath,
           setMoviesPath,
           seriesPath,
           setSeriesPath,
           saveSetting,
+          localPathStyle,
           mediaSettingsLoading,
           librarySettingsSaving,
           qualityProfiles: qualityProfiles,

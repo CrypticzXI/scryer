@@ -79,8 +79,7 @@ impl AppUseCase {
         actor: &User,
         client_type: Option<String>,
     ) -> AppResult<Vec<DownloadClientConfig>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
+        self.require_library_settings_read_permission(actor).await?;
 
         let client_type = client_type
             .map(|value| value.trim().to_string())

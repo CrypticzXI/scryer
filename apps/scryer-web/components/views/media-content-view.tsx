@@ -52,6 +52,7 @@ import type {
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
 import { buildViewPath } from "@/lib/utils/routing";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import type { ContentViewMode } from "./media-content/content-view-mode";
 
 type Facet = "movie" | "series" | "anime";
@@ -113,6 +114,22 @@ function isMediaSettingsSection(section: ContentSettingsSection): boolean {
   );
 }
 
+function canAccessMediaSettingsSection(
+  section: ContentSettingsSection,
+  canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
+): boolean {
+  if (!isMediaSettingsSection(section)) {
+    return true;
+  }
+
+  if (section === "library") {
+    return canManageConfig || canManageLibrarySettings;
+  }
+
+  return canManageConfig;
+}
+
 export function MediaContentView({
   state,
 }: {
@@ -120,11 +137,13 @@ export function MediaContentView({
     view: ViewId;
     contentSettingsSection: ContentSettingsSection;
     canManageConfig: boolean;
+    canManageLibrarySettings: boolean;
     contentSettingsLabel: string;
     moviesPath: string;
     setMoviesPath: (value: string) => void;
     seriesPath: string;
     setSeriesPath: (value: string) => void;
+    localPathStyle: LocalPathStyle;
     mediaSettingsLoading: boolean;
     librarySettingsSaving: boolean;
     qualityProfiles: ParsedQualityProfile[];
@@ -303,7 +322,9 @@ export function MediaContentView({
     view,
     contentSettingsSection,
     canManageConfig,
+    canManageLibrarySettings,
     contentSettingsLabel,
+    localPathStyle,
     mediaSettingsLoading,
     librarySettingsSaving,
     qualityProfiles,
@@ -442,7 +463,11 @@ export function MediaContentView({
     [deferredMonitoredTitles, selectedTitleIds],
   );
   const effectiveContentSettingsSection =
-    !canManageConfig && isMediaSettingsSection(contentSettingsSection)
+    !canAccessMediaSettingsSection(
+      contentSettingsSection,
+      canManageConfig,
+      canManageLibrarySettings,
+    )
       ? "overview"
       : contentSettingsSection;
 
@@ -474,13 +499,13 @@ export function MediaContentView({
     !librariesLoading &&
     relevantLibraries.some((library) => invalidRootLibraryIds.includes(library.id));
   const showInitialScanAction =
-    canManageConfig &&
+    canManageLibrarySettings &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     hasConfiguredRootFolders === true &&
     !hasInvalidConfiguredRootFolders;
   const showConfigureRootFoldersAction =
-    canManageConfig &&
+    canManageLibrarySettings &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     (hasConfiguredRootFolders === false || hasInvalidConfiguredRootFolders);
@@ -767,6 +792,7 @@ export function MediaContentView({
             scanLoading={libraryScanLoading}
             scanNotice={libraryScanNotice}
             scanSummary={libraryScanSummary}
+            localPathStyle={localPathStyle}
             qualityProfiles={qualityProfiles}
             downloadClients={libraryDownloadClients}
             downloadClientsLoading={libraryDownloadClientsLoading}

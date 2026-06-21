@@ -44,7 +44,7 @@ import {
 } from "@/lib/utils/download-clients";
 import { providerConfigRecordToValues } from "@/lib/utils/provider-config";
 import {
-  resolveLocalPathStyle,
+  localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import {
@@ -387,9 +387,7 @@ export function SetupWizardContainer({
   const [dcTypeOptions, setDcTypeOptions] = useState<
     DownloadClientTypeOption[]
   >(() => buildDownloadClientTypeOptions([]));
-  const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>(() =>
-    resolveLocalPathStyle(null),
-  );
+  const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>("unix");
   const [dcTesting, setDcTesting] = useState(false);
   const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(
     null,
@@ -635,7 +633,9 @@ export function SetupWizardContainer({
       )
         throw error;
 
-      setDcLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
+      setDcLocalPathStyle(
+        localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+      );
       setDcTypeOptions(
         buildDownloadClientTypeOptions(
           (data?.downloadClientProviderTypes as

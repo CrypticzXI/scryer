@@ -144,8 +144,7 @@ impl LibraryMutations {
         input: UpdateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor =
-            require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
         let roots = input.roots.map(|roots| {
             roots
                 .into_iter()
@@ -170,8 +169,7 @@ impl LibraryMutations {
 
     async fn delete_library(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteLibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor =
-            require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
         let deleted = app
             .delete_library(&actor, &id)

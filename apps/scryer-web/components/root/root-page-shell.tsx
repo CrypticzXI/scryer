@@ -287,6 +287,22 @@ function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
   return section === "import" || isMediaSettingsSection(section);
 }
 
+function canAccessMediaSettingsSection(
+  section: ContentSettingsSection,
+  canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
+): boolean {
+  if (!isManageConfigMediaSection(section)) {
+    return true;
+  }
+
+  if (section === "library") {
+    return canManageConfig || canManageLibrarySettings;
+  }
+
+  return canManageConfig;
+}
+
 function canAccessSettingsSection(
   section: SettingsSection,
   canManageUsers: boolean,
@@ -592,6 +608,7 @@ function MainContent({
   canManageTitle,
   canManageUsers,
   canManageConfig,
+  canManageLibrarySettings,
 }: {
   view: ViewId;
   overviewTitleId: string | null;
@@ -621,6 +638,7 @@ function MainContent({
   canManageTitle: boolean;
   canManageUsers: boolean;
   canManageConfig: boolean;
+  canManageLibrarySettings: boolean;
 }) {
   if (view === "activity") {
     if (!canAccessActivity) {
@@ -736,14 +754,19 @@ function MainContent({
   }
   return (
     <MediaContentContainer
-      key={`${view}-${!canManageConfig && isManageConfigMediaSection(contentSettingsSection) ? "overview" : contentSettingsSection}`}
+      key={`${view}-${!canAccessMediaSettingsSection(contentSettingsSection, canManageConfig, canManageLibrarySettings) ? "overview" : contentSettingsSection}`}
       view={view}
       contentSettingsSection={
-        !canManageConfig && isManageConfigMediaSection(contentSettingsSection)
+        !canAccessMediaSettingsSection(
+          contentSettingsSection,
+          canManageConfig,
+          canManageLibrarySettings,
+        )
           ? "overview"
           : contentSettingsSection
       }
       canManageConfig={canManageConfig}
+      canManageLibrarySettings={canManageLibrarySettings}
       onOpenOverview={handleOpenOverview}
     />
   );
@@ -1670,6 +1693,9 @@ function AuthenticatedHomePage({
   );
   const canManageUsers = canManageUserAccounts || canManagePermissions;
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+  const canManageLibrarySettings =
+    canManageConfig ||
+    hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageLibrary);
   const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
   const viewingBackupsSettings =
     view === "settings" && settingsSection === "backups";
@@ -1818,14 +1844,23 @@ function AuthenticatedHomePage({
   useEffect(() => {
     if (
       !isMediaView(view) ||
-      canManageConfig ||
-      !isManageConfigMediaSection(contentSettingsSection)
+      canAccessMediaSettingsSection(
+        contentSettingsSection,
+        canManageConfig,
+        canManageLibrarySettings,
+      )
     ) {
       return;
     }
 
     navigateTo(view, undefined, "overview", undefined, undefined);
-  }, [canManageConfig, contentSettingsSection, navigateTo, view]);
+  }, [
+    canManageConfig,
+    canManageLibrarySettings,
+    contentSettingsSection,
+    navigateTo,
+    view,
+  ]);
 
   const navigateToAccessibleDefault = useCallback(() => {
     const fallback = defaultAccessibleRoute(
@@ -1859,8 +1894,11 @@ function AuthenticatedHomePage({
         )
       : !(
           isMediaView(view) &&
-          isManageConfigMediaSection(contentSettingsSection) &&
-          !canManageConfig
+          !canAccessMediaSettingsSection(
+            contentSettingsSection,
+            canManageConfig,
+            canManageLibrarySettings,
+          )
         );
   const protectedSettingsRoute =
     routeCanAccessSettingsContent &&
@@ -2364,6 +2402,9 @@ function AuthenticatedHomePage({
                                   canManageTitle={canManageTitle}
                                   canManageUsers={canManageUsers}
                                   canManageConfig={canManageConfig}
+                                  canManageLibrarySettings={
+                                    canManageLibrarySettings
+                                  }
                                 />
                               )}
                             </Suspense>

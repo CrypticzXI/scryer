@@ -32,7 +32,7 @@ import {
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
 import {
-  resolveLocalPathStyle,
+  localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import type {
@@ -83,9 +83,7 @@ export function SettingsDownloadClientsContainer({
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
-  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>(() =>
-    resolveLocalPathStyle(null),
-  );
+  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>("unix");
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingDownloadClientEditorAction>(null);
   const [draftBaseline, setDraftBaseline] = useState<DownloadClientDraft>(() =>
@@ -159,7 +157,9 @@ export function SettingsDownloadClientsContainer({
         const clients: DownloadClientRecord[] = data?.downloadClientConfigs || [];
         setSettingsDownloadClients(clients);
         setDownloadClientOrder(clients.map((clientRecord) => clientRecord.id));
-        setLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
+        setLocalPathStyle(
+          localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+        );
         setDownloadClientTypeOptions(
           buildDownloadClientTypeOptions(
             (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],

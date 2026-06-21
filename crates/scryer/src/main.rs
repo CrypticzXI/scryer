@@ -97,6 +97,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
 const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
+const LOG_FILE_ENV: &str = "SCRYER_LOG_FILE";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -399,9 +400,22 @@ fn log_smg_version_incompatibility(
 
 #[tokio::main]
 async fn main() {
-    // Phase 1: Extract --data-dir from args before subcommand dispatch.
+    // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
-    let data_dir_override = extract_data_dir(&mut args);
+    let data_dir_override = match extract_data_dir(&mut args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let log_file_override = match extract_log_file(&mut args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     // Phase 2: Handle CLI subcommands before any startup work.
     // args[0] is the binary name; subcommand (if any) is args[1].
@@ -422,7 +436,9 @@ async fn main() {
             }
             other => {
                 eprintln!("unknown argument: {other}");
-                eprintln!("usage: scryer [--data-dir <path>] [init | --generate-key | --version]");
+                eprintln!(
+                    "usage: scryer [--data-dir <path>] [--log-file <path>] [init | --generate-key | --version]"
+                );
                 std::process::exit(1);
             }
         }
@@ -434,17 +450,36 @@ async fn main() {
 
     scryer_outbound_http::install_default_rustls_provider();
 
-    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
-    let pre_restore_datastore_config =
-        match resolve_datastore_config_from_env(data_dir.clone(), migration_mode) {
-            Ok(config) => config,
-            Err(error) => {
-                eprintln!("{error}");
+    let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
+    let log_file_config = resolve_log_file_config(
+        log_file_override.as_deref(),
+        normalize_env_option(LOG_FILE_ENV).as_deref(),
+        &data_dir,
+        default_windows_log_file_path(),
+    );
+    let log_file_writer = match log_file_config.as_ref() {
+        Some(config) => match log_buffer::open_log_file(&config.path) {
+            Ok(writer) => Some(writer),
+            Err(error) if config.explicit => {
+                eprintln!(
+                    "failed to open Scryer log file at {}: {error}",
+                    config.path.display()
+                );
                 std::process::exit(1);
             }
-        };
-
-    let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
+            Err(error) => {
+                eprintln!(
+                    "warning: failed to open default Scryer log file at {}: {error}; continuing with console and in-app logs",
+                    config.path.display()
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    let file_logging_path = log_file_writer
+        .as_ref()
+        .and_then(|_| log_file_config.as_ref().map(|config| config.path.clone()));
 
     {
         use tracing_subscriber::layer::SubscriberExt;
@@ -457,13 +492,32 @@ async fn main() {
         let buffer_layer = tracing_subscriber::fmt::layer()
             .with_writer(log_buffer::LogBufferWriter::new(log_ring_buffer.clone()))
             .with_ansi(false);
+        let file_layer = log_file_writer.map(|writer| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false)
+        });
 
         tracing_subscriber::registry()
             .with(env_filter)
             .with(stdout_layer)
             .with(buffer_layer)
+            .with(file_layer)
             .init();
     }
+    if let Some(path) = file_logging_path.as_ref() {
+        tracing::info!(path = %path.display(), "file logging enabled");
+    }
+
+    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
+    let pre_restore_datastore_config =
+        match resolve_datastore_config_from_env(data_dir.clone(), migration_mode) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!("{error}");
+                std::process::exit(1);
+            }
+        };
 
     let finalized_pending_restore =
         match finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await {
@@ -1628,25 +1682,49 @@ async fn shutdown_signal(token: CancellationToken) {
 
 /// Extract `--data-dir <path>` or `--data-dir=<path>` from the arg list,
 /// removing those elements so the remaining args are clean for subcommand dispatch.
-fn extract_data_dir(args: &mut Vec<String>) -> Option<PathBuf> {
+fn extract_data_dir(args: &mut Vec<String>) -> Result<Option<PathBuf>, String> {
+    extract_path_arg(args, "--data-dir")
+}
+
+/// Extract `--log-file <path>` or `--log-file=<path>` from the arg list,
+/// removing those elements so the remaining args are clean for subcommand dispatch.
+fn extract_log_file(args: &mut Vec<String>) -> Result<Option<PathBuf>, String> {
+    extract_path_arg(args, "--log-file")
+}
+
+fn extract_path_arg(args: &mut Vec<String>, flag: &str) -> Result<Option<PathBuf>, String> {
     let mut i = 1; // skip binary name
+    let equals_flag = format!("{flag}=");
     while i < args.len() {
-        if args[i] == "--data-dir" {
+        if args[i] == flag {
             args.remove(i);
             if i < args.len() {
-                return Some(PathBuf::from(args.remove(i)));
+                if is_startup_arg_token(&args[i]) {
+                    return Err(format!("{flag} requires a path argument"));
+                }
+                return Ok(Some(PathBuf::from(args.remove(i))));
             }
-            eprintln!("--data-dir requires a path argument");
-            std::process::exit(1);
-        } else if let Some(value) = args[i].strip_prefix("--data-dir=") {
+            return Err(format!("{flag} requires a path argument"));
+        } else if let Some(value) = args[i].strip_prefix(&equals_flag) {
+            if value.is_empty() {
+                return Err(format!("{flag} requires a path argument"));
+            }
             let path = PathBuf::from(value);
             args.remove(i);
-            return Some(path);
+            return Ok(Some(path));
         } else {
             i += 1;
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_startup_arg_token(value: &str) -> bool {
+    matches!(
+        value,
+        "--data-dir" | "--log-file" | "--generate-key" | "--version" | "-V" | "init"
+    ) || value.starts_with("--data-dir=")
+        || value.starts_with("--log-file=")
 }
 
 /// Resolve the data directory from CLI flag or platform default.
@@ -1661,6 +1739,63 @@ fn resolve_data_dir(cli_override: Option<&Path>) -> PathBuf {
     directories::ProjectDirs::from("", "", "scryer")
         .map(|p| p.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedLogFileConfig {
+    path: PathBuf,
+    explicit: bool,
+}
+
+fn resolve_log_file_config(
+    cli_override: Option<&Path>,
+    env_override: Option<&str>,
+    data_dir: &Path,
+    default_path: Option<PathBuf>,
+) -> Option<ResolvedLogFileConfig> {
+    if let Some(path) = cli_override {
+        return Some(ResolvedLogFileConfig {
+            path: resolve_explicit_log_file_path(path, data_dir),
+            explicit: true,
+        });
+    }
+
+    if let Some(path) = env_override {
+        return Some(ResolvedLogFileConfig {
+            path: resolve_explicit_log_file_path(Path::new(path), data_dir),
+            explicit: true,
+        });
+    }
+
+    default_path.map(|path| ResolvedLogFileConfig {
+        path,
+        explicit: false,
+    })
+}
+
+fn resolve_explicit_log_file_path(path: &Path, data_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        data_dir.join(path)
+    }
+}
+
+fn default_windows_log_file_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        return directories::BaseDirs::new().map(|dirs| {
+            dirs.data_local_dir()
+                .join("scryer")
+                .join("logs")
+                .join("scryer.log")
+        });
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 fn load_env_file(data_dir: Option<&Path>, include_managed_instance_secrets: bool) {
@@ -2540,15 +2675,17 @@ async fn seed_builtin_plugin_installations(
 mod tests {
     use super::{
         ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
-        SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+        ResolvedLogFileConfig, SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
         bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
-        comma_separated_env_has_entries, load_runtime_plugin_state, resolve_auth_mode,
+        comma_separated_env_has_entries, extract_data_dir, extract_log_file,
+        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
         restart_spec_from_parts, title_image_handler,
         validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
     use std::io;
+    use std::path::PathBuf;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -2610,6 +2747,171 @@ mod tests {
         std::thread::sleep(Duration::from_millis(40));
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn extract_log_file_removes_space_form_before_subcommand_dispatch() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "logs/scryer.log".to_string(),
+            "--version".to_string(),
+        ];
+
+        let path = extract_log_file(&mut args)
+            .expect("extract log file")
+            .expect("log file path");
+
+        assert_eq!(path, PathBuf::from("logs/scryer.log"));
+        assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn extract_log_file_removes_equals_form_before_subcommand_dispatch() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file=logs/scryer.log".to_string(),
+            "init".to_string(),
+        ];
+
+        let path = extract_log_file(&mut args)
+            .expect("extract log file")
+            .expect("log file path");
+
+        assert_eq!(path, PathBuf::from("logs/scryer.log"));
+        assert_eq!(args, vec!["scryer".to_string(), "init".to_string()]);
+    }
+
+    #[test]
+    fn extract_log_file_reports_missing_value() {
+        let mut args = vec!["scryer".to_string(), "--log-file".to_string()];
+
+        let error = extract_log_file(&mut args).expect_err("missing value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_rejects_version_flag_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "--version".to_string(),
+        ];
+
+        let error = extract_log_file(&mut args).expect_err("flag value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_rejects_subcommand_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "init".to_string(),
+        ];
+
+        let error = extract_log_file(&mut args).expect_err("subcommand value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_data_dir_rejects_log_file_flag_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--data-dir".to_string(),
+            "--log-file".to_string(),
+            "logs/scryer.log".to_string(),
+        ];
+
+        let error = extract_data_dir(&mut args).expect_err("flag value should fail");
+
+        assert!(error.contains("--data-dir requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_reports_empty_equals_value() {
+        let mut args = vec!["scryer".to_string(), "--log-file=".to_string()];
+
+        let error = extract_log_file(&mut args).expect_err("empty value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_data_dir_still_removes_data_dir_flag() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--data-dir".to_string(),
+            "/config".to_string(),
+            "--version".to_string(),
+        ];
+
+        let path = extract_data_dir(&mut args)
+            .expect("extract data dir")
+            .expect("data dir path");
+
+        assert_eq!(path, PathBuf::from("/config"));
+        assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn log_file_config_prefers_cli_then_env_then_default() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        let default = Some(dir.path().join("default").join("scryer.log"));
+
+        assert_eq!(
+            resolve_log_file_config(
+                Some(std::path::Path::new("cli.log")),
+                Some("env.log"),
+                &data_dir,
+                default.clone()
+            ),
+            Some(ResolvedLogFileConfig {
+                path: data_dir.join("cli.log"),
+                explicit: true,
+            })
+        );
+        assert_eq!(
+            resolve_log_file_config(None, Some("env.log"), &data_dir, default.clone()),
+            Some(ResolvedLogFileConfig {
+                path: data_dir.join("env.log"),
+                explicit: true,
+            })
+        );
+        assert_eq!(
+            resolve_log_file_config(None, None, &data_dir, default.clone()),
+            Some(ResolvedLogFileConfig {
+                path: default.expect("default path"),
+                explicit: false,
+            })
+        );
+    }
+
+    #[test]
+    fn log_file_config_has_no_default_when_default_path_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+
+        assert_eq!(resolve_log_file_config(None, None, &data_dir, None), None);
+    }
+
+    #[test]
+    fn log_file_config_keeps_absolute_explicit_paths() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        let absolute = dir.path().join("scryer.log");
+
+        assert_eq!(
+            resolve_log_file_config(Some(&absolute), Some("env.log"), &data_dir, None),
+            Some(ResolvedLogFileConfig {
+                path: absolute,
+                explicit: true,
+            })
+        );
     }
 
     #[derive(Default)]

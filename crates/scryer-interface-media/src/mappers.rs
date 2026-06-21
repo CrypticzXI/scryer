@@ -2129,12 +2129,22 @@ pub fn from_title_acquisition_diagnostics(
     })
 }
 
+pub fn from_runtime_path_style(
+    style: scryer_application::RuntimePathStyle,
+) -> RuntimePathStyleValue {
+    match style {
+        scryer_application::RuntimePathStyle::Unix => RuntimePathStyleValue::Unix,
+        scryer_application::RuntimePathStyle::Windows => RuntimePathStyleValue::Windows,
+    }
+}
+
 pub fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
     SystemHealthPayload {
         service_ready: health.service_ready,
         db_path: health.db_path,
         datastore_engine: health.datastore_engine,
         datastore_migration_key: health.datastore_migration_key,
+        runtime_path_style: from_runtime_path_style(health.runtime_path_style),
         total_titles: health.total_titles as i32,
         monitored_titles: health.monitored_titles as i32,
         total_users: health.total_users as i32,

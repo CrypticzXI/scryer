@@ -45,6 +45,10 @@ import {
   areNzbgetRoutingMapsEqual,
   areRoutingOrdersEqual,
 } from "@/lib/utils/media-content";
+import {
+  isAbsoluteLocalPathForStyle,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
 
 const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
@@ -88,6 +92,7 @@ type MediaLibrarySettingsPanelProps = {
   scanLoading: boolean;
   scanNotice?: string | null;
   scanSummary: LibraryScanSummary | null;
+  localPathStyle: LocalPathStyle;
   qualityProfiles: ParsedQualityProfile[];
   downloadClients: DownloadClientRecord[];
   downloadClientsLoading: boolean;
@@ -200,6 +205,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   scanLoading,
   scanNotice,
   scanSummary,
+  localPathStyle,
   qualityProfiles,
   downloadClients,
   downloadClientsLoading,
@@ -451,6 +457,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     [normalizedDraftRoots],
   );
   const hasRootFolderConflicts = conflictingLibraryNamesByRootPath.size > 0;
+  const invalidRootFolderPaths = React.useMemo(() => {
+    const invalidPaths = new Set<string>();
+    normalizedDraftRoots.forEach((root) => {
+      if (!isAbsoluteLocalPathForStyle(root.path, localPathStyle)) {
+        invalidPaths.add(root.path);
+      }
+    });
+    return invalidPaths;
+  }, [localPathStyle, normalizedDraftRoots]);
+  const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
   const downloadClientRoutingBusy =
@@ -934,6 +950,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   {sortedFolders.map(({ rf, originalIndex: index }) => {
                     const conflictingLibraryNames =
                       conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
+                    const pathIsInvalid = invalidRootFolderPaths.has(rf.path);
 
                     return (
                       <li
@@ -998,6 +1015,11 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             {t("settings.rootFolderConflict", {
                               libraries: conflictingLibraryNames.join(", "),
                             })}
+                          </p>
+                        ) : null}
+                        {pathIsInvalid ? (
+                          <p className="text-xs text-destructive">
+                            {t("settings.downloadClientRemotePathMappingsLocalRequired")}
                           </p>
                         ) : null}
                       </li>
@@ -1461,7 +1483,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
-                    hasRootFolderConflicts
+                    hasRootFolderConflicts ||
+                    hasInvalidRootFolderPaths
                   }
                 >
                   <Save className="mr-1.5 h-4 w-4" />
@@ -1477,7 +1500,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
-                    hasRootFolderConflicts
+                    hasRootFolderConflicts ||
+                    hasInvalidRootFolderPaths
                   }
                 >
                   {t("settings.librarySaveOnlyButton")}

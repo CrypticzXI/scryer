@@ -31,6 +31,11 @@ import type {
 } from "@/lib/types";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 import { normalizeLibraryPermissionsForStorage } from "@/lib/utils/permissions";
+import {
+  isAbsoluteLocalPathForStyle,
+  localPathStyleFromRuntimeValue,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
 
 type SettingsMediaServersSectionProps = ComponentProps<typeof SettingsMediaServersSection>;
 
@@ -96,6 +101,26 @@ function parsePathMappings(value: string): MediaServerPathMapping[] {
       };
     })
     .filter((mapping) => mapping.sourcePath.length > 0 && mapping.destinationPath.length > 0);
+}
+
+function pathMappingsTextHasValidLocalPaths(
+  value: string,
+  localPathStyle: LocalPathStyle,
+): boolean {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .every((line) => {
+      const [sourcePath, destinationPath = ""] = line.split(/=>/, 2);
+      const remotePath = sourcePath.trim();
+      const localPath = destinationPath.trim();
+      return (
+        remotePath.length > 0 &&
+        localPath.length > 0 &&
+        isAbsoluteLocalPathForStyle(localPath, localPathStyle)
+      );
+    });
 }
 
 function normalizeDefaultLibraryGrants(
@@ -204,6 +229,8 @@ export function SettingsMediaServersContainer() {
   const [plexServerOptions, setPlexServerOptions] = useState<PlexServerDiscovery[]>([]);
   const [plexDiscoveryBusy, setPlexDiscoveryBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>("unix");
+  const [pathMappingsValid, setPathMappingsValid] = useState(true);
 
   const isDraftDirty = JSON.stringify(draft) !== JSON.stringify(draftBaseline);
 
@@ -212,6 +239,9 @@ export function SettingsMediaServersContainer() {
       .query(mediaServerConnectionsQuery, { provider: null }, { requestPolicy: "network-only" })
       .toPromise();
     if (error) throw error;
+    setLocalPathStyle(
+      localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+    );
     setConnections(
       ((data?.mediaServerConnections ?? []) as MediaServerConnection[]).filter((connection) =>
         isVisibleMediaServerProvider(connection.provider),
@@ -248,6 +278,7 @@ export function SettingsMediaServersContainer() {
     setPlexDiscoveryToken(null);
     setPlexServerOptions([]);
     setEditorError(null);
+    setPathMappingsValid(true);
   }, []);
 
   const openCreateEditor = useCallback(() => {
@@ -258,6 +289,7 @@ export function SettingsMediaServersContainer() {
     setPlexDiscoveryToken(null);
     setPlexServerOptions([]);
     setEditorError(null);
+    setPathMappingsValid(true);
     setEditorMode("create");
     setIsEditorOpen(true);
   }, []);
@@ -270,10 +302,13 @@ export function SettingsMediaServersContainer() {
     setPlexDiscoveryToken(null);
     setPlexServerOptions([]);
     setEditorError(null);
+    setPathMappingsValid(
+      pathMappingsTextHasValidLocalPaths(nextDraft.pathMappingsText, localPathStyle),
+    );
     setEditorMode("edit");
     setIsEditorOpen(true);
     setGlobalStatus(t("status.editingMediaServer", { name: connection.displayName }));
-  }, [setGlobalStatus, t]);
+  }, [localPathStyle, setGlobalStatus, t]);
 
   const requestCreateEditor = useCallback(() => {
     if (!isEditorOpen || !isDraftDirty) {
@@ -357,6 +392,13 @@ export function SettingsMediaServersContainer() {
     const baseUrl = draft.baseUrl.trim();
     if (!name || (draft.provider !== "plex" && !baseUrl)) {
       const message = t("settings.mediaServerValidation");
+      setEditorError(message);
+      setGlobalStatus(message);
+      return;
+    }
+    if (!pathMappingsTextHasValidLocalPaths(draft.pathMappingsText, localPathStyle)) {
+      const message = t("settings.downloadClientRemotePathMappingsLocalRequired");
+      setPathMappingsValid(false);
       setEditorError(message);
       setGlobalStatus(message);
       return;
@@ -518,6 +560,9 @@ export function SettingsMediaServersContainer() {
         libraries={libraries}
         draft={draft}
         setDraft={setDraft}
+        localPathStyle={localPathStyle}
+        pathMappingsValid={pathMappingsValid}
+        onPathMappingsValidityChange={setPathMappingsValid}
         editingConnectionId={editingConnectionId}
         mutatingConnectionId={mutatingConnectionId}
         testingConnectionId={testingConnectionId}

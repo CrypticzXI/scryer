@@ -3,9 +3,10 @@ use async_graphql::{Context, ID, MergedObject, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, OAuthAuthorizationSource,
-    PendingImportCounts, SCRYER_VERSION, SortDirection, TitleCatalogContentStatus,
-    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter,
-    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
+    PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
+    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
+    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -21,12 +22,20 @@ use crate::mappers::{
     from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type,
+    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
     from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
     from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
+
+async fn require_runtime_info_permission(ctx: &Context<'_>) -> GqlResult<()> {
+    let app = app_from_ctx(ctx)?;
+    let actor = actor_from_ctx(ctx)?;
+    app.require_library_settings_read_permission(&actor)
+        .await
+        .map_err(to_gql_error)
+}
 
 fn supported_title_history_values_message() -> String {
     supported_title_history_event_types()
@@ -1190,6 +1199,13 @@ impl JobAndDownloadQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl SystemQueries {
+    async fn runtime_info(&self, ctx: &Context<'_>) -> GqlResult<RuntimeInfoPayload> {
+        require_runtime_info_permission(ctx).await?;
+        Ok(RuntimeInfoPayload {
+            runtime_path_style: from_runtime_path_style(RuntimePathStyle::current()),
+        })
+    }
+
     async fn system_health(&self, ctx: &Context<'_>) -> GqlResult<SystemHealthPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1916,7 +1932,7 @@ impl UtilityQueries {
         ctx: &Context<'_>,
         #[graphql(default_with = "String::from(\"/\")")] path: String,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
-        require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        require_runtime_info_permission(ctx).await?;
         let target = std::path::Path::new(&path);
         if !target.is_absolute() {
             return Err(to_gql_error(AppError::Validation(

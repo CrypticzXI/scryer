@@ -1492,6 +1492,9 @@ export const downloadClientsQuery = `query DownloadClients {
 export const mediaServerConnectionsQuery = `query MediaServerConnections($provider: MediaServerProviderValue) {
   mediaServerConnections(provider: $provider) {${MEDIA_SERVER_CONNECTION_FIELDS}
   }
+  runtimeInfo {
+    runtimePathStyle
+  }
 }`;
 
 export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId: ID!, $search: String) {
@@ -1740,8 +1743,13 @@ export const downloadClientsInitQuery = `query DownloadClientsInit {
   }
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
-  systemHealth {
-    dbPath
+  runtimeInfo {
+    runtimePathStyle
+  }
+}`;
+
+export const libraryDownloadClientsQuery = `query LibraryDownloadClients {
+  downloadClientConfigs {${downloadClientFieldSelection}
   }
 }`;
 
@@ -1757,8 +1765,8 @@ export const setupWizardProviderTypesInitQuery = `query SetupWizardProviderTypes
   }
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
-  systemHealth {
-    dbPath
+  runtimeInfo {
+    runtimePathStyle
   }
 }`;
 
@@ -1770,6 +1778,9 @@ export const mediaSettingsInitQuery = `query MediaSettingsInit($scope: ContentSc
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
   mediaSettings(scope: $scope) {${mediaSettingsFieldSelection}
+  }
+  runtimeInfo {
+    runtimePathStyle
   }
 }`;
 
@@ -2180,6 +2191,7 @@ export const systemHealthQuery = `query SystemHealth {
     dbPath
     datastoreEngine
     datastoreMigrationKey
+    runtimePathStyle
     totalTitles
     monitoredTitles
     totalUsers

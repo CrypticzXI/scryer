@@ -862,7 +862,7 @@ async fn graphql_system_health() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        "{ systemHealth { serviceReady totalTitles } }",
+        "{ systemHealth { serviceReady runtimePathStyle totalTitles } runtimeInfo { runtimePathStyle } }",
         json!({}),
     )
     .await;
@@ -870,6 +870,20 @@ async fn graphql_system_health() {
     assert!(
         body["data"]["systemHealth"]["serviceReady"].is_boolean(),
         "should return serviceReady boolean"
+    );
+    assert!(
+        matches!(
+            body["data"]["systemHealth"]["runtimePathStyle"].as_str(),
+            Some("UNIX") | Some("WINDOWS")
+        ),
+        "should return runtime path style"
+    );
+    assert!(
+        matches!(
+            body["data"]["runtimeInfo"]["runtimePathStyle"].as_str(),
+            Some("UNIX") | Some("WINDOWS")
+        ),
+        "should return lightweight runtime path style"
     );
 }
 

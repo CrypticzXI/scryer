@@ -520,6 +520,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             default_value_json: "null",
             is_sensitive: false,
         },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "scheduler.instance_id",
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
         // SMG (Scryer Metadata Gateway) enrollment
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_SERVICE,
@@ -1050,6 +1058,27 @@ pub(crate) async fn seed_service_settings_from_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scryer_application::SettingsRepository;
+    use scryer_infrastructure::{MigrationMode, SqliteServices};
+
+    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("scryer.db");
+        let services = SqliteServices::new_with_mode(
+            db_path.to_string_lossy().to_string(),
+            MigrationMode::Apply,
+        )
+        .await
+        .expect("sqlite services");
+        let store = Arc::new(SettingsStore::new(
+            services.datastore(),
+            services.encryption_key_state(),
+        ));
+        seed_service_setting_definitions(store.clone())
+            .await
+            .expect("seed setting definitions");
+        (temp, store)
+    }
 
     #[test]
     fn service_setting_seeds_include_audio_persona_migration_sentinel() {
@@ -1058,6 +1087,45 @@ mod tests {
                 && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
                 && seed.data_type == "bool"
         }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_scheduler_instance_id() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.category == SETTINGS_CATEGORY_SERVICE
+                && seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == "scheduler.instance_id"
+                && seed.data_type == "string"
+                && seed.default_value_json == "null"
+                && !seed.is_sensitive
+        }));
+    }
+
+    #[tokio::test]
+    async fn service_setting_definitions_allow_scheduler_instance_id_to_persist() {
+        let (_temp, store) = bootstrap_settings_store().await;
+
+        SettingsRepository::upsert_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            "scheduler.instance_id",
+            None,
+            "\"scheduler-seed\"".to_string(),
+            "system",
+            None,
+        )
+        .await
+        .expect("scheduler instance id should persist");
+
+        let stored = SettingsRepository::get_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            "scheduler.instance_id",
+            None,
+        )
+        .await
+        .expect("scheduler instance id should load");
+        assert_eq!(stored.as_deref(), Some("\"scheduler-seed\""));
     }
 
     #[test]

@@ -72,6 +72,7 @@ export type SystemHealth = {
   dbPath: string;
   datastoreEngine: string;
   datastoreMigrationKey: string | null;
+  runtimePathStyle: "UNIX" | "WINDOWS";
   totalTitles: number;
   monitoredTitles: number;
   totalUsers: number;

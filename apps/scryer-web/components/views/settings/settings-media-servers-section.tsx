@@ -51,12 +51,16 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 
 type SettingsMediaServersSectionProps = {
   connections: MediaServerConnection[];
   libraries: LibraryRecord[];
   draft: MediaServerConnectionDraft;
   setDraft: React.Dispatch<React.SetStateAction<MediaServerConnectionDraft>>;
+  localPathStyle: LocalPathStyle;
+  pathMappingsValid: boolean;
+  onPathMappingsValidityChange: (isValid: boolean) => void;
   editingConnectionId: string | null;
   mutatingConnectionId: string | null;
   testingConnectionId: string | null;
@@ -181,6 +185,9 @@ export function SettingsMediaServersSection({
   libraries,
   draft,
   setDraft,
+  localPathStyle,
+  pathMappingsValid,
+  onPathMappingsValidityChange,
   editingConnectionId,
   mutatingConnectionId,
   testingConnectionId,
@@ -650,6 +657,8 @@ export function SettingsMediaServersSection({
                         value={draft.pathMappingsText}
                         helpText={t("settings.mediaServerPathMappingsHelp")}
                         direction="remote-to-local"
+                        localPathStyle={localPathStyle}
+                        onValidityChange={onPathMappingsValidityChange}
                         onChange={(_, value) =>
                           setDraft((previous) => ({
                             ...previous,
@@ -757,7 +766,7 @@ export function SettingsMediaServersSection({
                   <Button
                     id="settings-media-server-save"
                     type="submit"
-                    disabled={isSavingEditor}
+                    disabled={isSavingEditor || !pathMappingsValid}
                   >
                     {isSavingEditor
                       ? t("label.saving")

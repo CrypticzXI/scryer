@@ -127,6 +127,24 @@ impl AppUseCase {
             .has_any_app_permission(permissions))
     }
 
+    pub async fn require_library_settings_read_permission(&self, actor: &User) -> AppResult<()> {
+        let app_permissions = AppPermissionMask::from_permissions([
+            AppPermission::ManageSystemSettings,
+            AppPermission::ManageCatalogSettings,
+        ]);
+        if self.has_any_app_permission(actor, app_permissions).await?
+            || self
+                .has_any_granted_library_permission(actor, LibraryPermission::ManageLibrary)
+                .await?
+        {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ))
+        }
+    }
+
     pub async fn require_library_permission(
         &self,
         actor: &User,

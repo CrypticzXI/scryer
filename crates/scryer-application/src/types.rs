@@ -1647,12 +1647,46 @@ pub struct DiskSpaceInfo {
     pub used_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimePathStyle {
+    Unix,
+    Windows,
+}
+
+impl RuntimePathStyle {
+    pub fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_path_style_tests {
+    use super::RuntimePathStyle;
+
+    #[test]
+    #[cfg(unix)]
+    fn current_is_unix_on_unix() {
+        assert_eq!(RuntimePathStyle::current(), RuntimePathStyle::Unix);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn current_is_windows_on_windows() {
+        assert_eq!(RuntimePathStyle::current(), RuntimePathStyle::Windows);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SystemHealth {
     pub service_ready: bool,
     pub db_path: String,
     pub datastore_engine: String,
     pub datastore_migration_key: Option<String>,
+    pub runtime_path_style: RuntimePathStyle,
     pub total_titles: usize,
     pub monitored_titles: usize,
     pub total_users: usize,

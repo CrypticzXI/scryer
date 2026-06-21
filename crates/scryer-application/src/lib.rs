@@ -435,7 +435,7 @@ pub use types::{
     PendingImportSearchAttempt, PendingImportStatus, PendingRelease, PendingReleaseStatus,
     PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, RecycleBinSettings,
     RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-    ResolvePendingImportResult, ScopedExternalId, SortDirection, SystemHealth,
+    ResolvePendingImportResult, RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth,
     TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
     TitleCatalogSort, TitleCatalogSortKey, TitleEpisodeProgressSummary, TitleImageBlob,
     TitleImageKind, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord,

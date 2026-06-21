@@ -1,4 +1,5 @@
 export type LocalPathStyle = "unix" | "windows";
+export type RuntimePathStyleValue = "UNIX" | "WINDOWS";
 
 function isWindowsDriveAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path);
@@ -6,24 +7,6 @@ function isWindowsDriveAbsolutePath(path: string): boolean {
 
 function isWindowsUncAbsolutePath(path: string): boolean {
   return /^\\\\[^\\/]+[\\/][^\\/]+/.test(path);
-}
-
-export function detectBrowserLocalPathStyle(): LocalPathStyle {
-  if (typeof navigator !== "undefined") {
-    const navigatorWithUserAgentData = navigator as Navigator & {
-      userAgentData?: { platform?: string };
-    };
-    const platform =
-      navigatorWithUserAgentData.userAgentData?.platform ??
-      navigator.platform ??
-      navigator.userAgent ??
-      "";
-    if (/win/i.test(platform)) {
-      return "windows";
-    }
-  }
-
-  return "unix";
 }
 
 export function inferLocalPathStyleFromPath(
@@ -45,10 +28,10 @@ export function inferLocalPathStyleFromPath(
   return null;
 }
 
-export function resolveLocalPathStyle(
-  path: string | null | undefined,
+export function localPathStyleFromRuntimeValue(
+  value: string | null | undefined,
 ): LocalPathStyle {
-  return inferLocalPathStyleFromPath(path) ?? detectBrowserLocalPathStyle();
+  return value === "WINDOWS" ? "windows" : "unix";
 }
 
 export function isAbsoluteLocalPathForStyle(
