@@ -612,6 +612,7 @@ pub struct Title {
     pub monitored: bool,
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalId>,
+    pub root_folder_id: Option<String>,
     pub created_by: Option<String>,
     pub created_at: DateTime<Utc>,
     // rich metadata (hydrated from metadata gateway)
@@ -1851,6 +1852,8 @@ pub struct NewTitle {
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalId>,
     #[serde(default)]
+    pub root_folder_id: Option<String>,
+    #[serde(default)]
     pub min_availability: Option<String>,
     #[serde(default)]
     pub poster_url: Option<String>,
@@ -1878,6 +1881,7 @@ impl NewTitle {
             monitored: true,
             tags: vec![],
             external_ids: vec![],
+            root_folder_id: None,
             min_availability: None,
             poster_url: None,
             year: None,

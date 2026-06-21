@@ -48,6 +48,15 @@ fn library_root_id(library: &Value, path: &str) -> String {
         .to_string()
 }
 
+async fn stored_title_root_folder_id(ctx: &TestContext, title_id: &str) -> Option<String> {
+    ctx.titles
+        .get_by_id(title_id)
+        .await
+        .expect("title should load")
+        .expect("title should exist")
+        .root_folder_id
+}
+
 #[tokio::test]
 async fn graphql_list_titles_starts_empty() {
     let ctx = TestContext::new().await;
@@ -311,6 +320,7 @@ async fn graphql_add_title_with_structured_options() {
             addTitle(input: $input) {
                 title {
                     id
+                    tags
                     rootFolderId
                     qualityProfileId
                     rootFolderPath
@@ -355,6 +365,23 @@ async fn graphql_add_title_with_structured_options() {
     assert_eq!(title["interSeasonMovies"], false);
     assert_eq!(title["fillerPolicy"], "skip_filler");
     assert_eq!(title["recapPolicy"], "skip_recap");
+    let title_id = title["id"].as_str().expect("title id");
+    let stored_title = ctx
+        .titles
+        .get_by_id(title_id)
+        .await
+        .expect("title should load")
+        .expect("title should exist");
+    assert_eq!(
+        stored_title.root_folder_id.as_deref(),
+        Some(root_folder_id.as_str())
+    );
+    assert!(
+        !stored_title
+            .tags
+            .iter()
+            .any(|tag| tag.starts_with("scryer:root-folder:"))
+    );
 }
 
 #[tokio::test]
@@ -1411,13 +1438,22 @@ async fn graphql_update_title_structured_options_merge_with_existing_tags() {
     let tag_values: Vec<&str> = tags.iter().filter_map(|tag| tag.as_str()).collect();
     assert!(tag_values.contains(&"favorite"));
     assert!(tag_values.contains(&"scryer:quality-profile:anime-4k"));
-    assert!(tag_values.contains(&"scryer:root-folder:/library/option-anime-custom"));
     assert!(tag_values.contains(&"scryer:season-folder:disabled"));
     assert!(tag_values.contains(&"scryer:filler-policy:skip_filler"));
     assert!(
         !tag_values
             .iter()
+            .any(|tag| tag.starts_with("scryer:root-folder:"))
+    );
+    assert!(
+        !tag_values
+            .iter()
             .any(|tag| tag.starts_with("scryer:recap-policy:"))
+    );
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert_eq!(
+        stored_root_folder_id.as_deref(),
+        Some(root_folder_id.as_str())
     );
 }
 
@@ -1479,6 +1515,11 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     assert_eq!(added["rootFolderId"], custom_root_id);
     assert_eq!(added["rootFolderPath"], "/library/root-update-a-custom");
     let title_id = added["id"].as_str().expect("title id").to_string();
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert_eq!(
+        stored_root_folder_id.as_deref(),
+        Some(custom_root_id.as_str())
+    );
 
     let unknown = gql(
         &ctx,
@@ -1552,6 +1593,8 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
             .filter_map(|tag| tag.as_str())
             .any(|tag| tag.starts_with("scryer:root-folder:"))
     );
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert!(stored_root_folder_id.is_none());
 
     let reset = gql(
         &ctx,
@@ -1573,6 +1616,11 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
     assert_eq!(
         reset["data"]["updateTitle"]["rootFolderPath"],
         "/library/root-update-a-custom"
+    );
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert_eq!(
+        stored_root_folder_id.as_deref(),
+        Some(custom_root_id.as_str())
     );
 
     let cleared_by_null = gql(
@@ -1607,6 +1655,8 @@ async fn graphql_update_title_root_folder_id_validates_and_clears() {
             .filter_map(|tag| tag.as_str())
             .any(|tag| tag.starts_with("scryer:root-folder:"))
     );
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert!(stored_root_folder_id.is_none());
 }
 
 #[tokio::test]
@@ -1681,7 +1731,16 @@ async fn graphql_update_title_root_folder_id_omitted_preserves_override() {
     let tags = updated["tags"].as_array().expect("tags array");
     let tag_values: Vec<&str> = tags.iter().filter_map(|tag| tag.as_str()).collect();
     assert!(tag_values.contains(&"scryer:quality-profile:anime-preserve-hd"));
-    assert!(tag_values.contains(&"scryer:root-folder:/library/root-preserve-custom"));
+    assert!(
+        !tag_values
+            .iter()
+            .any(|tag| tag.starts_with("scryer:root-folder:"))
+    );
+    let stored_root_folder_id = stored_title_root_folder_id(&ctx, &title_id).await;
+    assert_eq!(
+        stored_root_folder_id.as_deref(),
+        Some(custom_root_id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -1780,6 +1839,187 @@ async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
         update_wrong_facet.get("errors").is_some(),
         "movie root should not be accepted for anime updateTitle: {update_wrong_facet}"
     );
+}
+
+#[tokio::test]
+async fn graphql_title_root_folder_id_tracks_library_root_id_lifecycle() {
+    let ctx = TestContext::new().await;
+    let library = create_title_catalog_library(
+        &ctx,
+        "anime",
+        "Root Lifecycle Anime Library",
+        &[
+            ("/library/root-lifecycle-default", true),
+            ("/library/root-lifecycle-custom", false),
+        ],
+    )
+    .await;
+    let library_id = library_id(&library);
+    let default_root_id = library_root_id(&library, "/library/root-lifecycle-default");
+    let custom_root_id = library_root_id(&library, "/library/root-lifecycle-custom");
+
+    let add_body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { id rootFolderId rootFolderPath }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Root Lifecycle Anime",
+                "facet": "anime",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "options": {
+                    "rootFolderId": custom_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&add_body);
+    let added = &add_body["data"]["addTitle"]["title"];
+    assert_eq!(added["rootFolderId"], custom_root_id);
+    assert_eq!(added["rootFolderPath"], "/library/root-lifecycle-custom");
+    let title_id = added["id"].as_str().expect("title id").to_string();
+    assert_eq!(
+        stored_title_root_folder_id(&ctx, &title_id)
+            .await
+            .as_deref(),
+        Some(custom_root_id.as_str())
+    );
+
+    let moved_root = gql(
+        &ctx,
+        r#"mutation($input: UpdateLibraryInput!) {
+            updateLibrary(input: $input) {
+                roots { id path isDefault }
+            }
+        }"#,
+        json!({
+            "input": {
+                "libraryId": library_id,
+                "roots": [
+                    {
+                        "id": default_root_id,
+                        "path": "/library/root-lifecycle-default",
+                        "isDefault": true
+                    },
+                    {
+                        "id": custom_root_id,
+                        "path": "/library/root-lifecycle-renamed",
+                        "isDefault": false
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&moved_root);
+
+    let after_move = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) { rootFolderId rootFolderPath }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&after_move);
+    assert_eq!(after_move["data"]["title"]["rootFolderId"], custom_root_id);
+    assert_eq!(
+        after_move["data"]["title"]["rootFolderPath"],
+        "/library/root-lifecycle-renamed"
+    );
+    assert_eq!(
+        stored_title_root_folder_id(&ctx, &title_id)
+            .await
+            .as_deref(),
+        Some(custom_root_id.as_str())
+    );
+
+    let removed_root = gql(
+        &ctx,
+        r#"mutation($input: UpdateLibraryInput!) {
+            updateLibrary(input: $input) {
+                roots { id path isDefault }
+            }
+        }"#,
+        json!({
+            "input": {
+                "libraryId": library_id,
+                "roots": [
+                    {
+                        "id": default_root_id,
+                        "path": "/library/root-lifecycle-default",
+                        "isDefault": true
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&removed_root);
+
+    let after_remove = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) { rootFolderId rootFolderPath }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&after_remove);
+    assert!(after_remove["data"]["title"]["rootFolderId"].is_null());
+    assert!(after_remove["data"]["title"]["rootFolderPath"].is_null());
+    assert!(stored_title_root_folder_id(&ctx, &title_id).await.is_none());
+}
+
+#[tokio::test]
+async fn graphql_add_title_default_root_id_inherits_library_default() {
+    let ctx = TestContext::new().await;
+    let library = create_title_catalog_library(
+        &ctx,
+        "anime",
+        "Default Root Anime Library",
+        &[
+            ("/library/default-root-default", true),
+            ("/library/default-root-custom", false),
+        ],
+    )
+    .await;
+    let library_id = library_id(&library);
+    let default_root_id = library_root_id(&library, "/library/default-root-default");
+
+    let add_body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { id rootFolderId rootFolderPath }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Default Root Anime",
+                "facet": "anime",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "options": {
+                    "rootFolderId": default_root_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&add_body);
+    let title = &add_body["data"]["addTitle"]["title"];
+    assert!(title["rootFolderId"].is_null());
+    assert!(title["rootFolderPath"].is_null());
+    let title_id = title["id"].as_str().expect("title id");
+    assert!(stored_title_root_folder_id(&ctx, title_id).await.is_none());
 }
 
 #[tokio::test]

@@ -27,14 +27,14 @@ use crate::queries::{
 use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
-    id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
+    id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
@@ -42,14 +42,14 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
 )";
 
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
-    id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
+    id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
@@ -62,6 +62,7 @@ ON CONFLICT (id) DO UPDATE SET
     monitored = excluded.monitored,
     tags = excluded.tags,
     external_ids = excluded.external_ids,
+    root_folder_id = excluded.root_folder_id,
     created_by = excluded.created_by,
     created_at = excluded.created_at,
     year = excluded.year,
@@ -903,8 +904,9 @@ impl TitleRepository for TitleStore {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
+        root_folder_id: Option<Option<String>>,
     ) -> AppResult<Title> {
-        if name.is_none() && facet.is_none() && tags.is_none() {
+        if name.is_none() && facet.is_none() && tags.is_none() && root_folder_id.is_none() {
             return Err(AppError::Validation(
                 "at least one title field must be provided".to_string(),
             ));
@@ -916,6 +918,7 @@ impl TitleRepository for TitleStore {
             let name = name.clone();
             let facet = facet.clone();
             let tags = tags.clone();
+            let root_folder_id = root_folder_id.clone();
             Box::pin(async move {
                 let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                 if let Some(name) = name {
@@ -932,6 +935,9 @@ impl TitleRepository for TitleStore {
                 }
                 if let Some(tags) = tags {
                     title.tags = tags;
+                }
+                if let Some(root_folder_id) = root_folder_id {
+                    title.root_folder_id = root_folder_id;
                 }
                 persist_title_tx(tx, &title, HydrationStateWrite::Preserve).await?;
                 load_title_tx_or_not_found(tx, &id, true).await
@@ -1353,6 +1359,7 @@ where
         } else {
             Vec::new()
         },
+        root_folder_id: row.opt_text("root_folder_id")?,
         created_by: row.opt_text("created_by")?,
         created_at: row.timestamp("created_at")?,
         year: row.opt_i32("year")?,
@@ -2094,6 +2101,7 @@ fn title_write_args(
         SqlArg::Json(
             serde_json::to_value(&title.external_ids).unwrap_or(JsonValue::Array(Vec::new())),
         ),
+        SqlArg::OptText(title.root_folder_id.clone()),
         SqlArg::OptText(title.created_by.clone()),
         SqlArg::Timestamp(title.created_at),
         SqlArg::OptI64(title.year.map(i64::from)),

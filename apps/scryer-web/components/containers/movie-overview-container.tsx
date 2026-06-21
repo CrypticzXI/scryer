@@ -213,7 +213,9 @@ export type MediaRenameApplyResult = {
 type MovieOverviewSnapshotTitle = TitleDetail & {
   collections?: TitleCollection[];
   mediaFiles?: TitleMediaFile[];
-  wantedItems?: WantedItem[];
+  wantedItems?: {
+    items?: WantedItem[];
+  } | null;
 };
 
 type MovieOverviewContainerProps = {
@@ -366,7 +368,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
       setBlocklistEntries(snapshot.titleReleaseBlocklist);
       setMediaFiles(nextTitle?.mediaFiles ?? []);
       setSubtitleDownloads(snapshot.externalSubtitles);
-      setWantedItem(nextTitle?.wantedItems?.[0] ?? null);
+      setWantedItem(nextTitle?.wantedItems?.items?.[0] ?? null);
       setHasDownloadClients(snapshot.hasDownloadClients);
       if (!nextTitle || !snapshot.hasDownloadClients) {
         applyDownloadFeedbackSnapshot(createEmptyTitleOverviewDownloadFeedbackSnapshot());

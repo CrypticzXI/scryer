@@ -396,6 +396,7 @@ impl TitleRepository for MockTitleRepo {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
+        root_folder_id: Option<Option<String>>,
     ) -> AppResult<Title> {
         let mut list = self.store.lock().await;
         let title = list
@@ -417,6 +418,10 @@ impl TitleRepository for MockTitleRepo {
 
         if let Some(tags) = tags {
             title.tags = normalize_tags(&tags);
+        }
+
+        if let Some(root_folder_id) = root_folder_id {
+            title.root_folder_id = root_folder_id;
         }
 
         Ok(title.clone())

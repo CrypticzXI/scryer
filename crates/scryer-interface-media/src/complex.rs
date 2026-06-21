@@ -1,6 +1,5 @@
 use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
 use scryer_application::{ReleaseDecisionsQuery, WantedItemsQuery};
-use scryer_domain::LibraryPermission;
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 use crate::mappers::{
@@ -72,36 +71,25 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
-    async fn root_folder_id(&self, ctx: &Context<'_>) -> GqlResult<Option<ID>> {
-        let Some(root_folder_path) = self
-            .root_folder_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-        else {
-            return Ok(None);
-        };
+    async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let libraries = app
-            .list_libraries_for_permission(
-                &actor,
-                Some(self.facet.into_domain()),
-                LibraryPermission::View,
+        app.require_library_permission(
+            &actor,
+            self.library_id.as_ref(),
+            scryer_domain::LibraryPermission::View,
+        )
+        .await
+        .map_err(to_gql_error)?;
+        let configured_path = app
+            .title_root_folder_path_for_parts(
+                self.root_folder_id.as_ref().map(ID::as_ref),
+                self.library_id.as_ref(),
+                &self.facet.into_domain(),
             )
             .await
             .map_err(to_gql_error)?;
-        let root_id = libraries
-            .into_iter()
-            .find(|library| library.id == self.library_id.as_ref())
-            .and_then(|library| {
-                library
-                    .roots
-                    .into_iter()
-                    .find(|root| root.path.trim() == root_folder_path)
-            })
-            .map(|root| root.id.into());
-        Ok(root_id)
+        Ok(configured_path.or_else(|| self.legacy_root_folder_path.clone()))
     }
 
     async fn required_audio_languages_override(

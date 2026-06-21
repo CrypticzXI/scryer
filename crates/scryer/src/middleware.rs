@@ -14,10 +14,11 @@ use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
 };
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::base_path::BasePath;
@@ -39,9 +40,13 @@ const WS_ALLOWED_ORIGINS_ENV: &str = "SCRYER_WS_ALLOWED_ORIGINS";
 #[cfg(test)]
 const PRODUCTION_CORS_OPT_IN_ENV: &str = "SCRYER_ENABLE_PRODUCTION_CORS";
 const WEB_UI_URL_ENV: &str = "SCRYER_WEB_UI_URL";
+pub(crate) const UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV: &str =
+    "SCRYER_UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST";
 const AUTHLESS_WEB_CLIENT_HEADER: &str = "x-scryer-web-client";
 const AUTHLESS_WEB_CLIENT_COOKIE: &str = "scryer_authless_client";
 const AUTHLESS_WEB_CLIENT_TTL_SECONDS: u64 = 5 * 60;
+const AUTHLESS_ACCESS_ALLOWLIST_DNS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const AUTHLESS_ACCESS_ALLOWLIST_DNS_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthlessAccessPolicy {
@@ -53,6 +58,7 @@ pub(crate) struct AuthlessAccessPolicy {
 pub(crate) struct AuthlessAccessGuardState {
     pub(crate) auth_runtime: AuthRuntimeStateHandle,
     pub(crate) policy: AuthlessAccessPolicy,
+    pub(crate) allowlist: AuthlessAccessAllowlist,
 }
 
 #[derive(Clone)]
@@ -65,6 +71,30 @@ pub(crate) struct AuthlessWebClientProofRouteState {
     pub(crate) auth_runtime: AuthRuntimeStateHandle,
     pub(crate) policy: AuthlessAccessPolicy,
     pub(crate) proof: AuthlessWebClientProofState,
+    pub(crate) allowlist: AuthlessAccessAllowlist,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthlessAccessAllowlist {
+    inner: Arc<AuthlessAccessAllowlistInner>,
+}
+
+struct AuthlessAccessAllowlistInner {
+    ip_matchers: Vec<AuthlessIpMatcher>,
+    dns_hosts: Vec<String>,
+    dns_cache: RwLock<HashMap<String, CachedDnsAllowlistEntry>>,
+}
+
+#[derive(Clone)]
+struct CachedDnsAllowlistEntry {
+    ips: Vec<IpAddr>,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum AuthlessIpMatcher {
+    Exact(IpAddr),
+    Cidr(IpAddr, u8),
 }
 
 #[derive(serde::Serialize)]
@@ -72,6 +102,215 @@ pub(crate) struct AuthlessWebClientProofRouteState {
 struct AuthlessWebClientProofResponse {
     proof: String,
     expires_at: u64,
+}
+
+impl AuthlessAccessAllowlist {
+    pub(crate) fn parse(raw: &str) -> Self {
+        let mut ip_matchers = Vec::new();
+        let mut dns_hosts = Vec::new();
+
+        for entry in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            if let Some(matcher) = parse_authless_ip_matcher(entry) {
+                ip_matchers.push(matcher);
+            } else if let Some(host) = parse_authless_allowlist_host(entry) {
+                dns_hosts.push(host);
+            } else {
+                warn!(
+                    env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                    value = entry,
+                    "ignoring invalid unauthenticated public access allowlist entry"
+                );
+            }
+        }
+
+        dns_hosts.sort();
+        dns_hosts.dedup();
+
+        Self {
+            inner: Arc::new(AuthlessAccessAllowlistInner {
+                ip_matchers,
+                dns_hosts,
+                dns_cache: RwLock::new(HashMap::new()),
+            }),
+        }
+    }
+
+    pub(crate) fn is_configured(&self) -> bool {
+        !self.inner.ip_matchers.is_empty() || !self.inner.dns_hosts.is_empty()
+    }
+
+    #[cfg(test)]
+    async fn cache_host_for_test(&self, host: &str, ips: Vec<IpAddr>) {
+        self.inner.dns_cache.write().await.insert(
+            host.to_string(),
+            CachedDnsAllowlistEntry {
+                ips,
+                expires_at: Instant::now() + AUTHLESS_ACCESS_ALLOWLIST_DNS_CACHE_TTL,
+            },
+        );
+    }
+
+    async fn allows_public_ip(&self, ip: IpAddr) -> bool {
+        if self
+            .inner
+            .ip_matchers
+            .iter()
+            .any(|matcher| matcher.matches(ip))
+        {
+            return true;
+        }
+
+        let dns_hosts = self.inner.dns_hosts.clone();
+        for host in dns_hosts {
+            if self.dns_host_matches_ip(&host, ip).await {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    async fn dns_host_matches_ip(&self, host: &str, ip: IpAddr) -> bool {
+        if let Some(ips) = self.cached_dns_ips(host).await {
+            return ips.contains(&ip);
+        }
+
+        let ips = self.resolve_dns_host(host).await;
+        let ttl = if ips.is_empty() {
+            AUTHLESS_ACCESS_ALLOWLIST_DNS_NEGATIVE_CACHE_TTL
+        } else {
+            AUTHLESS_ACCESS_ALLOWLIST_DNS_CACHE_TTL
+        };
+        self.inner.dns_cache.write().await.insert(
+            host.to_string(),
+            CachedDnsAllowlistEntry {
+                ips: ips.clone(),
+                expires_at: Instant::now() + ttl,
+            },
+        );
+        ips.contains(&ip)
+    }
+
+    async fn cached_dns_ips(&self, host: &str) -> Option<Vec<IpAddr>> {
+        let cache = self.inner.dns_cache.read().await;
+        let entry = cache.get(host)?;
+        if entry.expires_at > Instant::now() {
+            Some(entry.ips.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn resolve_dns_host(&self, host: &str) -> Vec<IpAddr> {
+        match tokio::net::lookup_host((host, 0)).await {
+            Ok(addrs) => {
+                let mut ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
+                ips.sort();
+                ips.dedup();
+                ips
+            }
+            Err(error) => {
+                warn!(
+                    env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                    host,
+                    error = %error,
+                    "failed to resolve unauthenticated public access allowlist host"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+impl Default for AuthlessAccessAllowlist {
+    fn default() -> Self {
+        Self::parse("")
+    }
+}
+
+impl AuthlessIpMatcher {
+    fn matches(self, ip: IpAddr) -> bool {
+        match self {
+            Self::Exact(exact) => exact == ip,
+            Self::Cidr(base, prefix) => cidr_contains(base, prefix, ip),
+        }
+    }
+}
+
+fn parse_authless_ip_matcher(raw: &str) -> Option<AuthlessIpMatcher> {
+    let Some((ip, prefix)) = raw.split_once('/') else {
+        return raw.parse::<IpAddr>().ok().map(AuthlessIpMatcher::Exact);
+    };
+    let ip = ip.trim().parse::<IpAddr>().ok()?;
+    let prefix = prefix.trim().parse::<u8>().ok()?;
+    match ip {
+        IpAddr::V4(_) if prefix <= 32 => Some(AuthlessIpMatcher::Cidr(ip, prefix)),
+        IpAddr::V6(_) if prefix <= 128 => Some(AuthlessIpMatcher::Cidr(ip, prefix)),
+        _ => None,
+    }
+}
+
+fn parse_authless_allowlist_host(raw: &str) -> Option<String> {
+    let host = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host.len() > 253
+        || host.contains("://")
+        || host.contains('/')
+        || host.contains('\\')
+        || host.contains(':')
+    {
+        return None;
+    }
+
+    if host.split('.').all(valid_dns_label) {
+        Some(host)
+    } else {
+        None
+    }
+}
+
+fn valid_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn cidr_contains(base: IpAddr, prefix: u8, ip: IpAddr) -> bool {
+    match (base, ip) {
+        (IpAddr::V4(base), IpAddr::V4(ip)) => {
+            let mask = ipv4_mask(prefix);
+            u32::from(base) & mask == u32::from(ip) & mask
+        }
+        (IpAddr::V6(base), IpAddr::V6(ip)) => {
+            let mask = ipv6_mask(prefix);
+            u128::from(base) & mask == u128::from(ip) & mask
+        }
+        _ => false,
+    }
+}
+
+fn ipv4_mask(prefix: u8) -> u32 {
+    if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    }
+}
+
+fn ipv6_mask(prefix: u8) -> u128 {
+    if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    }
 }
 
 impl AuthlessWebClientProofState {
@@ -159,8 +398,14 @@ pub(crate) async fn authless_web_client_proof_handler(
     let headers = parts.headers;
     let snapshot = state.auth_runtime.snapshot();
 
-    if let AuthlessAccessDecision::Reject(reason) =
-        authless_web_client_proof_decision(&snapshot, state.policy, &headers, remote_addr)
+    if let AuthlessAccessDecision::Reject(reason) = authless_web_client_proof_decision(
+        &snapshot,
+        state.policy,
+        &state.allowlist,
+        &headers,
+        remote_addr,
+    )
+    .await
     {
         warn!("Rejecting authless web client proof request: {reason}");
         let mut response = (
@@ -197,9 +442,10 @@ pub(crate) async fn authless_web_client_proof_handler(
     }
 }
 
-fn authless_web_client_proof_decision(
+async fn authless_web_client_proof_decision(
     snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
     policy: AuthlessAccessPolicy,
+    allowlist: &AuthlessAccessAllowlist,
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
 ) -> AuthlessAccessDecision {
@@ -215,7 +461,7 @@ fn authless_web_client_proof_decision(
         return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::AuthRequired);
     }
 
-    authless_access_decision(snapshot, policy, headers, remote_addr)
+    authless_access_decision_with_allowlist(snapshot, policy, allowlist, headers, remote_addr).await
 }
 
 fn request_is_cross_site(headers: &HeaderMap) -> bool {
@@ -915,12 +1161,14 @@ pub(crate) async fn enforce_authless_access_guard(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let decision = authless_access_decision(
+    let decision = authless_access_decision_with_allowlist(
         &state.auth_runtime.snapshot(),
         state.policy,
+        &state.allowlist,
         request.headers(),
         Some(remote_addr),
-    );
+    )
+    .await;
 
     match decision {
         AuthlessAccessDecision::Allow => next.run(request).await,
@@ -1511,6 +1759,61 @@ fn authless_access_decision(
                 ),
                 None => AuthlessAccessDecision::Allow,
             },
+            Err(()) => {
+                AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
+            }
+        };
+    }
+
+    AuthlessAccessDecision::Allow
+}
+
+async fn authless_access_decision_with_allowlist(
+    snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
+    policy: AuthlessAccessPolicy,
+    allowlist: &AuthlessAccessAllowlist,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> AuthlessAccessDecision {
+    if snapshot.effective_form_login_enabled {
+        return AuthlessAccessDecision::Allow;
+    }
+
+    let allowlist_configured = allowlist.is_configured();
+    let public_access_open = !policy.recovery_mode
+        && (policy.allow_unauthenticated_public_access || allowlist_configured);
+    if policy.allow_unauthenticated_public_access && !policy.recovery_mode && !allowlist_configured
+    {
+        return AuthlessAccessDecision::Allow;
+    }
+
+    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MissingRemoteAddress);
+    };
+
+    if !is_local_network_ip(peer_ip) {
+        if public_access_open && allowlist.allows_public_ip(peer_ip).await {
+            return AuthlessAccessDecision::Allow;
+        }
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(peer_ip));
+    }
+
+    if has_proxy_forwarding_headers(headers) {
+        return match forwarded_client_ip_chain(headers) {
+            Ok(client_ips) => {
+                for public_ip in client_ips
+                    .into_iter()
+                    .filter(|client_ip| !is_local_network_ip(*client_ip))
+                {
+                    if !public_access_open || !allowlist.allows_public_ip(public_ip).await {
+                        return AuthlessAccessDecision::Reject(
+                            AuthlessAccessRejectReason::PublicForwardedClient(public_ip),
+                        );
+                    }
+                }
+
+                AuthlessAccessDecision::Allow
+            }
             Err(()) => {
                 AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
             }
@@ -2264,6 +2567,150 @@ mod tests {
         assert_eq!(decision, AuthlessAccessDecision::Allow);
     }
 
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_allows_matching_ip() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.8");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_allowlist_implies_public_access_for_matching_ip() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.8");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                protected_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_ignores_invalid_entries_when_valid_remains() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("https://bad.example, 8.8.8.8");
+
+        assert!(allowlist.is_configured());
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 4, 4), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 4, 4)
+            )))
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_rejects_unlisted_ip() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("203.0.113.10");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 8, 8)
+            )))
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_matches_ipv4_and_ipv6_cidr() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.0/24,2001:4860::/32");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((
+                    Ipv6Addr::new(0x2001, 0x4860, 0, 0, 0, 0, 0, 0x8888),
+                    3000,
+                ))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_matches_cached_dns_host() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("home.example.test");
+        allowlist
+            .cache_host_for_test(
+                "home.example.test",
+                vec![IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))],
+            )
+            .await;
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+    }
+
     #[test]
     fn authless_guard_public_override_does_not_bypass_recovery_mode() {
         let headers = HeaderMap::new();
@@ -2330,6 +2777,25 @@ mod tests {
             AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicForwardedClient(
                 IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_public_override_allowlist_allows_matching_forwarded_client() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.8");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                public_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
         );
     }
 
@@ -2481,9 +2947,18 @@ mod tests {
         policy: AuthlessAccessPolicy,
         _web_client_proof: AuthlessWebClientProofState,
     ) -> Router {
+        authless_guard_test_app_with_allowlist(snapshot, policy, AuthlessAccessAllowlist::default())
+    }
+
+    fn authless_guard_test_app_with_allowlist(
+        snapshot: scryer_interface::context::AuthRuntimeStateSnapshot,
+        policy: AuthlessAccessPolicy,
+        allowlist: AuthlessAccessAllowlist,
+    ) -> Router {
         let state = AuthlessAccessGuardState {
             auth_runtime: AuthRuntimeStateHandle::new(snapshot),
             policy,
+            allowlist,
         };
         Router::new()
             .route("/graphql", get(|| async { "graphql ok" }))
@@ -2498,10 +2973,23 @@ mod tests {
         snapshot: scryer_interface::context::AuthRuntimeStateSnapshot,
         policy: AuthlessAccessPolicy,
     ) -> Router {
+        authless_web_client_test_app_with_allowlist(
+            snapshot,
+            policy,
+            AuthlessAccessAllowlist::default(),
+        )
+    }
+
+    fn authless_web_client_test_app_with_allowlist(
+        snapshot: scryer_interface::context::AuthRuntimeStateSnapshot,
+        policy: AuthlessAccessPolicy,
+        allowlist: AuthlessAccessAllowlist,
+    ) -> Router {
         let state = AuthlessWebClientProofRouteState {
             auth_runtime: AuthRuntimeStateHandle::new(snapshot),
             policy,
             proof: AuthlessWebClientProofState::new(),
+            allowlist,
         };
         Router::new().route(
             "/authless-client",
@@ -2603,6 +3091,49 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn authless_guard_middleware_public_override_allowlist_allows_matching_graphql_request() {
+        let proof_state = AuthlessWebClientProofState::new();
+        let app = authless_guard_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            public_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        );
+
+        let response = app
+            .oneshot(request_with_peer_and_authless_proof(
+                "/graphql",
+                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                &proof_state,
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authless_guard_middleware_allowlist_implies_public_access_for_matching_graphql_request()
+     {
+        let proof_state = AuthlessWebClientProofState::new();
+        let app = authless_guard_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            protected_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        );
+
+        let response = app
+            .oneshot(request_with_peer_and_authless_proof(
+                "/graphql",
+                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                &proof_state,
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -2874,6 +3405,79 @@ mod tests {
                 .is_some_and(|proof| proof.matches('.').count() == 2)
         );
         assert!(body["expiresAt"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_public_override_allows_public_peer() {
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), public_authless_policy())
+                .oneshot(request_with_peer(
+                    "/authless-client",
+                    SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                ))
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = read_json_response(response).await;
+        assert!(
+            body["proof"]
+                .as_str()
+                .is_some_and(|proof| proof.matches('.').count() == 2)
+        );
+        assert!(body["expiresAt"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_public_override_allowlist_allows_matching_peer() {
+        let response = authless_web_client_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            public_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        )
+        .oneshot(request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+        ))
+        .await
+        .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_allowlist_implies_public_access_for_matching_peer() {
+        let response = authless_web_client_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            protected_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        )
+        .oneshot(request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+        ))
+        .await
+        .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_public_override_allowlist_rejects_unlisted_peer() {
+        let response = authless_web_client_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            public_authless_policy(),
+            AuthlessAccessAllowlist::parse("203.0.113.10"),
+        )
+        .oneshot(request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+        ))
+        .await
+        .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

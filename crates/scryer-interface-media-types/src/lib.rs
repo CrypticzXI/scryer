@@ -3143,7 +3143,14 @@ pub struct SetUserLibraryPermissionsInput {
 }
 
 #[derive(InputObject, Clone)]
-pub struct LibraryRootInput {
+pub struct CreateLibraryRootInput {
+    pub path: String,
+    pub is_default: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateLibraryRootInput {
+    pub id: Option<ID>,
     pub path: String,
     pub is_default: bool,
 }
@@ -3152,7 +3159,7 @@ pub struct LibraryRootInput {
 pub struct CreateLibraryInput {
     pub facet: MediaFacetValue,
     pub name: String,
-    pub roots: Vec<LibraryRootInput>,
+    pub roots: Vec<CreateLibraryRootInput>,
     pub settings: Option<LibrarySettingsInput>,
 }
 
@@ -3160,7 +3167,7 @@ pub struct CreateLibraryInput {
 pub struct UpdateLibraryInput {
     pub library_id: ID,
     pub name: Option<String>,
-    pub roots: Option<Vec<LibraryRootInput>>,
+    pub roots: Option<Vec<UpdateLibraryRootInput>>,
     pub settings: Option<LibrarySettingsInput>,
 }
 

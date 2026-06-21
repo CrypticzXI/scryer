@@ -821,11 +821,16 @@ pub(crate) async fn resolve_import_paths(
 ) -> AppResult<ImportPathSettings> {
     let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
     let default_root = app.default_media_root_for_title(title).await?;
-    let media_root = title
-        .tags
-        .iter()
-        .find(|t| t.starts_with("scryer:root-folder:"))
-        .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
+    let media_root = app
+        .title_root_folder_path_override(title)
+        .await?
+        .or_else(|| {
+            title
+                .tags
+                .iter()
+                .find(|t| t.starts_with("scryer:root-folder:"))
+                .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
+        })
         .unwrap_or(default_root);
 
     let rename_enabled = app.resolve_rename_enabled(&title.facet).await?;

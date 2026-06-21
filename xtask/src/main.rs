@@ -566,17 +566,29 @@ fn backend_health_looks_ok(port: u16) -> bool {
 }
 
 fn backend_graphql_looks_ready(port: u16) -> bool {
-    let Some((cookie, proof)) = authless_web_client_proof(port) else {
-        return false;
-    };
+    if backend_graphql_auth_runtime_state_looks_ready(port, None) {
+        return true;
+    }
+
+    authless_web_client_proof(port).is_some_and(|(cookie, proof)| {
+        backend_graphql_auth_runtime_state_looks_ready(port, Some((&cookie, &proof)))
+    })
+}
+
+fn backend_graphql_auth_runtime_state_looks_ready(
+    port: u16,
+    authless_headers: Option<(&str, &str)>,
+) -> bool {
     let body = r#"{"query":"query { authRuntimeState { effectiveFormLoginEnabled skipLoginForLocalIps } }"}"#;
+    let authless_headers = authless_headers
+        .map(|(cookie, proof)| format!("Cookie: {cookie}\r\nx-scryer-web-client: {proof}\r\n"))
+        .unwrap_or_default();
     let request = format!(
         "POST /graphql HTTP/1.1\r\n\
 Host: 127.0.0.1:{port}\r\n\
 Accept: application/json\r\n\
 Content-Type: application/json\r\n\
-Cookie: {cookie}\r\n\
-x-scryer-web-client: {proof}\r\n\
+{authless_headers}\
 Content-Length: {content_length}\r\n\
 Connection: close\r\n\r\n\
 {body}",

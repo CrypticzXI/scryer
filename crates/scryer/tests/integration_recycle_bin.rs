@@ -134,6 +134,7 @@ async fn seed_library(ctx: &TestContext, name: &str, root: &Path) -> Library {
             MediaFacet::Movie,
             name.to_string(),
             vec![LibraryRootDraft {
+                id: None,
                 path: root.to_string_lossy().to_string(),
                 is_default: true,
             }],

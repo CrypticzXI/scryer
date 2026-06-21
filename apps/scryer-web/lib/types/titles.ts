@@ -58,6 +58,7 @@ export type TitleRecord = {
 };
 
 export type RootFolderOption = {
+  id?: string;
   path: string;
   isDefault: boolean;
 };

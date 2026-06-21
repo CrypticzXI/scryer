@@ -911,3 +911,95 @@ async fn migration_0104_accepts_plain_path_settings_without_choking_on_unrelated
         ]
     );
 }
+
+#[tokio::test]
+async fn migration_0136_backfills_only_non_default_root_folder_overrides() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE titles (
+            id TEXT PRIMARY KEY,
+            library_id TEXT,
+            facet TEXT NOT NULL,
+            tags TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("titles should create");
+    sqlx::query(
+        "CREATE TABLE library_roots (
+            id TEXT PRIMARY KEY,
+            library_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            normalized_path TEXT,
+            is_default INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("library_roots should create");
+
+    sqlx::query(
+        "INSERT INTO library_roots (id, library_id, path, normalized_path, is_default)
+         VALUES
+            ('root-default', 'anime-library', '/library/default', '/library/default', 1),
+            ('root-custom', 'anime-library', '/library/custom', '/library/custom', 0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("library roots should insert");
+    sqlx::query(
+        "INSERT INTO titles (id, library_id, facet, tags)
+         VALUES
+            ('title-default', 'anime-library', 'anime', '[\"keep\",\"scryer:root-folder:/library/default\"]'),
+            ('title-custom', 'anime-library', 'anime', '[\"scryer:root-folder:/library/custom/\",\"keep\"]'),
+            ('title-unmatched', 'anime-library', 'anime', '[\"scryer:root-folder:/library/missing\",\"keep\"]')",
+    )
+    .execute(&pool)
+    .await
+    .expect("titles should insert");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../../scryer/src/db/migrations/0136_title_root_folder_id.sql"),
+    )
+    .await;
+
+    let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, root_folder_id, tags
+           FROM titles
+          ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migrated titles should query");
+
+    assert_eq!(rows[0].0, "title-custom");
+    assert_eq!(rows[0].1.as_deref(), Some("root-custom"));
+    let custom_tags: Vec<String> =
+        serde_json::from_str(&rows[0].2).expect("custom tags should decode");
+    assert_eq!(custom_tags, vec!["keep".to_string()]);
+
+    assert_eq!(rows[1].0, "title-default");
+    assert!(rows[1].1.is_none());
+    let default_tags: Vec<String> =
+        serde_json::from_str(&rows[1].2).expect("default tags should decode");
+    assert_eq!(default_tags, vec!["keep".to_string()]);
+
+    assert_eq!(rows[2].0, "title-unmatched");
+    assert!(rows[2].1.is_none());
+    let unmatched_tags: Vec<String> =
+        serde_json::from_str(&rows[2].2).expect("unmatched tags should decode");
+    assert_eq!(
+        unmatched_tags,
+        vec![
+            "scryer:root-folder:/library/missing".to_string(),
+            "keep".to_string()
+        ]
+    );
+}

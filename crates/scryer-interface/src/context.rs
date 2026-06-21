@@ -16,6 +16,16 @@ pub use scryer_interface_core::{
 
 pub type ApiSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 
+pub fn export_schema_sdl() -> String {
+    Schema::build(
+        QueryRoot::default(),
+        MutationRoot::default(),
+        SubscriptionRoot,
+    )
+    .finish()
+    .sdl()
+}
+
 pub fn build_schema(app: AppUseCase, auth_runtime: AuthRuntimeStateHandle) -> ApiSchema {
     build_schema_with_log_buffer_and_restore(app, auth_runtime, None, None)
 }

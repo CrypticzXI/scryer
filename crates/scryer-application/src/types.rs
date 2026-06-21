@@ -12,6 +12,7 @@ use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRootDraft {
+    pub id: Option<String>,
     pub path: String,
     pub is_default: bool,
 }

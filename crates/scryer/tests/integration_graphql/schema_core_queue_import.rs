@@ -1395,6 +1395,7 @@ async fn graphql_traverses_core_graph_relationships() {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
+        root_folder_id: None,
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),

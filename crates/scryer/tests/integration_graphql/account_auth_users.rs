@@ -1506,6 +1506,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             updated_at: now,
         },
         vec![LibraryRootDraft {
+            id: None,
             path: media_root.path().to_string_lossy().to_string(),
             is_default: true,
         }],
@@ -1524,6 +1525,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             source: "tvdb".to_string(),
             value: "998877".to_string(),
         }],
+        root_folder_id: None,
         created_by: None,
         created_at: now,
         year: Some(2024),

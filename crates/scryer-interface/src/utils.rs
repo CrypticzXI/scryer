@@ -5,7 +5,7 @@ use crate::types::{AddTitleInput, DownloadSourceKindValue, IntoApplication};
 
 pub(crate) struct ResolvedTitleOptionsInput {
     pub quality_profile_id: Option<async_graphql::ID>,
-    pub root_folder_path: Option<Option<String>>,
+    pub root_folder_id: Option<Option<String>>,
     pub monitor_type: Option<crate::types::MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,
@@ -55,13 +55,6 @@ pub(crate) fn apply_title_options(tags: &mut Vec<String>, options: ResolvedTitle
             .quality_profile_id
             .map(|value| value.as_ref().trim().to_string()),
     );
-    if let Some(root_folder_path) = options.root_folder_path {
-        set_structured_tag(
-            tags,
-            "scryer:root-folder:",
-            root_folder_path.map(|value| value.trim().to_string()),
-        );
-    }
     set_structured_tag(
         tags,
         "scryer:monitor-type:",
@@ -147,6 +140,9 @@ pub(crate) fn map_add_input(
 
     let parsed_facet = facet.into_domain();
     tags = normalize_title_tags(tags);
+    let root_folder_id = resolved_options
+        .as_ref()
+        .and_then(|options| options.root_folder_id.clone().flatten());
     if let Some(options) = resolved_options {
         apply_title_options(&mut tags, options);
     }
@@ -164,6 +160,7 @@ pub(crate) fn map_add_input(
                 value: item.value,
             })
             .collect(),
+        root_folder_id,
         min_availability,
         poster_url: None,
         year,

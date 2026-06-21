@@ -224,6 +224,7 @@ pub trait TitleRepository: Send + Sync {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
+        root_folder_id: Option<Option<String>>,
     ) -> AppResult<Title>;
     async fn update_title_hydrated_metadata(
         &self,
@@ -1005,6 +1006,9 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
     async fn touch_last_error(&self, id: &str) -> AppResult<()>;
+    async fn clear_last_error(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }

@@ -58,17 +58,17 @@ fn find_library_root<'a>(
     })
 }
 
-fn root_folder_path_override(root: &LibraryRoot) -> Option<Option<String>> {
+fn root_folder_id_override(root: &LibraryRoot) -> Option<Option<String>> {
     if root.is_default {
         Some(None)
     } else {
-        Some(Some(root.path.clone()))
+        Some(Some(root.id.clone()))
     }
 }
 
 fn resolved_title_options(
     options: TitleOptionsInput,
-    root_folder_path: Option<Option<String>>,
+    root_folder_id: Option<Option<String>>,
 ) -> ResolvedTitleOptionsInput {
     let TitleOptionsInput {
         quality_profile_id,
@@ -83,7 +83,7 @@ fn resolved_title_options(
 
     ResolvedTitleOptionsInput {
         quality_profile_id,
-        root_folder_path,
+        root_folder_id,
         monitor_type,
         use_season_folders,
         monitor_specials,
@@ -114,7 +114,7 @@ async fn resolve_add_title_options(
         return Ok((library_id, None));
     };
     let root_folder_id = options.root_folder_id.clone();
-    let (library_id, root_folder_path) = match root_folder_id {
+    let (library_id, root_folder_id) = match root_folder_id {
         MaybeUndefined::Undefined => (library_id, None),
         MaybeUndefined::Null => (library_id, Some(None)),
         MaybeUndefined::Value(root_folder_id) => {
@@ -133,14 +133,14 @@ async fn resolve_add_title_options(
             }
             (
                 library_id.or_else(|| Some(root_library.id.clone())),
-                root_folder_path_override(root),
+                root_folder_id_override(root),
             )
         }
     };
 
     Ok((
         library_id,
-        Some(resolved_title_options(options, root_folder_path)),
+        Some(resolved_title_options(options, root_folder_id)),
     ))
 }
 
@@ -151,7 +151,7 @@ async fn resolve_update_title_options(
     options: TitleOptionsInput,
 ) -> GqlResult<ResolvedTitleOptionsInput> {
     let root_folder_id = options.root_folder_id.clone();
-    let root_folder_path = match root_folder_id {
+    let root_folder_id = match root_folder_id {
         MaybeUndefined::Undefined => None,
         MaybeUndefined::Null => Some(None),
         MaybeUndefined::Value(root_folder_id) => {
@@ -170,11 +170,11 @@ async fn resolve_update_title_options(
                 .ok_or_else(|| {
                     validation_error("rootFolderId must reference a root on the title library")
                 })?;
-            root_folder_path_override(root)
+            root_folder_id_override(root)
         }
     };
 
-    Ok(resolved_title_options(options, root_folder_path))
+    Ok(resolved_title_options(options, root_folder_id))
 }
 
 #[Object]
@@ -283,6 +283,7 @@ impl TitleMutations {
         let title_id = title_id.to_string();
         let facet = facet.map(MediaFacetValue::into_domain);
         let mut tags = tags.map(normalize_title_tags);
+        let mut root_folder_id = None;
 
         if let Some(options) = options {
             let title = app
@@ -296,11 +297,19 @@ impl TitleMutations {
             };
             let resolved_options =
                 resolve_update_title_options(&app, &actor, &title, options).await?;
+            root_folder_id = resolved_options.root_folder_id.clone();
             tags = Some(merge_title_option_tags(base_tags, resolved_options));
         }
 
         let title = app
-            .update_title_metadata(&actor, &title_id, name, facet, tags)
+            .update_title_metadata_with_root_folder_id(
+                &actor,
+                &title_id,
+                name,
+                facet,
+                tags,
+                root_folder_id,
+            )
             .await
             .map_err(to_gql_error)?;
         Ok(from_title(title))

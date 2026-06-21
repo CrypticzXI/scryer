@@ -1,4 +1,4 @@
-pub(crate) const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at, \
+pub(crate) const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at, \
     year, overview, poster_url, poster_local_path, background_url, background_local_path, \
     sort_title, slug, imdb_id, runtime_minutes, genres, \
     content_status, language, first_aired, network, studio, country, aliases, \

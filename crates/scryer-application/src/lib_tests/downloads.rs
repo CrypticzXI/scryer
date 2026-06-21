@@ -531,6 +531,7 @@ async fn synthetic_download_import_rows_are_enriched_from_submissions_before_per
                 monitored: true,
                 tags: vec![],
                 external_ids: vec![],
+                root_folder_id: None,
                 min_availability: None,
                 ..Default::default()
             },
@@ -619,6 +620,7 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
                 monitored: true,
                 tags: vec![],
                 external_ids: vec![],
+                root_folder_id: None,
                 min_availability: None,
                 ..Default::default()
             },
@@ -3570,6 +3572,7 @@ async fn list_download_history_page_includes_tracked_terminal_rows_when_client_h
                 monitored: true,
                 tags: vec![],
                 external_ids: vec![],
+                root_folder_id: None,
                 min_availability: None,
                 poster_url: None,
                 year: Some(2012),
@@ -3791,6 +3794,7 @@ async fn recent_activity_and_history_ignore_operational_domain_events() {
             monitored: true,
             tags: vec![],
             external_ids: vec![],
+            root_folder_id: None,
             min_availability: None,
             poster_url: None,
             year: None,

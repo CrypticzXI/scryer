@@ -533,6 +533,7 @@ impl AppUseCase {
                 .roots
                 .iter()
                 .map(|root| LibraryRootDraft {
+                    id: Some(root.id.clone()),
                     path: root.path.clone(),
                     is_default: root.is_default,
                 })

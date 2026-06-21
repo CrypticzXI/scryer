@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit && eslint 'src/**/*.{ts,tsx}' 'components/**/*.{ts,tsx}' 'lib/**/*.{ts,tsx}'"
+    "lint": "tsc --noEmit && eslint 'src/**/*.{ts,tsx}' 'components/**/*.{ts,tsx}' 'lib/**/*.{ts,tsx}'",
+    "test:graphql-compat": "node --test scripts/check-graphql-schema-compat.test.mjs"
   },
   "allowScripts": {
     "fsevents@2.3.3": true

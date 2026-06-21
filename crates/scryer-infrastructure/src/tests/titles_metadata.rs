@@ -299,7 +299,7 @@ async fn title_update_metadata_keeps_validation_and_not_found_errors() {
         .await
         .expect("title should insert");
 
-    let empty_err = TitleRepository::update_metadata(&catalog, &title.id, None, None, None)
+    let empty_err = TitleRepository::update_metadata(&catalog, &title.id, None, None, None, None)
         .await
         .expect_err("empty update should fail validation");
     assert!(matches!(
@@ -308,10 +308,16 @@ async fn title_update_metadata_keeps_validation_and_not_found_errors() {
             if message.contains("at least one title field")
     ));
 
-    let blank_name_err =
-        TitleRepository::update_metadata(&catalog, &title.id, Some("   ".to_string()), None, None)
-            .await
-            .expect_err("blank title name should fail validation");
+    let blank_name_err = TitleRepository::update_metadata(
+        &catalog,
+        &title.id,
+        Some("   ".to_string()),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("blank title name should fail validation");
     assert!(matches!(
         blank_name_err,
         scryer_application::AppError::Validation(message)
@@ -322,6 +328,7 @@ async fn title_update_metadata_keeps_validation_and_not_found_errors() {
         &catalog,
         "missing-title",
         Some("Renamed".to_string()),
+        None,
         None,
         None,
     )
@@ -336,6 +343,7 @@ async fn title_update_metadata_keeps_validation_and_not_found_errors() {
         &catalog,
         &title.id,
         Some(" Renamed Title ".to_string()),
+        None,
         None,
         None,
     )

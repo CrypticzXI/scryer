@@ -269,7 +269,9 @@ const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
-    wantedItems {${WANTED_ITEM_FIELDS}
+    wantedItems {
+      items {${WANTED_ITEM_FIELDS}
+      }
     }`;
 
 const TITLE_EVENT_FIELDS = `

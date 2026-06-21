@@ -401,6 +401,7 @@ function withFailureDetail(message: string, detail: string | null): string {
 function libraryRootsInput(roots: RootFolderOption[]) {
   return roots
     .map((root) => ({
+      id: root.id,
       path: root.path.trim(),
       isDefault: root.isDefault,
     }))

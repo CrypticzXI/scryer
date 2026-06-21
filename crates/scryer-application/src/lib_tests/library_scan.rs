@@ -1561,6 +1561,7 @@ async fn additive_scan_keeps_title_match_total_unknown_until_completion() {
         &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: series_root.to_string_lossy().to_string(),
             is_default: true,
         }]),
@@ -1673,10 +1674,12 @@ async fn background_refresh_movies_scans_all_configured_roots() {
         None,
         Some(vec![
             LibraryRootDraft {
+                id: None,
                 path: root_one.to_string_lossy().to_string(),
                 is_default: true,
             },
             LibraryRootDraft {
+                id: None,
                 path: root_two.to_string_lossy().to_string(),
                 is_default: false,
             },
@@ -1816,6 +1819,7 @@ async fn cancel_library_scan_rejects_additive_sessions() {
         &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: series_root.to_string_lossy().to_string(),
             is_default: true,
         }]),
@@ -2249,6 +2253,7 @@ async fn reconcile_default_library_roots_backfills_legacy_root_folders_when_boot
             anime_library.name.clone(),
             anime_library.slug.clone(),
             vec![LibraryRootDraft {
+                id: None,
                 path: "/data/anime".to_string(),
                 is_default: true,
             }],
@@ -2297,6 +2302,7 @@ async fn reconcile_default_library_roots_keeps_non_bootstrap_canonical_roots() {
             movie_library.name.clone(),
             movie_library.slug.clone(),
             vec![LibraryRootDraft {
+                id: None,
                 path: "/canonical/movies".to_string(),
                 is_default: true,
             }],
@@ -2646,6 +2652,7 @@ async fn update_default_library_roots_updates_all_facet_root_read_paths() {
             expected_roots
                 .iter()
                 .map(|root| LibraryRootDraft {
+                    id: None,
                     path: root.path.clone(),
                     is_default: root.is_default,
                 })
@@ -2682,6 +2689,7 @@ async fn title_root_resolution_uses_owning_library_roots() {
         &movie_library_id,
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: "/library/default-movies".to_string(),
             is_default: true,
         }]),
@@ -2695,6 +2703,7 @@ async fn title_root_resolution_uses_owning_library_roots() {
             MediaFacet::Movie,
             "Kids Movies".to_string(),
             vec![LibraryRootDraft {
+                id: None,
                 path: "/library/kids-movies".to_string(),
                 is_default: true,
             }],
@@ -2723,6 +2732,7 @@ async fn update_default_library_rejects_empty_roots_without_persisting_them() {
         &movie_library_id,
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: "/library/movies-main".to_string(),
             is_default: true,
         }]),
@@ -2767,6 +2777,7 @@ async fn update_library_removing_root_clears_pending_imports_for_removed_root() 
         &movie_library_id,
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: "/movies-old".to_string(),
             is_default: true,
         }]),
@@ -2792,6 +2803,7 @@ async fn update_library_removing_root_clears_pending_imports_for_removed_root() 
         &movie_library_id,
         None,
         Some(vec![LibraryRootDraft {
+            id: None,
             path: "/movies-new".to_string(),
             is_default: true,
         }]),
@@ -3421,6 +3433,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                     source: "tvdb".to_string(),
                     value: "123456".to_string(),
                 }],
+                root_folder_id: None,
                 min_availability: None,
                 poster_url: None,
                 year: None,
@@ -3663,6 +3676,7 @@ async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
                     source: "tvdb".to_string(),
                     value: "123456".to_string(),
                 }],
+                root_folder_id: None,
                 min_availability: None,
                 poster_url: None,
                 year: Some(2020),

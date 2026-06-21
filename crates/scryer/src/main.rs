@@ -72,8 +72,9 @@ use backup_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofRouteState,
-    AuthlessWebClientProofState, CorsConfig, WebSocketOriginPolicy,
+    AuthState, AuthlessAccessAllowlist, AuthlessAccessGuardState, AuthlessAccessPolicy,
+    AuthlessWebClientProofRouteState, AuthlessWebClientProofState, CorsConfig,
+    UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, WebSocketOriginPolicy,
     authless_web_client_proof_handler, cors_handler, enforce_authless_access_guard,
     graphql_handler, graphql_ws_handler, health_handler, rate_limit_http_api,
 };
@@ -1224,6 +1225,17 @@ async fn bootstrap_application(
             restart: restore_restart_controller.handle(),
         }),
     );
+    let authless_access_allowlist_raw =
+        normalize_env_option(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV).unwrap_or_default();
+    let authless_access_allowlist_env_configured =
+        comma_separated_env_has_entries(&authless_access_allowlist_raw);
+    let authless_access_allowlist = AuthlessAccessAllowlist::parse(&authless_access_allowlist_raw);
+    validate_unauthenticated_public_access_allowlist_config(
+        authless_access_allowlist_env_configured,
+        authless_access_allowlist.is_configured(),
+        &auth_mode,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
     if auth_mode.used_legacy_dev_auto_login {
         tracing::warn!(
             "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
@@ -1244,11 +1256,28 @@ async fn bootstrap_application(
                 env = RECOVERY_ADMIN_PASSWORD_ENV,
                 "running in recovery mode with authentication disabled; only private/local clients are allowed"
             );
-        } else if auth_mode.allow_unauthenticated_public_access {
-            tracing::warn!(
-                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
-                "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
-            );
+        } else if auth_mode.allow_unauthenticated_public_access
+            || authless_access_allowlist.is_configured()
+        {
+            if authless_access_allowlist.is_configured() {
+                if auth_mode.allow_unauthenticated_public_access {
+                    tracing::warn!(
+                        env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                        allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                        "public unauthenticated access is explicitly enabled and narrowed by allowlist; matching clients will act as admin"
+                    );
+                } else {
+                    tracing::warn!(
+                        allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                        "public unauthenticated access is enabled by allowlist; matching clients will act as admin"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                    "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
+                );
+            }
         } else {
             tracing::warn!(
                 env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
@@ -1342,11 +1371,13 @@ async fn bootstrap_application(
     let authless_access_guard_state = AuthlessAccessGuardState {
         auth_runtime: auth_runtime.clone(),
         policy: authless_access_policy,
+        allowlist: authless_access_allowlist.clone(),
     };
     let authless_web_client_proof_route_state = AuthlessWebClientProofRouteState {
         auth_runtime: auth_runtime.clone(),
         policy: authless_access_policy,
         proof: authless_web_client_proof.clone(),
+        allowlist: authless_access_allowlist,
     };
 
     let cors_for_layer = cors.clone();
@@ -1684,6 +1715,10 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn comma_separated_env_has_entries(value: &str) -> bool {
+    value.split(',').any(|entry| !entry.trim().is_empty())
+}
+
 fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
     let rp_id = normalize_env_option("SCRYER_WEBAUTHN_RP_ID");
     let rp_origin = normalize_env_option("SCRYER_WEBAUTHN_RP_ORIGIN");
@@ -1797,6 +1832,25 @@ fn parse_env_bool_value(raw: &str) -> Option<bool> {
         "0" | "false" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn validate_unauthenticated_public_access_allowlist_config(
+    allowlist_env_configured: bool,
+    allowlist_has_valid_entries: bool,
+    auth_mode: &AuthModeConfig,
+) -> Result<(), String> {
+    if allowlist_env_configured && !allowlist_has_valid_entries {
+        return Err(format!(
+            "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} is set but contains no valid IP, CIDR, or DNS entries; fix the allowlist or unset it"
+        ));
+    }
+    if allowlist_has_valid_entries && auth_mode.recovery_active() {
+        return Err(format!(
+            "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} cannot be used with {RECOVERY_ADMIN_PASSWORD_ENV}; recovery mode is private/local only"
+        ));
+    }
+
+    Ok(())
 }
 
 fn resolve_auth_mode(
@@ -2485,9 +2539,11 @@ async fn seed_builtin_plugin_installations(
 mod tests {
     use super::{
         ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
-        SelfRestartController, bootstrap_plugin_installations,
-        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
+        comma_separated_env_has_entries, load_runtime_plugin_state, resolve_auth_mode,
         restart_spec_from_parts, title_image_handler,
+        validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -3028,6 +3084,58 @@ mod tests {
 
         assert!(error.contains(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV));
         assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_without_public_access_override() {
+        let auth_mode = resolve_auth_mode(None, None, None, None).expect("auth mode");
+
+        validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
+            .expect("valid allowlist should imply narrowed public access");
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_rejects_no_valid_entries() {
+        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
+        let error =
+            validate_unauthenticated_public_access_allowlist_config(true, false, &auth_mode)
+                .expect_err("allowlist with no valid entries should be rejected");
+
+        assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
+        assert!(error.contains("no valid IP, CIDR, or DNS entries"));
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_rejects_recovery_mode() {
+        let auth_mode =
+            resolve_auth_mode(None, None, Some("new-password"), None).expect("auth mode");
+        let error = validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
+            .expect_err("allowlist implies public access and recovery remains private/local");
+
+        assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
+        assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_public_access_override() {
+        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
+
+        validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
+            .expect("allowlist should narrow public access override");
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_unset_allowlist() {
+        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
+
+        validate_unauthenticated_public_access_allowlist_config(false, false, &auth_mode)
+            .expect("unset allowlist keeps broad public access override");
+    }
+
+    #[test]
+    fn comma_separated_env_entries_ignore_empty_items() {
+        assert!(!comma_separated_env_has_entries(" ,, "));
+        assert!(comma_separated_env_has_entries(",,home.example.test,"));
     }
 
     #[tokio::test]

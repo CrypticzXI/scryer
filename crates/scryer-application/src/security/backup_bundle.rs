@@ -1746,6 +1746,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn prepared_backup_directory_round_trip_preserves_restore_inputs() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1771,6 +1772,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_round_trip_uses_versioned_header() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1792,6 +1794,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_wrong_passphrase() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1807,6 +1810,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_unknown_version() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1832,6 +1836,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_truncated_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1847,6 +1852,7 @@ mod tests {
         assert!(error.to_string().contains("metadata is truncated"));
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_invalid_metadata_length() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1870,6 +1876,7 @@ mod tests {
         assert!(error.to_string().contains("metadata is invalid"));
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_truncated_chunk() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1889,6 +1896,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn plaintext_backup_extracts_plain_ndjson_parts() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1985,6 +1993,7 @@ mod tests {
         assert_eq!(round_trip, payload);
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn inspect_rejects_legacy_bundle_format_version() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2012,6 +2021,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-backups")]
     #[test]
     fn encrypted_backup_rejects_oversized_chunk_length() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2036,10 +2046,12 @@ mod tests {
         assert!(error.to_string().contains("payload length is invalid"));
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn write_test_bundle(output_path: &Path, passphrase: &str) -> AppResult<()> {
         write_test_bundle_with_payload_size(output_path, passphrase, 64)
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn write_test_bundle_with_payload_size(
         output_path: &Path,
         passphrase: &str,
@@ -2050,6 +2062,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn write_legacy_plaintext_test_bundle(output_path: &Path) -> AppResult<()> {
         let mut staging = test_bundle_staging(64)?;
         let instance_secrets = BackupInstanceSecrets::from_export_secrets(test_export_secrets());
@@ -2080,6 +2093,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn test_bundle_staging(payload_size: usize) -> AppResult<BackupBundleStaging> {
         let mut staging = BackupBundleStaging::new()?;
         let table_path = staging
@@ -2092,6 +2106,7 @@ mod tests {
         Ok(staging)
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn test_export_request(output_path: &Path, passphrase: &str) -> BackupBundleExportRequest {
         BackupBundleExportRequest {
             output_path: output_path.to_path_buf(),
@@ -2103,6 +2118,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn test_export_secrets() -> BackupExportSecrets {
         BackupExportSecrets {
             encryption_master_key: "master-key".to_string(),
@@ -2112,6 +2128,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "runtime-backups")]
     fn write_test_payload(path: &Path, payload_size: usize) -> AppResult<()> {
         let file = File::create(path).map_err(|error| {
             AppError::Repository(format!("failed to create test payload: {error}"))

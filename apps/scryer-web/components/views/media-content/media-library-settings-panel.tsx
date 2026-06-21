@@ -105,6 +105,7 @@ const NEW_LIBRARY_VALUE = "__new_library__";
 
 function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   return (library?.roots ?? []).map((root) => ({
+    id: root.id,
     path: root.path,
     isDefault: root.isDefault,
   }));
@@ -129,7 +130,7 @@ function normalizeRoots(roots: RootFolderOption[]): RootFolderOption[] {
     if (isDefault) {
       hasDefault = true;
     }
-    next.push({ path, isDefault });
+    next.push({ id: root.id, path, isDefault });
   });
 
   if (next.length > 0 && !hasDefault) {

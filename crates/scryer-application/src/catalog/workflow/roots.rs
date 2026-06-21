@@ -127,6 +127,78 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub(crate) async fn resolve_title_root_folder_id_for_library(
+        &self,
+        library_id: &str,
+        root_folder_id: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let Some(root_folder_id) = root_folder_id.map(str::trim).filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        let root = library
+            .roots
+            .iter()
+            .find(|root| root.id == root_folder_id)
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "rootFolderId must reference a root on the title library".to_string(),
+                )
+            })?;
+        Ok((!root.is_default).then(|| root.id.clone()))
+    }
+
+    pub(crate) async fn title_root_folder_path_override(
+        &self,
+        title: &scryer_domain::Title,
+    ) -> AppResult<Option<String>> {
+        self.title_root_folder_path_for_parts(
+            title.root_folder_id.as_deref(),
+            &title.library_id,
+            &title.facet,
+        )
+        .await
+    }
+
+    pub async fn title_root_folder_path_for_parts(
+        &self,
+        root_folder_id: Option<&str>,
+        library_id: &str,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<String>> {
+        let Some(root_folder_id) = root_folder_id
+            .map(str::trim)
+            .filter(|root_folder_id| !root_folder_id.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(library) = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if library.facet != *facet {
+            return Ok(None);
+        }
+        Ok(library
+            .roots
+            .into_iter()
+            .find(|root| root.id == root_folder_id)
+            .map(|root| root.path))
+    }
+}
+impl AppUseCase {
     /// Return every configured library root for a facet across all libraries.
     pub(crate) async fn all_library_root_folders_for_facet(
         &self,

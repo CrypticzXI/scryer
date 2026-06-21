@@ -1033,6 +1033,7 @@ fn media_request_to_new_title(
         monitored,
         tags,
         external_ids: request.external_ids.clone(),
+        root_folder_id: None,
         min_availability: None,
         poster_url: request.poster_url.clone(),
         year: request.year,

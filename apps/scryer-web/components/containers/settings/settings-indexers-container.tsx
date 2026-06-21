@@ -676,6 +676,7 @@ export function SettingsIndexersContainer({
               validation?.message ?? t("status.indexerConnectionTestFailed"),
             );
           }
+          await refreshIndexers();
         },
       });
     } catch {

@@ -1373,6 +1373,7 @@ mod tests {
             monitored: true,
             tags: Vec::new(),
             external_ids: Vec::new(),
+            root_folder_id: None,
             created_by: None,
             created_at: chrono::Utc::now(),
             year: None,

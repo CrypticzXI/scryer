@@ -38,6 +38,7 @@ async fn graphql_introspection_mutation_type() {
 async fn graphql_introspection_schema_census_matches_contract_baseline() {
     let ctx = TestContext::new().await;
     let sdl = schema_sdl(&ctx);
+    assert_eq!(scryer_interface::export_schema_sdl(), sdl);
     assert!(sdl.contains("type QueryRoot"));
     assert!(sdl.contains("type MutationRoot"));
     assert!(sdl.contains("type SubscriptionRoot"));
@@ -111,9 +112,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert_eq!(query_field_count, 102);
     assert_eq!(mutation_field_count, 157);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 432);
+    assert_eq!(public_types.len(), 433);
     assert_eq!(kind_count("OBJECT"), 223);
-    assert_eq!(kind_count("INPUT_OBJECT"), 137);
+    assert_eq!(kind_count("INPUT_OBJECT"), 138);
     assert_eq!(kind_count("ENUM"), 62);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));

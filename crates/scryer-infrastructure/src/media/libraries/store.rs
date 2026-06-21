@@ -5,6 +5,7 @@ use scryer_domain::{
     AppPermissionMask, Id, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet,
     default_library_id_for_facet,
 };
+use std::collections::{HashMap, HashSet};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
@@ -266,12 +267,110 @@ async fn update_library_tx(
         return Err(AppError::NotFound(format!("library {library_id}")));
     }
 
+    let roots = preserve_library_root_ids_tx(tx, library_id, roots).await?;
+    clear_removed_title_root_folder_ids_tx(tx, library_id, &roots.removed_root_ids).await?;
     tx.execute(
         "DELETE FROM library_roots WHERE library_id = {}",
         &[SqlArg::Text(library_id.to_string())],
     )
     .await?;
-    insert_library_roots_tx(tx, library_id, roots).await
+    insert_library_roots_tx(tx, library_id, roots.roots).await
+}
+
+struct PreservedLibraryRoots {
+    roots: Vec<LibraryRootDraft>,
+    removed_root_ids: Vec<String>,
+}
+
+async fn preserve_library_root_ids_tx(
+    tx: &mut SqlTx<'_>,
+    library_id: &str,
+    roots: Vec<LibraryRootDraft>,
+) -> AppResult<PreservedLibraryRoots> {
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Tx(tx),
+        "SELECT id, normalized_path FROM library_roots WHERE library_id = {}",
+        &[SqlArg::Text(library_id.to_string())],
+    )
+    .await?;
+    let mut existing_ids = HashSet::new();
+    let mut id_by_normalized_path = HashMap::new();
+    for row in rows {
+        let id = row.text("id")?;
+        existing_ids.insert(id.clone());
+        if let Some(normalized_path) = row.opt_text("normalized_path")? {
+            id_by_normalized_path.insert(normalized_path, id);
+        }
+    }
+
+    let roots = roots
+        .into_iter()
+        .map(|mut root| {
+            if let Some(id) = root
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                if !existing_ids.contains(id) {
+                    return Err(AppError::Validation(
+                        "library root id must reference a root on the selected library".into(),
+                    ));
+                }
+                root.id = Some(id.to_string());
+            } else if let Some(existing_id) =
+                id_by_normalized_path.get(&normalize_root_path(&root.path))
+            {
+                root.id = Some(existing_id.clone());
+            }
+            Ok(root)
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let desired_ids = roots
+        .iter()
+        .filter_map(|root| root.id.as_deref())
+        .collect::<HashSet<_>>();
+    let mut removed_root_ids = existing_ids
+        .iter()
+        .filter(|id| !desired_ids.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    removed_root_ids.sort();
+
+    Ok(PreservedLibraryRoots {
+        roots,
+        removed_root_ids,
+    })
+}
+
+async fn clear_removed_title_root_folder_ids_tx(
+    tx: &mut SqlTx<'_>,
+    library_id: &str,
+    removed_root_ids: &[String],
+) -> AppResult<()> {
+    for root_id in removed_root_ids {
+        tx.execute(
+            "UPDATE titles
+                SET root_folder_id = NULL
+              WHERE root_folder_id = {}
+                AND COALESCE(
+                        library_id,
+                        CASE facet
+                            WHEN 'movie' THEN 'movie_default_library'
+                            WHEN 'series' THEN 'series_default_library'
+                            WHEN 'anime' THEN 'anime_default_library'
+                            ELSE 'movie_default_library'
+                        END
+                    ) = {}",
+            &[
+                SqlArg::Text(root_id.clone()),
+                SqlArg::Text(library_id.to_string()),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn insert_library_roots_tx(
@@ -285,12 +384,19 @@ async fn insert_library_roots_tx(
         if path.is_empty() {
             continue;
         }
+        let root_id = root
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| Id::new().0);
         tx.execute(
             "INSERT INTO library_roots
              (id, library_id, path, normalized_path, is_default, created_at, updated_at)
              VALUES ({}, {}, {}, {}, {}, {}, {})",
             &[
-                SqlArg::Text(Id::new().0),
+                SqlArg::Text(root_id),
                 SqlArg::Text(library_id.to_string()),
                 SqlArg::Text(path.to_string()),
                 SqlArg::Text(normalize_root_path(path)),

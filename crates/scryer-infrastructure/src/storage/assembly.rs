@@ -2427,6 +2427,7 @@ mod tests {
                 source: "tmdb".to_string(),
                 value: "424242".to_string(),
             }],
+            root_folder_id: None,
             created_by: None,
             created_at: chrono::Utc::now(),
             year: Some(2026),

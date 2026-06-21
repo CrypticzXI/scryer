@@ -327,6 +327,7 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
+        root_folder_id: None,
         created_by: None,
         created_at: Utc::now(),
         year: Some(2026),

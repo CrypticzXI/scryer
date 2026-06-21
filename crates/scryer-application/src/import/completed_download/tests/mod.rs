@@ -221,6 +221,7 @@ impl TitleRepository for TestTitleRepo {
         _: Option<String>,
         _: Option<MediaFacet>,
         _: Option<Vec<String>>,
+        _: Option<Option<String>>,
     ) -> AppResult<Title> {
         Err(AppError::Repository("not needed in test".into()))
     }

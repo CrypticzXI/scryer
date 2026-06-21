@@ -104,10 +104,15 @@ const RELEASE_LOCAL_PATH_ALLOWLIST_FILES: &[&str] = &[
     "xtask-release/src/main.rs",
 ];
 const RELEASE_SIBLING_E2E_ALLOWLIST_FILES: &[&str] = &["xtask-release/src/main.rs"];
+const GRAPHQL_API_COMPAT_STEP: &str = "graphql_api_compat";
+const GRAPHQL_API_BASELINE_VERSION: &str = "0.16.3";
+const GRAPHQL_SCHEMA_ARTIFACT: &str = "api/graphql/schema.graphql";
+const GRAPHQL_SCHEMA_EXPORT_DIR: &str = "target/xtask-release/graphql";
 const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
     "builtin_refresh",
     "web_validation",
     "rust_validation",
+    GRAPHQL_API_COMPAT_STEP,
     "release_hygiene",
 ];
 
@@ -778,6 +783,15 @@ fn release_dry_run_cache_rejection_reason(
         return Some("cached builtin artifacts are missing or BLAKE3-mismatched".to_string());
     }
     None
+}
+
+fn graphql_api_baseline_version() -> Version {
+    Version::parse(GRAPHQL_API_BASELINE_VERSION)
+        .expect("GraphQL API baseline version should be valid semver")
+}
+
+fn allow_missing_previous_graphql_schema(next_version: &Version) -> bool {
+    *next_version == graphql_api_baseline_version()
 }
 
 fn next_version(current: &Version, bump: VersionBump) -> Version {
@@ -1925,6 +1939,12 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             }
             web_result?;
             rust_result?;
+            run_scryer_graphql_api_compat_validation(
+                ctx,
+                "[graphql] ",
+                latest_tag.as_deref(),
+                &next_version,
+            )?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
             ok("Parallel validation passed");
             Ok::<(BuiltinRefresh, Vec<String>), anyhow::Error>((
@@ -1939,7 +1959,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         if args.dry_run {
             match validation_result {
                 Ok((refreshed_builtins, validated_steps)) => {
-                    let prep_changed_paths = git_tracked_dirty_paths(ctx)?;
+                    let mut prep_changed_paths = git_tracked_dirty_paths(ctx)?;
+                    maybe_add_changed_graphql_schema_artifact(ctx, &mut prep_changed_paths)?;
                     let final_git_commit = if !prep_changed_paths.is_empty() {
                         step("Committing release-prep changes");
                         let committed = commit_tracked_changes(
@@ -2050,6 +2071,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     if npm_lock.exists() && changed_file(ctx, &npm_lock)? {
         changed.push(npm_lock.clone());
     }
+    maybe_add_changed_graphql_schema_artifact(ctx, &mut changed)?;
     for path in &builtin_plugin_paths {
         if changed_file(ctx, path)? {
             changed.push(path.clone());
@@ -2222,6 +2244,12 @@ fn run_scryer_web_validation(ctx: &TaskContext, prefix: &'static str) -> Result<
     run_streaming(&mut lint, prefix)?;
     prefixed_ok(prefix, "TypeScript type check passed");
 
+    prefixed_step(prefix, "Running GraphQL compatibility checker tests");
+    let mut graphql_compat_tests = ctx.release_command_in("npm", &web_dir);
+    graphql_compat_tests.args(["run", "test:graphql-compat"]);
+    run_streaming(&mut graphql_compat_tests, prefix)?;
+    prefixed_ok(prefix, "GraphQL compatibility checker tests passed");
+
     prefixed_step(prefix, "Running web build");
     let mut build = ctx.release_command_in("npm", &web_dir);
     build
@@ -2336,6 +2364,112 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     }
 
     prefixed_ok(prefix, "Rust release validations and tests passed");
+    Ok(())
+}
+
+fn run_scryer_graphql_api_compat_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+    latest_tag: Option<&str>,
+    next_version: &Version,
+) -> Result<()> {
+    prefixed_step(prefix, "Exporting current GraphQL schema");
+    let export_dir = ctx.path(GRAPHQL_SCHEMA_EXPORT_DIR);
+    fs::create_dir_all(&export_dir)
+        .with_context(|| format!("failed to create {}", export_dir.display()))?;
+    let current_schema_path = export_dir.join("schema.graphql");
+    let previous_schema_path = export_dir.join("previous-schema.graphql");
+    let mut export = ctx.command_in("cargo", &ctx.repo_root);
+    export.args([
+        "run",
+        "--locked",
+        "--quiet",
+        "-p",
+        "scryer-interface",
+        "--bin",
+        "export-graphql-schema",
+    ]);
+    let current_sdl = run_capture(&mut export).context("failed to export GraphQL schema")?;
+    fs::write(&current_schema_path, current_sdl).with_context(|| {
+        format!(
+            "failed to write current GraphQL schema to {}",
+            current_schema_path.display()
+        )
+    })?;
+    prefixed_ok(prefix, "Current GraphQL schema exported");
+
+    let previous_sdl = read_previous_release_graphql_schema(ctx, latest_tag);
+    match previous_sdl {
+        Ok(previous_sdl) => {
+            fs::write(&previous_schema_path, previous_sdl).with_context(|| {
+                format!(
+                    "failed to write previous GraphQL schema to {}",
+                    previous_schema_path.display()
+                )
+            })?;
+            prefixed_step(prefix, "Checking GraphQL API compatibility");
+            let web_dir = ctx.path("apps/scryer-web");
+            let mut check = ctx.release_command_in("node", &web_dir);
+            check.arg("scripts/check-graphql-schema-compat.mjs");
+            check.arg(&previous_schema_path);
+            check.arg(&current_schema_path);
+            run_streaming(&mut check, prefix)?;
+            prefixed_ok(prefix, "GraphQL API compatibility passed");
+        }
+        Err(error) if allow_missing_previous_graphql_schema(next_version) => {
+            warn(format!(
+                "Bootstrapping GraphQL API baseline for {next_version}; previous schema was unavailable: {error:#}"
+            ));
+        }
+        Err(error) => {
+            bail!(
+                "previous release GraphQL schema is required after {GRAPHQL_API_BASELINE_VERSION}: {error:#}"
+            );
+        }
+    }
+
+    update_graphql_schema_artifact(ctx, &current_schema_path)?;
+    prefixed_ok(prefix, "GraphQL schema artifact updated");
+    Ok(())
+}
+
+fn read_previous_release_graphql_schema(
+    ctx: &TaskContext,
+    latest_tag: Option<&str>,
+) -> Result<String> {
+    let latest_tag =
+        latest_tag.ok_or_else(|| anyhow!("no previous scryer release tag was found"))?;
+    let spec = format!("{latest_tag}:{GRAPHQL_SCHEMA_ARTIFACT}");
+    let mut show = ctx.command_in("git", &ctx.repo_root);
+    show.args(["show", &spec]);
+    run_capture(&mut show)
+        .with_context(|| format!("failed to read {GRAPHQL_SCHEMA_ARTIFACT} from {latest_tag}"))
+}
+
+fn update_graphql_schema_artifact(ctx: &TaskContext, current_schema_path: &Path) -> Result<()> {
+    let artifact = ctx.path(GRAPHQL_SCHEMA_ARTIFACT);
+    if let Some(parent) = artifact.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(current_schema_path, &artifact).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            current_schema_path.display(),
+            artifact.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn maybe_add_changed_graphql_schema_artifact(
+    ctx: &TaskContext,
+    changed: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let artifact = ctx.path(GRAPHQL_SCHEMA_ARTIFACT);
+    if changed_file(ctx, &artifact)? && !changed.iter().any(|path| path == &artifact) {
+        changed.push(artifact);
+    }
     Ok(())
 }
 
@@ -2731,6 +2865,39 @@ mod tests {
             reason.as_deref(),
             Some("computed release tag changed since dry run")
         );
+    }
+
+    #[test]
+    fn release_dry_run_cache_rejects_missing_graphql_api_compat_step() {
+        let mut cache = sample_release_dry_run_cache();
+        cache
+            .validated_steps
+            .retain(|step| step != GRAPHQL_API_COMPAT_STEP);
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "dry run did not record required release-blocking validations: graphql_api_compat"
+            )
+        );
+    }
+
+    #[test]
+    fn graphql_api_compat_allows_missing_previous_schema_for_baseline_bootstrap() {
+        let version = Version::parse(GRAPHQL_API_BASELINE_VERSION).unwrap();
+
+        assert!(allow_missing_previous_graphql_schema(&version));
+    }
+
+    #[test]
+    fn graphql_api_compat_rejects_missing_previous_schema_after_baseline() {
+        let version = Version::parse("0.16.4").unwrap();
+
+        assert!(!allow_missing_previous_graphql_schema(&version));
     }
 
     #[test]

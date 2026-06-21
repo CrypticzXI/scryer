@@ -236,6 +236,7 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
         None,
         None,
         Some(vec!["favorite".to_string()]),
+        None,
     )
     .await
     .expect("title metadata should update");

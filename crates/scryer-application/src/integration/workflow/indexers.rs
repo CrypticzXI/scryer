@@ -617,6 +617,13 @@ impl AppUseCase {
                 config_json: normalized_config_json,
             })
             .await?;
+        if should_validate_connection {
+            self.services
+                .integrations
+                .indexer_configs
+                .clear_last_error(&updated.id)
+                .await?;
+        }
         if should_sync_managed_children {
             if updated.is_enabled {
                 self.queue_managed_indexer_sync(&updated.id);

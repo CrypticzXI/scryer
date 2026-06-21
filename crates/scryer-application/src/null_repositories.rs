@@ -2159,6 +2159,7 @@ pub mod test_nulls {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
+            _: Option<Option<String>>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not configured".into()))
         }

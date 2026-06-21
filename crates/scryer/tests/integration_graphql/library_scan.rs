@@ -1408,6 +1408,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
                 source: "tvdb".to_string(),
                 value: "345679".to_string(),
             }],
+            root_folder_id: None,
             created_by: None,
             created_at: Utc::now(),
             year: Some(2024),
