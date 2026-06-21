@@ -315,13 +315,20 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
 
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO titles (id, name, name_normalized, facet, monitored, status, tags, external_ids, created_at)
-         VALUES (?, ?, ?, ?, 1, 'active', '[]', '[]', ?)",
+        "INSERT INTO titles (
+            id, name, name_normalized, library_id, facet, monitored, status,
+            tags, external_ids, root_folder_id, created_at
+         )
+         VALUES (?, ?, ?, ?, ?, 1, 'active', '[]', '[]', ?, ?)",
     )
     .bind("title-series")
     .bind("Legacy Series")
     .bind("legacy series")
+    .bind(scryer_domain::default_library_id_for_facet(
+        &scryer_domain::MediaFacet::Series,
+    ))
     .bind("series")
+    .bind(scryer_domain::root_folder_id_for_path("/data/series"))
     .bind(&now)
     .execute(&pool)
     .await
@@ -912,8 +919,7 @@ async fn migration_0104_accepts_plain_path_settings_without_choking_on_unrelated
     );
 }
 
-#[tokio::test]
-async fn migration_0136_backfills_only_non_default_root_folder_overrides() {
+async fn create_0136_test_pool() -> sqlx::SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -932,23 +938,75 @@ async fn migration_0136_backfills_only_non_default_root_folder_overrides() {
     .await
     .expect("titles should create");
     sqlx::query(
+        "CREATE TABLE libraries (
+            id TEXT PRIMARY KEY,
+            facet TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("libraries should create");
+    sqlx::query(
         "CREATE TABLE library_roots (
             id TEXT PRIMARY KEY,
             library_id TEXT NOT NULL,
             path TEXT NOT NULL,
             normalized_path TEXT,
-            is_default INTEGER NOT NULL
+            is_default INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z',
+            updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z'
         )",
     )
     .execute(&pool)
     .await
     .expect("library_roots should create");
+    pool
+}
+
+async fn run_0136_sqlite(pool: &sqlx::SqlitePool) -> Result<(), AppError> {
+    run_embedded_migration(
+        pool,
+        include_str!("../../../scryer/src/db/migrations/0136_title_root_folder_id_pre.sql"),
+    )
+    .await;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+    crate::migrations::title_root_folder_ids::migrate_title_root_folder_ids_sqlite(&mut tx).await?;
+    tx.commit()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    sqlx::raw_sql(include_str!(
+        "../../../scryer/src/db/migrations/0136_title_root_folder_id_post.sql"
+    ))
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_0136_rekeys_roots_and_backfills_concrete_title_root_ids() {
+    let pool = create_0136_test_pool().await;
+
+    sqlx::query(
+        "INSERT INTO libraries (id, facet)
+         VALUES
+            ('anime-library', 'anime'),
+            ('movie-library', 'movie')",
+    )
+    .execute(&pool)
+    .await
+    .expect("libraries should insert");
 
     sqlx::query(
         "INSERT INTO library_roots (id, library_id, path, normalized_path, is_default)
          VALUES
-            ('root-default', 'anime-library', '/library/default', '/library/default', 1),
-            ('root-custom', 'anime-library', '/library/custom', '/library/custom', 0)",
+            ('random-default-id', 'anime-library', '/Library/Default', '/library/default', 1),
+            ('random-custom-id', 'anime-library', '/Library/Custom', '/library/custom', 0)",
     )
     .execute(&pool)
     .await
@@ -956,21 +1014,49 @@ async fn migration_0136_backfills_only_non_default_root_folder_overrides() {
     sqlx::query(
         "INSERT INTO titles (id, library_id, facet, tags)
          VALUES
-            ('title-default', 'anime-library', 'anime', '[\"keep\",\"scryer:root-folder:/library/default\"]'),
-            ('title-custom', 'anime-library', 'anime', '[\"scryer:root-folder:/library/custom/\",\"keep\"]'),
-            ('title-unmatched', 'anime-library', 'anime', '[\"scryer:root-folder:/library/missing\",\"keep\"]')",
+            ('title-default', 'anime-library', 'anime', '[\"keep-default\"]'),
+            ('title-custom', 'anime-library', 'anime', '[\"scryer:root-folder:/Library/Custom/\",\"keep-custom\"]'),
+            ('title-unmatched', 'anime-library', 'anime', '[\"scryer:root-folder:/Library/Missing\",\"keep-unmatched\"]')",
     )
     .execute(&pool)
     .await
     .expect("titles should insert");
 
-    run_embedded_migration(
-        &pool,
-        include_str!("../../../scryer/src/db/migrations/0136_title_root_folder_id.sql"),
-    )
-    .await;
+    run_0136_sqlite(&pool)
+        .await
+        .expect("0136 migration should run");
 
-    let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
+    let root_rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, path, normalized_path, is_default
+           FROM library_roots
+          ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migrated roots should query");
+    let root_ids_by_path = root_rows
+        .iter()
+        .map(|(id, path, _, _)| (path.clone(), id.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        root_ids_by_path["/Library/Default"],
+        scryer_domain::root_folder_id_for_path("/Library/Default")
+    );
+    assert_eq!(
+        root_ids_by_path["/Library/Custom"],
+        scryer_domain::root_folder_id_for_path("/Library/Custom")
+    );
+    assert_eq!(
+        root_ids_by_path["/Library/Missing"],
+        scryer_domain::root_folder_id_for_path("/Library/Missing")
+    );
+    assert!(
+        root_rows
+            .iter()
+            .all(|(id, _, _, _)| id != "random-default-id" && id != "random-custom-id")
+    );
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT id, root_folder_id, tags
            FROM titles
           ORDER BY id",
@@ -980,26 +1066,122 @@ async fn migration_0136_backfills_only_non_default_root_folder_overrides() {
     .expect("migrated titles should query");
 
     assert_eq!(rows[0].0, "title-custom");
-    assert_eq!(rows[0].1.as_deref(), Some("root-custom"));
+    assert_eq!(rows[0].1, root_ids_by_path["/Library/Custom"]);
     let custom_tags: Vec<String> =
         serde_json::from_str(&rows[0].2).expect("custom tags should decode");
-    assert_eq!(custom_tags, vec!["keep".to_string()]);
+    assert_eq!(custom_tags, vec!["keep-custom".to_string()]);
 
     assert_eq!(rows[1].0, "title-default");
-    assert!(rows[1].1.is_none());
+    assert_eq!(rows[1].1, root_ids_by_path["/Library/Default"]);
     let default_tags: Vec<String> =
         serde_json::from_str(&rows[1].2).expect("default tags should decode");
-    assert_eq!(default_tags, vec!["keep".to_string()]);
+    assert_eq!(default_tags, vec!["keep-default".to_string()]);
 
     assert_eq!(rows[2].0, "title-unmatched");
-    assert!(rows[2].1.is_none());
+    assert_eq!(rows[2].1, root_ids_by_path["/Library/Missing"]);
     let unmatched_tags: Vec<String> =
         serde_json::from_str(&rows[2].2).expect("unmatched tags should decode");
-    assert_eq!(
-        unmatched_tags,
-        vec![
-            "scryer:root-folder:/library/missing".to_string(),
-            "keep".to_string()
-        ]
+    assert_eq!(unmatched_tags, vec!["keep-unmatched".to_string()]);
+
+    let orphan_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM titles
+          WHERE root_folder_id IS NULL
+             OR NOT EXISTS (
+                SELECT 1 FROM library_roots
+                 WHERE library_roots.id = titles.root_folder_id
+                   AND library_roots.library_id = titles.library_id
+             )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("orphan count should query");
+    assert_eq!(orphan_count, 0);
+}
+
+#[tokio::test]
+async fn migration_0136_rejects_legacy_root_path_from_another_library() {
+    let pool = create_0136_test_pool().await;
+
+    sqlx::query(
+        "INSERT INTO libraries (id, facet)
+         VALUES
+            ('anime-library', 'anime'),
+            ('movie-library', 'movie')",
+    )
+    .execute(&pool)
+    .await
+    .expect("libraries should insert");
+    sqlx::query(
+        "INSERT INTO library_roots (id, library_id, path, normalized_path, is_default)
+         VALUES
+            ('movie-root', 'movie-library', '/shared/root', '/shared/root', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("movie root should insert");
+    sqlx::query(
+        "INSERT INTO titles (id, library_id, facet, tags)
+         VALUES
+            ('title-cross-root', 'anime-library', 'anime', '[\"scryer:root-folder:/shared/root\"]')",
+    )
+    .execute(&pool)
+    .await
+    .expect("title should insert");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../../scryer/src/db/migrations/0136_title_root_folder_id_pre.sql"),
+    )
+    .await;
+    let mut tx = pool.begin().await.expect("transaction should begin");
+    let err =
+        crate::migrations::title_root_folder_ids::migrate_title_root_folder_ids_sqlite(&mut tx)
+            .await
+            .expect_err("cross-library legacy root should fail");
+    assert!(
+        err.to_string()
+            .contains("configured on library movie-library"),
+        "unexpected migration error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn migration_0136_rejects_duplicate_existing_root_paths_before_rekey() {
+    let pool = create_0136_test_pool().await;
+
+    sqlx::query(
+        "INSERT INTO libraries (id, facet)
+         VALUES
+            ('anime-library', 'anime'),
+            ('movie-library', 'movie')",
+    )
+    .execute(&pool)
+    .await
+    .expect("libraries should insert");
+    sqlx::query(
+        "INSERT INTO library_roots (id, library_id, path, normalized_path, is_default)
+         VALUES
+            ('anime-root', 'anime-library', '/shared/root', '/shared/root', 1),
+            ('movie-root', 'movie-library', '/shared/root/', '/shared/root', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("roots should insert");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../../scryer/src/db/migrations/0136_title_root_folder_id_pre.sql"),
+    )
+    .await;
+    let mut tx = pool.begin().await.expect("transaction should begin");
+    let err =
+        crate::migrations::title_root_folder_ids::migrate_title_root_folder_ids_sqlite(&mut tx)
+            .await
+            .expect_err("duplicate root paths should fail before rekey");
+    assert!(
+        err.to_string()
+            .contains("duplicate root paths must be merged before migration"),
+        "unexpected migration error: {err}"
     );
 }

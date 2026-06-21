@@ -95,8 +95,8 @@ export type TitleDetail = {
   effectiveRequiredAudioLanguages?: string[];
   inheritsRequiredAudioLanguages?: boolean;
   qualityProfileId?: string | null;
-  rootFolderId?: string | null;
-  rootFolderPath?: string | null;
+  rootFolderId?: string;
+  rootFolderPath?: string;
   monitorType?: string | null;
   useSeasonFolders?: boolean | null;
   monitorSpecials?: boolean | null;

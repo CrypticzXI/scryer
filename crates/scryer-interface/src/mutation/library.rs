@@ -121,7 +121,6 @@ impl LibraryMutations {
             .roots
             .into_iter()
             .map(|root| scryer_application::LibraryRootDraft {
-                id: None,
                 path: root.path,
                 is_default: root.is_default,
             })
@@ -151,7 +150,6 @@ impl LibraryMutations {
             roots
                 .into_iter()
                 .map(|root| scryer_application::LibraryRootDraft {
-                    id: root.id.map(String::from),
                     path: root.path,
                     is_default: root.is_default,
                 })

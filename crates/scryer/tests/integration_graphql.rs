@@ -44,7 +44,7 @@ use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, BackupInfo, BackupStatus, BackupTrigger, BlocklistRepository,
     CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
-    InsertMediaFileInput, JwtSessionScope, LibraryRootDraft, MediaFileAnalysis,
+    InsertMediaFileInput, JwtSessionScope, LibraryRepository, LibraryRootDraft, MediaFileAnalysis,
     MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
     PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
     TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
@@ -1383,25 +1383,77 @@ async fn mount_smg_mocks(ctx: &TestContext, fixture_path: &str) {
         .await;
 }
 
+async fn configure_default_library_root(
+    ctx: &TestContext,
+    facet: MediaFacet,
+    media_root: &std::path::Path,
+) -> String {
+    let library_id = scryer_domain::default_library_id_for_facet(&facet);
+    let library = ctx
+        .libraries
+        .get_by_id(&library_id)
+        .await
+        .expect("lookup default library")
+        .expect("default library exists");
+    let media_root_path = media_root.to_string_lossy().to_string();
+    ctx.libraries
+        .update(
+            &library_id,
+            library.name,
+            library.slug,
+            vec![LibraryRootDraft {
+                path: media_root_path.clone(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("configure default library root");
+    scryer_domain::root_folder_id_for_path(&media_root_path)
+}
+
+async fn default_library_root_id(ctx: &TestContext, facet: &MediaFacet) -> String {
+    let library_id = scryer_domain::default_library_id_for_facet(facet);
+    let library = ctx
+        .libraries
+        .get_by_id(&library_id)
+        .await
+        .expect("lookup default library")
+        .expect("default library exists");
+    library
+        .roots
+        .iter()
+        .find(|root| root.is_default)
+        .or_else(|| library.roots.first())
+        .map(|root| root.id.clone())
+        .unwrap_or_else(|| {
+            scryer_domain::root_folder_id_for_path(match facet {
+                MediaFacet::Movie => "/data/movies",
+                MediaFacet::Series => "/data/series",
+                MediaFacet::Anime => "/data/anime",
+            })
+        })
+}
+
 async fn create_series_scan_title(
     ctx: &TestContext,
     media_root: &std::path::Path,
     name: &str,
     extra_tags: Vec<String>,
 ) -> (Title, Collection) {
-    let mut tags = vec![format!("scryer:root-folder:{}", media_root.display())];
-    tags.extend(extra_tags);
+    let root_folder_id = configure_default_library_root(ctx, MediaFacet::Series, media_root).await;
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let tags = extra_tags;
     let title_dir = media_root.join(name);
 
     let title = Title {
         id: Id::new().0,
         name: name.to_string(),
         facet: MediaFacet::Series,
-        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+        library_id: series_library_id,
         monitored: true,
         tags,
         external_ids: vec![],
-        root_folder_id: None,
+        root_folder_id,
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),
@@ -1461,6 +1513,7 @@ async fn create_catalog_title(
     tags: Vec<String>,
     monitored: bool,
 ) -> Title {
+    let root_folder_id = default_library_root_id(ctx, &facet).await;
     let title = Title {
         id: Id::new().0,
         name: name.to_string(),
@@ -1469,7 +1522,7 @@ async fn create_catalog_title(
         monitored,
         tags,
         external_ids,
-        root_folder_id: None,
+        root_folder_id,
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),
@@ -1499,10 +1552,6 @@ async fn create_catalog_title(
     };
 
     ctx.titles.create(title).await.expect("create title")
-}
-
-fn media_root_tag(path: &std::path::Path) -> String {
-    format!("scryer:root-folder:{}", path.to_string_lossy())
 }
 
 async fn set_title_folder_path(ctx: &TestContext, title_id: &str, path: &std::path::Path) {

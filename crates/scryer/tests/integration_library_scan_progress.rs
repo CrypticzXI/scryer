@@ -93,7 +93,6 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
             name.to_string(),
             slug.to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: value.to_string(),
                 is_default: true,
             }],

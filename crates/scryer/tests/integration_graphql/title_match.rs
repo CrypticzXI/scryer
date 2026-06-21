@@ -166,6 +166,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             mount_smg_mocks(&ctx, "smg/get_series.json").await;
 
             let media_root = tempfile::tempdir().expect("media root tempdir");
+            configure_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
             let title_name = "Broken Series Match";
             let title = create_catalog_title(
                 &ctx,
@@ -182,7 +183,6 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                     },
                 ],
                 vec![
-                    format!("scryer:root-folder:{}", media_root.path().display()),
                     "scryer:season-folder:enabled".to_string(),
                     "scryer:anime-status:finished".to_string(),
                 ],
@@ -307,11 +307,13 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             assert_eq!(payload["libraryScan"]["unmatched"], 0);
 
             let tags = payload["title"]["tags"].as_array().expect("tags array");
-            assert!(tags.contains(&json!(format!(
-                "scryer:root-folder:{}",
-                media_root.path().display()
-            ))));
             assert!(tags.contains(&json!("scryer:season-folder:enabled")));
+            assert!(
+                !tags
+                    .iter()
+                    .filter_map(|tag| tag.as_str())
+                    .any(|tag| tag.starts_with("scryer:root-folder:"))
+            );
             assert!(!tags.contains(&json!("scryer:anime-status:finished")));
 
             let external_ids = payload["title"]["externalIds"]

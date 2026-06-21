@@ -1160,7 +1160,6 @@ fn extract_tag_bool(tags: &[String], prefix: &str) -> Option<bool> {
 
 pub fn from_title(title: Title) -> TitlePayload {
     let quality_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:");
-    let root_folder_path = extract_tag_string(&title.tags, "scryer:root-folder:");
     let monitor_type = extract_tag_string(&title.tags, "scryer:monitor-type:")
         .as_deref()
         .and_then(MonitorTypeValue::from_tag_value);
@@ -1213,8 +1212,7 @@ pub fn from_title(title: Title) -> TitlePayload {
         min_availability: title.min_availability,
         digital_release_date: parse_date(title.digital_release_date),
         quality_profile_id: quality_profile_id.map(Into::into),
-        root_folder_id: title.root_folder_id.map(Into::into),
-        legacy_root_folder_path: root_folder_path,
+        root_folder_id: title.root_folder_id.into(),
         monitor_type,
         use_season_folders,
         monitor_specials,

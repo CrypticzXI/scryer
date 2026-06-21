@@ -116,7 +116,6 @@ async fn set_default_library_root(ctx: &TestContext, facet: MediaFacet, root: &P
             &library_id,
             None,
             Some(vec![LibraryRootDraft {
-                id: None,
                 path: root.to_string_lossy().to_string(),
                 is_default: true,
             }]),
@@ -141,10 +140,7 @@ async fn seed_series_title(
         library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         monitored: true,
-        tags: vec![format!(
-            "scryer:root-folder:{}",
-            media_root.to_string_lossy()
-        )],
+        tags: vec![],
         external_ids: tvdb_id
             .map(|value| {
                 vec![ExternalId {
@@ -153,6 +149,9 @@ async fn seed_series_title(
                 }]
             })
             .unwrap_or_default(),
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_root.to_string_lossy().as_ref(),
+        ),
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),

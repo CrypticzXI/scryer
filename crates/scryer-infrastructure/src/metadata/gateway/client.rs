@@ -162,15 +162,12 @@ async fn apply_instance_auth_headers_with_nonce(
             let host = canonical_request_host(url)?;
             let path_and_query = canonical_request_path_and_query(url);
             let auth_version = smg_enrollment::configured_pq_auth_version();
-            let nonce = match auth_version {
-                smg_enrollment::PqAuthVersion::V1 => None,
-                smg_enrollment::PqAuthVersion::V2 => Some(match nonce_override {
-                    Some(nonce) => nonce,
-                    None => smg_enrollment::generate_pq_auth_nonce().map_err(|e| {
-                        AppError::Repository(format!("failed to generate PQ auth nonce: {e}"))
-                    })?,
-                }),
-            };
+            let nonce = Some(match nonce_override {
+                Some(nonce) => nonce,
+                None => smg_enrollment::generate_pq_auth_nonce().map_err(|e| {
+                    AppError::Repository(format!("failed to generate PQ auth nonce: {e}"))
+                })?,
+            });
             let signature = smg_enrollment::sign_pq_request(
                 seed_b64,
                 auth_version,

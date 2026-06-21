@@ -41,9 +41,7 @@ pub struct TitlePayload {
     pub min_availability: Option<String>,
     pub digital_release_date: Option<Date>,
     pub quality_profile_id: Option<ID>,
-    pub root_folder_id: Option<ID>,
-    #[graphql(skip)]
-    pub legacy_root_folder_path: Option<String>,
+    pub root_folder_id: ID,
     pub monitor_type: Option<MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,

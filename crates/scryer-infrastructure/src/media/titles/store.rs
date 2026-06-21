@@ -904,7 +904,7 @@ impl TitleRepository for TitleStore {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
-        root_folder_id: Option<Option<String>>,
+        root_folder_id: Option<String>,
     ) -> AppResult<Title> {
         if name.is_none() && facet.is_none() && tags.is_none() && root_folder_id.is_none() {
             return Err(AppError::Validation(
@@ -931,6 +931,12 @@ impl TitleRepository for TitleStore {
                     title.name = normalized.to_string();
                 }
                 if let Some(facet) = facet {
+                    if facet != title.facet {
+                        return Err(AppError::Validation(
+                            "changing a title facet is not supported because titles cannot move between libraries"
+                                .to_string(),
+                        ));
+                    }
                     title.facet = facet;
                 }
                 if let Some(tags) = tags {
@@ -1359,7 +1365,7 @@ where
         } else {
             Vec::new()
         },
-        root_folder_id: row.opt_text("root_folder_id")?,
+        root_folder_id: row.text("root_folder_id")?,
         created_by: row.opt_text("created_by")?,
         created_at: row.timestamp("created_at")?,
         year: row.opt_i32("year")?,
@@ -2101,7 +2107,7 @@ fn title_write_args(
         SqlArg::Json(
             serde_json::to_value(&title.external_ids).unwrap_or(JsonValue::Array(Vec::new())),
         ),
-        SqlArg::OptText(title.root_folder_id.clone()),
+        SqlArg::Text(title.root_folder_id.clone()),
         SqlArg::OptText(title.created_by.clone()),
         SqlArg::Timestamp(title.created_at),
         SqlArg::OptI64(title.year.map(i64::from)),

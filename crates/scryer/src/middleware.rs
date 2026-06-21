@@ -9,7 +9,9 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use scryer_application::{AppError, AppResult, AppUseCase, AuthenticatedTokenClaims};
+use scryer_application::{
+    AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, OAuthAuthorizationSource,
+};
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
@@ -1273,6 +1275,7 @@ impl ResolvedActor {
             verified_until: self.token_claims.mfa_verified_until,
             step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
+            oauth_authorization_source: self.token_claims.oauth_authorization_source,
         }
     }
 
@@ -1470,7 +1473,13 @@ async fn resolve_actor(
     let actor = match authorization_token_from_headers(headers) {
         Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
             Ok((user, token_claims)) => {
-                Some((user, token_claims, ResolvedActorSource::AuthenticatedToken))
+                if snapshot.effective_form_login_enabled
+                    && token_claims.oauth_authorization_source == OAuthAuthorizationSource::Authless
+                {
+                    None
+                } else {
+                    Some((user, token_claims, ResolvedActorSource::AuthenticatedToken))
+                }
             }
             Err(_) if !snapshot.effective_form_login_enabled => {
                 resolve_default_user(&state.app).await.map(|user| {
@@ -1531,6 +1540,9 @@ async fn attach_resolved_actor(
         ResolvedActorSource::AuthlessDefault => ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
     };
     if token_claims.is_oauth_access_token() {
+        if token_claims.oauth_authorization_source == OAuthAuthorizationSource::Authless {
+            user = anonymous_user(user);
+        }
         user.authorization.app = AppPermissionMask::NONE;
         user.authorization.actor_capabilities = ActorCapabilityMask::NONE;
     }
@@ -1780,10 +1792,9 @@ async fn authless_access_decision_with_allowlist(
     }
 
     let allowlist_configured = allowlist.is_configured();
-    let public_access_open = !policy.recovery_mode
-        && (policy.allow_unauthenticated_public_access || allowlist_configured);
-    if policy.allow_unauthenticated_public_access && !policy.recovery_mode && !allowlist_configured
-    {
+    let unrestricted_public_access_open =
+        policy.allow_unauthenticated_public_access && !policy.recovery_mode;
+    if unrestricted_public_access_open && !allowlist_configured {
         return AuthlessAccessDecision::Allow;
     }
 
@@ -1792,7 +1803,7 @@ async fn authless_access_decision_with_allowlist(
     };
 
     if !is_local_network_ip(peer_ip) {
-        if public_access_open && allowlist.allows_public_ip(peer_ip).await {
+        if allowlist_configured && allowlist.allows_public_ip(peer_ip).await {
             return AuthlessAccessDecision::Allow;
         }
         return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(peer_ip));
@@ -1805,7 +1816,7 @@ async fn authless_access_decision_with_allowlist(
                     .into_iter()
                     .filter(|client_ip| !is_local_network_ip(*client_ip))
                 {
-                    if !public_access_open || !allowlist.allows_public_ip(public_ip).await {
+                    if !allowlist_configured || !allowlist.allows_public_ip(public_ip).await {
                         return AuthlessAccessDecision::Reject(
                             AuthlessAccessRejectReason::PublicForwardedClient(public_ip),
                         );
@@ -2484,6 +2495,13 @@ mod tests {
         }
     }
 
+    fn recovery_authless_policy() -> AuthlessAccessPolicy {
+        AuthlessAccessPolicy {
+            allow_unauthenticated_public_access: false,
+            recovery_mode: true,
+        }
+    }
+
     #[test]
     fn authless_guard_allows_auth_enabled_requests() {
         let headers = HeaderMap::new();
@@ -2600,6 +2618,44 @@ mod tests {
             )
             .await,
             AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_recovery_mode_allowlist_allows_matching_public_ip() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.8");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                recovery_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn authless_guard_recovery_mode_allowlist_rejects_unlisted_public_ip() {
+        let headers = HeaderMap::new();
+        let allowlist = AuthlessAccessAllowlist::parse("203.0.113.10");
+
+        assert_eq!(
+            authless_access_decision_with_allowlist(
+                &auth_disabled_snapshot(),
+                recovery_authless_policy(),
+                &allowlist,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+            )
+            .await,
+            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
+                Ipv4Addr::new(8, 8, 8, 8)
+            )))
         );
     }
 
@@ -3137,6 +3193,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authless_guard_middleware_recovery_mode_allowlist_allows_matching_graphql_request() {
+        let proof_state = AuthlessWebClientProofState::new();
+        let app = authless_guard_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            recovery_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        );
+
+        let response = app
+            .oneshot(request_with_peer_and_authless_proof(
+                "/graphql",
+                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+                &proof_state,
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn authless_guard_middleware_rejects_public_websocket_route_before_handler() {
         let app = authless_guard_test_app(auth_disabled_snapshot(), protected_authless_policy());
 
@@ -3451,6 +3528,23 @@ mod tests {
         let response = authless_web_client_test_app_with_allowlist(
             auth_disabled_snapshot(),
             protected_authless_policy(),
+            AuthlessAccessAllowlist::parse("8.8.8.8"),
+        )
+        .oneshot(request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
+        ))
+        .await
+        .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authless_web_client_proof_recovery_mode_allowlist_allows_matching_public_peer() {
+        let response = authless_web_client_test_app_with_allowlist(
+            auth_disabled_snapshot(),
+            recovery_authless_policy(),
             AuthlessAccessAllowlist::parse("8.8.8.8"),
         )
         .oneshot(request_with_peer(

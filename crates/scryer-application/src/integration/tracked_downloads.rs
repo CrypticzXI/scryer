@@ -1931,7 +1931,7 @@ mod tests {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
-            _: Option<Option<String>>,
+            _: Option<String>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -2115,7 +2115,7 @@ mod tests {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
-            _: Option<Option<String>>,
+            _: Option<String>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -2649,6 +2649,7 @@ mod tests {
             id: Id::new().0,
             name: name.to_string(),
             library_id: scryer_domain::default_library_id_for_facet(&facet),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             facet,
             monitored: true,
             tags: vec![],

@@ -221,7 +221,7 @@ impl TitleRepository for TestTitleRepo {
         _: Option<String>,
         _: Option<MediaFacet>,
         _: Option<Vec<String>>,
-        _: Option<Option<String>>,
+        _: Option<String>,
     ) -> AppResult<Title> {
         Err(AppError::Repository("not needed in test".into()))
     }
@@ -1337,6 +1337,7 @@ fn build_title(id: &str, name: &str, facet: MediaFacet) -> Title {
         id: id.to_string(),
         name: name.to_string(),
         library_id: scryer_domain::default_library_id_for_facet(&facet),
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
         facet,
         monitored: true,
         tags: vec![],

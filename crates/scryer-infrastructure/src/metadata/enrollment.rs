@@ -18,8 +18,6 @@ use crate::metadata::response_body::read_response_body_preview;
 
 const SETTINGS_SCOPE_SYSTEM: &str = "system";
 const PQ_CLIENT_FAMILY: &str = "scryer-stable";
-pub(crate) const PQ_AUTH_VERSION_ENV: &str = "SCRYER_SMG_PQ_AUTH_VERSION";
-const PQ_AUTH_VERSION_V1: &str = "pqsig-v1";
 const PQ_AUTH_VERSION_V2: &str = "pqsig-v2";
 const PQ_AUTH_NONCE_BYTES: usize = 24;
 // ML-DSA key generation and signing allocate large fixed-size temporaries on the stack.
@@ -30,56 +28,22 @@ const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
-static CONFIGURED_PQ_AUTH_VERSION: LazyLock<PqAuthVersion> = LazyLock::new(|| {
-    let raw = std::env::var(PQ_AUTH_VERSION_ENV).ok();
-    match parse_pq_auth_version(raw.as_deref()) {
-        Some(version) => version,
-        None => {
-            if let Some(raw) = raw
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                warn!(
-                    env_var = PQ_AUTH_VERSION_ENV,
-                    configured = raw,
-                    fallback = PQ_AUTH_VERSION_V2,
-                    "invalid SMG PQ auth version override; using default"
-                );
-            }
-            PqAuthVersion::V2
-        }
-    }
-});
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PqAuthVersion {
-    V1,
     V2,
 }
 
 impl PqAuthVersion {
     pub(crate) fn header_value(self) -> &'static str {
         match self {
-            Self::V1 => PQ_AUTH_VERSION_V1,
             Self::V2 => PQ_AUTH_VERSION_V2,
         }
     }
 }
 
-fn parse_pq_auth_version(raw: Option<&str>) -> Option<PqAuthVersion> {
-    match raw.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Some(PqAuthVersion::V2),
-        Some(value) if value.eq_ignore_ascii_case("v1") => Some(PqAuthVersion::V1),
-        Some(value) if value.eq_ignore_ascii_case(PQ_AUTH_VERSION_V1) => Some(PqAuthVersion::V1),
-        Some(value) if value.eq_ignore_ascii_case("v2") => Some(PqAuthVersion::V2),
-        Some(value) if value.eq_ignore_ascii_case(PQ_AUTH_VERSION_V2) => Some(PqAuthVersion::V2),
-        Some(_) => None,
-    }
-}
-
 pub(crate) fn configured_pq_auth_version() -> PqAuthVersion {
-    *CONFIGURED_PQ_AUTH_VERSION
+    PqAuthVersion::V2
 }
 
 pub(crate) fn generate_pq_auth_nonce() -> Result<String, String> {
@@ -660,12 +624,7 @@ async fn send_authenticated_pq_registration_request(
                     })?
                     .as_secs() as i64;
                 let auth_version = configured_pq_auth_version();
-                let nonce = match auth_version {
-                    PqAuthVersion::V1 => None,
-                    PqAuthVersion::V2 => {
-                        Some(generate_pq_auth_nonce().map_err(EnrollmentError::Other)?)
-                    }
-                };
+                let nonce = Some(generate_pq_auth_nonce().map_err(EnrollmentError::Other)?);
                 let body_hash = sha256_hex_bytes(&body_bytes);
                 let signature = sign_pq_request(
                     &current_seed_b64,
@@ -815,9 +774,6 @@ pub(crate) async fn sign_pq_request(
     body_hash: &str,
 ) -> Result<String, String> {
     let message = match auth_version {
-        PqAuthVersion::V1 => {
-            canonical_pq_request_message_v1(method, host, path_and_query, timestamp, body_hash)
-        }
         PqAuthVersion::V2 => {
             let nonce = nonce.ok_or_else(|| "pqsig-v2 signing requires nonce".to_string())?;
             canonical_pq_request_message_v2(
@@ -881,24 +837,6 @@ fn sign_pq_seed_sync(seed_b64: &str, message: &[u8]) -> Result<String, String> {
     let signature = keypair.sign(message);
     let encoded = signature.encode();
     Ok(base64::engine::general_purpose::STANDARD.encode(encoded.as_slice()))
-}
-
-fn canonical_pq_request_message_v1(
-    method: &str,
-    host: &str,
-    path_and_query: &str,
-    timestamp: i64,
-    body_hash: &str,
-) -> Vec<u8> {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
-        method.to_ascii_uppercase(),
-        host,
-        path_and_query,
-        timestamp,
-        body_hash
-    )
-    .into_bytes()
 }
 
 fn canonical_pq_request_message_v2(
@@ -1044,9 +982,8 @@ fn hex_bytes(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnrollmentError, PqAuthVersion, canonical_pq_request_message_v1,
-        canonical_pq_request_message_v2, canonical_request_host, generate_pq_auth_nonce,
-        generate_pq_keypair, parse_pq_auth_version, pq_registration_proof_message,
+        EnrollmentError, PqAuthVersion, canonical_pq_request_message_v2, canonical_request_host,
+        generate_pq_auth_nonce, generate_pq_keypair, pq_registration_proof_message,
         sign_bootstrap_mac, sign_pq_request,
     };
     use scryer_outbound_http::parse_retry_after;
@@ -1102,17 +1039,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_pq_request_message_v1_uses_newline_separated_fields() {
-        let message =
-            canonical_pq_request_message_v1("post", "smg.example", "/graphql?x=1", 123, "abc");
-
-        assert_eq!(
-            String::from_utf8(message).unwrap(),
-            "POST\nsmg.example\n/graphql?x=1\n123\nabc"
-        );
-    }
-
-    #[test]
     fn canonical_pq_request_message_v2_includes_nonce() {
         let message = canonical_pq_request_message_v2(
             "get",
@@ -1127,22 +1053,6 @@ mod tests {
             String::from_utf8(message).unwrap(),
             "GET\nsmg.example\n/graphql?extensions=%7B%7D\n123\nnonce-1\nempty-body-hash"
         );
-    }
-
-    #[test]
-    fn pq_auth_version_parser_defaults_to_v2_and_accepts_v1_override() {
-        assert_eq!(parse_pq_auth_version(None), Some(PqAuthVersion::V2));
-        assert_eq!(parse_pq_auth_version(Some("")), Some(PqAuthVersion::V2));
-        assert_eq!(
-            parse_pq_auth_version(Some("pqsig-v1")),
-            Some(PqAuthVersion::V1)
-        );
-        assert_eq!(parse_pq_auth_version(Some("v1")), Some(PqAuthVersion::V1));
-        assert_eq!(
-            parse_pq_auth_version(Some("pqsig-v2")),
-            Some(PqAuthVersion::V2)
-        );
-        assert_eq!(parse_pq_auth_version(Some("nope")), None);
     }
 
     #[test]
@@ -1194,18 +1104,18 @@ mod tests {
 
         runtime.block_on(async {
             let keypair = generate_pq_keypair().await.expect("generated pq keypair");
-            let v1_signature = sign_pq_request(
+            let missing_nonce_error = sign_pq_request(
                 &keypair.seed_b64,
-                PqAuthVersion::V1,
-                "post",
+                PqAuthVersion::V2,
+                "get",
                 "smg.example",
-                "/graphql",
-                123,
+                "/graphql?extensions=%7B%7D",
+                124,
                 None,
                 "abc123",
             )
             .await
-            .expect("signed v1 pq request");
+            .expect_err("v2 signing requires a nonce");
             let v2_signature = sign_pq_request(
                 &keypair.seed_b64,
                 PqAuthVersion::V2,
@@ -1219,9 +1129,8 @@ mod tests {
             .await
             .expect("signed v2 pq request");
 
-            assert!(!v1_signature.is_empty());
+            assert_eq!(missing_nonce_error, "pqsig-v2 signing requires nonce");
             assert!(!v2_signature.is_empty());
-            assert_ne!(v1_signature, v2_signature);
         });
     }
 }

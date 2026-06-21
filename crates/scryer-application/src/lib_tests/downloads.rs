@@ -2425,10 +2425,7 @@ async fn import_series_download_skipped_by_import_checks_keeps_episode_id_and_re
                 name: "Import Series Skip".to_string(),
                 facet: MediaFacet::Series,
                 monitored: true,
-                tags: vec![format!(
-                    "scryer:root-folder:{}",
-                    library_dir.path().display()
-                )],
+                tags: vec![],
                 external_ids: vec![],
                 min_availability: None,
                 ..Default::default()
@@ -2727,10 +2724,7 @@ async fn try_import_completed_downloads_imports_additional_series_movie_file_fro
                 name: "Additional Series Movie Import".to_string(),
                 facet: MediaFacet::Anime,
                 monitored: true,
-                tags: vec![format!(
-                    "scryer:root-folder:{}",
-                    library_dir.path().display()
-                )],
+                tags: vec![],
                 external_ids: vec![],
                 min_availability: None,
                 ..Default::default()
@@ -2933,10 +2927,7 @@ async fn path_manual_import_can_target_series_movie_link() {
                 name: "Manual Series Movie Import".to_string(),
                 facet: MediaFacet::Anime,
                 monitored: true,
-                tags: vec![format!(
-                    "scryer:root-folder:{}",
-                    library_dir.path().display()
-                )],
+                tags: vec![],
                 external_ids: vec![],
                 min_availability: None,
                 ..Default::default()

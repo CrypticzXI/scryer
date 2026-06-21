@@ -5,6 +5,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -14,7 +15,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             source: "tvdb".to_string(),
             value: "91001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -156,6 +157,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -165,7 +167,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             source: "tvdb".to_string(),
             value: "91567".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -324,6 +326,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -333,7 +336,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
             source: "tvdb".to_string(),
             value: "92001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -469,6 +472,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
         builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
     });
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -478,7 +482,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
             source: "tvdb".to_string(),
             value: "93001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -690,6 +694,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -699,7 +704,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
             source: "tvdb".to_string(),
             value: "94001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -798,6 +803,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
     });
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -807,7 +813,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
             source: "tvdb".to_string(),
             value: "94002".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -904,6 +910,7 @@ async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_fo
         builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
     });
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -913,7 +920,7 @@ async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_fo
             source: "tvdb".to_string(),
             value: "94003".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1014,6 +1021,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     seed_typed_settings_definitions(&ctx).await;
     set_rename_collision_policy(&ctx, "anime", "replace_if_better").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1023,7 +1031,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
             source: "tvdb".to_string(),
             value: "95001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1111,7 +1119,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
             source: "tvdb".to_string(),
             value: "95002".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1175,6 +1183,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
     seed_typed_settings_definitions(&ctx).await;
     set_rename_collision_policy(&ctx, "movie", "replace_if_better").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1184,7 +1193,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
             source: "tvdb".to_string(),
             value: "96001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1221,7 +1230,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
             source: "tvdb".to_string(),
             value: "96002".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1290,6 +1299,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1299,7 +1309,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
             source: "tvdb".to_string(),
             value: "97002".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1406,6 +1416,7 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
     seed_typed_settings_definitions(&ctx).await;
     set_rename_collision_policy(&ctx, "movie", "replace_if_better").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1415,7 +1426,7 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
             source: "tvdb".to_string(),
             value: "97001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;
@@ -1497,6 +1508,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
     });
     let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1506,7 +1518,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
             source: "tvdb".to_string(),
             value: "98001".to_string(),
         }],
-        vec![media_root_tag(media_root.path())],
+        vec![],
         true,
     )
     .await;

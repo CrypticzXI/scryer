@@ -381,6 +381,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         id: id.to_string(),
         name: format!("Title {id}"),
         library_id: scryer_domain::default_library_id_for_facet(&facet),
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
         facet,
         monitored: true,
         tags: vec![],

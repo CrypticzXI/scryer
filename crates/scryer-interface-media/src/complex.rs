@@ -71,7 +71,7 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
-    async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
+    async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<String> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         app.require_library_permission(
@@ -81,15 +81,13 @@ impl TitlePayload {
         )
         .await
         .map_err(to_gql_error)?;
-        let configured_path = app
-            .title_root_folder_path_for_parts(
-                self.root_folder_id.as_ref().map(ID::as_ref),
-                self.library_id.as_ref(),
-                &self.facet.into_domain(),
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(configured_path.or_else(|| self.legacy_root_folder_path.clone()))
+        app.title_root_folder_path_for_parts(
+            self.root_folder_id.as_ref(),
+            self.library_id.as_ref(),
+            &self.facet.into_domain(),
+        )
+        .await
+        .map_err(to_gql_error)
     }
 
     async fn required_audio_languages_override(

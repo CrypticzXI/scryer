@@ -266,6 +266,125 @@ async fn graphql_me_reports_effective_oauth_permissions() {
 }
 
 #[tokio::test]
+async fn graphql_authless_oauth_token_is_anonymous_while_auth_disabled() {
+    let ctx = TestContext::new().await;
+    ctx.auth_runtime.apply_saved_security_settings(false, false);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let oauth_token = ctx
+        .app
+        .issue_oauth_access_token_with_source(
+            &user,
+            "generic-native",
+            "graphql-authless-oauth-anonymous",
+            scryer_application::OAuthAuthorizationSource::Authless,
+        )
+        .await
+        .expect("issue authless OAuth token");
+    let (_token_user, token_claims) = ctx
+        .app
+        .authenticate_token_with_claims(&oauth_token)
+        .await
+        .expect("authless OAuth token should authenticate");
+    assert_eq!(
+        token_claims.oauth_authorization_source,
+        scryer_application::OAuthAuthorizationSource::Authless
+    );
+
+    let body = gql_with_token(
+        &ctx,
+        r#"query { me { username appPermissions } }"#,
+        json!({}),
+        &oauth_token,
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["me"]["username"], "Anonymous");
+    assert_eq!(body["data"]["me"]["appPermissions"], json!([]));
+}
+
+#[tokio::test]
+async fn graphql_authless_oauth_token_is_rejected_when_auth_enabled() {
+    let ctx = TestContext::new().await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let oauth_token = ctx
+        .app
+        .issue_oauth_access_token_with_source(
+            &user,
+            "generic-native",
+            "graphql-authless-oauth-rejected",
+            scryer_application::OAuthAuthorizationSource::Authless,
+        )
+        .await
+        .expect("issue authless OAuth token");
+    let (_token_user, token_claims) = ctx
+        .app
+        .authenticate_token_with_claims(&oauth_token)
+        .await
+        .expect("authless OAuth token should authenticate");
+    assert_eq!(
+        token_claims.oauth_authorization_source,
+        scryer_application::OAuthAuthorizationSource::Authless
+    );
+    ctx.auth_runtime.apply_saved_security_settings(true, false);
+
+    let response = ctx
+        .http_client()
+        .post(ctx.graphql_url())
+        .bearer_auth(oauth_token)
+        .json(&json!({ "query": "query { titles { items { id } } }", "variables": {} }))
+        .send()
+        .await
+        .expect("request should complete");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("response body should be JSON");
+    let (_message, code) = first_graphql_error_message_and_code(&body);
+    assert_eq!(code, "AUTHENTICATION_REQUIRED");
+}
+
+#[tokio::test]
+async fn graphql_authenticated_oauth_token_still_works_when_auth_enabled() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let user = ctx
+        .app
+        .create_user(
+            &admin,
+            "authenticated_oauth_enabled".to_string(),
+            "oauth-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create OAuth user");
+    let oauth_token = ctx
+        .app
+        .issue_oauth_access_token(
+            &user,
+            "generic-native",
+            "graphql-authenticated-oauth-enabled",
+        )
+        .await
+        .expect("issue authenticated OAuth token");
+    ctx.auth_runtime.apply_saved_security_settings(true, false);
+
+    let body = gql_with_token(
+        &ctx,
+        r#"query { me { username appPermissions } }"#,
+        json!({}),
+        &oauth_token,
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["me"]["username"],
+        "authenticated_oauth_enabled"
+    );
+    assert_eq!(body["data"]["me"]["appPermissions"], json!([]));
+}
+
+#[tokio::test]
 async fn graphql_oauth_token_cannot_use_own_account_surfaces() {
     let ctx = TestContext::new().await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
@@ -1506,7 +1625,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             updated_at: now,
         },
         vec![LibraryRootDraft {
-            id: None,
             path: media_root.path().to_string_lossy().to_string(),
             is_default: true,
         }],
@@ -1525,7 +1643,9 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             source: "tvdb".to_string(),
             value: "998877".to_string(),
         }],
-        root_folder_id: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_root.path().to_string_lossy().as_ref(),
+        ),
         created_by: None,
         created_at: now,
         year: Some(2024),

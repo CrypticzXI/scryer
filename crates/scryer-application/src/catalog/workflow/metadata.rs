@@ -159,6 +159,14 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        if let Some(facet) = facet.as_ref()
+            && facet != &title.facet
+        {
+            return Err(AppError::Validation(
+                "changing a title facet is not supported because titles cannot move between libraries"
+                    .into(),
+            ));
+        }
         let resolved_root_folder_id = match root_folder_id {
             Some(Some(root_folder_id)) => Some(
                 self.resolve_title_root_folder_id_for_library(
@@ -167,7 +175,10 @@ impl AppUseCase {
                 )
                 .await?,
             ),
-            Some(None) => Some(None),
+            Some(None) => Some(
+                self.resolve_title_root_folder_id_for_library(&title.library_id, None)
+                    .await?,
+            ),
             None => None,
         };
 

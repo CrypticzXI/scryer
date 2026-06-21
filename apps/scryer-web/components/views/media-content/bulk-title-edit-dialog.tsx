@@ -23,7 +23,6 @@ import type { TitleOptionUpdates } from "@/lib/types/title-options";
 
 const UNCHANGED_VALUE = "__unchanged__";
 const INHERIT_VALUE = "__inherit__";
-const DEFAULT_ROOT_FOLDER_VALUE = "__default__";
 const ENABLED_VALUE = "enabled";
 const DISABLED_VALUE = "disabled";
 
@@ -84,8 +83,14 @@ export function BulkTitleEditDialog({
     (path: string) => path.split("/").filter(Boolean).pop() ?? path,
     [],
   );
-  const defaultRootFolderPath = React.useMemo(
-    () => rootFolders.find((folder) => folder.isDefault)?.path ?? null,
+  const sortedRootFolders = React.useMemo(
+    () =>
+      [...rootFolders].sort((left, right) => {
+        if (left.isDefault !== right.isDefault) {
+          return left.isDefault ? -1 : 1;
+        }
+        return left.path.localeCompare(right.path);
+      }),
     [rootFolders],
   );
 
@@ -137,10 +142,7 @@ export function BulkTitleEditDialog({
         draft.qualityProfileId === INHERIT_VALUE ? "" : draft.qualityProfileId;
     }
     if (draft.rootFolderId !== UNCHANGED_VALUE) {
-      changes.rootFolderId =
-        draft.rootFolderId === DEFAULT_ROOT_FOLDER_VALUE
-          ? null
-          : draft.rootFolderId;
+      changes.rootFolderId = draft.rootFolderId;
     }
     if (draft.monitorType !== UNCHANGED_VALUE) {
       changes.monitorType = draft.monitorType;
@@ -225,20 +227,15 @@ export function BulkTitleEditDialog({
                 <SelectItem value={UNCHANGED_VALUE}>
                   {t("label.unchanged")}
                 </SelectItem>
-                <SelectItem value={DEFAULT_ROOT_FOLDER_VALUE}>
-                  {defaultRootFolderPath
-                    ? t("title.defaultRootFolder", {
-                        path: folderLabel(defaultRootFolderPath),
-                      })
-                    : t("label.default")}
-                </SelectItem>
-                {rootFolders
-                  .filter((rootFolder) => !rootFolder.isDefault)
-                  .map((rootFolder) => (
-                    <SelectItem key={rootFolder.id} value={rootFolder.id}>
-                      {folderLabel(rootFolder.path)}
-                    </SelectItem>
-                  ))}
+                {sortedRootFolders.map((rootFolder) => (
+                  <SelectItem key={rootFolder.id} value={rootFolder.id}>
+                    {rootFolder.isDefault
+                      ? t("title.defaultRootFolder", {
+                          path: folderLabel(rootFolder.path),
+                        })
+                      : folderLabel(rootFolder.path)}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </EditableField>

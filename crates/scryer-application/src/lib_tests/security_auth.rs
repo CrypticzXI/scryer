@@ -509,6 +509,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -729,12 +730,69 @@ async fn oauth_access_token_omits_app_permissions_and_actor_capabilities() {
         decoded.claims.oauth_grant_id.as_deref(),
         Some("grant-oauth-admin-claims")
     );
+    assert_eq!(
+        decoded.claims.oauth_authorization_source,
+        crate::OAuthAuthorizationSource::Authenticated
+    );
 
     let (_, token_claims) = app
         .authenticate_token_with_claims(&token)
         .await
         .expect("authenticate OAuth token");
     assert!(token_claims.is_oauth_access_token());
+    assert_eq!(
+        token_claims.oauth_authorization_source,
+        crate::OAuthAuthorizationSource::Authenticated
+    );
+    assert!(token_claims.actor_capabilities.is_empty());
+}
+
+#[tokio::test]
+async fn authless_oauth_access_token_carries_authless_source_without_app_permissions() {
+    let (app, admin) = bootstrap();
+    let user = create_user_with_permissions(
+        &app,
+        &admin,
+        "authless_oauth_claims",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::UserManagement,
+            TestPermissionPreset::ConfigManagement,
+        ],
+    )
+    .await
+    .expect("create user");
+
+    let token = app
+        .issue_oauth_access_token_with_source(
+            &user,
+            "generic-native",
+            "grant-authless-claims",
+            crate::OAuthAuthorizationSource::Authless,
+        )
+        .await
+        .expect("issue authless OAuth access token");
+    let decoded =
+        jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(&token).expect("token should decode");
+
+    assert!(decoded.claims.app_permissions.is_empty());
+    assert!(decoded.claims.actor_capabilities.is_empty());
+    assert_eq!(
+        decoded.claims.oauth_authorization_source,
+        crate::OAuthAuthorizationSource::Authless
+    );
+
+    let (_, token_claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("authenticate authless OAuth token");
+    assert!(token_claims.is_oauth_access_token());
+    assert_eq!(
+        token_claims.oauth_authorization_source,
+        crate::OAuthAuthorizationSource::Authless
+    );
     assert!(token_claims.actor_capabilities.is_empty());
 }
 
@@ -763,6 +821,7 @@ async fn oauth_redirect_validation_and_code_exchange_reject_fragments() {
             "scryer_oac_test.invalid",
             fragment_redirect_uri,
             verifier,
+            true,
         )
         .await
         .expect_err("fragment-bearing token redirect should be rejected")
@@ -807,6 +866,7 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         actor_capabilities: vec![],
         oauth_client_id: Some("generic-native".to_string()),
         oauth_grant_id: Some("grant-with-app-permission".to_string()),
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -859,6 +919,7 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         actor_capabilities: vec!["manageOwnAccount".to_string()],
         oauth_client_id: Some("generic-native".to_string()),
         oauth_grant_id: Some("grant-with-actor-capability".to_string()),
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -1490,6 +1551,7 @@ async fn expired_token_returns_unauthorized() {
         actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -1529,6 +1591,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -1804,6 +1867,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         actor_capabilities: vec![],
         oauth_client_id: None,
         oauth_grant_id: None,
+        oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);

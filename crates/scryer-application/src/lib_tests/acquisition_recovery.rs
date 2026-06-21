@@ -5368,6 +5368,7 @@ async fn monitored_series_movie_link_reconciles_stale_episode_wanted_items() {
             name: "Series Movie Only".into(),
             facet: MediaFacet::Anime,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: false,
             tags: vec!["scryer:monitor-type:none".into()],
             external_ids: vec![],

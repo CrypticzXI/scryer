@@ -20,8 +20,6 @@ import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 
 const INHERIT_VALUE = "__inherit__";
-const DEFAULT_MARKER = "__default__";
-const UNCONFIGURED_ROOT_FOLDER_VALUE = "__unconfigured_root__";
 
 type MediaRenamePlanItem = {
   collectionId: string | null;
@@ -115,26 +113,29 @@ export function TitleSettingsPanel({
   };
 
   const currentProfileId = title.qualityProfileId?.trim() || INHERIT_VALUE;
-  const currentRootFolder = title.rootFolderPath?.trim() || "";
   const currentRootFolderId = title.rootFolderId?.trim() || "";
   const currentSeasonFolder = title.useSeasonFolders === false ? "disabled" : "enabled";
   const currentFillerPolicy = title.fillerPolicy?.trim() || INHERIT_VALUE;
   const currentRecapPolicy = title.recapPolicy?.trim() || INHERIT_VALUE;
   const [saving, setSaving] = React.useState(false);
 
+  const sortedRootFolders = React.useMemo(
+    () =>
+      [...rootFolders].sort((left, right) => {
+        if (left.isDefault !== right.isDefault) {
+          return left.isDefault ? -1 : 1;
+        }
+        return left.path.localeCompare(right.path);
+      }),
+    [rootFolders],
+  );
   const rootFolderById = React.useMemo(
     () => new Map(rootFolders.map((root) => [root.id, root])),
     [rootFolders],
   );
-  const configuredRootSelected =
-    currentRootFolderId.length > 0 && rootFolderById.has(currentRootFolderId);
-  const rootFolderSelectValue = configuredRootSelected
+  const rootFolderSelectValue = rootFolderById.has(currentRootFolderId)
     ? currentRootFolderId
-    : currentRootFolder
-      ? UNCONFIGURED_ROOT_FOLDER_VALUE
-      : DEFAULT_MARKER;
-  const defaultRootPath =
-    rootFolders.find((root) => root.isDefault)?.path || defaultRootFolder;
+    : sortedRootFolders[0]?.id ?? "";
 
   React.useEffect(() => {
     setRenamePlan(null);
@@ -152,13 +153,13 @@ export function TitleSettingsPanel({
   };
 
   const handleRootFolderChange = async (value: string) => {
-    if (value === UNCONFIGURED_ROOT_FOLDER_VALUE) {
+    if (!value.trim()) {
       return;
     }
     setSaving(true);
     try {
       await onUpdateTitleOptions({
-        rootFolderId: value === DEFAULT_MARKER ? null : value,
+        rootFolderId: value,
       });
     } finally {
       setSaving(false);
@@ -296,27 +297,21 @@ export function TitleSettingsPanel({
           <Select
             value={rootFolderSelectValue}
             onValueChange={(v) => void handleRootFolderChange(v)}
-            disabled={saving}
+            disabled={saving || sortedRootFolders.length === 0}
           >
             <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={DEFAULT_MARKER}>
-                {t("title.defaultRootFolder", { path: folderLabel(defaultRootPath) })}
-              </SelectItem>
-              {rootFolderSelectValue === UNCONFIGURED_ROOT_FOLDER_VALUE ? (
-                <SelectItem value={UNCONFIGURED_ROOT_FOLDER_VALUE} disabled>
-                  {currentRootFolder}
+              {sortedRootFolders.map((rf) => (
+                <SelectItem key={rf.id} value={rf.id}>
+                  {rf.isDefault
+                    ? t("title.defaultRootFolder", {
+                        path: folderLabel(rf.path || defaultRootFolder),
+                      })
+                    : folderLabel(rf.path)}
                 </SelectItem>
-              ) : null}
-              {rootFolders
-                .filter((rf) => !rf.isDefault)
-                .map((rf) => (
-                  <SelectItem key={rf.id} value={rf.id}>
-                    {folderLabel(rf.path)}
-                  </SelectItem>
-                ))}
+              ))}
             </SelectContent>
           </Select>
         </div>

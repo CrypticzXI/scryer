@@ -1233,7 +1233,6 @@ async fn bootstrap_application(
     validate_unauthenticated_public_access_allowlist_config(
         authless_access_allowlist_env_configured,
         authless_access_allowlist.is_configured(),
-        &auth_mode,
     )
     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
     if auth_mode.used_legacy_dev_auto_login {
@@ -1252,10 +1251,18 @@ async fn bootstrap_application(
                 format!("failed to ensure default admin for disabled-auth mode: {error}")
             })?;
         if auth_mode.recovery_active() {
-            tracing::warn!(
-                env = RECOVERY_ADMIN_PASSWORD_ENV,
-                "running in recovery mode with authentication disabled; only private/local clients are allowed"
-            );
+            if authless_access_allowlist.is_configured() {
+                tracing::warn!(
+                    env = RECOVERY_ADMIN_PASSWORD_ENV,
+                    allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                    "running in recovery mode with authentication disabled; private/local clients and matching allowlist clients are allowed"
+                );
+            } else {
+                tracing::warn!(
+                    env = RECOVERY_ADMIN_PASSWORD_ENV,
+                    "running in recovery mode with authentication disabled; only private/local clients are allowed"
+                );
+            }
         } else if auth_mode.allow_unauthenticated_public_access
             || authless_access_allowlist.is_configured()
         {
@@ -1387,6 +1394,7 @@ async fn bootstrap_application(
     let oauth_route_state = OAuthRouteState {
         app: app_use_case.clone(),
         base_path: base_path.clone(),
+        auth_runtime: auth_runtime.clone(),
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1837,19 +1845,12 @@ fn parse_env_bool_value(raw: &str) -> Option<bool> {
 fn validate_unauthenticated_public_access_allowlist_config(
     allowlist_env_configured: bool,
     allowlist_has_valid_entries: bool,
-    auth_mode: &AuthModeConfig,
 ) -> Result<(), String> {
     if allowlist_env_configured && !allowlist_has_valid_entries {
         return Err(format!(
             "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} is set but contains no valid IP, CIDR, or DNS entries; fix the allowlist or unset it"
         ));
     }
-    if allowlist_has_valid_entries && auth_mode.recovery_active() {
-        return Err(format!(
-            "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} cannot be used with {RECOVERY_ADMIN_PASSWORD_ENV}; recovery mode is private/local only"
-        ));
-    }
-
     Ok(())
 }
 
@@ -3088,47 +3089,34 @@ mod tests {
 
     #[test]
     fn unauthenticated_public_access_allowlist_accepts_without_public_access_override() {
-        let auth_mode = resolve_auth_mode(None, None, None, None).expect("auth mode");
-
-        validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
+        validate_unauthenticated_public_access_allowlist_config(true, true)
             .expect("valid allowlist should imply narrowed public access");
     }
 
     #[test]
     fn unauthenticated_public_access_allowlist_rejects_no_valid_entries() {
-        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
-        let error =
-            validate_unauthenticated_public_access_allowlist_config(true, false, &auth_mode)
-                .expect_err("allowlist with no valid entries should be rejected");
+        let error = validate_unauthenticated_public_access_allowlist_config(true, false)
+            .expect_err("allowlist with no valid entries should be rejected");
 
         assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
         assert!(error.contains("no valid IP, CIDR, or DNS entries"));
     }
 
     #[test]
-    fn unauthenticated_public_access_allowlist_rejects_recovery_mode() {
-        let auth_mode =
-            resolve_auth_mode(None, None, Some("new-password"), None).expect("auth mode");
-        let error = validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
-            .expect_err("allowlist implies public access and recovery remains private/local");
-
-        assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
-        assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
+    fn unauthenticated_public_access_allowlist_accepts_recovery_mode() {
+        validate_unauthenticated_public_access_allowlist_config(true, true)
+            .expect("valid allowlist should permit narrowed public recovery access");
     }
 
     #[test]
     fn unauthenticated_public_access_allowlist_accepts_public_access_override() {
-        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
-
-        validate_unauthenticated_public_access_allowlist_config(true, true, &auth_mode)
+        validate_unauthenticated_public_access_allowlist_config(true, true)
             .expect("allowlist should narrow public access override");
     }
 
     #[test]
     fn unauthenticated_public_access_allowlist_accepts_unset_allowlist() {
-        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
-
-        validate_unauthenticated_public_access_allowlist_config(false, false, &auth_mode)
+        validate_unauthenticated_public_access_allowlist_config(false, false)
             .expect("unset allowlist keeps broad public access override");
     }
 

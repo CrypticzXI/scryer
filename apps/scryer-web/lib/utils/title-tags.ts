@@ -1,5 +1,4 @@
 export const QUALITY_PROFILE_PREFIX = "scryer:quality-profile:";
-export const ROOT_FOLDER_PREFIX = "scryer:root-folder:";
 export const MONITOR_TYPE_PREFIX = "scryer:monitor-type:";
 export const SEASON_FOLDER_PREFIX = "scryer:season-folder:";
 export const MAL_SCORE_PREFIX = "scryer:mal-score:";

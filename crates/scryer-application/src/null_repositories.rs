@@ -1856,6 +1856,14 @@ impl OAuthRepository for NullOAuthRepository {
         Ok(0)
     }
 
+    async fn revoke_authless_refresh_grants(
+        &self,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
     async fn touch_refresh_grant_last_used(
         &self,
         _: &str,
@@ -2159,7 +2167,7 @@ pub mod test_nulls {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
-            _: Option<Option<String>>,
+            _: Option<String>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not configured".into()))
         }

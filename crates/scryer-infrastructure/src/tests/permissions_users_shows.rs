@@ -243,7 +243,7 @@ async fn sqlite_show_queries_roundtrip() {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
-        root_folder_id: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
         created_by: None,
         created_at: Utc::now(),
         year: None,

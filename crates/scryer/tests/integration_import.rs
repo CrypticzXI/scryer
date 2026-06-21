@@ -11,8 +11,8 @@ use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     BlocklistRepository, DownloadClientConfigRepository, DownloadSourceIdentity, ImportRepository,
-    MediaFileRepository, ReleaseAttemptRepository, ShowRepository, TitleRepository,
-    WantedItemRepository, import_completed_download,
+    LibraryRepository, LibraryRootDraft, MediaFileRepository, ReleaseAttemptRepository,
+    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
@@ -63,18 +63,46 @@ fn scryer_completed(
     }
 }
 
-/// Add a minimal movie Title to the DB, tagging `media_root` so import
-/// uses it as the destination library folder without needing settings.
+async fn configure_default_library_root(
+    ctx: &TestContext,
+    facet: MediaFacet,
+    media_root: &str,
+) -> String {
+    let library_id = scryer_domain::default_library_id_for_facet(&facet);
+    let library = ctx
+        .libraries
+        .get_by_id(&library_id)
+        .await
+        .expect("default library should load")
+        .expect("default library should exist");
+    ctx.libraries
+        .update(
+            &library_id,
+            library.name,
+            library.slug,
+            vec![LibraryRootDraft {
+                path: media_root.to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("default library root should update");
+    scryer_domain::root_folder_id_for_path(media_root)
+}
+
+/// Add a minimal movie Title to the DB with `media_root` configured as the
+/// destination library folder.
 async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &str) -> Title {
+    let root_folder_id = configure_default_library_root(ctx, MediaFacet::Movie, media_root).await;
     let title = Title {
         id: id.to_string(),
         name: name.to_string(),
         facet: MediaFacet::Movie,
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
-        // The root-folder tag overrides the settings lookup.
-        tags: vec![format!("scryer:root-folder:{}", media_root)],
+        tags: vec![],
         external_ids: vec![],
+        root_folder_id,
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),
@@ -128,14 +156,16 @@ async fn add_series_title_with_runtime(
     media_root: &str,
     runtime_minutes: Option<i32>,
 ) -> Title {
+    let root_folder_id = configure_default_library_root(ctx, MediaFacet::Series, media_root).await;
     let title = Title {
         id: id.to_string(),
         name: name.to_string(),
         facet: MediaFacet::Series,
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
-        tags: vec![format!("scryer:root-folder:{}", media_root)],
+        tags: vec![],
         external_ids: vec![],
+        root_folder_id,
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),

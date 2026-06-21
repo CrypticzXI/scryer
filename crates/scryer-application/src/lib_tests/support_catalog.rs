@@ -396,7 +396,7 @@ impl TitleRepository for MockTitleRepo {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
-        root_folder_id: Option<Option<String>>,
+        root_folder_id: Option<String>,
     ) -> AppResult<Title> {
         let mut list = self.store.lock().await;
         let title = list
@@ -413,6 +413,12 @@ impl TitleRepository for MockTitleRepo {
         }
 
         if let Some(facet) = facet {
+            if facet != title.facet {
+                return Err(AppError::Validation(
+                    "changing a title facet is not supported because titles cannot move between libraries"
+                        .into(),
+                ));
+            }
             title.facet = facet;
         }
 

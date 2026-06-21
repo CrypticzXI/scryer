@@ -5702,6 +5702,7 @@ dependencies = [
 name = "scryer-domain"
 version = "0.16.2"
 dependencies = [
+ "blake3",
  "chrono",
  "serde",
  "strum 0.28.0",

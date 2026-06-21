@@ -2,10 +2,10 @@ use async_graphql::{Context, ID, MergedObject, Object, Result as GqlResult};
 
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, PendingImportCounts,
-    SCRYER_VERSION, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort,
-    TitleCatalogSortKey, TitleHistoryFilter, WantedItemsQuery,
-    is_supported_title_history_event_type, supported_title_history_event_types,
+    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, OAuthAuthorizationSource,
+    PendingImportCounts, SCRYER_VERSION, SortDirection, TitleCatalogContentStatus,
+    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleHistoryFilter,
+    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -1452,7 +1452,8 @@ impl SystemQueries {
     }
 
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
-        if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+        let auth_context = mfa_verification_from_ctx(ctx);
+        if auth_context.session_scope == JwtSessionScope::MfaEnrollment {
             return Err(to_gql_error(AppError::MfaEnrollmentRequired(
                 "MFA enrollment must be completed before accessing Scryer".into(),
             )));
@@ -1466,6 +1467,9 @@ impl SystemQueries {
                     .load_user_for_auth_payload(&user)
                     .await
                     .map_err(to_gql_error)?;
+                if auth_context.oauth_authorization_source == OAuthAuthorizationSource::Authless {
+                    user.username = "Anonymous".to_string();
+                }
                 user.authorization = effective_authorization;
                 let auth_factor_status = app
                     .user_auth_factor_status(&user.id)

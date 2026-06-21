@@ -21,7 +21,6 @@ async fn create_library_rejects_root_used_by_other_facet_library() {
             series_library.name.clone(),
             series_library.slug.clone(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/TV".to_string(),
                 is_default: true,
             }],
@@ -35,7 +34,6 @@ async fn create_library_rejects_root_used_by_other_facet_library() {
             MediaFacet::Anime,
             "Anime2".to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/TV".to_string(),
                 is_default: true,
             }],
@@ -83,7 +81,6 @@ async fn update_library_rejects_root_used_by_other_facet_library() {
             series_library.name.clone(),
             series_library.slug.clone(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/TV".to_string(),
                 is_default: true,
             }],
@@ -97,7 +94,6 @@ async fn update_library_rejects_root_used_by_other_facet_library() {
             &anime_library_id,
             Some(anime_library.name.clone()),
             Some(vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/TV".to_string(),
                 is_default: true,
             }]),
@@ -147,7 +143,6 @@ async fn delete_library_purges_library_state_for_non_default_library() {
             MediaFacet::Movie,
             "Kids".to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/Kids".to_string(),
                 is_default: true,
             }],
@@ -290,7 +285,6 @@ async fn delete_library_purges_history_before_deleting_title_rows() {
             MediaFacet::Movie,
             "Kids".to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/Kids".to_string(),
                 is_default: true,
             }],
@@ -379,7 +373,6 @@ async fn delete_library_returns_error_when_title_dependency_cleanup_fails() {
             MediaFacet::Movie,
             "Kids".to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/Kids".to_string(),
                 is_default: true,
             }],
@@ -495,7 +488,6 @@ async fn update_non_default_library_rederives_slug_from_name() {
             MediaFacet::Movie,
             "Kids Movies".to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: "/Volumes/Media/Kids".to_string(),
                 is_default: true,
             }],

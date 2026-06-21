@@ -7,7 +7,7 @@ use scryer_application::{
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
     MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
+    OAuthRepository, PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
     SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
@@ -31,6 +31,7 @@ use tokio::time::{Duration, timeout};
 mod imports_download_submissions;
 mod library_scan_unmatched;
 mod migrations;
+mod oauth;
 mod permissions_users_shows;
 mod plugins;
 mod settings_and_writer;
@@ -327,7 +328,7 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
-        root_folder_id: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         created_by: None,
         created_at: Utc::now(),
         year: Some(2026),
@@ -367,6 +368,10 @@ fn show_store(services: &SqliteServices) -> ShowStore {
 
 fn user_store(services: &SqliteServices) -> UserStore {
     UserStore::new(services.datastore())
+}
+
+fn oauth_store(services: &SqliteServices) -> OAuthStore {
+    OAuthStore::new(services.datastore())
 }
 
 fn wanted_store(services: &SqliteServices) -> WantedStore {

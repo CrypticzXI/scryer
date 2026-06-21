@@ -12,7 +12,6 @@ use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRootDraft {
-    pub id: Option<String>,
     pub path: String,
     pub is_default: bool,
 }
@@ -1422,6 +1421,7 @@ pub struct AuthenticatedTokenClaims {
     pub session_scope: JwtSessionScope,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
+    pub oauth_authorization_source: OAuthAuthorizationSource,
     pub actor_capabilities: scryer_domain::ActorCapabilityMask,
 }
 
@@ -1435,12 +1435,41 @@ impl AuthenticatedTokenClaims {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthAuthorizationSource {
+    #[default]
+    Authenticated,
+    Authless,
+}
+
+impl OAuthAuthorizationSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Authenticated => "authenticated",
+            Self::Authless => "authless",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "authless" => Self::Authless,
+            _ => Self::Authenticated,
+        }
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, Self::Authenticated)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthAuthorizationCodeRecord {
     pub id: String,
     pub code_hash: String,
     pub client_id: String,
     pub user_id: String,
+    pub authorization_source: OAuthAuthorizationSource,
     pub redirect_uri: String,
     pub scope: String,
     pub code_challenge: String,
@@ -1455,6 +1484,7 @@ pub struct OAuthRefreshGrantRecord {
     pub id: String,
     pub family_id: String,
     pub user_id: String,
+    pub authorization_source: OAuthAuthorizationSource,
     pub client_id: String,
     pub scope: String,
     pub auth_session_version: String,
@@ -1519,6 +1549,12 @@ pub(crate) struct JwtClaims {
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]
     pub oauth_grant_id: Option<String>,
+    #[serde(
+        default,
+        rename = "oauthAuthorizationSource",
+        skip_serializing_if = "OAuthAuthorizationSource::is_authenticated"
+    )]
+    pub oauth_authorization_source: OAuthAuthorizationSource,
     #[serde(default, rename = "actorCapabilities")]
     pub actor_capabilities: Vec<String>,
 }

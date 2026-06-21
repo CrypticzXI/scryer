@@ -5,6 +5,7 @@ use std::time::Instant;
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
+    OAuthAuthorizationSource,
 };
 use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
@@ -127,6 +128,7 @@ pub struct MfaVerification {
     pub verified_until: Option<i64>,
     pub step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub oauth_authorization_source: OAuthAuthorizationSource,
 }
 
 #[derive(Clone)]

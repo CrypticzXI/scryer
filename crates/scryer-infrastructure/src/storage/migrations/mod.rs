@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod hook_ids;
 pub(crate) mod notification_targets;
+pub(crate) mod title_root_folder_ids;
 
 use crate::encryption::EncryptionKey;
 use crate::migration_assets::{
@@ -726,6 +727,9 @@ async fn run_rust_hook(
                 hook_context.encryption_key.as_ref(),
             )
             .await
+        }
+        "migrate_title_root_folder_ids" => {
+            title_root_folder_ids::migrate_title_root_folder_ids_sqlite(tx).await
         }
         #[cfg(test)]
         "test_insert_hook_marker" => {

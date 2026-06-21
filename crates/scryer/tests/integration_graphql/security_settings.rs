@@ -241,6 +241,76 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
 }
 
 #[tokio::test]
+async fn graphql_security_settings_form_login_enable_revokes_authless_oauth_grants() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+
+    create_oauth_refresh_grant_for_security_test(
+        &ctx,
+        &admin,
+        scryer_application::OAuthAuthorizationSource::Authless,
+        "authless",
+    )
+    .await;
+    create_oauth_refresh_grant_for_security_test(
+        &ctx,
+        &admin,
+        scryer_application::OAuthAuthorizationSource::Authenticated,
+        "authenticated",
+    )
+    .await;
+    let before = ctx
+        .app
+        .list_oauth_connected_apps(&admin)
+        .await
+        .expect("list connected apps before enabling form login");
+    assert_eq!(before.len(), 2);
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    let after = ctx
+        .app
+        .list_oauth_connected_apps(&admin)
+        .await
+        .expect("list connected apps after enabling form login");
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0].client_id,
+        scryer_application::OAUTH_GENERIC_NATIVE_CLIENT_ID
+    );
+}
+
+#[tokio::test]
 async fn graphql_typed_security_settings_reject_short_password_minimum() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -427,4 +497,39 @@ async fn graphql_delay_profiles_round_trip() {
     .await;
     assert_no_errors(&delete);
     assert_eq!(delete["data"]["deleteDelayProfile"]["id"], "balanced-delay");
+}
+
+async fn create_oauth_refresh_grant_for_security_test(
+    ctx: &TestContext,
+    user: &User,
+    authorization_source: scryer_application::OAuthAuthorizationSource,
+    state: &str,
+) {
+    const REDIRECT_URI: &str = "http://127.0.0.1:49152/callback";
+    const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    let issued = ctx
+        .app
+        .create_oauth_authorization_code(
+            user,
+            scryer_application::OAUTH_GENERIC_NATIVE_CLIENT_ID,
+            REDIRECT_URI,
+            scryer_application::OAUTH_LIBRARY_SCOPE,
+            CODE_CHALLENGE,
+            "S256",
+            authorization_source,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("create OAuth authorization code ({state}): {err}"));
+    ctx.app
+        .exchange_oauth_authorization_code(
+            scryer_application::OAUTH_GENERIC_NATIVE_CLIENT_ID,
+            &issued.code,
+            REDIRECT_URI,
+            CODE_VERIFIER,
+            true,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("exchange OAuth authorization code ({state}): {err}"));
 }

@@ -224,7 +224,7 @@ pub trait TitleRepository: Send + Sync {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
-        root_folder_id: Option<Option<String>>,
+        root_folder_id: Option<String>,
     ) -> AppResult<Title>;
     async fn update_title_hydrated_metadata(
         &self,
@@ -688,6 +688,11 @@ pub trait OAuthRepository: Send + Sync {
     async fn revoke_user_refresh_grants(
         &self,
         user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
+    async fn revoke_authless_refresh_grants(
+        &self,
         revoked_at: chrono::DateTime<chrono::Utc>,
         reason: &str,
     ) -> AppResult<u64>;

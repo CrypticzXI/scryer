@@ -799,6 +799,7 @@ impl SettingsMutations {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageUsers).await?;
+        let previous_snapshot = auth_runtime.snapshot();
 
         let settings = app
             .update_security_settings(
@@ -818,6 +819,12 @@ impl SettingsMutations {
             settings.form_login_enabled,
             settings.skip_login_for_local_ips,
         );
+        if !previous_snapshot.effective_form_login_enabled && snapshot.effective_form_login_enabled
+        {
+            app.revoke_authless_oauth_refresh_grants("form_login_enabled")
+                .await
+                .map_err(to_gql_error)?;
+        }
 
         Ok(from_security_settings(settings, &snapshot))
     }

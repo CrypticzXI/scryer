@@ -7,6 +7,7 @@ use chrono::{Duration, Utc};
 use scryer_domain::{Id, User};
 use url::Url;
 
+use crate::types::OAuthAuthorizationSource;
 use crate::{
     AppError, AppResult, AppUseCase, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
     OAuthRefreshGrantRecord, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord,
@@ -131,6 +132,7 @@ impl AppUseCase {
         scope: &str,
         code_challenge: &str,
         code_challenge_method: &str,
+        authorization_source: OAuthAuthorizationSource,
     ) -> AppResult<OAuthIssuedCode> {
         self.validate_oauth_redirect_uri(client_id, redirect_uri)?;
         let scope = self.validate_oauth_scope(Some(scope))?;
@@ -148,6 +150,7 @@ impl AppUseCase {
             scope,
             code_challenge: code_challenge.to_string(),
             code_challenge_method: code_challenge_method.to_string(),
+            authorization_source,
             created_at: now,
             expires_at: now + Duration::seconds(AUTHORIZATION_CODE_TTL_SECONDS),
             consumed_at: None,
@@ -167,6 +170,7 @@ impl AppUseCase {
         code: &str,
         redirect_uri: &str,
         code_verifier: &str,
+        authless_codes_allowed: bool,
     ) -> AppResult<OAuthTokenPair> {
         validate_pkce_code_verifier(code_verifier)?;
         let redirect_url = Url::parse(redirect_uri)
@@ -192,6 +196,13 @@ impl AppUseCase {
         if record.client_id != client_id || record.redirect_uri != redirect_uri {
             return Err(AppError::Unauthorized(
                 "authorization code binding mismatch".into(),
+            ));
+        }
+        if record.authorization_source == OAuthAuthorizationSource::Authless
+            && !authless_codes_allowed
+        {
+            return Err(AppError::Unauthorized(
+                "authless authorization code is no longer allowed".into(),
             ));
         }
         let expected_hash = self.oauth_token_hash("authorization_code", code);
@@ -223,7 +234,15 @@ impl AppUseCase {
             .get_by_id(&record.user_id)
             .await?
             .ok_or_else(|| AppError::Unauthorized("OAuth user no longer exists".into()))?;
-        self.issue_oauth_token_pair(&user, client_id, &record.scope)
+        self.issue_oauth_token_pair(&user, client_id, &record.scope, record.authorization_source)
+            .await
+    }
+
+    pub async fn revoke_authless_oauth_refresh_grants(&self, reason: &str) -> AppResult<u64> {
+        self.services
+            .identity
+            .oauth
+            .revoke_authless_refresh_grants(Utc::now(), reason)
             .await
     }
 
@@ -231,6 +250,7 @@ impl AppUseCase {
         &self,
         client_id: &str,
         refresh_token: &str,
+        authless_grants_allowed: bool,
     ) -> AppResult<OAuthTokenPair> {
         let token_id = oauth_token_id(refresh_token, REFRESH_PREFIX)?;
         let Some((token, grant)) = self
@@ -249,6 +269,18 @@ impl AppUseCase {
         }
         if grant.revoked_at.is_some() || token.revoked_at.is_some() {
             return Err(AppError::Unauthorized("refresh token is revoked".into()));
+        }
+        if grant.authorization_source == OAuthAuthorizationSource::Authless
+            && !authless_grants_allowed
+        {
+            self.services
+                .identity
+                .oauth
+                .revoke_refresh_family(&grant.family_id, Utc::now(), "form_login_enabled")
+                .await?;
+            return Err(AppError::Unauthorized(
+                "authless refresh grant is no longer allowed".into(),
+            ));
         }
         let expected_hash = self.oauth_token_hash("refresh_token", refresh_token);
         if token.token_hash != expected_hash {
@@ -309,7 +341,12 @@ impl AppUseCase {
             }
         };
         let access_token = self
-            .issue_oauth_access_token(&user, &rotation.grant.client_id, &rotation.grant.id)
+            .issue_oauth_access_token_with_source(
+                &user,
+                &rotation.grant.client_id,
+                &rotation.grant.id,
+                rotation.grant.authorization_source,
+            )
             .await?;
         Ok(OAuthTokenPair {
             access_token,
@@ -409,6 +446,7 @@ impl AppUseCase {
         user: &User,
         client_id: &str,
         scope: &str,
+        authorization_source: OAuthAuthorizationSource,
     ) -> AppResult<OAuthTokenPair> {
         let scope = self.validate_oauth_scope(Some(scope))?;
         let auth_session_version = self
@@ -428,6 +466,7 @@ impl AppUseCase {
             client_id: client_id.to_string(),
             scope,
             auth_session_version,
+            authorization_source,
             created_at: now,
             updated_at: now,
             last_used_at: None,
@@ -442,7 +481,12 @@ impl AppUseCase {
             .create_refresh_grant(grant, token_record)
             .await?;
         let access_token = self
-            .issue_oauth_access_token(user, &grant.client_id, &grant.id)
+            .issue_oauth_access_token_with_source(
+                user,
+                &grant.client_id,
+                &grant.id,
+                grant.authorization_source,
+            )
             .await?;
         Ok(OAuthTokenPair {
             access_token,

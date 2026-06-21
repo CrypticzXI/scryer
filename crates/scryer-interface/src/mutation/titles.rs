@@ -59,11 +59,7 @@ fn find_library_root<'a>(
 }
 
 fn root_folder_id_override(root: &LibraryRoot) -> Option<Option<String>> {
-    if root.is_default {
-        Some(None)
-    } else {
-        Some(Some(root.id.clone()))
-    }
+    Some(Some(root.id.clone()))
 }
 
 fn resolved_title_options(

@@ -77,7 +77,6 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
             name.to_string(),
             slug.to_string(),
             vec![LibraryRootDraft {
-                id: None,
                 path: value.to_string(),
                 is_default: true,
             }],
@@ -243,7 +242,6 @@ async fn scheduled_background_refresh_creates_one_job_run_per_library() {
             updated_at: now,
         },
         vec![LibraryRootDraft {
-            id: None,
             path: second_root.path().to_string_lossy().to_string(),
             is_default: true,
         }],

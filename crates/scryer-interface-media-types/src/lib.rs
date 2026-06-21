@@ -3150,7 +3150,6 @@ pub struct CreateLibraryRootInput {
 
 #[derive(InputObject, Clone)]
 pub struct UpdateLibraryRootInput {
-    pub id: Option<ID>,
     pub path: String,
     pub is_default: bool,
 }

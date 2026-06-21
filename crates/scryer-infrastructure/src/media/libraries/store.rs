@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{AppError, AppResult, LibraryRepository, LibraryRootDraft};
 use scryer_domain::{
-    AppPermissionMask, Id, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet,
-    default_library_id_for_facet,
+    AppPermissionMask, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet,
+    default_library_id_for_facet, normalize_library_root_path, root_folder_id_for_path,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
@@ -267,92 +267,45 @@ async fn update_library_tx(
         return Err(AppError::NotFound(format!("library {library_id}")));
     }
 
-    let roots = preserve_library_root_ids_tx(tx, library_id, roots).await?;
-    clear_removed_title_root_folder_ids_tx(tx, library_id, &roots.removed_root_ids).await?;
+    reject_referenced_root_removals_tx(tx, library_id, &roots).await?;
     tx.execute(
         "DELETE FROM library_roots WHERE library_id = {}",
         &[SqlArg::Text(library_id.to_string())],
     )
     .await?;
-    insert_library_roots_tx(tx, library_id, roots.roots).await
+    insert_library_roots_tx(tx, library_id, roots).await
 }
 
-struct PreservedLibraryRoots {
-    roots: Vec<LibraryRootDraft>,
-    removed_root_ids: Vec<String>,
-}
-
-async fn preserve_library_root_ids_tx(
+async fn reject_referenced_root_removals_tx(
     tx: &mut SqlTx<'_>,
     library_id: &str,
-    roots: Vec<LibraryRootDraft>,
-) -> AppResult<PreservedLibraryRoots> {
+    roots: &[LibraryRootDraft],
+) -> AppResult<()> {
     let rows = SqlRuntime::fetch_all(
         SqlExec::Tx(tx),
-        "SELECT id, normalized_path FROM library_roots WHERE library_id = {}",
+        "SELECT id FROM library_roots WHERE library_id = {}",
         &[SqlArg::Text(library_id.to_string())],
     )
     .await?;
-    let mut existing_ids = HashSet::new();
-    let mut id_by_normalized_path = HashMap::new();
-    for row in rows {
-        let id = row.text("id")?;
-        existing_ids.insert(id.clone());
-        if let Some(normalized_path) = row.opt_text("normalized_path")? {
-            id_by_normalized_path.insert(normalized_path, id);
-        }
-    }
-
-    let roots = roots
+    let existing_ids = rows
         .into_iter()
-        .map(|mut root| {
-            if let Some(id) = root
-                .id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                if !existing_ids.contains(id) {
-                    return Err(AppError::Validation(
-                        "library root id must reference a root on the selected library".into(),
-                    ));
-                }
-                root.id = Some(id.to_string());
-            } else if let Some(existing_id) =
-                id_by_normalized_path.get(&normalize_root_path(&root.path))
-            {
-                root.id = Some(existing_id.clone());
-            }
-            Ok(root)
-        })
-        .collect::<AppResult<Vec<_>>>()?;
-
+        .map(|row| row.text("id"))
+        .collect::<AppResult<HashSet<_>>>()?;
     let desired_ids = roots
         .iter()
-        .filter_map(|root| root.id.as_deref())
+        .map(|root| root_folder_id_for_path(&root.path))
         .collect::<HashSet<_>>();
     let mut removed_root_ids = existing_ids
-        .iter()
-        .filter(|id| !desired_ids.contains(id.as_str()))
+        .difference(&desired_ids)
         .cloned()
         .collect::<Vec<_>>();
     removed_root_ids.sort();
 
-    Ok(PreservedLibraryRoots {
-        roots,
-        removed_root_ids,
-    })
-}
-
-async fn clear_removed_title_root_folder_ids_tx(
-    tx: &mut SqlTx<'_>,
-    library_id: &str,
-    removed_root_ids: &[String],
-) -> AppResult<()> {
     for root_id in removed_root_ids {
-        tx.execute(
-            "UPDATE titles
-                SET root_folder_id = NULL
+        let referenced_count = SqlRuntime::fetch_optional(
+            SqlExec::Tx(tx),
+            "SELECT COUNT(*) AS referenced_count
+               FROM titles
               WHERE root_folder_id = {}
                 AND COALESCE(
                         library_id,
@@ -363,12 +316,17 @@ async fn clear_removed_title_root_folder_ids_tx(
                             ELSE 'movie_default_library'
                         END
                     ) = {}",
-            &[
-                SqlArg::Text(root_id.clone()),
-                SqlArg::Text(library_id.to_string()),
-            ],
+            &[SqlArg::Text(root_id), SqlArg::Text(library_id.to_string())],
         )
-        .await?;
+        .await?
+        .map(|row| row.i64("referenced_count"))
+        .transpose()?
+        .unwrap_or(0);
+        if referenced_count > 0 {
+            return Err(AppError::Validation(
+                "library root cannot be removed while titles reference it".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -384,13 +342,7 @@ async fn insert_library_roots_tx(
         if path.is_empty() {
             continue;
         }
-        let root_id = root
-            .id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| Id::new().0);
+        let root_id = root_folder_id_for_path(path);
         tx.execute(
             "INSERT INTO library_roots
              (id, library_id, path, normalized_path, is_default, created_at, updated_at)
@@ -399,7 +351,7 @@ async fn insert_library_roots_tx(
                 SqlArg::Text(root_id),
                 SqlArg::Text(library_id.to_string()),
                 SqlArg::Text(path.to_string()),
-                SqlArg::Text(normalize_root_path(path)),
+                SqlArg::Text(normalize_library_root_path(path)),
                 SqlArg::Bool(root.is_default),
                 SqlArg::Timestamp(now),
                 SqlArg::Timestamp(now),
@@ -496,10 +448,6 @@ fn row_to_library_grant(row: &SqlRow) -> AppResult<LibraryGrant> {
             row.i64("permission_mask")?,
         )),
     })
-}
-
-fn normalize_root_path(path: &str) -> String {
-    path.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
 fn mask_to_db_value(mask: u64) -> i64 {
