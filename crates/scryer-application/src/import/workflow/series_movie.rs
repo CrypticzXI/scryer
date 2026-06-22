@@ -813,9 +813,16 @@ async fn import_movie_download(
                 .await;
             let new_score = post_download_score.score;
             if new_score > old_score {
-                let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
+                let media_root = crate::recycle_bin::media_root_for_title(app, title)
+                    .await
+                    .ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "cannot safely upgrade {} because no configured media root could be resolved",
+                            title.name
+                        ))
+                    })?;
                 let recycle_config = app
-                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
+                    .recycle_bin_config_for_media_root(Some(&media_root))
                     .await;
 
                 match crate::upgrade::execute_upgrade(
@@ -831,7 +838,7 @@ async fn import_movie_download(
                     old_score,
                     post_download_score.scoring_log.clone(),
                     &[],
-                    media_root_opt.as_deref(),
+                    Some(&media_root),
                     &recycle_config,
                     import_mode,
                 )
@@ -1424,9 +1431,16 @@ async fn import_series_movie_download(
                 .await;
             let new_score = post_download_score.score;
             if new_score > old_score {
-                let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
+                let media_root = crate::recycle_bin::media_root_for_title(app, title)
+                    .await
+                    .ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "cannot safely upgrade {} because no configured media root could be resolved",
+                            title.name
+                        ))
+                    })?;
                 let recycle_config = app
-                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
+                    .recycle_bin_config_for_media_root(Some(&media_root))
                     .await;
 
                 match crate::upgrade::execute_upgrade(
@@ -1442,7 +1456,7 @@ async fn import_series_movie_download(
                     old_score,
                     post_download_score.scoring_log.clone(),
                     &[],
-                    media_root_opt.as_deref(),
+                    Some(&media_root),
                     &recycle_config,
                     import_mode,
                 )

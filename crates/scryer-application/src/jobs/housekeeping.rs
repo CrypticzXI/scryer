@@ -658,8 +658,71 @@ impl AppUseCase {
                     )));
                 }
 
-                crate::recycle_bin::restore_from_recycle(&recycled_file, original_path).await?;
-                let _ = tokio::fs::remove_dir_all(&entry_dir).await;
+                // User-facing restore must never overwrite a live file at the
+                // original path; restore_from_recycle diverts to a `-restored`
+                // sibling on conflict and returns where it actually landed.
+                let restored_to =
+                    crate::recycle_bin::restore_from_recycle(&recycled_file, original_path, false)
+                        .await?;
+                if let Err(error) = tokio::fs::remove_dir_all(&entry_dir).await {
+                    tracing::warn!(
+                        error = %error,
+                        entry_dir = %entry_dir.display(),
+                        restored_to = %restored_to.display(),
+                        "failed to remove recycle entry directory after restore"
+                    );
+                }
+                if let Some(title_id) = manifest.title_id.as_deref() {
+                    let restored_library_file = crate::LibraryFile {
+                        path: restored_to.to_string_lossy().to_string(),
+                        display_name: original_path
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        nfo_path: None,
+                        size_bytes: tokio::fs::metadata(&restored_to)
+                            .await
+                            .ok()
+                            .and_then(|metadata| i64::try_from(metadata.len()).ok()),
+                        source_signature_scheme: None,
+                        source_signature_value: None,
+                    };
+                    match self.services.catalog.titles.get_by_id(title_id).await {
+                        Ok(Some(title)) => {
+                            if let Err(error) = self
+                                .scan_title_library_with_discovered_files(
+                                    actor,
+                                    title,
+                                    vec![restored_library_file],
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    title_id,
+                                    restored_to = %restored_to.display(),
+                                    "failed to scan title after restoring recycled file"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                title_id,
+                                restored_to = %restored_to.display(),
+                                "skipping restored file scan because the title no longer exists"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                title_id,
+                                restored_to = %restored_to.display(),
+                                "failed to load title before restored file scan"
+                            );
+                        }
+                    }
+                }
                 return Ok(true);
             }
         }

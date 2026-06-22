@@ -293,19 +293,21 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         metadata_fetched_at: None,
         min_availability: None,
         digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         folder_path: None,
     };
     ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 
-fn make_recycle_config(base: &std::path::Path) -> RecycleBinConfig {
+fn make_recycle_config(base: &std::path::Path, source_root: &std::path::Path) -> RecycleBinConfig {
     RecycleBinConfig {
         enabled: true,
         base_path: base.to_path_buf(),
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![source_root.to_path_buf()],
     }
 }
 
@@ -454,7 +456,7 @@ async fn upgrade_replaces_old_file_with_new() {
     let existing = seed_media_file(&ctx, "title-1", &old_path, 22, 400).await;
 
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let outcome = execute_upgrade_for_test(
         &app,
@@ -577,7 +579,7 @@ async fn upgrade_audit_events_survive_move_source_cleanup_failure() {
     let new_dest = media_dir.path().join("Movie.1080p.mkv");
     let existing = seed_media_file(&ctx, &title.id, &old_path, 22, 400).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test_with_import_mode(
         &app,
@@ -633,7 +635,7 @@ async fn upgrade_restores_old_file_on_import_failure() {
 
     let existing = seed_media_file(&ctx, "title-2", &old_path, 17, 400).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test(
         &app,
@@ -712,6 +714,7 @@ async fn upgrade_with_disabled_recycle_bin() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -745,6 +748,71 @@ async fn upgrade_with_disabled_recycle_bin() {
 }
 
 #[tokio::test]
+async fn upgrade_with_unknown_source_roots_keeps_old_record() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-rootless").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old content").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new content 1080p better").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-rootless", &old_path, 11, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let rootless_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+        source_roots: Vec::new(),
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 600,
+            target_episode_ids: &[],
+            media_root: None,
+            recycle_config: &rootless_config,
+        },
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("rootless recycle config should refuse old-file cleanup"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("no configured media roots"),
+        "unexpected error: {error}"
+    );
+    assert!(old_path.exists(), "old file should remain on disk");
+    let existing_after = ctx
+        .media_files
+        .get_media_file_by_id(&existing.id)
+        .await
+        .expect("lookup existing media file")
+        .expect("existing DB row should remain");
+    assert_eq!(
+        existing_after.file_path,
+        old_path.to_string_lossy().to_string()
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
     let ctx = TestContext::new().await;
     let app = app_with_real_fs(&ctx);
@@ -768,6 +836,7 @@ async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -837,7 +906,7 @@ async fn recycle_bin_same_path_upgrade_recycles_original_filename() {
 
     let existing = seed_media_file(&ctx, "title-4a", &old_path, 21, 300).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test(
         &app,
@@ -937,6 +1006,7 @@ async fn disabled_recycle_bin_same_path_path_update_failure_preserves_old_file()
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -1009,6 +1079,7 @@ async fn disabled_recycle_bin_upgrade_validation_failure_preserves_old_file() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(

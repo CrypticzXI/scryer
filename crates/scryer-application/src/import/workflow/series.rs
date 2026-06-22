@@ -499,12 +499,16 @@ async fn cleanup_superseded_episode_incumbents(
             match crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await {
                 Ok(result) => recycle_result = result,
                 Err(error) => {
+                    // Physical cleanup failed or was refused for safety. The file is
+                    // still on disk, so keep its database record rather than orphaning
+                    // the file; a later upgrade can retry cleanup.
                     tracing::warn!(
                         error = %error,
                         path = %old_path.display(),
                         file_id = %incumbent.media_file.id,
-                        "failed to recycle superseded episode incumbent; deleting stale database record anyway"
+                        "failed to recycle superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
                     );
+                    continue;
                 }
             }
         }

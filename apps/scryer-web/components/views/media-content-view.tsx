@@ -137,6 +137,8 @@ export function MediaContentView({
     view: ViewId;
     contentSettingsSection: ContentSettingsSection;
     canManageConfig: boolean;
+    canManageSystemSettings: boolean;
+    canManageCatalogSettings: boolean;
     canManageLibrarySettings: boolean;
     contentSettingsLabel: string;
     moviesPath: string;
@@ -322,6 +324,8 @@ export function MediaContentView({
     view,
     contentSettingsSection,
     canManageConfig,
+    canManageSystemSettings,
+    canManageCatalogSettings,
     canManageLibrarySettings,
     contentSettingsLabel,
     localPathStyle,
@@ -463,13 +467,17 @@ export function MediaContentView({
     [deferredMonitoredTitles, selectedTitleIds],
   );
   const effectiveContentSettingsSection =
-    !canAccessMediaSettingsSection(
+    canAccessMediaSettingsSection(
       contentSettingsSection,
       canManageConfig,
       canManageLibrarySettings,
     )
-      ? "overview"
-      : contentSettingsSection;
+      ? contentSettingsSection
+      : canManageLibrarySettings &&
+          !canManageConfig &&
+          isMediaSettingsSection(contentSettingsSection)
+        ? "library"
+        : "overview";
 
   const scopeLabel =
     activeQualityScopeId === "movie"
@@ -796,6 +804,10 @@ export function MediaContentView({
             qualityProfiles={qualityProfiles}
             downloadClients={libraryDownloadClients}
             downloadClientsLoading={libraryDownloadClientsLoading}
+            canCreateLibrary={canManageCatalogSettings}
+            canManageDownloadClientRouting={
+              canManageSystemSettings || canManageCatalogSettings
+            }
             loadLibrarySettings={state.loadLibrarySettings}
             loadFacetDownloadClientRouting={state.loadFacetDownloadClientRouting}
             onCreateLibrary={state.createLibrary}

@@ -174,6 +174,21 @@ async fn move_file(source: &str, target: &str, replace: bool) -> std::io::Result
             let mut file = fs::OpenOptions::new().write(true).open(target).await?;
             file.flush().await?;
             file.sync_all().await?;
+            // Prove the destination is a faithful copy (whole-file blake3) before
+            // deleting the source. On mismatch, remove the bad destination and
+            // surface an error, leaving the source intact.
+            if let Err(verify_error) = scryer_application::fs_integrity::verify_same_file_async(
+                Path::new(source),
+                Path::new(target),
+            )
+            .await
+            {
+                let _ = fs::remove_file(target).await;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    verify_error.to_string(),
+                ));
+            }
             fs::remove_file(source).await?;
             Ok(())
         }

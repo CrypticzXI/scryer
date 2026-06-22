@@ -147,6 +147,12 @@ struct PreparedUpgradeReplacement {
 }
 
 fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppResult<()> {
+    if recycle_config.source_roots.is_empty() {
+        return Err(AppError::Validation(
+            "refusing to upgrade because no configured media roots are available for old-file cleanup"
+                .to_string(),
+        ));
+    }
     if recycle_config.enabled && !recycle_config.cleanup_enabled {
         return Err(AppError::Validation(format!(
             "refusing to upgrade because the recycle bin path is unsafe: {}",
@@ -439,7 +445,20 @@ async fn finalize_same_path_upgrade(
         )
         .await
     {
-        restore_same_path_backup(old_path, &backup_path).await;
+        if let Err(restore_error) = restore_same_path_backup(old_path, &backup_path).await {
+            tracing::error!(
+                error = %restore_error,
+                backup = %backup_path.display(),
+                final_path = %old_path.display(),
+                "failed to restore old file after same-path DB swap failure; the original is preserved at the backup path"
+            );
+            rollback_new_replacement(app, &replacement.new_file_id, &replacement.import_path).await;
+            return Err(AppError::Repository(format!(
+                "failed to replace same-path media file record after guarded swap: {error}; failed to restore old file from backup {} to {}: {restore_error}",
+                backup_path.display(),
+                old_path.display()
+            )));
+        }
         rollback_new_replacement(app, &replacement.new_file_id, &replacement.import_path).await;
         return Err(AppError::Repository(format!(
             "failed to replace same-path media file record after guarded swap: {error}"
@@ -502,6 +521,7 @@ async fn dispose_old_file_after_verified_upgrade(
     replacement_path: &Path,
 ) -> AppResult<bool> {
     if !recycle_config.enabled {
+        recycle_bin::ensure_source_within_roots(recycle_config, old_file_source_path)?;
         remove_old_file_after_verified_upgrade(old_file_source_path).await?;
         return Ok(false);
     }
@@ -703,7 +723,22 @@ async fn swap_staged_replacement_into_place(
         })?;
 
     if let Err(error) = tokio::fs::rename(staged_replacement_path, final_path).await {
-        restore_same_path_backup(final_path, backup_path).await;
+        if let Err(restore_error) = restore_same_path_backup(final_path, backup_path).await {
+            tracing::error!(
+                error = %restore_error,
+                backup = %backup_path.display(),
+                final_path = %final_path.display(),
+                "failed to restore old file after same-path swap failure; the original is preserved at the backup path"
+            );
+            return Err(AppError::Repository(format!(
+                "failed to move verified replacement into final path: {} -> {}: {}; failed to restore old file from backup {} to {}: {restore_error}",
+                staged_replacement_path.display(),
+                final_path.display(),
+                error,
+                backup_path.display(),
+                final_path.display()
+            )));
+        }
         return Err(AppError::Repository(format!(
             "failed to move verified replacement into final path: {} -> {}: {}",
             staged_replacement_path.display(),
@@ -715,16 +750,22 @@ async fn swap_staged_replacement_into_place(
     Ok(())
 }
 
-async fn restore_same_path_backup(final_path: &Path, backup_path: &Path) {
-    let _ = tokio::fs::remove_file(final_path).await;
-    if let Err(error) = tokio::fs::rename(backup_path, final_path).await {
-        tracing::error!(
-            error = %error,
-            backup = %backup_path.display(),
-            final_path = %final_path.display(),
-            "failed to restore old file after guarded same-path upgrade failure"
-        );
-    }
+async fn restore_same_path_backup(final_path: &Path, backup_path: &Path) -> AppResult<()> {
+    // Atomically move the backup back over whatever is at `final_path`. On POSIX a
+    // rename replaces the destination in place, so we must NOT remove `final_path`
+    // first: doing so would leave it empty if the rename then failed. With the
+    // atomic rename, a failure leaves the original safely at `backup_path` and
+    // nothing is lost.
+    tokio::fs::rename(backup_path, final_path)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to restore old file after guarded same-path upgrade failure: {} -> {}: {}",
+                backup_path.display(),
+                final_path.display(),
+                error
+            ))
+        })
 }
 
 async fn remove_old_file_after_verified_upgrade(path: &Path) -> AppResult<()> {

@@ -518,12 +518,26 @@ fn build_library_query_evidence(
 }
 
 fn filename_parse_raw_name(path: &Path, display_name: Option<&str>) -> String {
-    path.file_stem()
+    let raw_name = path
+        .file_stem()
         .and_then(|stem| stem.to_str())
         .or(display_name)
         .unwrap_or_default()
-        .trim()
-        .to_string()
+        .trim();
+    strip_generated_restore_suffix(raw_name).to_string()
+}
+
+fn strip_generated_restore_suffix(raw_name: &str) -> &str {
+    if let Some(prefix) = raw_name.strip_suffix("-restored") {
+        return prefix.trim_end();
+    }
+    if let Some((prefix, suffix)) = raw_name.rsplit_once("-restored-")
+        && !suffix.is_empty()
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return prefix.trim_end();
+    }
+    raw_name
 }
 
 fn resolve_episodes_from_identity_with_season(
@@ -1280,6 +1294,22 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_domain::{EpisodeType, ExternalId};
+
+    #[test]
+    fn filename_parse_raw_name_strips_generated_restore_suffix() {
+        assert_eq!(
+            filename_parse_raw_name(Path::new("/library/Movie.2024-restored.mkv"), None),
+            "Movie.2024"
+        );
+        assert_eq!(
+            filename_parse_raw_name(Path::new("/library/Movie.2024-restored-2.mkv"), None),
+            "Movie.2024"
+        );
+        assert_eq!(
+            filename_parse_raw_name(Path::new("/library/Movie.2024-restored-cut.mkv"), None),
+            "Movie.2024-restored-cut"
+        );
+    }
 
     fn title(name: &str, facet: MediaFacet) -> Title {
         Title {

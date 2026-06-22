@@ -256,8 +256,18 @@ impl AppUseCase {
         actor: &User,
         provider_filter: Option<String>,
     ) -> AppResult<Vec<IndexerConfig>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
+        let settings_permissions = scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageSystemSettings,
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]);
+        if !self
+            .has_any_app_permission(actor, settings_permissions)
+            .await?
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ));
+        }
         self.services
             .integrations
             .indexer_configs

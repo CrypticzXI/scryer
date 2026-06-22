@@ -1075,8 +1075,22 @@ impl AppUseCase {
         title: Title,
         discovered_files: Vec<LibraryFile>,
     ) -> AppResult<LibraryScanSummary> {
-        self.require_library_management_permission(actor, &title.library_id)
-            .await?;
+        if let Err(error) = self
+            .require_library_management_permission(actor, &title.library_id)
+            .await
+        {
+            match error {
+                AppError::Unauthorized(_) => {
+                    self.require_library_permission(
+                        actor,
+                        &title.library_id,
+                        scryer_domain::LibraryPermission::ManageTitles,
+                    )
+                    .await?;
+                }
+                error => return Err(error),
+            }
+        }
 
         let facet_plan = match title.facet {
             MediaFacet::Movie => {

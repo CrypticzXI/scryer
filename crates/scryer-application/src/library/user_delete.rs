@@ -73,6 +73,8 @@ struct MediaFileDeleteContext {
     file_id: String,
     file_path: String,
     subtitle_paths: Vec<String>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +82,8 @@ struct SubtitleDeleteContext {
     title_id: String,
     subtitle_download_id: String,
     file_path: String,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
 }
 
 #[derive(Clone, Debug)]
@@ -446,11 +450,24 @@ impl AppUseCase {
             ));
         }
 
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&subtitle.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", subtitle.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
+
         self.execute_delete_context(
             UserDeleteContext::Subtitle(SubtitleDeleteContext {
                 title_id: subtitle.title_id.clone(),
                 subtitle_download_id: subtitle.id.clone(),
                 file_path: subtitle.file_path.clone(),
+                root_folders,
+                facet: title.facet,
             }),
             preview_fingerprint,
             typed_confirmation,
@@ -614,6 +631,16 @@ impl AppUseCase {
             .get_media_file_by_id(file_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", media_file.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
         let subtitles = self
             .services
             .workflow
@@ -629,6 +656,8 @@ impl AppUseCase {
                 .into_iter()
                 .map(|record| record.file_path)
                 .collect(),
+            root_folders,
+            facet: title.facet,
         }))
     }
 
@@ -645,11 +674,23 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::NotFound(format!("external subtitle {}", subtitle_download_id))
             })?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&subtitle.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", subtitle.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
 
         Ok(UserDeleteContext::Subtitle(SubtitleDeleteContext {
             title_id: subtitle.title_id,
             subtitle_download_id: subtitle.id,
             file_path: subtitle.file_path,
+            root_folders,
+            facet: title.facet,
         }))
     }
 }
@@ -848,6 +889,8 @@ fn build_media_file_delete_manifest(
         paths.insert(subtitle_path);
     }
 
+    ensure_paths_within_roots(&paths, context.root_folders, context.facet, "media file")?;
+
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
         "media_file",
@@ -861,6 +904,9 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
     let mut paths = BTreeSet::new();
     let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
     paths.insert(subtitle_path);
+
+    ensure_paths_within_roots(&paths, context.root_folders, context.facet, "subtitle")?;
+
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
         "subtitle",
@@ -868,6 +914,29 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
         context.file_path,
         entries,
     ))
+}
+
+/// Ensure every leaf path lies inside one of the configured library root folders
+/// before it can be deleted. Mirrors the containment guard the title-delete flow
+/// applies to folders, closing the gap where a stale/corrupt DB `file_path` could
+/// otherwise delete a file anywhere on disk. Fails closed when no roots resolve
+/// (`normalize_root_folders` rejects an empty set).
+fn ensure_paths_within_roots(
+    paths: &BTreeSet<PathBuf>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
+    label: &str,
+) -> AppResult<()> {
+    let normalized_roots = normalize_root_folders(root_folders, facet)?;
+    for path in paths {
+        if normalized_roots.iter().all(|root| !path.starts_with(root)) {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it is outside the configured root folders",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn normalize_root_folders(
@@ -1223,5 +1292,70 @@ mod tests {
         );
 
         assert_eq!(inferred, None);
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_accepts_paths_under_a_root() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from(
+            "/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv",
+        ));
+        paths.insert(PathBuf::from(
+            "/data/anime/Emberfall/Season 01/Emberfall - S01E01.srt",
+        ));
+
+        ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file")
+            .expect("paths inside the configured root must be accepted");
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_rejects_path_outside_roots() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/etc/passwd"));
+
+        let result =
+            ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "a path outside all configured roots must be refused"
+        );
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_rejects_sibling_prefix_path() {
+        // `/data/anime-secret` must NOT be considered inside `/data/anime`.
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime-secret/Show/file.mkv"));
+
+        let result =
+            ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "component-wise containment must reject sibling-prefix paths"
+        );
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_fails_closed_with_no_roots() {
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime/Show/file.mkv"));
+
+        let result = ensure_paths_within_roots(&paths, Vec::new(), MediaFacet::Anime, "media file");
+        assert!(
+            result.is_err(),
+            "no configured roots must fail closed rather than allowing deletion"
+        );
     }
 }

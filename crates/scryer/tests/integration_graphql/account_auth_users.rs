@@ -1762,7 +1762,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             }}
             "#
         ),
-        Some(actor),
+        Some(actor.clone()),
     )
     .await;
     assert_no_errors(&delete_body);
@@ -1789,6 +1789,82 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             .into_iter()
             .all(|entry| entry.id != collection.id),
         "delete should remove the matching movie collection row"
+    );
+
+    let catalog_only_path = media_root
+        .path()
+        .join("Scoped.Delete.Movie.2024.Catalog.Only.mkv");
+    std::fs::write(&catalog_only_path, b"catalog-only").expect("write catalog-only media file");
+    let catalog_only_file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: catalog_only_path.to_string_lossy().to_string(),
+            size_bytes: 4_096,
+            quality_label: Some("720p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert catalog-only media file");
+
+    let catalog_only_preview_body = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            query {{
+              deleteMediaFilePreview(fileId: "{catalog_only_file_id}") {{
+                fingerprint
+              }}
+            }}
+            "#
+        ),
+        Some(actor.clone()),
+    )
+    .await;
+    assert_no_errors(&catalog_only_preview_body);
+    let catalog_only_fingerprint =
+        catalog_only_preview_body["data"]["deleteMediaFilePreview"]["fingerprint"]
+            .as_str()
+            .expect("catalog-only preview fingerprint should be present");
+
+    let catalog_only_delete_body = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              deleteMediaFile(input: {{
+                fileId: "{catalog_only_file_id}",
+                previewFingerprint: "{catalog_only_fingerprint}"
+              }}) {{
+                id
+                deleted
+              }}
+            }}
+            "#
+        ),
+        Some(actor),
+    )
+    .await;
+    assert_no_errors(&catalog_only_delete_body);
+    assert_eq!(
+        catalog_only_delete_body["data"]["deleteMediaFile"]["id"],
+        catalog_only_file_id
+    );
+    assert_eq!(
+        catalog_only_delete_body["data"]["deleteMediaFile"]["deleted"],
+        true
+    );
+    assert!(
+        catalog_only_path.exists(),
+        "omitting deleteFromDisk should remove only the catalog row"
+    );
+    assert!(
+        ctx.media_files
+            .get_media_file_by_id(&catalog_only_file_id)
+            .await
+            .expect("lookup catalog-only deleted media file")
+            .is_none(),
+        "catalog-only delete should remove the media file row"
     );
 }
 

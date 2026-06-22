@@ -29,7 +29,7 @@ use crate::mappers::{
 };
 use crate::types::*;
 
-async fn require_runtime_info_permission(ctx: &Context<'_>) -> GqlResult<()> {
+async fn require_library_settings_permission(ctx: &Context<'_>) -> GqlResult<()> {
     let app = app_from_ctx(ctx)?;
     let actor = actor_from_ctx(ctx)?;
     app.require_library_settings_read_permission(&actor)
@@ -1200,7 +1200,7 @@ impl JobAndDownloadQueries {
 #[Object]
 impl SystemQueries {
     async fn runtime_info(&self, ctx: &Context<'_>) -> GqlResult<RuntimeInfoPayload> {
-        require_runtime_info_permission(ctx).await?;
+        let _actor = actor_from_ctx(ctx)?;
         Ok(RuntimeInfoPayload {
             runtime_path_style: from_runtime_path_style(RuntimePathStyle::current()),
         })
@@ -1932,7 +1932,7 @@ impl UtilityQueries {
         ctx: &Context<'_>,
         #[graphql(default_with = "String::from(\"/\")")] path: String,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
-        require_runtime_info_permission(ctx).await?;
+        require_library_settings_permission(ctx).await?;
         let target = std::path::Path::new(&path);
         if !target.is_absolute() {
             return Err(to_gql_error(AppError::Validation(

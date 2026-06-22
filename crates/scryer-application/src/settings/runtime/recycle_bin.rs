@@ -45,6 +45,9 @@ impl AppUseCase {
             .ok()
             .flatten()
             .and_then(|value| value.parse::<u32>().ok())
+            // Clamp to a minimum of 1 day: a retention of 0 makes the purge cutoff
+            // `now`, which would purge the entire recycle bin on the next sweep.
+            .map(|value| value.max(1))
             .unwrap_or(7);
 
         (enabled, custom_path, retention_days)
@@ -110,6 +113,7 @@ impl AppUseCase {
             retention_days,
             cleanup_enabled,
             validation_error,
+            source_roots: configured_roots.to_vec(),
         }
     }
 }

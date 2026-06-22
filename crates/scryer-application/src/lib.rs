@@ -14,6 +14,7 @@ pub use download_identity::{
 };
 mod events;
 pub mod external_import;
+pub mod fs_integrity;
 mod health;
 mod helpers;
 mod import;

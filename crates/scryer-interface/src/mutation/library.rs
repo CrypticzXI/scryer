@@ -340,7 +340,7 @@ impl LibraryMutations {
         app.delete_media_file(
             &actor,
             &file_id,
-            input.delete_from_disk.unwrap_or(true),
+            input.delete_from_disk.unwrap_or(false),
             input
                 .preview_fingerprint
                 .map(|preview_fingerprint| DeleteExecutionConfirmation {

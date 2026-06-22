@@ -119,6 +119,8 @@ type MediaContentContainerProps = {
   view: ViewId;
   contentSettingsSection: ContentSettingsSection;
   canManageConfig: boolean;
+  canManageSystemSettings: boolean;
+  canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
 };
@@ -572,6 +574,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   view,
   contentSettingsSection,
   canManageConfig,
+  canManageSystemSettings,
+  canManageCatalogSettings,
   canManageLibrarySettings,
   onOpenOverview,
 }: MediaContentContainerProps) {
@@ -2626,7 +2630,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   React.useEffect(() => {
-    if (!isMediaView || contentSettingsSection !== "library") {
+    const canManageDownloadClientRouting =
+      canManageSystemSettings || canManageCatalogSettings;
+
+    if (
+      !isMediaView ||
+      contentSettingsSection !== "library" ||
+      !canManageDownloadClientRouting
+    ) {
+      setLibraryDownloadClients([]);
       setLibraryDownloadClientsLoading(false);
       return;
     }
@@ -2666,7 +2678,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     return () => {
       cancelled = true;
     };
-  }, [client, contentSettingsSection, isMediaView, setGlobalStatus, t]);
+  }, [
+    canManageCatalogSettings,
+    canManageSystemSettings,
+    client,
+    contentSettingsSection,
+    isMediaView,
+    setGlobalStatus,
+    t,
+  ]);
 
   const createLibrary = React.useCallback(
     async (input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft }) => {
@@ -3052,6 +3072,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           view,
           contentSettingsSection,
           canManageConfig,
+          canManageSystemSettings,
+          canManageCatalogSettings,
           canManageLibrarySettings,
           contentSettingsLabel,
           moviesPath,

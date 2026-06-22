@@ -84,7 +84,10 @@ export function buildRouteCommands({
   ]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
-  const mediaCommands = canViewCatalog || canRequestMedia ? FACET_REGISTRY.flatMap((f) => {
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+  const canManageLibrarySettings =
+    canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
+  const mediaCommands = canViewCatalog || canRequestMedia || canManageLibrarySettings ? FACET_REGISTRY.flatMap((f) => {
     const commands: RouteCommand[] = [];
 
     if (canViewCatalog) {
@@ -120,7 +123,7 @@ export function buildRouteCommands({
       });
     }
 
-    if (canManageCatalogSettings) {
+    if (canManageLibrarySettings) {
       commands.push({
         id: `${f.viewId}-settings`,
         label: t(f.settingsLabelKey),
@@ -161,7 +164,9 @@ export function buildRouteCommands({
           extraKeywords: ["routing", "paths", "folders", "root"],
         },
       ];
-      for (const sub of facetSubSections) {
+      for (const sub of canManageConfig
+        ? facetSubSections
+        : facetSubSections.filter((entry) => entry.section === "library")) {
         commands.push({
           id: `${f.viewId}-settings-${sub.section}`,
           label: `${t(f.settingsLabelKey)} / ${t(sub.labelKey)}`,

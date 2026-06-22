@@ -300,12 +300,24 @@ function RootSidebarContent({
   }, [theme, setTheme]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+  const canManageLibrarySettings =
+    canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
   const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
   const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
   const canAccessFacetImport = canResolveImports;
-  const canAccessMediaSettings = canManageCatalogSettings;
+  const visibleMediaSettingsSubPages = React.useMemo(
+    () =>
+      canManageConfig
+        ? MEDIA_SETTINGS_SUB_PAGES
+        : canManageLibrarySettings
+          ? MEDIA_SETTINGS_SUB_PAGES.filter((subPage) => subPage.id === "library")
+          : [],
+    [canManageConfig, canManageLibrarySettings],
+  );
+  const canAccessMediaSettings = visibleMediaSettingsSubPages.length > 0;
 
   const visibleSettingsEntries = React.useMemo(
     () =>
@@ -414,10 +426,10 @@ function RootSidebarContent({
         if (!canAccessMediaSettings) {
           return getMediaOverviewLabel(view, t);
         }
-        const mediaSettingsLabel = MEDIA_SETTINGS_SUB_PAGES.find(
+        const mediaSettingsLabel = visibleMediaSettingsSubPages.find(
           (subPage) => subPage.id === contentSettingsSection,
         )?.labelKey;
-        return mediaSettingsLabel ? t(mediaSettingsLabel) : getMediaSettingsLabel(view, t);
+        return mediaSettingsLabel ? t(mediaSettingsLabel) : getMediaOverviewLabel(view, t);
       }
     }
 
@@ -451,6 +463,7 @@ function RootSidebarContent({
     canAccessMediaSettings,
     canManageTitle,
     canRequestMedia,
+    visibleMediaSettingsSubPages,
     visibleActivitySubPages,
     visibleSettingsEntries,
     visibleWantedSubPages,
@@ -567,7 +580,11 @@ function RootSidebarContent({
                               event,
                               item.id,
                               undefined,
-                              canViewCatalog ? "overview" : "requests",
+                              canViewCatalog
+                                ? "overview"
+                                : canAccessMediaSettings
+                                  ? "library"
+                                  : "requests",
                             );
                           }}
                         >
@@ -732,7 +749,7 @@ function RootSidebarContent({
                                       </SidebarMenuSubButton>
                                       <CollapsibleContent>
                                         <SidebarMenuSub>
-                                          {MEDIA_SETTINGS_SUB_PAGES.map((subPage) => (
+                                          {visibleMediaSettingsSubPages.map((subPage) => (
                                             <SidebarMenuSubItem key={subPage.id}>
                                               <SidebarMenuSubButton
                                                 id={selectorId("root-sidebar-media", item.id, subPage.id)}
