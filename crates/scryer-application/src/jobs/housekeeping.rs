@@ -455,21 +455,68 @@ impl AppUseCase {
                     }
                 };
 
-            // 1. Orphaned media files (file_path no longer exists on disk)
+            // 1. Orphaned media files (file_path no longer exists on disk).
+            // Root availability is checked before probing the file path so a
+            // disconnected media root cannot make every row look orphaned.
             let all_files = self
                 .services
                 .workflow
                 .housekeeping
-                .list_all_media_file_paths()
+                .list_media_files_with_roots()
                 .await?;
-            let orphan_ids: Vec<String> = all_files
-                .into_iter()
-                .filter(|(id, path)| {
-                    !protected_upgrade_file_ids.contains(id)
-                        && !crate::stored_paths::stored_path_to_path_buf(path).exists()
-                })
-                .map(|(id, _)| id)
-                .collect();
+            let mut orphan_ids = Vec::new();
+            for media_file in all_files {
+                if protected_upgrade_file_ids.contains(&media_file.media_file_id) {
+                    continue;
+                }
+
+                let file_path = crate::stored_paths::stored_path_to_path_buf(&media_file.file_path);
+                let roots = media_file
+                    .root_paths
+                    .iter()
+                    .map(|root| crate::stored_paths::stored_path_to_path_buf(root))
+                    .collect::<Vec<_>>();
+                if let Err(error) = crate::fs_safety::resolve_available_root_for_path(
+                    &file_path,
+                    &roots,
+                    crate::fs_safety::RootAvailabilityPolicy::AllowEmpty,
+                ) {
+                    warn!(
+                        error = %error,
+                        file_id = %media_file.media_file_id,
+                        path = %file_path.display(),
+                        "skipping orphan media-file cleanup because media root is unavailable"
+                    );
+                    continue;
+                }
+
+                match std::fs::symlink_metadata(&file_path) {
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            file_id = %media_file.media_file_id,
+                            path = %file_path.display(),
+                            "skipping orphan media-file cleanup because file status could not be read"
+                        );
+                        continue;
+                    }
+                }
+
+                if let Err(error) = self
+                    .cleanup_media_file_subtitle_state(&media_file.media_file_id)
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        file_id = %media_file.media_file_id,
+                        "skipping orphan media-file cleanup because subtitle state cleanup failed"
+                    );
+                    continue;
+                }
+                orphan_ids.push(media_file.media_file_id);
+            }
             if !orphan_ids.is_empty() {
                 self.services
                     .workflow
@@ -749,7 +796,9 @@ impl AppUseCase {
                     &library_roots,
                 )
                 .await?;
-                if let Err(error) = tokio::fs::remove_dir_all(&entry_dir).await {
+                if let Err(error) =
+                    crate::fs_safety::remove_dir_all_safely_if_exists(&entry_dir).await
+                {
                     tracing::warn!(
                         error = %error,
                         entry_dir = %entry_dir.display(),

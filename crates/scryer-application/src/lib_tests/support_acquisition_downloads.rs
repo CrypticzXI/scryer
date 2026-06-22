@@ -1241,6 +1241,12 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
         Ok(Vec::new())
     }
 
+    async fn list_media_files_with_roots(
+        &self,
+    ) -> AppResult<Vec<crate::HousekeepingMediaFileRootRow>> {
+        Ok(Vec::new())
+    }
+
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
         Ok(0)
     }

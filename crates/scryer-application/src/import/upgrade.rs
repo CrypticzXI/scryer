@@ -251,9 +251,7 @@ async fn write_same_path_upgrade_guard(
 }
 
 async fn remove_same_path_upgrade_guard_file(guard_path: &Path) {
-    if let Err(error) = tokio::fs::remove_file(guard_path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(error) = crate::fs_safety::remove_file_safely_if_exists(guard_path).await {
         tracing::warn!(
             error = %error,
             guard = %guard_path.display(),
@@ -693,40 +691,10 @@ async fn restore_same_path_guard_before_db_swap(
         return Ok(false);
     }
 
-    let mut moved_replacement: Option<PathBuf> = None;
-    if same_path_guard_regular_file_exists(final_path, "uncommitted replacement").await? {
-        let replacement_guard = sibling_guard_path(final_path, "failed-replacement");
-        tokio::fs::rename(final_path, &replacement_guard)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to move uncommitted same-path replacement aside during recovery: {} -> {}: {}",
-                    final_path.display(),
-                    replacement_guard.display(),
-                    error
-                ))
-            })?;
-        moved_replacement = Some(replacement_guard);
-    }
+    restore_same_path_backup(final_path, backup_path).await?;
 
-    if let Err(error) = tokio::fs::rename(backup_path, final_path).await {
-        if let Some(replacement_guard) = moved_replacement.as_ref()
-            && let Err(restore_error) = tokio::fs::rename(replacement_guard, final_path).await
-        {
-            tracing::error!(
-                error = %restore_error,
-                replacement = %replacement_guard.display(),
-                final_path = %final_path.display(),
-                "failed to restore uncommitted replacement after old backup recovery failed"
-            );
-        }
-        return Err(AppError::Repository(format!(
-            "failed to restore old same-path backup during recovery: {} -> {}: {}",
-            backup_path.display(),
-            final_path.display(),
-            error
-        )));
-    }
+    let staged_replacement_path = stored_path_to_path_buf(&manifest.staged_replacement_path);
+    remove_imported_replacement(&staged_replacement_path).await;
 
     if let Err(error) = app
         .services
@@ -739,15 +707,6 @@ async fn restore_same_path_guard_before_db_swap(
             error = %error,
             file_id = %manifest.replacement_file_id,
             "same-path upgrade guard restored old file but replacement DB row cleanup failed"
-        );
-    }
-    if let Some(replacement_guard) = moved_replacement
-        && let Err(error) = tokio::fs::remove_file(&replacement_guard).await
-    {
-        tracing::warn!(
-            error = %error,
-            path = %replacement_guard.display(),
-            "same-path upgrade guard restored old file but replacement file cleanup failed"
         );
     }
     remove_same_path_upgrade_guard_file(guard_path).await;
@@ -809,8 +768,9 @@ async fn dispose_same_path_guard_after_confirmed_db_swap(
         return Ok(true);
     }
 
+    let manifest_media_root = stored_path_to_path_buf(&manifest.media_root);
     let recycle_config = app
-        .recycle_bin_config_for_media_root(Some(manifest.media_root.as_str()))
+        .recycle_bin_config_for_media_root_path(Some(&manifest_media_root))
         .await;
     if recycle_config.enabled {
         let recycle_manifest = RecycleManifest::pending_upgrade(
@@ -1234,7 +1194,9 @@ async fn rollback_old_file_disposition(
                         error
                     ))
                 })?;
-            if let Err(error) = tokio::fs::remove_dir_all(&result.entry_dir).await {
+            if let Err(error) =
+                crate::fs_safety::remove_dir_all_safely_if_exists(&result.entry_dir).await
+            {
                 tracing::warn!(
                     error = %error,
                     entry_dir = %result.entry_dir.display(),
@@ -1244,7 +1206,7 @@ async fn rollback_old_file_disposition(
             Ok(())
         }
         OldFileDisposition::Backup(backup_path) => {
-            restore_same_path_backup(original_path, backup_path).await
+            restore_backup_to_absent_path(original_path, backup_path).await
         }
     }
 }
@@ -1632,16 +1594,107 @@ fn sibling_guard_path(path: &Path, label: &str) -> PathBuf {
 }
 
 async fn restore_same_path_backup(final_path: &Path, backup_path: &Path) -> AppResult<()> {
-    // Atomically move the backup back over whatever is at `final_path`. On POSIX a
-    // rename replaces the destination in place, so we must NOT remove `final_path`
-    // first: doing so would leave it empty if the rename then failed. With the
-    // atomic rename, a failure leaves the original safely at `backup_path` and
-    // nothing is lost.
+    if !same_path_guard_regular_file_exists(backup_path, "backup").await? {
+        return Err(AppError::Repository(format!(
+            "failed to restore old file after guarded same-path upgrade failure because backup is missing: {}",
+            backup_path.display()
+        )));
+    }
+
+    let moved_occupant = if same_path_guard_regular_file_exists(final_path, "final occupant")
+        .await?
+    {
+        let moved_aside = sibling_guard_path(final_path, "rollback-occupant");
+        tokio::fs::rename(final_path, &moved_aside)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to move occupied final path aside before restoring backup: {} -> {}: {}",
+                    final_path.display(),
+                    moved_aside.display(),
+                    error
+                ))
+            })?;
+        Some(moved_aside)
+    } else {
+        None
+    };
+
+    if let Err(error) = tokio::fs::rename(backup_path, final_path).await {
+        if let Some(moved_aside) = moved_occupant.as_ref() {
+            match tokio::fs::rename(moved_aside, final_path).await {
+                Ok(()) => {
+                    return Err(AppError::Repository(format!(
+                        "failed to restore old file after guarded same-path upgrade failure: {} -> {}: {}; moved-aside occupant {} was restored",
+                        backup_path.display(),
+                        final_path.display(),
+                        error,
+                        moved_aside.display()
+                    )));
+                }
+                Err(restore_error) => {
+                    return Err(AppError::Repository(format!(
+                        "failed to restore old file after guarded same-path upgrade failure: {} -> {}: {}; moved-aside occupant {} could not be restored to {}: {}",
+                        backup_path.display(),
+                        final_path.display(),
+                        error,
+                        moved_aside.display(),
+                        final_path.display(),
+                        restore_error
+                    )));
+                }
+            }
+        }
+        return Err(AppError::Repository(format!(
+            "failed to restore old file after guarded same-path upgrade failure: {} -> {}: {}",
+            backup_path.display(),
+            final_path.display(),
+            error
+        )));
+    }
+
+    if let Some(moved_aside) = moved_occupant
+        && let Err(error) = crate::fs_safety::remove_file_safely_if_exists(&moved_aside).await
+    {
+        tracing::warn!(
+            error = %error,
+            path = %moved_aside.display(),
+            "old file restored but moved-aside same-path replacement could not be removed"
+        );
+    }
+
+    Ok(())
+}
+
+async fn restore_backup_to_absent_path(final_path: &Path, backup_path: &Path) -> AppResult<()> {
+    match tokio::fs::symlink_metadata(final_path).await {
+        Ok(_) => {
+            return Err(AppError::Validation(format!(
+                "refusing to restore old upgrade backup {} because destination is occupied: {}",
+                backup_path.display(),
+                final_path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to stat old upgrade restore destination {}: {}",
+                final_path.display(),
+                error
+            )));
+        }
+    }
+    if !same_path_guard_regular_file_exists(backup_path, "backup").await? {
+        return Err(AppError::Repository(format!(
+            "failed to restore old upgrade backup because backup is missing: {}",
+            backup_path.display()
+        )));
+    }
     tokio::fs::rename(backup_path, final_path)
         .await
         .map_err(|error| {
             AppError::Repository(format!(
-                "failed to restore old file after guarded same-path upgrade failure: {} -> {}: {}",
+                "failed to restore old upgrade backup: {} -> {}: {}",
                 backup_path.display(),
                 final_path.display(),
                 error
@@ -1650,9 +1703,7 @@ async fn restore_same_path_backup(final_path: &Path, backup_path: &Path) -> AppR
 }
 
 async fn remove_old_file_after_verified_upgrade(path: &Path) -> AppResult<()> {
-    if let Err(error) = tokio::fs::remove_file(path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(error) = crate::fs_safety::remove_file_safely_if_exists(path).await {
         return Err(AppError::Repository(format!(
             "failed to remove old file after replacement validation {}: {}",
             path.display(),
@@ -1747,9 +1798,7 @@ async fn append_upgrade_recycle_event(
 }
 
 async fn remove_imported_replacement(dest_path: &std::path::Path) {
-    if let Err(remove_err) = tokio::fs::remove_file(dest_path).await
-        && remove_err.kind() != std::io::ErrorKind::NotFound
-    {
+    if let Err(remove_err) = crate::fs_safety::remove_file_safely_if_exists(dest_path).await {
         tracing::error!(
             error = %remove_err,
             path = %dest_path.display(),

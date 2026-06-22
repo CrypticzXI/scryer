@@ -7,7 +7,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
 
 const DELETE_PREVIEW_SAMPLE_PATH_LIMIT: usize = 5;
 const LARGE_DELETE_MEDIA_THRESHOLD: usize = 50;
@@ -183,7 +182,7 @@ impl AppUseCase {
         let context = self.resolve_title_delete_context(title_id).await?;
         self.require_delete_context_permission(actor, &context)
             .await?;
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         Ok(manifest.to_preview())
     }
 
@@ -338,7 +337,7 @@ impl AppUseCase {
         let context = self.resolve_media_file_delete_context(file_id).await?;
         self.require_delete_context_permission(actor, &context)
             .await?;
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         Ok(manifest.to_preview())
     }
 
@@ -524,7 +523,7 @@ impl AppUseCase {
         preview_fingerprint: &str,
         typed_confirmation: Option<&str>,
     ) -> AppResult<()> {
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         if manifest.fingerprint != preview_fingerprint {
             return Err(AppError::Validation(
                 "delete preview is stale; refresh the delete dialog and confirm again".into(),
@@ -538,6 +537,8 @@ impl AppUseCase {
                 "typed confirmation is required; enter {DELETE_TYPED_CONFIRMATION_VALUE}"
             )));
         }
+
+        ensure_delete_context_roots_available(&context)?;
 
         for entry in &manifest.entries {
             delete_single_path(entry).await.map_err(|error| {
@@ -882,7 +883,9 @@ fn build_media_file_delete_manifest(
 ) -> AppResult<UserDeleteManifest> {
     let mut paths = BTreeSet::new();
     let file_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
+    let nfo_path = file_path.with_extension("nfo");
     paths.insert(file_path);
+    paths.insert(nfo_path);
 
     for raw_path in context.subtitle_paths {
         let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&raw_path))?;
@@ -914,6 +917,52 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
         context.file_path,
         entries,
     ))
+}
+
+fn ensure_delete_context_roots_available(context: &UserDeleteContext) -> AppResult<()> {
+    match context {
+        UserDeleteContext::Title(context) => {
+            let Some(folder_path) = context.folder_path.as_deref() else {
+                return Ok(());
+            };
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let path = normalize_absolute_path(&stored_path_to_path_buf(folder_path))?;
+            crate::fs_safety::resolve_available_root_for_path(
+                &path,
+                &roots,
+                crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
+            )?;
+            Ok(())
+        }
+        UserDeleteContext::MediaFile(context) => {
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let mut raw_paths = Vec::with_capacity(context.subtitle_paths.len() + 1);
+            raw_paths.push(context.file_path.as_str());
+            raw_paths.extend(context.subtitle_paths.iter().map(String::as_str));
+            for raw_path in raw_paths {
+                let path = normalize_absolute_path(&stored_path_to_path_buf(raw_path))?;
+                crate::fs_safety::resolve_available_root_for_path(
+                    &path,
+                    &roots,
+                    crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
+                )?;
+            }
+            Ok(())
+        }
+        UserDeleteContext::Subtitle(context) => {
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
+            crate::fs_safety::resolve_available_root_for_path(
+                &path,
+                &roots,
+                crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
+            )?;
+            Ok(())
+        }
+    }
 }
 
 /// Ensure every path lies inside one of the configured library root folders.
@@ -1265,21 +1314,15 @@ fn build_delete_manifest_fingerprint(
 
 async fn delete_single_path(entry: &DeleteManifestEntry) -> AppResult<()> {
     match entry.delete_kind {
-        DeletePathKind::File => fs::remove_file(&entry.path)
-            .await
-            .map_err(|error| AppError::Repository(error.to_string())),
-        DeletePathKind::Directory => fs::remove_dir(&entry.path)
-            .await
-            .map_err(|error| AppError::Repository(error.to_string())),
-        DeletePathKind::Symlink => match fs::remove_file(&entry.path).await {
+        DeletePathKind::File => crate::fs_safety::remove_file_safely(&entry.path).await,
+        DeletePathKind::Directory => crate::fs_safety::remove_dir_safely(&entry.path).await,
+        DeletePathKind::Symlink => match crate::fs_safety::remove_file_safely(&entry.path).await {
             Ok(()) => Ok(()),
-            Err(remove_file_error) => {
-                fs::remove_dir(&entry.path)
-                    .await
-                    .map_err(|remove_dir_error| {
-                        AppError::Repository(format!("{remove_file_error}; {remove_dir_error}"))
-                    })
-            }
+            Err(remove_file_error) => crate::fs_safety::remove_dir_safely(&entry.path)
+                .await
+                .map_err(|remove_dir_error| {
+                    AppError::Repository(format!("{remove_file_error}; {remove_dir_error}"))
+                }),
         },
     }
 }
@@ -1287,6 +1330,13 @@ async fn delete_single_path(entry: &DeleteManifestEntry) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root_entry(path: &Path) -> RootFolderEntry {
+        RootFolderEntry {
+            path: path_to_stored_string(path),
+            is_default: true,
+        }
+    }
 
     #[test]
     fn infer_title_folder_path_from_paths_uses_title_root_under_configured_root() {
@@ -1435,5 +1485,90 @@ mod tests {
             result.is_err(),
             "leaf delete containment must reject sibling-prefix paths"
         );
+    }
+
+    #[test]
+    fn media_file_manifest_includes_nfo_and_tracked_subtitles_but_not_plexmatch() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let title_dir = tempdir.path().join("Show");
+        std::fs::create_dir(&title_dir).expect("create title dir");
+        let media_path = title_dir.join("Episode.mkv");
+        let nfo_path = title_dir.join("Episode.nfo");
+        let subtitle_path = title_dir.join("Episode.en.srt");
+        let plexmatch_path = title_dir.join(".plexmatch");
+        std::fs::write(&media_path, b"media").expect("write media");
+        std::fs::write(&nfo_path, b"metadata").expect("write nfo");
+        std::fs::write(&subtitle_path, b"subtitle").expect("write subtitle");
+        std::fs::write(&plexmatch_path, b"title metadata").expect("write plexmatch");
+
+        let manifest = build_media_file_delete_manifest(MediaFileDeleteContext {
+            title_id: "title-1".to_string(),
+            file_id: "file-1".to_string(),
+            file_path: path_to_stored_string(&media_path),
+            subtitle_paths: vec![path_to_stored_string(&subtitle_path)],
+            root_folders: vec![test_root_entry(tempdir.path())],
+            facet: MediaFacet::Anime,
+        })
+        .expect("build manifest");
+
+        let paths: BTreeSet<_> = manifest.entries.iter().map(|entry| &entry.path).collect();
+        assert!(paths.contains(&media_path));
+        assert!(paths.contains(&nfo_path));
+        assert!(paths.contains(&subtitle_path));
+        assert!(!paths.contains(&plexmatch_path));
+    }
+
+    #[test]
+    fn title_folder_manifest_includes_plexmatch_from_directory_walk() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let title_dir = tempdir.path().join("Show");
+        std::fs::create_dir(&title_dir).expect("create title dir");
+        let media_path = title_dir.join("Episode.mkv");
+        let plexmatch_path = title_dir.join(".plexmatch");
+        std::fs::write(&media_path, b"media").expect("write media");
+        std::fs::write(&plexmatch_path, b"title metadata").expect("write plexmatch");
+
+        let manifest = build_title_delete_manifest(TitleDeleteContext {
+            title_id: "title-1".to_string(),
+            title_name: "Show".to_string(),
+            facet: MediaFacet::Anime,
+            folder_path: Some(path_to_stored_string(&title_dir)),
+            root_folders: vec![test_root_entry(tempdir.path())],
+            other_titles: Vec::new(),
+        })
+        .expect("build title manifest");
+
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.path == plexmatch_path),
+            "title folder delete should include .plexmatch via the directory walk"
+        );
+    }
+
+    #[test]
+    fn delete_context_root_availability_requires_non_empty_root_for_disk_delete() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let missing_media_path = tempdir.path().join("Missing.mkv");
+        let context = UserDeleteContext::MediaFile(MediaFileDeleteContext {
+            title_id: "title-1".to_string(),
+            file_id: "file-1".to_string(),
+            file_path: path_to_stored_string(&missing_media_path),
+            subtitle_paths: Vec::new(),
+            root_folders: vec![test_root_entry(tempdir.path())],
+            facet: MediaFacet::Anime,
+        });
+
+        let empty_result = ensure_delete_context_roots_available(&context);
+        assert!(
+            matches!(empty_result, Err(AppError::Validation(_))),
+            "empty roots should not prove that a disk-delete target's root is mounted"
+        );
+
+        std::fs::write(tempdir.path().join(".mount-check"), b"mounted")
+            .expect("write mount marker");
+        ensure_delete_context_roots_available(&context)
+            .expect("missing target is allowed once the containing root is available");
     }
 }

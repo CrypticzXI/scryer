@@ -92,11 +92,27 @@ impl AppUseCase {
         media_root: Option<&str>,
         configured_roots: &[PathBuf],
     ) -> crate::recycle_bin::RecycleBinConfig {
+        Self::recycle_bin_config_from_path_values(
+            enabled,
+            custom_path,
+            retention_days,
+            media_root.map(Path::new),
+            configured_roots,
+        )
+    }
+
+    fn recycle_bin_config_from_path_values(
+        enabled: bool,
+        custom_path: Option<&str>,
+        retention_days: u32,
+        media_root: Option<&Path>,
+        configured_roots: &[PathBuf],
+    ) -> crate::recycle_bin::RecycleBinConfig {
         let custom_path_configured = custom_path.is_some();
         let base_path = if let Some(path) = custom_path {
             PathBuf::from(path)
         } else if let Some(root) = media_root {
-            PathBuf::from(root).join(".scryer-recycle")
+            root.join(".scryer-recycle")
         } else {
             PathBuf::from("/tmp/.scryer-recycle")
         };
@@ -129,6 +145,26 @@ impl AppUseCase {
             .filter(|root| !root.as_os_str().is_empty())
             .collect::<Vec<_>>();
         Self::recycle_bin_config_from_values(
+            enabled,
+            custom_path.as_deref(),
+            retention_days,
+            media_root,
+            &configured_roots,
+        )
+    }
+}
+impl AppUseCase {
+    pub(crate) async fn recycle_bin_config_for_media_root_path(
+        &self,
+        media_root: Option<&Path>,
+    ) -> crate::recycle_bin::RecycleBinConfig {
+        let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let configured_roots = media_root
+            .into_iter()
+            .map(Self::normalize_recycle_config_path)
+            .filter(|root| !root.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        Self::recycle_bin_config_from_path_values(
             enabled,
             custom_path.as_deref(),
             retention_days,

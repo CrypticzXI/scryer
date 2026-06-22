@@ -15,6 +15,7 @@ pub use download_identity::{
 mod events;
 pub mod external_import;
 pub mod fs_integrity;
+mod fs_safety;
 mod health;
 mod helpers;
 mod import;
@@ -328,13 +329,13 @@ pub use ports::{
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
-    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportFileTransferProgress,
-    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
-    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
-    IndexerStatsTracker, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
-    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
-    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
-    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    FileImporter, HousekeepingMediaFileRootRow, HousekeepingRepository, ImportArtifactRepository,
+    ImportFileTransferProgress, ImportFileTransferProgressSender, ImportRepository,
+    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
+    IndexerPluginProvider, IndexerStatsTracker, JellyfinServerUser, JobRunRepository,
+    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
+    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
+    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,

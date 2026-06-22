@@ -463,6 +463,12 @@ impl HousekeepingRepository for TestLibraryStateStore {
         self.housekeeping.list_all_media_file_paths().await
     }
 
+    async fn list_media_files_with_roots(
+        &self,
+    ) -> AppResult<Vec<scryer_application::HousekeepingMediaFileRootRow>> {
+        self.housekeeping.list_media_files_with_roots().await
+    }
+
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {
         self.housekeeping.delete_media_files_by_ids(ids).await
     }

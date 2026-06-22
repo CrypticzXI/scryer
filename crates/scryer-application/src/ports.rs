@@ -27,6 +27,15 @@ pub struct TitleDeletePreviewInfo {
     pub folder_path: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HousekeepingMediaFileRootRow {
+    pub media_file_id: String,
+    pub title_id: String,
+    pub file_path: String,
+    pub library_id: String,
+    pub root_paths: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct EpisodeImageUrlUpdate {
     pub episode_id: String,
@@ -1134,6 +1143,7 @@ pub trait HousekeepingRepository: Send + Sync {
     ) -> AppResult<u32>;
     async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
+    async fn list_media_files_with_roots(&self) -> AppResult<Vec<HousekeepingMediaFileRootRow>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
     async fn run_database_maintenance(&self) -> AppResult<()> {
         Ok(())

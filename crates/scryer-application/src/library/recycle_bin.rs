@@ -376,15 +376,7 @@ async fn recycle_file_inner(
     }
 
     if !config.enabled {
-        if let Err(err) = tokio::fs::remove_file(source_path).await
-            && err.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(AppError::Repository(format!(
-                "failed to delete file {}: {}",
-                source_path.display(),
-                err
-            )));
-        }
+        crate::fs_safety::remove_file_safely_if_exists(source_path).await?;
         return Ok(None);
     }
 
@@ -422,7 +414,7 @@ async fn recycle_file_inner(
         .get_or_insert_with(|| scryer_domain::Id::new().0);
     manifest.status = Some(RECYCLE_STATUS_PENDING.to_string());
     if let Err(error) = write_manifest(&recycle_dir, &manifest).await {
-        let _ = tokio::fs::remove_dir_all(&recycle_dir).await;
+        let _ = crate::fs_safety::remove_dir_all_safely_if_exists(&recycle_dir).await;
         return Err(error);
     }
 
@@ -436,7 +428,7 @@ async fn recycle_file_inner(
     if let Err(error) =
         recycle_source_to_destination(source_path.to_path_buf(), recycled_path.clone()).await
     {
-        let _ = tokio::fs::remove_dir_all(&recycle_dir).await;
+        let _ = crate::fs_safety::remove_dir_all_safely_if_exists(&recycle_dir).await;
         return Err(error);
     }
 
@@ -511,7 +503,7 @@ async fn recycle_source_to_destination(
         })?;
 
     if let Err(error) = tokio::io::copy(&mut source_file, &mut recycled_file).await {
-        let _ = tokio::fs::remove_file(&recycled_path).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(&recycled_path).await;
         return Err(AppError::Repository(format!(
             "failed to copy {} to recycle bin {}: {}",
             source_path.display(),
@@ -520,7 +512,7 @@ async fn recycle_source_to_destination(
         )));
     }
     if let Err(error) = recycled_file.flush().await {
-        let _ = tokio::fs::remove_file(&recycled_path).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(&recycled_path).await;
         return Err(AppError::Repository(format!(
             "failed to flush recycled file {}: {}",
             recycled_path.display(),
@@ -528,7 +520,7 @@ async fn recycle_source_to_destination(
         )));
     }
     if let Err(error) = recycled_file.sync_all().await {
-        let _ = tokio::fs::remove_file(&recycled_path).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(&recycled_path).await;
         return Err(AppError::Repository(format!(
             "failed to sync recycled file {}: {}",
             recycled_path.display(),
@@ -540,16 +532,15 @@ async fn recycle_source_to_destination(
     if let Err(verify_error) =
         crate::fs_integrity::verify_same_file_async(&source_path, &recycled_path).await
     {
-        let _ = tokio::fs::remove_file(&recycled_path).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(&recycled_path).await;
         return Err(verify_error);
     }
     drop(source_file);
 
-    match tokio::fs::remove_file(&source_path).await {
+    match crate::fs_safety::remove_file_safely_if_exists(&source_path).await {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => {
-            let _ = tokio::fs::remove_file(&recycled_path).await;
+            let _ = crate::fs_safety::remove_file_safely_if_exists(&recycled_path).await;
             Err(AppError::Repository(format!(
                 "failed to remove source file {} after copy to recycle bin: {}",
                 source_path.display(),
@@ -744,7 +735,7 @@ where
             ))
         })?;
     if let Err(error) = tokio::io::copy(&mut source_file, &mut destination_file).await {
-        let _ = tokio::fs::remove_file(destination).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(destination).await;
         return Err(AppError::Repository(format!(
             "failed to restore {} to {}: {}",
             recycled_path.display(),
@@ -753,7 +744,7 @@ where
         )));
     }
     if let Err(error) = destination_file.flush().await {
-        let _ = tokio::fs::remove_file(destination).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(destination).await;
         return Err(AppError::Repository(format!(
             "failed to flush restored file {}: {}",
             destination.display(),
@@ -761,7 +752,7 @@ where
         )));
     }
     if let Err(error) = destination_file.sync_all().await {
-        let _ = tokio::fs::remove_file(destination).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(destination).await;
         return Err(AppError::Repository(format!(
             "failed to sync restored file {}: {}",
             destination.display(),
@@ -773,7 +764,7 @@ where
     let recycled_for_verify = recycled_path.to_path_buf();
     let destination_for_verify = destination.to_path_buf();
     if let Err(verify_error) = verify(recycled_for_verify, destination_for_verify).await {
-        let _ = tokio::fs::remove_file(destination).await;
+        let _ = crate::fs_safety::remove_file_safely_if_exists(destination).await;
         return Err(verify_error);
     }
 
@@ -816,7 +807,7 @@ async fn restore_without_overwrite(
         }
 
         copy_recycled_to_claimed_destination(recycled_path, &destination, destination_file).await?;
-        tokio::fs::remove_file(recycled_path)
+        crate::fs_safety::remove_file_safely(recycled_path)
             .await
             .map_err(|error| {
                 AppError::Repository(format!(
@@ -909,10 +900,10 @@ async fn restore_from_recycle_inner(
             if let Err(verify_error) =
                 crate::fs_integrity::verify_same_file_async(recycled_path, original_path).await
             {
-                let _ = tokio::fs::remove_file(original_path).await;
+                let _ = crate::fs_safety::remove_file_safely_if_exists(original_path).await;
                 return Err(verify_error);
             }
-            let _ = tokio::fs::remove_file(recycled_path).await;
+            let _ = crate::fs_safety::remove_file_safely_if_exists(recycled_path).await;
         }
     }
 
@@ -1097,13 +1088,7 @@ pub async fn purge_committed_entry(
         return Ok(false);
     }
 
-    tokio::fs::remove_dir_all(entry_dir).await.map_err(|e| {
-        AppError::Repository(format!(
-            "failed to purge recycle entry {}: {}",
-            entry_dir.display(),
-            e
-        ))
-    })?;
+    crate::fs_safety::remove_dir_all_safely(entry_dir).await?;
     Ok(true)
 }
 

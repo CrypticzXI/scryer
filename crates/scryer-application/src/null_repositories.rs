@@ -1024,6 +1024,13 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
         Ok(vec![])
     }
+
+    async fn list_media_files_with_roots(
+        &self,
+    ) -> AppResult<Vec<crate::HousekeepingMediaFileRootRow>> {
+        Ok(vec![])
+    }
+
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
         Ok(0)
     }

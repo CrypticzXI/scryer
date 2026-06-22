@@ -596,6 +596,8 @@ impl AppUseCase {
             .await?;
         }
 
+        self.cleanup_media_file_subtitle_state(file_id).await?;
+
         self.services
             .library
             .media_files
@@ -646,6 +648,43 @@ impl AppUseCase {
                     }),
                 ))
                 .await;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn cleanup_media_file_subtitle_state(&self, file_id: &str) -> AppResult<()> {
+        let downloads = self
+            .services
+            .workflow
+            .subtitle_downloads
+            .list_for_media_file(file_id)
+            .await?;
+        for download in downloads {
+            self.services
+                .workflow
+                .subtitle_downloads
+                .delete(&download.id)
+                .await?;
+            self.services
+                .workflow
+                .subtitle_downloads
+                .delete_probe_cache_entry(&download.media_file_id, &download.file_path)
+                .await?;
+        }
+
+        let probe_cache_entries = self
+            .services
+            .workflow
+            .subtitle_downloads
+            .list_probe_cache_for_media_file(file_id)
+            .await?;
+        for entry in probe_cache_entries {
+            self.services
+                .workflow
+                .subtitle_downloads
+                .delete_probe_cache_entry(&entry.media_file_id, &entry.file_path)
+                .await?;
         }
 
         Ok(())
