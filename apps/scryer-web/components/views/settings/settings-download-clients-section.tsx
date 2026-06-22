@@ -224,7 +224,7 @@ export type SettingsDownloadClientsSectionProps = {
   isSavingOrder: boolean;
   isEditorOpen: boolean;
   editorMode: "create" | "edit";
-  localPathStyle: LocalPathStyle;
+  localPathStyle: LocalPathStyle | undefined;
   startCreateDownloadClient: () => void;
 };
 

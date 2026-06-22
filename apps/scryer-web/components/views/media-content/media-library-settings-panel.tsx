@@ -46,7 +46,7 @@ import {
   areRoutingOrdersEqual,
 } from "@/lib/utils/media-content";
 import {
-  isAbsoluteLocalPathForStyle,
+  isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 
@@ -92,7 +92,7 @@ type MediaLibrarySettingsPanelProps = {
   scanLoading: boolean;
   scanNotice?: string | null;
   scanSummary: LibraryScanSummary | null;
-  localPathStyle: LocalPathStyle;
+  localPathStyle: LocalPathStyle | undefined;
   qualityProfiles: ParsedQualityProfile[];
   downloadClients: DownloadClientRecord[];
   downloadClientsLoading: boolean;
@@ -460,7 +460,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const invalidRootFolderPaths = React.useMemo(() => {
     const invalidPaths = new Set<string>();
     normalizedDraftRoots.forEach((root) => {
-      if (!isAbsoluteLocalPathForStyle(root.path, localPathStyle)) {
+      if (!isLocalPathFormatValidForStyle(root.path, localPathStyle)) {
         invalidPaths.add(root.path);
       }
     });

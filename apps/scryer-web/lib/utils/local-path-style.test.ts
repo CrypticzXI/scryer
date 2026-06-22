@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   isAbsoluteLocalPathForStyle,
+  isLocalPathFormatValidForStyle,
   localPathStyleFromRuntimeValue,
 } from "./local-path-style.ts";
 
@@ -33,6 +34,23 @@ test("Windows runtime local path validation accepts Windows absolute paths", () 
 test("GraphQL runtime path style maps to frontend local path style", () => {
   assert.equal(localPathStyleFromRuntimeValue("UNIX"), "unix");
   assert.equal(localPathStyleFromRuntimeValue("WINDOWS"), "windows");
-  assert.equal(localPathStyleFromRuntimeValue(null), "unix");
-  assert.equal(localPathStyleFromRuntimeValue(undefined), "unix");
+  assert.equal(localPathStyleFromRuntimeValue(null), undefined);
+  assert.equal(localPathStyleFromRuntimeValue(undefined), undefined);
+  assert.equal(localPathStyleFromRuntimeValue("MYSTERY"), undefined);
+});
+
+test("Unknown runtime path style skips local path format validation", () => {
+  assert.equal(isLocalPathFormatValidForStyle("C:\\Downloads", undefined), true);
+  assert.equal(isLocalPathFormatValidForStyle("/data/downloads", undefined), true);
+  assert.equal(isLocalPathFormatValidForStyle("relative/path", undefined), true);
+});
+
+test("Known runtime path style enforces local path format validation", () => {
+  assert.equal(isLocalPathFormatValidForStyle("/data/downloads", "unix"), true);
+  assert.equal(isLocalPathFormatValidForStyle("C:\\Downloads", "unix"), false);
+  assert.equal(isLocalPathFormatValidForStyle("C:\\Downloads", "windows"), true);
+  assert.equal(
+    isLocalPathFormatValidForStyle("/data/downloads", "windows"),
+    false,
+  );
 });

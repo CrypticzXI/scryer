@@ -32,7 +32,7 @@ import type {
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 import { normalizeLibraryPermissionsForStorage } from "@/lib/utils/permissions";
 import {
-  isAbsoluteLocalPathForStyle,
+  isLocalPathFormatValidForStyle,
   localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
@@ -105,7 +105,7 @@ function parsePathMappings(value: string): MediaServerPathMapping[] {
 
 function pathMappingsTextHasValidLocalPaths(
   value: string,
-  localPathStyle: LocalPathStyle,
+  localPathStyle: LocalPathStyle | undefined,
 ): boolean {
   return value
     .split(/\r?\n/)
@@ -118,7 +118,7 @@ function pathMappingsTextHasValidLocalPaths(
       return (
         remotePath.length > 0 &&
         localPath.length > 0 &&
-        isAbsoluteLocalPathForStyle(localPath, localPathStyle)
+        isLocalPathFormatValidForStyle(localPath, localPathStyle)
       );
     });
 }
@@ -229,7 +229,8 @@ export function SettingsMediaServersContainer() {
   const [plexServerOptions, setPlexServerOptions] = useState<PlexServerDiscovery[]>([]);
   const [plexDiscoveryBusy, setPlexDiscoveryBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
-  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>("unix");
+  const [localPathStyle, setLocalPathStyle] =
+    useState<LocalPathStyle | undefined>(undefined);
   const [pathMappingsValid, setPathMappingsValid] = useState(true);
 
   const isDraftDirty = JSON.stringify(draft) !== JSON.stringify(draftBaseline);

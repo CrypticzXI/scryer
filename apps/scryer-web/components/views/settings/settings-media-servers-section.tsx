@@ -58,7 +58,7 @@ type SettingsMediaServersSectionProps = {
   libraries: LibraryRecord[];
   draft: MediaServerConnectionDraft;
   setDraft: React.Dispatch<React.SetStateAction<MediaServerConnectionDraft>>;
-  localPathStyle: LocalPathStyle;
+  localPathStyle: LocalPathStyle | undefined;
   pathMappingsValid: boolean;
   onPathMappingsValidityChange: (isValid: boolean) => void;
   editingConnectionId: string | null;

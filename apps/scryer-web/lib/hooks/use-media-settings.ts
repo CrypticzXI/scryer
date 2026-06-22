@@ -70,7 +70,7 @@ export type UseMediaSettingsResult = {
   setSeriesPath: (value: string) => void;
   rootFolders: RootFolderOption[];
   saveRootFolders: (folders: RootFolderOption[]) => void;
-  localPathStyle: LocalPathStyle;
+  localPathStyle: LocalPathStyle | undefined;
   mediaSettingsLoading: boolean;
   mediaSettingsSaving: boolean;
   qualityProfiles: SearchableQualityProfileBody[];
@@ -191,7 +191,7 @@ export function useMediaSettings({
   );
   const [rootFolders, setRootFolders] = React.useState<RootFolderOption[]>([]);
   const [localPathStyle, setLocalPathStyle] =
-    React.useState<LocalPathStyle>("unix");
+    React.useState<LocalPathStyle | undefined>(undefined);
   const [mediaSettingsLoading, setMediaSettingsLoading] = React.useState(false);
   const [mediaSettingsSaving, setMediaSettingsSaving] = React.useState(false);
   const [qualityProfiles, setQualityProfiles] = React.useState<

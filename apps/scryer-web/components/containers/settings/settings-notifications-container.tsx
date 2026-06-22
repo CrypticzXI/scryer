@@ -30,6 +30,10 @@ import {
   titleListEntryQuery,
 } from "@/lib/graphql/queries";
 import {
+  localPathStyleFromRuntimeValue,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
+import {
   createNotificationChannelMutation,
   updateNotificationChannelMutation,
   deleteNotificationChannelMutation,
@@ -237,6 +241,9 @@ export function SettingsNotificationsContainer({
 
   // --- Channel state ---
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
+  const [localPathStyle, setLocalPathStyle] = useState<
+    LocalPathStyle | undefined
+  >(undefined);
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [mutatingChannelId, setMutatingChannelId] = useState<string | null>(null);
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<NotificationChannel | null>(null);
@@ -369,6 +376,9 @@ export function SettingsNotificationsContainer({
         setSubscriptions(data?.notificationSubscriptions || []);
         setProviderTypes(data?.notificationProviderTypes || []);
         setEventTypes(data?.notificationEventTypes || []);
+        setLocalPathStyle(
+          localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+        );
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
       }
@@ -964,6 +974,7 @@ export function SettingsNotificationsContainer({
     <>
       <SettingsNotificationsSection
         channels={channels}
+        localPathStyle={localPathStyle}
         editingChannelId={editingChannelId}
         channelDraft={channelDraft}
         setChannelDraft={setChannelDraft}

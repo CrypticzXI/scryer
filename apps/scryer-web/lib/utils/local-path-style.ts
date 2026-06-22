@@ -30,8 +30,14 @@ export function inferLocalPathStyleFromPath(
 
 export function localPathStyleFromRuntimeValue(
   value: string | null | undefined,
-): LocalPathStyle {
-  return value === "WINDOWS" ? "windows" : "unix";
+): LocalPathStyle | undefined {
+  if (value === "WINDOWS") {
+    return "windows";
+  }
+  if (value === "UNIX") {
+    return "unix";
+  }
+  return undefined;
 }
 
 export function isAbsoluteLocalPathForStyle(
@@ -43,4 +49,21 @@ export function isAbsoluteLocalPathForStyle(
   }
 
   return path.startsWith("/");
+}
+
+/**
+ * Format-validate a local path against the server's path style, tolerating an
+ * unknown style. While the runtime style is still unknown (e.g. the
+ * `runtimeInfo` query has not resolved yet, or an older server does not report
+ * it), the format check is skipped so valid paths are not transiently flagged
+ * as invalid. Server-side validation remains the source of truth on save.
+ */
+export function isLocalPathFormatValidForStyle(
+  path: string,
+  style: LocalPathStyle | undefined,
+): boolean {
+  if (!style) {
+    return true;
+  }
+  return isAbsoluteLocalPathForStyle(path, style);
 }

@@ -387,7 +387,8 @@ export function SetupWizardContainer({
   const [dcTypeOptions, setDcTypeOptions] = useState<
     DownloadClientTypeOption[]
   >(() => buildDownloadClientTypeOptions([]));
-  const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>("unix");
+  const [dcLocalPathStyle, setDcLocalPathStyle] =
+    useState<LocalPathStyle | undefined>(undefined);
   const [dcTesting, setDcTesting] = useState(false);
   const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(
     null,

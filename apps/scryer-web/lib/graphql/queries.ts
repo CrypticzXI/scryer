@@ -2523,6 +2523,9 @@ export const notificationsInitQuery = `query NotificationsInit {
   notificationProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
   notificationEventTypes
+  runtimeInfo {
+    runtimePathStyle
+  }
 }`;
 
 // ── Metadata Gateway (proxied through backend) ────────────────────────

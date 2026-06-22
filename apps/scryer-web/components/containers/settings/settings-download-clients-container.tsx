@@ -83,7 +83,8 @@ export function SettingsDownloadClientsContainer({
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
-  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>("unix");
+  const [localPathStyle, setLocalPathStyle] =
+    useState<LocalPathStyle | undefined>(undefined);
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingDownloadClientEditorAction>(null);
   const [draftBaseline, setDraftBaseline] = useState<DownloadClientDraft>(() =>

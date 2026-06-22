@@ -8,7 +8,7 @@ import type { Translate } from "@/components/root/types";
 import { TranslateContext } from "@/lib/context/translate-context";
 import { selectorId } from "@/lib/utils/dom-ids";
 import {
-  isAbsoluteLocalPathForStyle,
+  isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 
@@ -89,7 +89,7 @@ export function LocalRemotePathMappingsField({
   required = false,
   maxRows = DEFAULT_MAX_ROWS,
   direction = "local-to-remote",
-  localPathStyle = "unix",
+  localPathStyle,
   translate,
   onChange,
   onValidityChange,
@@ -171,7 +171,7 @@ export function LocalRemotePathMappingsField({
           errors.localPath = t("settings.downloadClientRemotePathMappingsLocalRequired");
         } else if (localPath && !remotePath) {
           errors.remotePath = t("settings.downloadClientRemotePathMappingsRemoteRequired");
-        } else if (localPath && !isAbsoluteLocalPathForStyle(localPath, localPathStyle)) {
+        } else if (localPath && !isLocalPathFormatValidForStyle(localPath, localPathStyle)) {
           errors.localPath = t("settings.downloadClientRemotePathMappingsLocalAbsolute");
         }
         return errors;

@@ -143,7 +143,7 @@ export function MediaContentView({
     setMoviesPath: (value: string) => void;
     seriesPath: string;
     setSeriesPath: (value: string) => void;
-    localPathStyle: LocalPathStyle;
+    localPathStyle: LocalPathStyle | undefined;
     mediaSettingsLoading: boolean;
     librarySettingsSaving: boolean;
     qualityProfiles: ParsedQualityProfile[];
