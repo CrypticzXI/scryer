@@ -833,6 +833,7 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+    pub(crate) same_path_upgrade_guard_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -1027,6 +1028,7 @@ impl AppRuntimeState {
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
+                same_path_upgrade_guard_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),

@@ -226,7 +226,7 @@ impl AppUseCase {
         Ok(purged)
     }
 
-    async fn purge_recycle_entry_after_validation(
+    pub(crate) async fn purge_recycle_entry_after_validation(
         &self,
         media_root: &str,
         config: &crate::recycle_bin::RecycleBinConfig,
@@ -331,7 +331,9 @@ impl AppUseCase {
         if media_root.trim().is_empty() {
             return Err("missing media root".to_string());
         }
-        if !std::path::Path::new(&manifest.original_path).starts_with(media_root) {
+        let media_root_path = crate::stored_paths::stored_path_to_path_buf(media_root);
+        let original_path = crate::stored_paths::stored_path_to_path_buf(&manifest.original_path);
+        if !crate::recycle_bin::path_is_under_configured_root(&original_path, &media_root_path) {
             return Err(format!(
                 "original path is outside manifest media root: original={} root={}",
                 manifest.original_path, media_root
@@ -361,7 +363,9 @@ impl AppUseCase {
                 replacement_path, replacement.file_path
             ));
         }
-        if !std::path::Path::new(&replacement.file_path).exists() {
+        let replacement_path_buf =
+            crate::stored_paths::stored_path_to_path_buf(&replacement.file_path);
+        if !replacement_path_buf.exists() {
             return Err(format!(
                 "replacement media file does not exist on disk: {}",
                 replacement.file_path
@@ -373,7 +377,10 @@ impl AppUseCase {
                 title_id, replacement.title_id
             ));
         }
-        if !std::path::Path::new(&replacement.file_path).starts_with(media_root) {
+        if !crate::recycle_bin::path_is_under_configured_root(
+            &replacement_path_buf,
+            &media_root_path,
+        ) {
             return Err(format!(
                 "replacement path is outside manifest media root: replacement={} root={}",
                 replacement.file_path, media_root
@@ -416,32 +423,68 @@ impl AppUseCase {
 
     pub(crate) async fn run_scheduled_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
+        let orphaned_media_files = {
+            let _same_path_upgrade_guard = self
+                .runtime
+                .imports
+                .same_path_upgrade_guard_lock
+                .lock()
+                .await;
+            match crate::import::upgrade::reconcile_same_path_upgrade_guards_locked(self).await {
+                Ok(reconciled) if reconciled > 0 => {
+                    info!(reconciled, "reconciled same-path upgrade guards")
+                }
+                Ok(_) => {}
+                Err(error) => warn!(
+                    error = %error,
+                    "failed to reconcile same-path upgrade guards"
+                ),
+            }
+
+            let protected_upgrade_file_ids =
+                match crate::import::upgrade::same_path_upgrade_guard_media_file_ids_locked(self)
+                    .await
+                {
+                    Ok(ids) => ids,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "failed to collect same-path upgrade guard protected media files"
+                        );
+                        HashSet::new()
+                    }
+                };
+
+            // 1. Orphaned media files (file_path no longer exists on disk)
+            let all_files = self
+                .services
+                .workflow
+                .housekeeping
+                .list_all_media_file_paths()
+                .await?;
+            let orphan_ids: Vec<String> = all_files
+                .into_iter()
+                .filter(|(id, path)| {
+                    !protected_upgrade_file_ids.contains(id)
+                        && !crate::stored_paths::stored_path_to_path_buf(path).exists()
+                })
+                .map(|(id, _)| id)
+                .collect();
+            if !orphan_ids.is_empty() {
+                self.services
+                    .workflow
+                    .housekeeping
+                    .delete_media_files_by_ids(&orphan_ids)
+                    .await?
+            } else {
+                0
+            }
+        };
+
         let general_settings = self.general_settings().await?;
         let history_retention_days = general_settings.history_retention_days as i64;
         let user_facing_domain_event_types = user_facing_domain_event_types();
         let operational_domain_event_types = operational_domain_event_types();
-
-        // 1. Orphaned media files (file_path no longer exists on disk)
-        let all_files = self
-            .services
-            .workflow
-            .housekeeping
-            .list_all_media_file_paths()
-            .await?;
-        let orphan_ids: Vec<String> = all_files
-            .into_iter()
-            .filter(|(_, path)| !std::path::Path::new(path).exists())
-            .map(|(id, _)| id)
-            .collect();
-        let orphaned_media_files = if !orphan_ids.is_empty() {
-            self.services
-                .workflow
-                .housekeeping
-                .delete_media_files_by_ids(&orphan_ids)
-                .await?
-        } else {
-            0
-        };
 
         let stale_release_decisions = self
             .services
@@ -608,9 +651,17 @@ impl AppUseCase {
         let roots = self.recycle_root_libraries().await?;
 
         let mut all_entries = Vec::new();
+        let mut list_tasks = tokio::task::JoinSet::new();
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            match crate::recycle_bin::list_entries(&config, &media_root).await {
-                Ok(entries) => {
+            list_tasks.spawn(async move {
+                let entries = crate::recycle_bin::list_entries(&config, &media_root).await;
+                (media_root, entries)
+            });
+        }
+
+        while let Some(result) = list_tasks.join_next().await {
+            match result {
+                Ok((_media_root, Ok(entries))) => {
                     for entry in entries {
                         let Some(library) =
                             self.resolve_recycle_entry_library(&entry, &roots).await?
@@ -622,8 +673,11 @@ impl AppUseCase {
                         }
                     }
                 }
-                Err(e) => {
+                Ok((media_root, Err(e))) => {
                     info!(error = %e, media_root = %media_root, "failed to list recycle entries")
+                }
+                Err(error) => {
+                    info!(error = %error, "recycle entry list task failed")
                 }
             }
         }

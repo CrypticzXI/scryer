@@ -486,7 +486,7 @@ async fn cleanup_superseded_episode_incumbents(
 ) {
     for incumbent in superseded {
         let mut recycle_result = None;
-        let old_path = PathBuf::from(&incumbent.media_file.file_path);
+        let old_path = crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
         if old_path.exists() {
             let manifest = crate::recycle_bin::RecycleManifest::pending_upgrade(
                 incumbent.media_file.file_path.clone(),

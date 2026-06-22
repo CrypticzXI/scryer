@@ -327,9 +327,26 @@ async fn write_manifest(entry_dir: &Path, manifest: &RecycleManifest) -> AppResu
 pub async fn recycle_file(
     config: &RecycleBinConfig,
     source_path: &Path,
-    mut manifest: RecycleManifest,
+    manifest: RecycleManifest,
 ) -> AppResult<Option<RecycleResult>> {
-    let source_metadata = match tokio::fs::metadata(source_path).await {
+    recycle_file_inner(config, source_path, manifest, true).await
+}
+
+pub(crate) async fn recycle_file_pending(
+    config: &RecycleBinConfig,
+    source_path: &Path,
+    manifest: RecycleManifest,
+) -> AppResult<Option<RecycleResult>> {
+    recycle_file_inner(config, source_path, manifest, false).await
+}
+
+async fn recycle_file_inner(
+    config: &RecycleBinConfig,
+    source_path: &Path,
+    mut manifest: RecycleManifest,
+    commit_after_move: bool,
+) -> AppResult<Option<RecycleResult>> {
+    let source_metadata = match tokio::fs::symlink_metadata(source_path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -345,6 +362,12 @@ pub async fn recycle_file(
     // the permanent-delete branch (recycle disabled) and the recycle move against a
     // stale/corrupt/out-of-root source path.
     ensure_source_within_roots(config, source_path)?;
+    if source_metadata.file_type().is_symlink() {
+        return Err(AppError::Validation(format!(
+            "refusing to delete {} because it is a symlink",
+            source_path.display()
+        )));
+    }
     if !source_metadata.is_file() {
         return Err(AppError::Validation(format!(
             "refusing to delete {} because it is not a regular file",
@@ -417,13 +440,15 @@ pub async fn recycle_file(
         return Err(error);
     }
 
-    manifest.status = Some(RECYCLE_STATUS_COMMITTED.to_string());
-    if let Err(error) = write_manifest(&recycle_dir, &manifest).await {
-        warn!(
-            error = %error,
-            entry_dir = %recycle_dir.display(),
-            "file recycled but manifest could not be marked committed; caller may retry commit metadata"
-        );
+    if commit_after_move {
+        manifest.status = Some(RECYCLE_STATUS_COMMITTED.to_string());
+        if let Err(error) = write_manifest(&recycle_dir, &manifest).await {
+            warn!(
+                error = %error,
+                entry_dir = %recycle_dir.display(),
+                "file recycled but manifest could not be marked committed; caller may retry commit metadata"
+            );
+        }
     }
 
     info!(
@@ -445,6 +470,26 @@ async fn recycle_source_to_destination(
     source_path: PathBuf,
     recycled_path: PathBuf,
 ) -> AppResult<()> {
+    match tokio::fs::rename(&source_path, &recycled_path).await {
+        Ok(()) => return Ok(()),
+        Err(error) if is_cross_device_error(&error) => {
+            info!(
+                source = %source_path.display(),
+                recycled = %recycled_path.display(),
+                error = %error,
+                "recycle rename crossed devices; falling back to copy with sampled verification"
+            );
+        }
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to move {} to recycle bin {}: {}",
+                source_path.display(),
+                recycled_path.display(),
+                error
+            )));
+        }
+    }
+
     let mut source_file = tokio::fs::File::open(&source_path).await.map_err(|error| {
         AppError::Repository(format!(
             "failed to open source file {} for recycle: {}",
@@ -512,6 +557,10 @@ async fn recycle_source_to_destination(
             )))
         }
     }
+}
+
+fn is_cross_device_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(18) | Some(17))
 }
 
 fn lexically_normalize_for_policy(path: &Path) -> PathBuf {
@@ -813,12 +862,7 @@ async fn restore_from_recycle_inner(
     overwrite: bool,
     allowed_roots: Option<&[PathBuf]>,
 ) -> AppResult<PathBuf> {
-    if !recycled_path.exists() {
-        return Err(AppError::Repository(format!(
-            "recycled file not found: {}",
-            recycled_path.display()
-        )));
-    }
+    ensure_recycled_restore_source_is_regular(recycled_path).await?;
 
     if let Some(roots) = allowed_roots {
         ensure_restore_destination_within_roots(original_path, roots)?;
@@ -880,6 +924,38 @@ async fn restore_from_recycle_inner(
     Ok(original_path.to_path_buf())
 }
 
+async fn ensure_recycled_restore_source_is_regular(recycled_path: &Path) -> AppResult<()> {
+    let metadata = match tokio::fs::symlink_metadata(recycled_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppError::Repository(format!(
+                "recycled file not found: {}",
+                recycled_path.display()
+            )));
+        }
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to stat recycled file {} before restore: {}",
+                recycled_path.display(),
+                error
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::Validation(format!(
+            "refusing to restore recycled file {} because it is a symlink",
+            recycled_path.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(AppError::Validation(format!(
+            "refusing to restore recycled file {} because it is not a regular file",
+            recycled_path.display()
+        )));
+    }
+    Ok(())
+}
+
 pub async fn commit_recycle_entry(
     recycle_result: &Option<RecycleResult>,
     replacement_file_id: &str,
@@ -902,7 +978,7 @@ pub async fn commit_recycle_entry(
     })?;
     manifest.status = Some(RECYCLE_STATUS_COMMITTED.to_string());
     manifest.replacement_file_id = Some(replacement_file_id.to_string());
-    manifest.replacement_path = Some(replacement_path.display().to_string());
+    manifest.replacement_path = Some(crate::stored_paths::path_to_stored_string(replacement_path));
     write_manifest(&result.entry_dir, &manifest).await
 }
 
@@ -1520,6 +1596,84 @@ mod tests {
         assert_eq!(m.reason, "title_deleted");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recycle_same_device_uses_rename_fast_path() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        let source = tmp.path().join("test.mkv");
+        tokio::fs::write(&source, b"video data").await.unwrap();
+        let before = std::fs::metadata(&source).unwrap();
+
+        let config = test_config(&recycle_dir);
+        let result = recycle_file(&config, &source, test_manifest())
+            .await
+            .unwrap()
+            .expect("recycled");
+
+        let after = std::fs::metadata(&result.recycled_path).unwrap();
+        assert_eq!(before.dev(), after.dev());
+        assert_eq!(
+            before.ino(),
+            after.ino(),
+            "same-device recycle should rename the file instead of copying it"
+        );
+        assert!(!source.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recycle_refuses_symlink_source_without_touching_link_or_target() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        let target = tmp.path().join("target.mkv");
+        let link = tmp.path().join("link.mkv");
+        tokio::fs::write(&target, b"video data").await.unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let config = test_config(&recycle_dir);
+        let result = recycle_file(&config, &link, test_manifest()).await;
+
+        assert!(result.is_err(), "symlink source must be refused");
+        assert!(link.exists(), "refused symlink should remain");
+        assert!(target.exists(), "symlink target should remain untouched");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[tokio::test]
+    async fn commit_recycle_entry_stores_encoded_replacement_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        let source = tmp.path().join("old.mkv");
+        tokio::fs::write(&source, b"old video").await.unwrap();
+        let config = test_config(&recycle_dir);
+        let result = recycle_file_pending(&config, &source, test_manifest())
+            .await
+            .unwrap();
+
+        let replacement_name = std::ffi::OsString::from_vec(b"replacement-\xFF.mkv".to_vec());
+        let replacement_path = tmp.path().join(replacement_name);
+        tokio::fs::write(&replacement_path, b"new video")
+            .await
+            .unwrap();
+        commit_recycle_entry(&result, "replacement-file", &replacement_path)
+            .await
+            .unwrap();
+
+        let result = result.expect("pending recycle result");
+        let manifest = read_test_manifest(&result.entry_dir).await;
+        let stored = manifest.replacement_path.expect("replacement path");
+        assert!(stored.starts_with("scryer-path-v1:u:"));
+        assert_eq!(
+            crate::stored_paths::stored_path_to_path_buf(&stored),
+            replacement_path
+        );
+    }
+
     #[tokio::test]
     async fn test_recycle_disabled_deletes_directly() {
         let tmp = TempDir::new().unwrap();
@@ -1773,32 +1927,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recycle_physical_copy_refuses_directory_source_race() {
-        let tmp = TempDir::new().unwrap();
-        let source_dir = tmp.path().join("source");
-        let recycled_path = tmp.path().join("recycled.mkv");
-        tokio::fs::create_dir_all(&source_dir).await.unwrap();
-
-        let error = recycle_source_to_destination(source_dir.clone(), recycled_path.clone())
-            .await
-            .expect_err("directory source should fail physical recycle");
-        assert!(
-            error.to_string().contains("failed to copy")
-                || error.to_string().contains("content verification")
-                || error.to_string().contains("source file"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            source_dir.exists(),
-            "directory source must not be moved or deleted"
-        );
-        assert!(
-            !recycled_path.exists(),
-            "failed physical recycle must not leave a recycled file"
-        );
-    }
-
-    #[tokio::test]
     async fn test_recycle_nonexistent_file_returns_none() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp.path().join("recycle"));
@@ -1980,6 +2108,80 @@ mod tests {
 
         assert_eq!(restored_to, source);
         assert_eq!(tokio::fs::read(&source).await.unwrap(), recycled_content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_without_overwrite_refuses_symlink_recycle_source() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.mkv");
+        let recycled_link = tmp.path().join("recycled-link.mkv");
+        let destination = tmp.path().join("movie.mkv");
+        tokio::fs::write(&target, b"out of recycle bytes")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(&target, &recycled_link).unwrap();
+
+        let error = restore_from_recycle(&recycled_link, &destination, false)
+            .await
+            .expect_err("symlink recycle source should be refused");
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            tokio::fs::symlink_metadata(&recycled_link)
+                .await
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "refused recycle source link should remain"
+        );
+        assert!(target.exists(), "symlink target should remain untouched");
+        assert!(
+            !destination.exists(),
+            "restore destination should not be created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_with_overwrite_refuses_symlink_recycle_source() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.mkv");
+        let recycled_link = tmp.path().join("recycled-link.mkv");
+        let destination = tmp.path().join("movie.mkv");
+        tokio::fs::write(&target, b"out of recycle bytes")
+            .await
+            .unwrap();
+        tokio::fs::write(&destination, b"current live bytes")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(&target, &recycled_link).unwrap();
+
+        let error = restore_from_recycle(&recycled_link, &destination, true)
+            .await
+            .expect_err("symlink recycle source should be refused");
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            tokio::fs::symlink_metadata(&recycled_link)
+                .await
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "refused recycle source link should remain"
+        );
+        assert!(target.exists(), "symlink target should remain untouched");
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"current live bytes",
+            "overwrite restore should not touch the live destination"
+        );
     }
 
     #[tokio::test]

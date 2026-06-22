@@ -847,37 +847,18 @@ impl AppUseCase {
                         if entry.manifest.title_id.as_deref() != Some(title_id) {
                             continue;
                         }
-                        match crate::recycle_bin::purge_committed_entry(
-                            &config,
-                            &entry.entry_dir,
-                            &entry.manifest,
-                        )
+                        match self
+                            .purge_recycle_entry_after_validation(
+                                &media_root,
+                                &config,
+                                &entry.entry_dir,
+                                &entry.manifest,
+                                actor.clone(),
+                            )
                         .await
                         {
                             Ok(true) => {
                                 purged += 1;
-                                let event = new_title_domain_event(
-                                    actor.clone(),
-                                    title,
-                                    scryer_domain::DomainEventPayload::MediaFileDeleted(
-                                        scryer_domain::MediaFileDeletedEventData {
-                                            title: title_context_snapshot(title),
-                                            media_updates: vec![deleted_media_update(
-                                                entry.manifest.original_path.clone(),
-                                            )],
-                                            file_id: entry.manifest.original_file_id.clone(),
-                                            reason: scryer_domain::MediaFileDeletedReason::RecycleBinPurged,
-                                            episode_ids: Vec::new(),
-                                        },
-                                    ),
-                                );
-                                if let Err(error) = self.append_domain_event(event).await {
-                                    warn!(
-                                        error = %error,
-                                        title_id = %title_id,
-                                        "recycle entry purged for deleted title but audit event could not be recorded"
-                                    );
-                                }
                             }
                             Ok(false) => {}
                             Err(error) => warn!(
