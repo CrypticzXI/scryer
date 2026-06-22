@@ -1738,6 +1738,7 @@ impl std::fmt::Display for AuthlessAccessRejectReason {
     }
 }
 
+#[cfg(test)]
 fn authless_access_decision(
     snapshot: &scryer_interface::context::AuthRuntimeStateSnapshot,
     policy: AuthlessAccessPolicy,
@@ -1762,16 +1763,15 @@ fn authless_access_decision(
 
     if has_proxy_forwarding_headers(headers) {
         return match forwarded_client_ip_chain(headers) {
-            Ok(client_ips) => match client_ips
+            Ok(client_ips) => client_ips
                 .into_iter()
                 .find(|client_ip| !is_local_network_ip(*client_ip))
-            {
-                Some(public_ip) => AuthlessAccessDecision::Reject(
-                    AuthlessAccessRejectReason::PublicForwardedClient(public_ip),
-                ),
-                None => AuthlessAccessDecision::Allow,
-            },
-            Err(()) => {
+                .map_or(AuthlessAccessDecision::Allow, |public_ip| {
+                    AuthlessAccessDecision::Reject(
+                        AuthlessAccessRejectReason::PublicForwardedClient(public_ip),
+                    )
+                }),
+            Err(_) => {
                 AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::MalformedForwardedClient)
             }
         };

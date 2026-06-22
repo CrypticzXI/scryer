@@ -99,6 +99,11 @@ fn write_executable_script(path: &std::path::Path, content: &str) {
 }
 
 async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) {
+    let root_folder_path = match facet {
+        MediaFacet::Movie => "/data/movies",
+        MediaFacet::Series => "/data/series",
+        MediaFacet::Anime => "/data/anime",
+    };
     TitleRepository::create(
         &ctx.titles,
         scryer_domain::Title {
@@ -109,6 +114,7 @@ async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) 
             monitored: true,
             tags: vec![],
             external_ids: vec![],
+            root_folder_id: scryer_domain::root_folder_id_for_path(root_folder_path),
             created_by: None,
             created_at: chrono::Utc::now(),
             year: Some(2024),

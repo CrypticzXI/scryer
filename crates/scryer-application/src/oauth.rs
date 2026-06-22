@@ -124,6 +124,10 @@ impl AppUseCase {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "authorization code creation mirrors the OAuth request parameters and source marker"
+    )]
     pub async fn create_oauth_authorization_code(
         &self,
         user: &User,

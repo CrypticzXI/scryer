@@ -2704,6 +2704,7 @@ async fn title_root_resolution_uses_owning_library_roots() {
         .expect("custom library should be created");
     let mut title = make_due_hydration_title("custom-library-title", MediaFacet::Movie, 42);
     title.library_id = kids_library.id.clone();
+    title.root_folder_id = kids_library.roots[0].id.clone();
 
     let import_paths = crate::import_workflow::resolve_import_paths(&app, &title)
         .await
@@ -2736,7 +2737,7 @@ async fn update_default_library_rejects_empty_roots_without_persisting_them() {
         .await
         .expect_err("empty default roots should be rejected");
     assert!(
-        matches!(error, AppError::Validation(ref message) if message.contains("default libraries require at least one root folder")),
+        matches!(error, AppError::Validation(ref message) if message.contains("libraries require at least one root folder")),
         "unexpected error: {error:?}"
     );
 

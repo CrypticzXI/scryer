@@ -57,10 +57,10 @@ pub(crate) async fn execute_upgrade(
     recycle_config: &RecycleBinConfig,
     import_mode: ImportMode,
 ) -> AppResult<UpgradeResult> {
-    ensure_old_file_disposition_ready(recycle_config)?;
     let audit_actor = DomainEventActor::from(actor);
 
     let old_path = stored_path_to_path_buf(&existing_file.file_path);
+    ensure_old_file_disposition_ready(recycle_config, &old_path)?;
     let dest_path_string = path_to_stored_string(dest_path);
     let source_path_string = path_to_stored_string(source_path);
 
@@ -146,7 +146,10 @@ struct PreparedUpgradeReplacement {
     source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 
-fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppResult<()> {
+fn ensure_old_file_disposition_ready(
+    recycle_config: &RecycleBinConfig,
+    old_path: &Path,
+) -> AppResult<()> {
     if recycle_config.source_roots.is_empty() {
         return Err(AppError::Validation(
             "refusing to upgrade because no configured media roots are available for old-file cleanup"
@@ -162,6 +165,7 @@ fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppRe
                 .unwrap_or("invalid recycle bin configuration")
         )));
     }
+    recycle_bin::ensure_source_within_roots(recycle_config, old_path)?;
     Ok(())
 }
 

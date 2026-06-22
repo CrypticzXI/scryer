@@ -33,13 +33,27 @@ impl Default for MockLibraryRepo {
 
 pub(super) fn mock_default_library(facet: MediaFacet) -> Library {
     let now = Utc::now();
+    let path = match facet {
+        MediaFacet::Movie => "/data/movies",
+        MediaFacet::Series => "/data/series",
+        MediaFacet::Anime => "/data/anime",
+    }
+    .to_string();
+    let library_id = scryer_domain::default_library_id_for_facet(&facet);
     Library {
-        id: scryer_domain::default_library_id_for_facet(&facet),
+        id: library_id.clone(),
         facet: facet.clone(),
         name: format!("Default {}", facet.as_str()),
         slug: scryer_domain::default_library_slug_for_facet(&facet).to_string(),
         is_default: true,
-        roots: Vec::new(),
+        roots: vec![scryer_domain::LibraryRoot {
+            id: scryer_domain::root_folder_id_for_path(&path),
+            library_id,
+            path,
+            is_default: true,
+            created_at: now,
+            updated_at: now,
+        }],
         created_at: now,
         updated_at: now,
     }

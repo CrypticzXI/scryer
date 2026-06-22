@@ -426,12 +426,13 @@ fn parse_sidecar_suffix_tokens(suffix: &str) -> (Option<String>, bool, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "runtime-media-analysis")]
+    use std::time::Duration;
     use std::{
         collections::{BTreeMap, HashSet},
         fs,
         path::Path,
         sync::Arc,
-        time::Duration,
     };
 
     use async_trait::async_trait;
@@ -892,6 +893,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
     async fn reconcile_uses_content_language_for_languageless_sidecar() {
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -900,7 +902,7 @@ mod tests {
         fs::write(&video, b"video").expect("video");
         fs::write(
             &subtitle,
-            "1\n00:00:01,000 --> 00:00:02,000\nThank you for staying with us tonight, because this matters.\n\n2\n00:00:03,000 --> 00:00:04,000\nWe still have plenty of time to solve this together.\n",
+            "1\n00:00:01,000 --> 00:00:02,000\nThank you for staying with us tonight, because this conversation matters to everyone in the room.\n\n2\n00:00:03,000 --> 00:00:04,000\nWe still have plenty of time to solve this together if we keep listening carefully.\n\n3\n00:00:05,000 --> 00:00:06,000\nThe plan is simple, practical, and written in plain English for the whole team.\n",
         )
         .expect("subtitle");
 
@@ -920,6 +922,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
     async fn reconcile_uses_srt_hi_probe_when_filename_has_no_hi_token() {
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -928,7 +931,7 @@ mod tests {
         fs::write(&video, b"video").expect("video");
         fs::write(
             &subtitle,
-            "1\n00:00:01,000 --> 00:00:02,000\n[door opens]\n\n2\n00:00:03,000 --> 00:00:04,000\n♪ music ♪\n\n3\n00:00:05,000 --> 00:00:06,000\nWe should go now.\n",
+            "1\n00:00:01,000 --> 00:00:02,000\n[door opens]\n\n2\n00:00:03,000 --> 00:00:04,000\n[phone rings]\n\n3\n00:00:05,000 --> 00:00:06,000\n♪ dramatic music builds ♪\n\n4\n00:00:07,000 --> 00:00:08,000\nNARRATOR: We should go now before the storm reaches the harbor.\n",
         )
         .expect("subtitle");
 
@@ -955,7 +958,7 @@ mod tests {
         fs::write(&video, b"video").expect("video");
         fs::write(
             &subtitle,
-            "1\n00:00:01,000 --> 00:00:02,000\nThank you for staying with us tonight, because this matters.\n\n2\n00:00:03,000 --> 00:00:04,000\nWe still have plenty of time to solve this together.\n",
+            "1\n00:00:01,000 --> 00:00:02,000\nThank you for staying with us tonight, because this conversation matters to everyone in the room.\n\n2\n00:00:03,000 --> 00:00:04,000\nWe still have plenty of time to solve this together if we keep listening carefully.\n\n3\n00:00:05,000 --> 00:00:06,000\nThe plan is simple, practical, and written in plain English for the whole team.\n",
         )
         .expect("subtitle");
 
@@ -971,6 +974,7 @@ mod tests {
         assert_eq!(first_cache, second_cache);
     }
 
+    #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
     async fn edited_sidecar_reprobes_when_file_changes() {
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -992,7 +996,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(1));
         fs::write(
             &subtitle,
-            "1\n00:00:01,000 --> 00:00:02,000\n今夜ここに残ってくれて本当にありがとう。まだやるべきことがたくさんある。\n\n2\n00:00:03,000 --> 00:00:04,000\n誰も代わりに解決できないから、私たちが最後までやり切るしかない。\n",
+            "1\n00:00:01,000 --> 00:00:02,000\n今夜ここに残ってくれて本当にありがとう。まだやるべきことがたくさんあるので、最後まで一緒に確認しましょう。\n\n2\n00:00:03,000 --> 00:00:04,000\n誰も代わりに解決できないから、私たちが落ち着いて話し合いながら最後までやり切るしかありません。\n\n3\n00:00:05,000 --> 00:00:06,000\nこの計画は複雑ではありません。必要なのは、状況をよく見て丁寧に進めることだけです。\n",
         )
         .expect("subtitle");
 

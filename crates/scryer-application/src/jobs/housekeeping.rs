@@ -7,7 +7,7 @@ use crate::events::retention::{
     user_facing_domain_event_types,
 };
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
@@ -28,7 +28,27 @@ struct RecycleRootLibrary {
 }
 
 fn recycle_path_is_under_root(path: &str, root: &str) -> bool {
-    crate::catalog_workflow::library_path_is_under_root(path, root)
+    let path = crate::stored_paths::stored_path_to_path_buf(path);
+    let root = crate::stored_paths::stored_path_to_path_buf(root);
+    crate::recycle_bin::path_is_under_configured_root(&path, &root)
+}
+
+fn recycle_library_root_paths(
+    library: &RecycleEntryLibrary,
+    roots: &[RecycleRootLibrary],
+) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .filter(|root| root.library.id == library.id)
+        .map(|root| crate::stored_paths::stored_path_to_path_buf(&root.media_root))
+        .collect()
+}
+
+fn recycle_restore_destination_is_under_library_roots(
+    path: &Path,
+    library_roots: &[PathBuf],
+) -> bool {
+    crate::recycle_bin::restore_destination_is_under_configured_roots(path, library_roots)
 }
 
 fn recycled_item_from_entry(
@@ -112,10 +132,7 @@ impl AppUseCase {
         }
 
         if let Some(root) = roots.iter().find(|root| {
-            recycle_path_is_under_root(
-                &entry.manifest.original_path,
-                root.normalized_media_root.as_str(),
-            )
+            recycle_path_is_under_root(&entry.manifest.original_path, root.media_root.as_str())
         }) {
             return Ok(Some(root.library.clone()));
         }
@@ -644,8 +661,18 @@ impl AppUseCase {
                     scryer_domain::LibraryPermission::ManageTitles,
                 )
                 .await?;
-
                 let original_path = std::path::Path::new(&manifest.original_path);
+                let library_roots = recycle_library_root_paths(&library, &roots);
+                if !recycle_restore_destination_is_under_library_roots(
+                    original_path,
+                    &library_roots,
+                ) {
+                    return Err(AppError::Validation(format!(
+                        "refusing to restore recycle entry {} because original path is outside the resolved library roots: {}",
+                        entry_id, manifest.original_path
+                    )));
+                }
+
                 let file_name = original_path
                     .file_name()
                     .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
@@ -661,9 +688,13 @@ impl AppUseCase {
                 // User-facing restore must never overwrite a live file at the
                 // original path; restore_from_recycle diverts to a `-restored`
                 // sibling on conflict and returns where it actually landed.
-                let restored_to =
-                    crate::recycle_bin::restore_from_recycle(&recycled_file, original_path, false)
-                        .await?;
+                let restored_to = crate::recycle_bin::restore_from_recycle_with_roots(
+                    &recycled_file,
+                    original_path,
+                    false,
+                    &library_roots,
+                )
+                .await?;
                 if let Err(error) = tokio::fs::remove_dir_all(&entry_dir).await {
                     tracing::warn!(
                         error = %error,
@@ -841,5 +872,58 @@ impl AppUseCase {
             }
         }
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_library() -> RecycleEntryLibrary {
+        RecycleEntryLibrary {
+            id: "library-1".to_string(),
+            name: "Library".to_string(),
+        }
+    }
+
+    #[test]
+    fn recycle_library_root_paths_use_raw_media_root_for_filesystem_policy() {
+        let library = test_library();
+        let roots = vec![RecycleRootLibrary {
+            media_root: r"/tmp/media\raw".to_string(),
+            normalized_media_root: "/tmp/media/raw".to_string(),
+            library: library.clone(),
+        }];
+
+        let policy_roots = recycle_library_root_paths(&library, &roots);
+        assert_eq!(policy_roots, vec![PathBuf::from(r"/tmp/media\raw")]);
+
+        #[cfg(not(windows))]
+        assert!(
+            !recycle_restore_destination_is_under_library_roots(
+                Path::new("/tmp/media/raw/Movie.mkv"),
+                &policy_roots
+            ),
+            "non-Windows restore validation must fail closed for ambiguous raw roots"
+        );
+    }
+
+    #[test]
+    fn recycle_restore_destination_accepts_normal_raw_root() {
+        let library = test_library();
+        let roots = vec![RecycleRootLibrary {
+            media_root: "/tmp/media".to_string(),
+            normalized_media_root: "/tmp/media".to_string(),
+            library: library.clone(),
+        }];
+
+        let policy_roots = recycle_library_root_paths(&library, &roots);
+        assert!(
+            recycle_restore_destination_is_under_library_roots(
+                Path::new("/tmp/media/Movie.mkv"),
+                &policy_roots
+            ),
+            "normal raw roots should still allow file destinations under the root"
+        );
     }
 }

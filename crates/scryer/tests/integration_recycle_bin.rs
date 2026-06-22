@@ -620,6 +620,146 @@ async fn restoring_conflict_scans_title_and_tracks_restored_file_as_additional()
 }
 
 #[tokio::test]
+async fn restoring_out_of_root_manifest_is_refused_and_entry_remains() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root = tempfile::tempdir().expect("library root");
+    let outside = tempfile::tempdir().expect("outside root");
+    let library = seed_library(&ctx, "Restore Guard", root.path()).await;
+    seed_title(&ctx, "title-restore-guard", &library).await;
+
+    let source_path = root.path().join("Out.Of.Root.Movie.mkv");
+    let outside_path = outside.path().join("Out.Of.Root.Movie.mkv");
+    std::fs::write(&source_path, b"recycled original").expect("write source file");
+    let recycle_result = recycle_file(
+        &RecycleBinConfig {
+            enabled: true,
+            base_path: root.path().join(".scryer-recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![root.path().to_path_buf()],
+        },
+        &source_path,
+        RecycleManifest {
+            schema: None,
+            entry_id: None,
+            source_operation_id: None,
+            recycled_at: Utc::now().to_rfc3339(),
+            original_path: outside_path.to_string_lossy().to_string(),
+            original_file_id: None,
+            size_bytes: 17,
+            title_id: Some("title-restore-guard".to_string()),
+            media_root: None,
+            reason: "file_deleted".to_string(),
+            status: None,
+            replacement_file_id: None,
+            replacement_path: None,
+        },
+    )
+    .await
+    .expect("recycle source file")
+    .expect("file should be recycled");
+    let manager = manage_titles_actor("manager", std::slice::from_ref(&library.id));
+
+    let error = ctx
+        .app
+        .restore_recycled_item(&manager, &recycle_result.entry_id)
+        .await
+        .expect_err("out-of-root manifest should be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("outside the resolved library roots"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !outside_path.exists(),
+        "restore must not create the out-of-root destination"
+    );
+    assert!(
+        recycle_result.entry_dir.exists(),
+        "refused restore should keep the recycle entry"
+    );
+    assert!(
+        recycle_result.recycled_path.exists(),
+        "refused restore should keep the recycled file"
+    );
+}
+
+#[tokio::test]
+async fn restoring_root_equal_manifest_is_refused_and_entry_remains() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root = tempfile::tempdir().expect("library root");
+    let library = seed_library(&ctx, "Restore Root Guard", root.path()).await;
+    seed_title(&ctx, "title-restore-root-guard", &library).await;
+
+    let source_path = root.path().join("Root.Equal.Movie.mkv");
+    std::fs::write(&source_path, b"recycled original").expect("write source file");
+    let recycle_result = recycle_file(
+        &RecycleBinConfig {
+            enabled: true,
+            base_path: root.path().join(".scryer-recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![root.path().to_path_buf()],
+        },
+        &source_path,
+        RecycleManifest {
+            schema: None,
+            entry_id: None,
+            source_operation_id: None,
+            recycled_at: Utc::now().to_rfc3339(),
+            original_path: root.path().to_string_lossy().to_string(),
+            original_file_id: None,
+            size_bytes: 17,
+            title_id: Some("title-restore-root-guard".to_string()),
+            media_root: None,
+            reason: "file_deleted".to_string(),
+            status: None,
+            replacement_file_id: None,
+            replacement_path: None,
+        },
+    )
+    .await
+    .expect("recycle source file")
+    .expect("file should be recycled");
+    let manager = manage_titles_actor("manager", std::slice::from_ref(&library.id));
+    let root_name = root
+        .path()
+        .file_name()
+        .expect("temp root has file name")
+        .to_string_lossy();
+    let escaped_sibling = root.path().with_file_name(format!("{root_name}-restored"));
+
+    let error = ctx
+        .app
+        .restore_recycled_item(&manager, &recycle_result.entry_id)
+        .await
+        .expect_err("root-equal manifest should be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("outside the resolved library roots"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !escaped_sibling.exists(),
+        "restore must not create a -restored sibling outside the root"
+    );
+    assert!(
+        recycle_result.entry_dir.exists(),
+        "refused restore should keep the recycle entry"
+    );
+    assert!(
+        recycle_result.recycled_path.exists(),
+        "refused restore should keep the recycled file"
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_paths_are_inert_and_direct_delete_new_files() {
     let ctx = TestContext::new().await;
     seed_recycle_bin_setting_definition(&ctx).await;

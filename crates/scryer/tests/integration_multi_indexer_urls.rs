@@ -11,8 +11,8 @@ use std::sync::Arc;
 use common::{disable_platform_keystore_for_tests, load_fixture};
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, INDEXER_ROUTING_SETTINGS_KEY, IndexerPluginProvider,
-    IndexerRoutingSettingsEntry, JwtAuthConfig, MovieFacetHandler, SETTINGS_SCOPE_SYSTEM,
-    SeriesFacetHandler,
+    IndexerRoutingSettingsEntry, JwtAuthConfig, LibraryRootDraft, MovieFacetHandler,
+    SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
 };
 use scryer_domain::{ExternalId, IndexerConfig, MediaFacet, NewTitle, User};
 use scryer_infrastructure::SettingDefinitionSeed;
@@ -23,7 +23,7 @@ use scryer_infrastructure::sqlite::{
 use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadSubmissionStore,
     FileSystemLibraryScanner, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, LibraryStore, MediaFileStore,
     MultiIndexerSearchClient, PendingReleaseStore, ReleaseStore, SqliteServices,
     SubtitleDownloadStore, TitleImageStore, WantedStore, WorkflowOperationStore,
 };
@@ -196,9 +196,29 @@ where
     let title_store = Arc::new(TitleStore::new(datastore.clone()));
     let show_store = Arc::new(ShowStore::new(datastore.clone()));
     let user_store = Arc::new(UserStore::new(datastore.clone()));
+    let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+    for (library_id, name, slug, root_path) in [
+        ("movie_default_library", "Movies", "movies", "/data/movies"),
+        ("series_default_library", "Series", "series", "/data/series"),
+        ("anime_default_library", "Anime", "anime", "/data/anime"),
+    ] {
+        scryer_application::LibraryRepository::update(
+            &*library_store,
+            library_id,
+            name.to_string(),
+            slug.to_string(),
+            vec![LibraryRootDraft {
+                path: root_path.to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("seed default library root");
+    }
     let titles: Arc<dyn scryer_application::TitleRepository> = title_store;
     let shows: Arc<dyn scryer_application::ShowRepository> = show_store;
     let users: Arc<dyn scryer_application::UserRepository> = user_store;
+    let libraries: Arc<dyn scryer_application::LibraryRepository> = library_store;
     let indexer_configs_repo: Arc<dyn scryer_application::IndexerConfigRepository> =
         indexer_config_store;
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
@@ -239,6 +259,7 @@ where
         ":memory:".to_string(),
     )
     .with_media_files(media_file_store)
+    .with_libraries(libraries)
     .with_wanted_items(wanted_store)
     .with_pending_releases(pending_release_store)
     .with_blocklist_repo(blocklist_store)

@@ -109,17 +109,20 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 102);
+    assert_eq!(query_field_count, 103);
     assert_eq!(mutation_field_count, 157);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 433);
-    assert_eq!(kind_count("OBJECT"), 223);
+    assert_eq!(public_types.len(), 435);
+    assert_eq!(kind_count("OBJECT"), 224);
     assert_eq!(kind_count("INPUT_OBJECT"), 138);
-    assert_eq!(kind_count("ENUM"), 62);
+    assert_eq!(kind_count("ENUM"), 63);
     assert_eq!(kind_count("SCALAR"), 10);
     assert!(query_field_names.contains(&"backupSettings"));
+    assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(mutation_field_names.contains(&"updateBackupSettings"));
     assert!(public_type_names.contains(&"BackupSettingsPayload"));
+    assert!(public_type_names.contains(&"RuntimeInfoPayload"));
+    assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
 }
 

@@ -71,6 +71,7 @@ fn test_title(name: &str) -> scryer_domain::Title {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),
@@ -848,41 +849,7 @@ async fn nzbget_submit_download() {
         .mount(&ctx.nzbget_server)
         .await;
 
-    let title = scryer_domain::Title {
-        id: "test-title-id".to_string(),
-        name: "Test Movie Title".to_string(),
-        facet: scryer_domain::MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: chrono::Utc::now(),
-        year: Some(2024),
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
+    let title = test_title("Test Movie Title");
 
     let source_hint = format!("{}/getnzb/test.nzb", ctx.nzbget_server.uri());
     let result = new_submit_nzbget_client(&ctx.nzbget_server.uri())
@@ -934,41 +901,7 @@ async fn nzbget_submit_download_supports_v25_3_append_signature() {
         .mount(&ctx.nzbget_server)
         .await;
 
-    let title = scryer_domain::Title {
-        id: "test-title-id".to_string(),
-        name: "Test Movie Title".to_string(),
-        facet: scryer_domain::MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: chrono::Utc::now(),
-        year: Some(2024),
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
+    let title = test_title("Test Movie Title");
 
     let source_hint = format!("{}/getnzb/test.nzb", ctx.nzbget_server.uri());
     let result = new_submit_nzbget_client(&ctx.nzbget_server.uri())
@@ -986,41 +919,7 @@ async fn nzbget_submit_download_supports_v25_3_append_signature() {
 #[tokio::test]
 async fn nzbget_submit_download_no_source_hint() {
     let ctx = TestContext::new().await;
-    let title = scryer_domain::Title {
-        id: "test-id".to_string(),
-        name: "Test".to_string(),
-        facet: scryer_domain::MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: chrono::Utc::now(),
-        year: None,
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
+    let title = test_title("Test");
 
     let result = new_submit_nzbget_client(&ctx.nzbget_server.uri())
         .await
@@ -2234,41 +2133,7 @@ async fn sabnzbd_submit_download() {
         .mount(&server)
         .await;
 
-    let title = scryer_domain::Title {
-        id: "test-title-id".to_string(),
-        name: "Test Movie Title".to_string(),
-        facet: scryer_domain::MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: chrono::Utc::now(),
-        year: Some(2024),
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
+    let title = test_title("Test Movie Title");
 
     let nzb_url = format!("{}/getnzb?id=abc123&apikey=xyz", server.uri());
     let result = new_submit_sabnzbd_client(&server.uri())
@@ -2291,41 +2156,7 @@ async fn sabnzbd_submit_download() {
 
 #[tokio::test]
 async fn sabnzbd_submit_download_no_source_hint() {
-    let title = scryer_domain::Title {
-        id: "test-id".to_string(),
-        name: "Test".to_string(),
-        facet: scryer_domain::MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: chrono::Utc::now(),
-        year: None,
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    };
+    let title = test_title("Test");
 
     let server = MockServer::start().await;
     let result = new_submit_sabnzbd_client(&server.uri())

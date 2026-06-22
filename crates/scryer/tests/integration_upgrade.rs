@@ -813,6 +813,78 @@ async fn upgrade_with_unknown_source_roots_keeps_old_record() {
 }
 
 #[tokio::test]
+async fn upgrade_with_out_of_root_old_path_keeps_old_record_before_replacement() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-out-of-root").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let outside_dir = tempfile::tempdir().expect("outside dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = outside_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old content").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new content 1080p better").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-out-of-root", &old_path, 11, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 600,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &config,
+        },
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("out-of-root old file should refuse old-file cleanup before replacement"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("outside the configured media roots"),
+        "unexpected error: {error}"
+    );
+    assert!(old_path.exists(), "old file should remain on disk");
+    assert!(
+        !new_dest.exists(),
+        "replacement should not be imported after preflight refusal"
+    );
+    let existing_after = ctx
+        .media_files
+        .get_media_file_by_id(&existing.id)
+        .await
+        .expect("lookup existing media file")
+        .expect("existing DB row should remain");
+    assert_eq!(
+        existing_after.file_path,
+        old_path.to_string_lossy().to_string()
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
     let ctx = TestContext::new().await;
     let app = app_with_real_fs(&ctx);

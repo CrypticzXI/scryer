@@ -1552,7 +1552,7 @@ mod tests {
             .await
             .expect("persisted config should be reused");
 
-        let seen = provider.seen_configs.lock().unwrap();
+        let seen = provider.seen_configs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].base_url, "https://api.nzbgeek.info");
         assert_eq!(

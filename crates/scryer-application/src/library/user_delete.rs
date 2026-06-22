@@ -889,7 +889,7 @@ fn build_media_file_delete_manifest(
         paths.insert(subtitle_path);
     }
 
-    ensure_paths_within_roots(&paths, context.root_folders, context.facet, "media file")?;
+    ensure_leaf_paths_within_roots(&paths, context.root_folders, context.facet, "media file")?;
 
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
@@ -905,7 +905,7 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
     let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
     paths.insert(subtitle_path);
 
-    ensure_paths_within_roots(&paths, context.root_folders, context.facet, "subtitle")?;
+    ensure_leaf_paths_within_roots(&paths, context.root_folders, context.facet, "subtitle")?;
 
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
@@ -916,11 +916,10 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
     ))
 }
 
-/// Ensure every leaf path lies inside one of the configured library root folders
-/// before it can be deleted. Mirrors the containment guard the title-delete flow
-/// applies to folders, closing the gap where a stale/corrupt DB `file_path` could
-/// otherwise delete a file anywhere on disk. Fails closed when no roots resolve
-/// (`normalize_root_folders` rejects an empty set).
+/// Ensure every path lies inside one of the configured library root folders.
+/// The title-folder delete flow applies additional folder-specific checks before
+/// this guard. Fails closed when no roots resolve.
+#[cfg(test)]
 fn ensure_paths_within_roots(
     paths: &BTreeSet<PathBuf>,
     root_folders: Vec<RootFolderEntry>,
@@ -930,6 +929,37 @@ fn ensure_paths_within_roots(
     let normalized_roots = normalize_root_folders(root_folders, facet)?;
     for path in paths {
         if normalized_roots.iter().all(|root| !path.starts_with(root)) {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it is outside the configured root folders",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Ensure every leaf delete target has a parent directory under a configured root.
+/// This rejects root-equal media/subtitle paths even if the root path itself is a
+/// regular file or symlink.
+fn ensure_leaf_paths_within_roots(
+    paths: &BTreeSet<PathBuf>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
+    label: &str,
+) -> AppResult<()> {
+    let normalized_roots = normalize_root_folders(root_folders, facet)?;
+    for path in paths {
+        let Some(parent) = path.parent() else {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it has no parent directory",
+                path.display()
+            )));
+        };
+        if path.file_name().is_none()
+            || normalized_roots
+                .iter()
+                .all(|root| !parent.starts_with(root))
+        {
             return Err(AppError::Validation(format!(
                 "refusing to delete {label} {} because it is outside the configured root folders",
                 path.display()
@@ -1356,6 +1386,54 @@ mod tests {
         assert!(
             result.is_err(),
             "no configured roots must fail closed rather than allowing deletion"
+        );
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_accepts_file_parent_under_root() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime/Show/file.mkv"));
+        paths.insert(PathBuf::from("/data/anime/Show/file.srt"));
+
+        ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file")
+            .expect("leaf files under a configured root must be accepted");
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_rejects_root_path() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime"));
+
+        let result =
+            ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            result.is_err(),
+            "leaf delete containment must reject a path equal to the configured root"
+        );
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_rejects_sibling_prefix_path() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime-secret/file.mkv"));
+
+        let result =
+            ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "subtitle");
+        assert!(
+            result.is_err(),
+            "leaf delete containment must reject sibling-prefix paths"
         );
     }
 }

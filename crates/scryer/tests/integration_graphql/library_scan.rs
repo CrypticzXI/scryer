@@ -1,5 +1,34 @@
 use super::*;
 
+async fn update_library_paths_for_scan(
+    ctx: &TestContext,
+    movie_path: &str,
+    series_path: &str,
+    anime_path: &str,
+) {
+    let update = gql(
+        ctx,
+        r#"
+        mutation UpdateLibraryPaths($input: UpdateLibraryPathsInput!) {
+          updateLibraryPaths(input: $input) {
+            moviePath
+            seriesPath
+            animePath
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "moviePath": movie_path,
+            "seriesPath": series_path,
+            "animePath": anime_path
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+}
+
 #[tokio::test]
 async fn graphql_scan_title_library() {
     let ctx = TestContext::new().await;
@@ -1156,6 +1185,14 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
 async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_folder_path() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    update_library_paths_for_scan(
+        &ctx,
+        "/tmp/movies-unused",
+        "/tmp/series-unused",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1190,7 +1227,6 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         .expect("create collection");
     let episode = create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Existing Anime [BD]");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
@@ -1275,6 +1311,14 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
 async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_folder_path() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    update_library_paths_for_scan(
+        &ctx,
+        "/tmp/movies-unused",
+        media_root.path().to_string_lossy().as_ref(),
+        "/tmp/anime-unused",
+    )
+    .await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1309,7 +1353,6 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
         .expect("create collection");
     let episode = create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Existing Series [WEB-DL]");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
@@ -1394,6 +1437,14 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
 async fn library_series_scan_existing_unhydrated_title_without_episodes_completes_session() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    update_library_paths_for_scan(
+        &ctx,
+        "/tmp/movies-unused",
+        media_root.path().to_string_lossy().as_ref(),
+        "/tmp/anime-unused",
+    )
+    .await;
 
     let title = ctx
         .titles
@@ -1439,7 +1490,6 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
         .await
         .expect("create pending title");
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Pending Series [WEB-DL]");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
@@ -1630,6 +1680,14 @@ async fn library_series_scan_counts_new_title_files_before_post_hydration_scan_p
 async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_folder() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    update_library_paths_for_scan(
+        &ctx,
+        media_root.path().to_string_lossy().as_ref(),
+        "/tmp/series-unused",
+        "/tmp/anime-unused",
+    )
+    .await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1652,7 +1710,6 @@ async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_fold
         .await
         .expect("set stale folder path");
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let movie_dir = media_root.path().join("Existing Movie [2160p]");
     std::fs::create_dir_all(&movie_dir).expect("create movie dir");
     let movie_path = movie_dir.join("Existing.Movie.2024.2160p.WEB-DL.mkv");
@@ -1739,6 +1796,14 @@ async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_fold
 async fn library_movie_scan_matches_existing_title_from_movie_nfo_when_folder_missing() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    update_library_paths_for_scan(
+        &ctx,
+        media_root.path().to_string_lossy().as_ref(),
+        "/tmp/series-unused",
+        "/tmp/anime-unused",
+    )
+    .await;
 
     let title = create_catalog_title(
         &ctx,
@@ -1753,7 +1818,6 @@ async fn library_movie_scan_matches_existing_title_from_movie_nfo_when_folder_mi
     )
     .await;
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let movie_dir = media_root.path().join("Existing Movie [2160p]");
     std::fs::create_dir_all(&movie_dir).expect("create movie dir");
     let movie_path = movie_dir.join("Existing.Movie.2024.2160p.WEB-DL.mkv");

@@ -448,9 +448,7 @@ async fn sqlite_titles(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> AppResul
         .fetch_all(&mut **tx)
         .await
         .map_err(repo_err)?;
-    rows.into_iter()
-        .map(|row| title_row_from_sqlite(row))
-        .collect()
+    rows.into_iter().map(title_row_from_sqlite).collect()
 }
 
 async fn postgres_titles(
@@ -464,9 +462,7 @@ async fn postgres_titles(
     .fetch_all(&mut **tx)
     .await
     .map_err(repo_err)?;
-    rows.into_iter()
-        .map(|row| title_row_from_postgres(row))
-        .collect()
+    rows.into_iter().map(title_row_from_postgres).collect()
 }
 
 fn title_row_from_sqlite(row: sqlx::sqlite::SqliteRow) -> AppResult<TitleRow> {

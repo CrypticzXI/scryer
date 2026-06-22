@@ -2,6 +2,7 @@ use crate::{AppError, AppResult};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
 
 pub const RECYCLE_MANIFEST_SCHEMA: &str = "scryer.recycle-entry.v1";
@@ -23,7 +24,7 @@ pub struct RecycleBinConfig {
     /// Allowlist of configured media roots the source file must live under before
     /// it may be recycled or (when recycling is disabled) permanently deleted.
     /// An empty list means the roots are unknown (legacy/misconfigured) and the
-    /// containment check is skipped with a warning rather than refusing.
+    /// source-removing operation must fail closed.
     pub source_roots: Vec<PathBuf>,
 }
 
@@ -328,15 +329,28 @@ pub async fn recycle_file(
     source_path: &Path,
     mut manifest: RecycleManifest,
 ) -> AppResult<Option<RecycleResult>> {
-    // If the source doesn't exist, nothing to recycle.
-    if !source_path.exists() {
-        return Ok(None);
-    }
+    let source_metadata = match tokio::fs::metadata(source_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to stat source file {} before recycle/delete: {}",
+                source_path.display(),
+                error
+            )));
+        }
+    };
 
     // Refuse to act on a path outside the configured media roots. This guards both
     // the permanent-delete branch (recycle disabled) and the recycle move against a
     // stale/corrupt/out-of-root source path.
     ensure_source_within_roots(config, source_path)?;
+    if !source_metadata.is_file() {
+        return Err(AppError::Validation(format!(
+            "refusing to delete {} because it is not a regular file",
+            source_path.display()
+        )));
+    }
 
     if !config.enabled {
         if let Err(err) = tokio::fs::remove_file(source_path).await
@@ -383,10 +397,11 @@ pub async fn recycle_file(
     manifest
         .source_operation_id
         .get_or_insert_with(|| scryer_domain::Id::new().0);
-    manifest
-        .status
-        .get_or_insert_with(|| RECYCLE_STATUS_COMMITTED.to_string());
-    write_manifest(&recycle_dir, &manifest).await?;
+    manifest.status = Some(RECYCLE_STATUS_PENDING.to_string());
+    if let Err(error) = write_manifest(&recycle_dir, &manifest).await {
+        let _ = tokio::fs::remove_dir_all(&recycle_dir).await;
+        return Err(error);
+    }
 
     // Move the file into the recycle directory
     let file_name = Path::new(&manifest.original_path)
@@ -395,41 +410,20 @@ pub async fn recycle_file(
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
     let recycled_path = recycle_dir.join(file_name);
 
-    // Try rename first (instant if same filesystem)
-    match tokio::fs::rename(source_path, &recycled_path).await {
-        Ok(()) => {}
-        Err(rename_err) => {
-            // Cross-device: fall back to copy + delete
-            warn!(
-                error = %rename_err,
-                "rename failed (likely cross-device), falling back to copy"
-            );
-            tokio::fs::copy(source_path, &recycled_path)
-                .await
-                .map_err(|e| {
-                    AppError::Repository(format!(
-                        "failed to copy {} to recycle bin {}: {}",
-                        source_path.display(),
-                        recycled_path.display(),
-                        e
-                    ))
-                })?;
-            // Prove the recycled copy is identical before deleting the original.
-            // On mismatch, discard the partial recycle entry and keep the source.
-            if let Err(verify_error) =
-                crate::fs_integrity::verify_same_file_async(source_path, &recycled_path).await
-            {
-                let _ = tokio::fs::remove_dir_all(&recycle_dir).await;
-                return Err(verify_error);
-            }
-            tokio::fs::remove_file(source_path).await.map_err(|e| {
-                AppError::Repository(format!(
-                    "failed to remove source file {} after copy to recycle bin: {}",
-                    source_path.display(),
-                    e
-                ))
-            })?;
-        }
+    if let Err(error) =
+        recycle_source_to_destination(source_path.to_path_buf(), recycled_path.clone()).await
+    {
+        let _ = tokio::fs::remove_dir_all(&recycle_dir).await;
+        return Err(error);
+    }
+
+    manifest.status = Some(RECYCLE_STATUS_COMMITTED.to_string());
+    if let Err(error) = write_manifest(&recycle_dir, &manifest).await {
+        warn!(
+            error = %error,
+            entry_dir = %recycle_dir.display(),
+            "file recycled but manifest could not be marked committed; caller may retry commit metadata"
+        );
     }
 
     info!(
@@ -447,9 +441,80 @@ pub async fn recycle_file(
     }))
 }
 
-/// Lexically normalize a path (collapse `.`/`..`, no filesystem access), matching
-/// the normalization applied to configured media roots.
-fn lexically_normalize(path: &Path) -> PathBuf {
+async fn recycle_source_to_destination(
+    source_path: PathBuf,
+    recycled_path: PathBuf,
+) -> AppResult<()> {
+    let mut source_file = tokio::fs::File::open(&source_path).await.map_err(|error| {
+        AppError::Repository(format!(
+            "failed to open source file {} for recycle: {}",
+            source_path.display(),
+            error
+        ))
+    })?;
+    let mut recycled_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&recycled_path)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to claim recycle destination {}: {}",
+                recycled_path.display(),
+                error
+            ))
+        })?;
+
+    if let Err(error) = tokio::io::copy(&mut source_file, &mut recycled_file).await {
+        let _ = tokio::fs::remove_file(&recycled_path).await;
+        return Err(AppError::Repository(format!(
+            "failed to copy {} to recycle bin {}: {}",
+            source_path.display(),
+            recycled_path.display(),
+            error
+        )));
+    }
+    if let Err(error) = recycled_file.flush().await {
+        let _ = tokio::fs::remove_file(&recycled_path).await;
+        return Err(AppError::Repository(format!(
+            "failed to flush recycled file {}: {}",
+            recycled_path.display(),
+            error
+        )));
+    }
+    if let Err(error) = recycled_file.sync_all().await {
+        let _ = tokio::fs::remove_file(&recycled_path).await;
+        return Err(AppError::Repository(format!(
+            "failed to sync recycled file {}: {}",
+            recycled_path.display(),
+            error
+        )));
+    }
+    drop(recycled_file);
+
+    if let Err(verify_error) =
+        crate::fs_integrity::verify_same_file_async(&source_path, &recycled_path).await
+    {
+        let _ = tokio::fs::remove_file(&recycled_path).await;
+        return Err(verify_error);
+    }
+    drop(source_file);
+
+    match tokio::fs::remove_file(&source_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&recycled_path).await;
+            Err(AppError::Repository(format!(
+                "failed to remove source file {} after copy to recycle bin: {}",
+                source_path.display(),
+                error
+            )))
+        }
+    }
+}
+
+fn lexically_normalize_for_policy(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -465,6 +530,77 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
+#[cfg(not(windows))]
+fn contains_non_windows_separator_ambiguity(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(segment) => segment.to_string_lossy().contains('\\'),
+        std::path::Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().contains('\\'),
+        _ => false,
+    })
+}
+
+pub(crate) fn path_is_under_configured_root(path: &Path, root: &Path) -> bool {
+    #[cfg(not(windows))]
+    if contains_non_windows_separator_ambiguity(path)
+        || contains_non_windows_separator_ambiguity(root)
+    {
+        return false;
+    }
+
+    let normalized_path = lexically_normalize_for_policy(path);
+    let normalized_root = lexically_normalize_for_policy(root);
+    crate::catalog_workflow::library_path_is_under_root(
+        normalized_path.to_string_lossy().as_ref(),
+        normalized_root.to_string_lossy().as_ref(),
+    )
+}
+
+pub(crate) fn restore_destination_is_under_configured_root(path: &Path, root: &Path) -> bool {
+    if path.file_name().is_none() {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    path_is_under_configured_root(parent, root)
+}
+
+pub(crate) fn restore_destination_is_under_configured_roots(
+    path: &Path,
+    roots: &[PathBuf],
+) -> bool {
+    !roots.is_empty()
+        && roots
+            .iter()
+            .any(|root| restore_destination_is_under_configured_root(path, root))
+}
+
+fn ensure_restore_destination_within_roots(destination: &Path, roots: &[PathBuf]) -> AppResult<()> {
+    if roots.is_empty() {
+        return Err(AppError::Validation(format!(
+            "refusing to restore {} because no configured media roots are available",
+            destination.display()
+        )));
+    }
+    if restore_destination_is_under_configured_roots(destination, roots) {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "refusing to restore {} because it is outside the configured media roots",
+        destination.display()
+    )))
+}
+
+pub(crate) fn source_file_is_under_configured_root(path: &Path, root: &Path) -> bool {
+    if path.file_name().is_none() {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    path_is_under_configured_root(parent, root)
+}
+
 /// Refuse to recycle/delete a source path that is not inside any configured media
 /// root. Source-removing operations must fail closed when no roots are available.
 pub(crate) fn ensure_source_within_roots(
@@ -477,11 +613,10 @@ pub(crate) fn ensure_source_within_roots(
             source_path.display()
         )));
     }
-    let normalized_source = lexically_normalize(source_path);
     if config
         .source_roots
         .iter()
-        .any(|root| normalized_source.starts_with(root))
+        .any(|root| source_file_is_under_configured_root(source_path, root))
     {
         return Ok(());
     }
@@ -491,9 +626,13 @@ pub(crate) fn ensure_source_within_roots(
     )))
 }
 
-/// Pick a non-colliding restore destination by inserting `-restored` before the
-/// extension (`<stem>-restored.<ext>`, then `-restored-2`, … on repeat).
-fn resolve_restored_path(original_path: &Path) -> PathBuf {
+/// Build restore destination candidates: original path first, then
+/// `<stem>-restored.<ext>`, `<stem>-restored-2.<ext>`, and finally generated IDs.
+fn restore_candidate_path(original_path: &Path, attempt: u32) -> PathBuf {
+    if attempt == 0 {
+        return original_path.to_path_buf();
+    }
+
     let parent = original_path
         .parent()
         .map(Path::to_path_buf)
@@ -506,29 +645,144 @@ fn resolve_restored_path(original_path: &Path) -> PathBuf {
         .extension()
         .map(|ext| ext.to_string_lossy().into_owned());
 
-    for counter in 1..=10_000u32 {
-        let suffix = if counter == 1 {
+    let suffix = if attempt <= 10_000 {
+        if attempt == 1 {
             "-restored".to_string()
         } else {
-            format!("-restored-{counter}")
-        };
-        let file_name = match &extension {
-            Some(ext) => format!("{stem}{suffix}.{ext}"),
-            None => format!("{stem}{suffix}"),
-        };
-        let candidate = parent.join(file_name);
-        if !candidate.exists() {
-            return candidate;
+            format!("-restored-{attempt}")
         }
-    }
-
-    // Pathological fallback: guarantee uniqueness with a generated id.
-    let unique = scryer_domain::Id::new().0;
+    } else {
+        format!("-restored-{}", scryer_domain::Id::new().0)
+    };
     let file_name = match &extension {
-        Some(ext) => format!("{stem}-restored-{unique}.{ext}"),
-        None => format!("{stem}-restored-{unique}"),
+        Some(ext) => format!("{stem}{suffix}.{ext}"),
+        None => format!("{stem}{suffix}"),
     };
     parent.join(file_name)
+}
+
+async fn copy_recycled_to_claimed_destination(
+    recycled_path: &Path,
+    destination: &Path,
+    destination_file: tokio::fs::File,
+) -> AppResult<()> {
+    copy_recycled_to_claimed_destination_with_verifier(
+        recycled_path,
+        destination,
+        destination_file,
+        |source, dest| async move { crate::fs_integrity::verify_same_file_async(&source, &dest).await },
+    )
+    .await
+}
+
+async fn copy_recycled_to_claimed_destination_with_verifier<F, Fut>(
+    recycled_path: &Path,
+    destination: &Path,
+    mut destination_file: tokio::fs::File,
+    verify: F,
+) -> AppResult<()>
+where
+    F: FnOnce(PathBuf, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = AppResult<()>>,
+{
+    let mut source_file = tokio::fs::File::open(recycled_path)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to open recycled file {} for restore: {}",
+                recycled_path.display(),
+                error
+            ))
+        })?;
+    if let Err(error) = tokio::io::copy(&mut source_file, &mut destination_file).await {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(AppError::Repository(format!(
+            "failed to restore {} to {}: {}",
+            recycled_path.display(),
+            destination.display(),
+            error
+        )));
+    }
+    if let Err(error) = destination_file.flush().await {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(AppError::Repository(format!(
+            "failed to flush restored file {}: {}",
+            destination.display(),
+            error
+        )));
+    }
+    if let Err(error) = destination_file.sync_all().await {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(AppError::Repository(format!(
+            "failed to sync restored file {}: {}",
+            destination.display(),
+            error
+        )));
+    }
+    drop(destination_file);
+
+    let recycled_for_verify = recycled_path.to_path_buf();
+    let destination_for_verify = destination.to_path_buf();
+    if let Err(verify_error) = verify(recycled_for_verify, destination_for_verify).await {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(verify_error);
+    }
+
+    Ok(())
+}
+
+async fn restore_without_overwrite(
+    recycled_path: &Path,
+    original_path: &Path,
+    allowed_roots: Option<&[PathBuf]>,
+) -> AppResult<PathBuf> {
+    for attempt in 0..=20_000u32 {
+        let destination = restore_candidate_path(original_path, attempt);
+        if let Some(roots) = allowed_roots {
+            ensure_restore_destination_within_roots(&destination, roots)?;
+        }
+        let destination_file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(AppError::Repository(format!(
+                    "failed to claim restore destination {}: {}",
+                    destination.display(),
+                    error
+                )));
+            }
+        };
+
+        if destination != original_path {
+            warn!(
+                original = %original_path.display(),
+                restored_to = %destination.display(),
+                "original path is occupied; restoring to a -restored sibling to avoid overwriting the live file"
+            );
+        }
+
+        copy_recycled_to_claimed_destination(recycled_path, &destination, destination_file).await?;
+        tokio::fs::remove_file(recycled_path)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to remove recycled source {} after restore: {}",
+                    recycled_path.display(),
+                    error
+                ))
+            })?;
+        return Ok(destination);
+    }
+
+    Err(AppError::Repository(format!(
+        "failed to find a non-colliding restore destination for {}",
+        original_path.display()
+    )))
 }
 
 /// Restore a file from the recycle bin.
@@ -541,11 +795,33 @@ pub async fn restore_from_recycle(
     original_path: &Path,
     overwrite: bool,
 ) -> AppResult<PathBuf> {
+    restore_from_recycle_inner(recycled_path, original_path, overwrite, None).await
+}
+
+pub(crate) async fn restore_from_recycle_with_roots(
+    recycled_path: &Path,
+    original_path: &Path,
+    overwrite: bool,
+    allowed_roots: &[PathBuf],
+) -> AppResult<PathBuf> {
+    restore_from_recycle_inner(recycled_path, original_path, overwrite, Some(allowed_roots)).await
+}
+
+async fn restore_from_recycle_inner(
+    recycled_path: &Path,
+    original_path: &Path,
+    overwrite: bool,
+    allowed_roots: Option<&[PathBuf]>,
+) -> AppResult<PathBuf> {
     if !recycled_path.exists() {
         return Err(AppError::Repository(format!(
             "recycled file not found: {}",
             recycled_path.display()
         )));
+    }
+
+    if let Some(roots) = allowed_roots {
+        ensure_restore_destination_within_roots(original_path, roots)?;
     }
 
     // Ensure parent directory exists
@@ -559,31 +835,27 @@ pub async fn restore_from_recycle(
         })?;
     }
 
-    // Never silently clobber a live file at the original location unless the caller
-    // explicitly opts into overwrite; divert to a `-restored` sibling instead.
-    let destination = if overwrite || !original_path.exists() {
-        original_path.to_path_buf()
-    } else {
-        let diverted = resolve_restored_path(original_path);
-        warn!(
-            original = %original_path.display(),
-            restored_to = %diverted.display(),
-            "original path is occupied; restoring to a -restored sibling to avoid overwriting the live file"
+    if !overwrite {
+        let destination =
+            restore_without_overwrite(recycled_path, original_path, allowed_roots).await?;
+        info!(
+            restored = %destination.display(),
+            "file restored from recycle bin"
         );
-        diverted
-    };
+        return Ok(destination);
+    }
 
-    match tokio::fs::rename(recycled_path, &destination).await {
+    match tokio::fs::rename(recycled_path, original_path).await {
         Ok(()) => {}
         Err(_) => {
             // Cross-device fallback
-            tokio::fs::copy(recycled_path, &destination)
+            tokio::fs::copy(recycled_path, original_path)
                 .await
                 .map_err(|e| {
                     AppError::Repository(format!(
                         "failed to restore {} to {}: {}",
                         recycled_path.display(),
-                        destination.display(),
+                        original_path.display(),
                         e
                     ))
                 })?;
@@ -591,9 +863,9 @@ pub async fn restore_from_recycle(
             // source. On mismatch, remove the bad restore and keep the recycled
             // copy so the file is never lost.
             if let Err(verify_error) =
-                crate::fs_integrity::verify_same_file_async(recycled_path, &destination).await
+                crate::fs_integrity::verify_same_file_async(recycled_path, original_path).await
             {
-                let _ = tokio::fs::remove_file(&destination).await;
+                let _ = tokio::fs::remove_file(original_path).await;
                 return Err(verify_error);
             }
             let _ = tokio::fs::remove_file(recycled_path).await;
@@ -601,11 +873,11 @@ pub async fn restore_from_recycle(
     }
 
     info!(
-        restored = %destination.display(),
+        restored = %original_path.display(),
         "file restored from recycle bin"
     );
 
-    Ok(destination)
+    Ok(original_path.to_path_buf())
 }
 
 pub async fn commit_recycle_entry(
@@ -1293,6 +1565,165 @@ mod tests {
         assert!(outside.exists(), "refused source must not be deleted");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn source_root_containment_accepts_windows_case_and_separator_variants() {
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from(r"C:\Recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![PathBuf::from(r"C:\Media\Movies")],
+        };
+
+        ensure_source_within_roots(&config, Path::new(r"c:/media/movies/Movie.mkv"))
+            .expect("Windows source containment should normalize case and separators");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn source_root_containment_is_case_sensitive_off_windows() {
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from("/tmp/recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![PathBuf::from("/Data/Movies")],
+        };
+
+        let result = ensure_source_within_roots(&config, Path::new("/data/movies/Movie.mkv"));
+        assert!(
+            result.is_err(),
+            "non-Windows source containment should fail closed on case mismatch"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn source_root_containment_rejects_backslash_ambiguity_off_windows() {
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from("/tmp/recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![PathBuf::from("/tmp/media")],
+        };
+
+        ensure_source_within_roots(&config, Path::new("/tmp/media/Movie.mkv"))
+            .expect("ordinary slash-separated path should remain in-root");
+        let result = ensure_source_within_roots(&config, Path::new(r"/tmp/media\evil.mkv"));
+        assert!(
+            result.is_err(),
+            "non-Windows source containment must not treat backslash as a separator"
+        );
+    }
+
+    #[test]
+    fn source_root_containment_rejects_parent_dir_escape() {
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from("/tmp/recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![PathBuf::from("/tmp/media")],
+        };
+
+        let result =
+            ensure_source_within_roots(&config, Path::new("/tmp/media/../outside/Movie.mkv"));
+        assert!(
+            result.is_err(),
+            "parent directory components must not escape a configured source root"
+        );
+    }
+
+    #[test]
+    fn source_root_containment_requires_file_parent_under_root() {
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from("/tmp/recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![PathBuf::from("/tmp/media")],
+        };
+
+        ensure_source_within_roots(&config, Path::new("/tmp/media/Movie.mkv"))
+            .expect("source file whose parent is the root should be allowed");
+        ensure_source_within_roots(&config, Path::new("/tmp/media/Movies/Movie.mkv"))
+            .expect("nested source file under the root should be allowed");
+        assert!(
+            ensure_source_within_roots(&config, Path::new("/tmp/media")).is_err(),
+            "source path equal to the root must be rejected"
+        );
+        assert!(
+            ensure_source_within_roots(&config, Path::new("/tmp/media/.")).is_err(),
+            "source path normalized to the root must be rejected"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn source_and_restore_roots_reject_backslash_ambiguity_off_windows() {
+        let ambiguous_root = PathBuf::from(r"/tmp/media\root");
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: PathBuf::from("/tmp/recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![ambiguous_root.clone()],
+        };
+
+        let source_result =
+            ensure_source_within_roots(&config, Path::new("/tmp/media/root/Movie.mkv"));
+        assert!(
+            source_result.is_err(),
+            "non-Windows source containment must reject ambiguous raw roots"
+        );
+        assert!(
+            !restore_destination_is_under_configured_roots(
+                Path::new("/tmp/media/root/Movie.mkv"),
+                &[ambiguous_root],
+            ),
+            "non-Windows restore containment must reject ambiguous raw roots"
+        );
+    }
+
+    #[test]
+    fn restore_destination_requires_file_under_root() {
+        let roots = vec![PathBuf::from("/tmp/media")];
+
+        assert!(
+            restore_destination_is_under_configured_roots(
+                Path::new("/tmp/media/Movie.mkv"),
+                &roots
+            ),
+            "file whose parent is the root should be allowed"
+        );
+        assert!(
+            restore_destination_is_under_configured_roots(
+                Path::new("/tmp/media/Movies/Movie.mkv"),
+                &roots
+            ),
+            "nested file under the root should be allowed"
+        );
+        assert!(
+            !restore_destination_is_under_configured_roots(Path::new("/tmp/media"), &roots),
+            "root itself is not a valid restore file destination"
+        );
+        assert!(
+            !restore_destination_is_under_configured_roots(
+                Path::new("/tmp/media/../media-restored"),
+                &roots
+            ),
+            "sibling restore candidates must not escape the root"
+        );
+    }
+
     #[tokio::test]
     async fn test_recycle_refuses_source_when_roots_are_unknown() {
         let tmp = TempDir::new().unwrap();
@@ -1311,6 +1742,60 @@ mod tests {
         let result = recycle_file(&config, &source, test_manifest()).await;
         assert!(result.is_err(), "unknown roots must fail closed");
         assert!(source.exists(), "refused source must not be deleted");
+    }
+
+    #[tokio::test]
+    async fn test_recycle_refuses_existing_directory_source_under_root() {
+        let tmp = TempDir::new().unwrap();
+        let media_root = tmp.path().join("media");
+        let source_dir = media_root.join("Movie");
+        tokio::fs::create_dir_all(&source_dir).await.unwrap();
+        let config = RecycleBinConfig {
+            enabled: false,
+            base_path: tmp.path().join("recycle"),
+            retention_days: 7,
+            cleanup_enabled: true,
+            validation_error: None,
+            source_roots: vec![media_root],
+        };
+
+        let error = recycle_file(&config, &source_dir, test_manifest())
+            .await
+            .expect_err("directory sources must be refused");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            source_dir.exists(),
+            "refused directory source must be left in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recycle_physical_copy_refuses_directory_source_race() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        let recycled_path = tmp.path().join("recycled.mkv");
+        tokio::fs::create_dir_all(&source_dir).await.unwrap();
+
+        let error = recycle_source_to_destination(source_dir.clone(), recycled_path.clone())
+            .await
+            .expect_err("directory source should fail physical recycle");
+        assert!(
+            error.to_string().contains("failed to copy")
+                || error.to_string().contains("content verification")
+                || error.to_string().contains("source file"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            source_dir.exists(),
+            "directory source must not be moved or deleted"
+        );
+        assert!(
+            !recycled_path.exists(),
+            "failed physical recycle must not leave a recycled file"
+        );
     }
 
     #[tokio::test]
@@ -1379,6 +1864,95 @@ mod tests {
         assert_eq!(
             tokio::fs::read(&restored_to).await.unwrap(),
             recycled_content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_retries_existing_restored_sibling() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        let source = tmp.path().join("movie.mkv");
+        let first_sibling = tmp.path().join("movie-restored.mkv");
+        let recycled_content = b"the recycled file";
+        tokio::fs::write(&source, recycled_content).await.unwrap();
+
+        let config = test_config(&recycle_dir);
+        let result = recycle_file(&config, &source, test_manifest())
+            .await
+            .unwrap()
+            .unwrap();
+
+        tokio::fs::write(&source, b"current live file")
+            .await
+            .unwrap();
+        tokio::fs::write(&first_sibling, b"previous restored file")
+            .await
+            .unwrap();
+
+        let restored_to = restore_from_recycle(&result.recycled_path, &source, false)
+            .await
+            .unwrap();
+
+        let second_sibling = tmp.path().join("movie-restored-2.mkv");
+        assert_eq!(restored_to, second_sibling);
+        assert_eq!(
+            tokio::fs::read(&source).await.unwrap(),
+            b"current live file"
+        );
+        assert_eq!(
+            tokio::fs::read(&first_sibling).await.unwrap(),
+            b"previous restored file"
+        );
+        assert_eq!(
+            tokio::fs::read(&second_sibling).await.unwrap(),
+            recycled_content
+        );
+        assert!(
+            !result.recycled_path.exists(),
+            "recycled source should be removed after verified restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_sampled_proof_mismatch_removes_partial_and_keeps_recycled_source() {
+        let tmp = TempDir::new().unwrap();
+        let recycled_path = tmp.path().join("movie.recycled");
+        let destination = tmp.path().join("movie-restored.mkv");
+        tokio::fs::write(&recycled_path, b"recycled source bytes")
+            .await
+            .unwrap();
+        let destination_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .await
+            .unwrap();
+
+        let error = copy_recycled_to_claimed_destination_with_verifier(
+            &recycled_path,
+            &destination,
+            destination_file,
+            |source, dest| async move {
+                tokio::fs::write(&dest, b"mismatched restored bytes")
+                    .await
+                    .unwrap();
+                crate::fs_integrity::verify_same_file_async(&source, &dest).await
+            },
+        )
+        .await
+        .expect_err("sampled proof mismatch should fail restore");
+
+        assert!(
+            error.to_string().contains("copy verification failed"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            recycled_path.exists(),
+            "failed verification must keep the recycled source"
+        );
+        assert!(
+            !destination.exists(),
+            "failed verification must remove the partial destination"
         );
     }
 

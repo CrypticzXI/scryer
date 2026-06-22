@@ -2861,14 +2861,14 @@ mod tests {
     fn log_file_config_prefers_cli_then_env_then_default() {
         let dir = tempdir().expect("tempdir");
         let data_dir = dir.path().join("data");
-        let default = Some(dir.path().join("default").join("scryer.log"));
+        let default = dir.path().join("default").join("scryer.log");
 
         assert_eq!(
             resolve_log_file_config(
                 Some(std::path::Path::new("cli.log")),
                 Some("env.log"),
                 &data_dir,
-                default.clone()
+                Some(default.clone())
             ),
             Some(ResolvedLogFileConfig {
                 path: data_dir.join("cli.log"),
@@ -2876,16 +2876,16 @@ mod tests {
             })
         );
         assert_eq!(
-            resolve_log_file_config(None, Some("env.log"), &data_dir, default.clone()),
+            resolve_log_file_config(None, Some("env.log"), &data_dir, Some(default.clone())),
             Some(ResolvedLogFileConfig {
                 path: data_dir.join("env.log"),
                 explicit: true,
             })
         );
         assert_eq!(
-            resolve_log_file_config(None, None, &data_dir, default.clone()),
+            resolve_log_file_config(None, None, &data_dir, Some(default.clone())),
             Some(ResolvedLogFileConfig {
-                path: default.expect("default path"),
+                path: default,
                 explicit: false,
             })
         );
