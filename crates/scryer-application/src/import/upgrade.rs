@@ -35,6 +35,82 @@ pub enum UpgradeResult {
     Rejected(crate::post_download_gate::ImportedFileRejection),
 }
 
+pub(crate) struct UpgradeRecycleContext {
+    pub(crate) media_root: String,
+    pub(crate) recycle_config: RecycleBinConfig,
+}
+
+pub(crate) async fn resolve_old_file_recycle_context(
+    app: &AppUseCase,
+    title: &Title,
+    existing_file: &TitleMediaFile,
+) -> AppResult<UpgradeRecycleContext> {
+    let old_path = stored_path_to_path_buf(&existing_file.file_path);
+    let media_roots = app
+        .all_library_root_folders_for_facet(&title.facet)
+        .await?
+        .into_iter()
+        .filter(|root| root.library_id == title.library_id)
+        .map(|root| root.path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+
+    if media_roots.is_empty() {
+        return Err(AppError::Validation(format!(
+            "refusing to upgrade {} because library {} has no configured media roots for old-file cleanup",
+            title.name, title.library_id
+        )));
+    }
+
+    let source_roots = media_roots
+        .iter()
+        .map(|root| stored_path_to_path_buf(root))
+        .collect::<Vec<_>>();
+    let old_file_media_root =
+        crate::fs_safety::most_specific_containing_root(&old_path, &source_roots).ok_or_else(
+            || {
+                AppError::Validation(format!(
+                    "refusing to upgrade {} because old file {} is outside the current media roots for library {}; keep the old root configured until existing files are moved, replaced, or deleted",
+                    title.name,
+                    old_path.display(),
+                    title.library_id
+                ))
+            },
+        )?;
+    crate::fs_safety::ensure_root_available(&old_file_media_root)?;
+
+    let recycle_config = app
+        .recycle_bin_configs_for_media_roots(media_roots)
+        .await
+        .into_iter()
+        .find_map(|(media_root, config)| {
+            if media_root.trim().is_empty()
+                || configured_roots_match(&stored_path_to_path_buf(&media_root), &old_file_media_root)
+            {
+                Some(config)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "refusing to upgrade {} because no recycle bin config could be resolved for old file root {}",
+                title.name,
+                old_file_media_root.display()
+            ))
+        })?;
+
+    Ok(UpgradeRecycleContext {
+        media_root: path_to_stored_string(&old_file_media_root),
+        recycle_config,
+    })
+}
+
+fn configured_roots_match(left: &Path, right: &Path) -> bool {
+    recycle_bin::path_is_under_configured_root(left, right)
+        && recycle_bin::path_is_under_configured_root(right, left)
+}
+
 /// Execute a guarded file upgrade: import and validate replacement, then retire old.
 ///
 /// The old file is not recycled or deleted until the replacement file is on disk,
@@ -56,7 +132,8 @@ pub(crate) async fn execute_upgrade(
     old_score: i32,
     post_download_scoring_log: Option<String>,
     target_episode_ids: &[String],
-    media_root: Option<&str>,
+    replacement_media_root: Option<&str>,
+    old_file_media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
     import_mode: ImportMode,
 ) -> AppResult<UpgradeResult> {
@@ -93,7 +170,7 @@ pub(crate) async fn execute_upgrade(
         stored_quality_label,
         final_score,
         target_episode_ids,
-        media_root,
+        replacement_media_root,
         &scoring_log,
         &source_path_string,
         import_mode,
@@ -107,7 +184,8 @@ pub(crate) async fn execute_upgrade(
         &replacement,
         recycle_config,
         &old_path,
-        media_root,
+        replacement_media_root,
+        old_file_media_root,
     )
     .await?;
 
@@ -878,7 +956,7 @@ async fn prepare_replacement_before_old_removal(
     stored_quality_label: Option<&str>,
     final_score: i32,
     target_episode_ids: &[String],
-    media_root: Option<&str>,
+    replacement_media_root: Option<&str>,
     scoring_log: &str,
     source_path_string: &str,
     import_mode: ImportMode,
@@ -957,7 +1035,7 @@ async fn prepare_replacement_before_old_removal(
         &new_file_id,
         &import_path_string,
         &title.id,
-        media_root,
+        replacement_media_root,
     )
     .await
     {
@@ -976,6 +1054,10 @@ async fn prepare_replacement_before_old_removal(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finalizing an upgrade needs replacement and old-file root context"
+)]
 async fn finalize_prepared_upgrade(
     app: &AppUseCase,
     title: &Title,
@@ -983,7 +1065,8 @@ async fn finalize_prepared_upgrade(
     replacement: &PreparedUpgradeReplacement,
     recycle_config: &RecycleBinConfig,
     old_path: &Path,
-    media_root: Option<&str>,
+    replacement_media_root: Option<&str>,
+    old_file_media_root: Option<&str>,
 ) -> AppResult<bool> {
     if replacement.same_final_path {
         finalize_same_path_upgrade(
@@ -993,7 +1076,8 @@ async fn finalize_prepared_upgrade(
             replacement,
             recycle_config,
             old_path,
-            media_root,
+            replacement_media_root,
+            old_file_media_root,
         )
         .await
     } else {
@@ -1004,12 +1088,17 @@ async fn finalize_prepared_upgrade(
             replacement,
             recycle_config,
             old_path,
-            media_root,
+            replacement_media_root,
+            old_file_media_root,
         )
         .await
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "distinct-path finalization needs replacement and old-file root context"
+)]
 async fn finalize_distinct_path_upgrade(
     app: &AppUseCase,
     title: &Title,
@@ -1017,7 +1106,8 @@ async fn finalize_distinct_path_upgrade(
     replacement: &PreparedUpgradeReplacement,
     recycle_config: &RecycleBinConfig,
     old_path: &Path,
-    media_root: Option<&str>,
+    replacement_media_root: Option<&str>,
+    old_file_media_root: Option<&str>,
 ) -> AppResult<bool> {
     let old_disposition = match prepare_old_file_disposition_for_upgrade(
         recycle_config,
@@ -1025,7 +1115,7 @@ async fn finalize_distinct_path_upgrade(
         old_path,
         &existing_file.file_path,
         title,
-        media_root,
+        old_file_media_root,
     )
     .await
     {
@@ -1064,7 +1154,7 @@ async fn finalize_distinct_path_upgrade(
         &replacement.new_file_id,
         &replacement.final_path_string,
         &title.id,
-        media_root,
+        replacement_media_root,
     )
     .await
     .map_err(|reason| {
@@ -1248,6 +1338,10 @@ fn resolve_same_path_upgrade_guard_root(
         })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same-path finalization needs replacement and old-file root context"
+)]
 async fn finalize_same_path_upgrade(
     app: &AppUseCase,
     title: &Title,
@@ -1255,7 +1349,8 @@ async fn finalize_same_path_upgrade(
     replacement: &PreparedUpgradeReplacement,
     recycle_config: &RecycleBinConfig,
     old_path: &Path,
-    media_root: Option<&str>,
+    replacement_media_root: Option<&str>,
+    old_file_media_root: Option<&str>,
 ) -> AppResult<bool> {
     let _guard = app
         .runtime
@@ -1263,7 +1358,8 @@ async fn finalize_same_path_upgrade(
         .same_path_upgrade_guard_lock
         .lock()
         .await;
-    let guard_root = resolve_same_path_upgrade_guard_root(recycle_config, media_root, old_path)?;
+    let guard_root =
+        resolve_same_path_upgrade_guard_root(recycle_config, old_file_media_root, old_path)?;
     let backup_path = sibling_guard_path(old_path, "old");
     let guard_path = same_path_upgrade_guard_path(&guard_root, &backup_path);
     let guard = SamePathUpgradeGuardManifest::new(
@@ -1356,7 +1452,7 @@ async fn finalize_same_path_upgrade(
         &replacement.new_file_id,
         &replacement.final_path_string,
         &title.id,
-        media_root,
+        replacement_media_root,
     )
     .await
     {
@@ -1386,7 +1482,7 @@ async fn finalize_same_path_upgrade(
         &backup_path,
         &existing_file.file_path,
         title,
-        media_root,
+        old_file_media_root,
         &replacement.new_file_id,
         &replacement_physical_path,
     )

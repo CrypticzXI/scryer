@@ -481,23 +481,40 @@ async fn cleanup_superseded_episode_incumbents(
     superseded: &[crate::EpisodeScopedMediaFile],
     replacement_file_id: &str,
     replacement_path: &Path,
-    media_root: Option<&str>,
-    recycle_config: &crate::recycle_bin::RecycleBinConfig,
 ) {
     for incumbent in superseded {
         let mut recycle_result = None;
         let old_path = crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
         if old_path.exists() {
+            let old_file_recycle_context =
+                match crate::upgrade::resolve_old_file_recycle_context(
+                    app,
+                    title,
+                    &incumbent.media_file,
+                )
+                .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            path = %old_path.display(),
+                            file_id = %incumbent.media_file.id,
+                            "failed to resolve recycle context for superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
+                        );
+                        continue;
+                    }
+                };
             let metadata = crate::recycle_bin::ReplacedMediaRecycleMetadata {
                 original_path: &incumbent.media_file.file_path,
                 original_file_id: &incumbent.media_file.id,
                 size_bytes: incumbent.media_file.size_bytes as u64,
                 title_id: &title.id,
-                media_root,
+                media_root: Some(old_file_recycle_context.media_root.as_str()),
             };
 
             match crate::recycle_bin::recycle_replaced_media_file(
-                recycle_config,
+                &old_file_recycle_context.recycle_config,
                 &old_path,
                 metadata,
                 true,

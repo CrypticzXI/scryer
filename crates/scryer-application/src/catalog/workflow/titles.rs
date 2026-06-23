@@ -834,45 +834,58 @@ impl AppUseCase {
         let actor = actor.into();
         let title_id = title.id.as_str();
 
-        if purge_recycle_bin_entries
-            && let Some(media_root) = crate::recycle_bin::media_root_for_title(self, title).await
-        {
-            let config = self
-                .recycle_bin_config_for_media_root(Some(&media_root))
-                .await;
+        if purge_recycle_bin_entries {
+            let media_roots = match self.all_library_root_folders_for_facet(&title.facet).await {
+                Ok(roots) => roots
+                    .into_iter()
+                    .filter(|root| root.library_id == title.library_id)
+                    .map(|root| root.path)
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id = %title_id,
+                        "failed to resolve recycle roots for deleted title"
+                    );
+                    Vec::new()
+                }
+            };
+            let configs = self.recycle_bin_configs_for_media_roots(media_roots).await;
             let mut purged = 0u32;
-            match crate::recycle_bin::list_committed_entries(&config).await {
-                Ok(entries) => {
-                    for entry in entries {
-                        if entry.manifest.title_id.as_deref() != Some(title_id) {
-                            continue;
-                        }
-                        match self
-                            .purge_recycle_entry_after_validation(
-                                &media_root,
-                                &config,
-                                &entry,
-                                actor.clone(),
-                            )
-                            .await
-                        {
-                            Ok(true) => {
-                                purged += 1;
+            for (media_root, config) in configs {
+                match crate::recycle_bin::list_committed_entries(&config).await {
+                    Ok(entries) => {
+                        for entry in entries {
+                            if entry.manifest.title_id.as_deref() != Some(title_id) {
+                                continue;
                             }
-                            Ok(false) => {}
-                            Err(error) => warn!(
-                                error = %error,
-                                title_id = %title_id,
-                                "failed to purge recycle entry for deleted title"
-                            ),
+                            match self
+                                .purge_recycle_entry_after_validation(
+                                    &media_root,
+                                    &config,
+                                    &entry,
+                                    actor.clone(),
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    purged += 1;
+                                }
+                                Ok(false) => {}
+                                Err(error) => warn!(
+                                    error = %error,
+                                    title_id = %title_id,
+                                    "failed to purge recycle entry for deleted title"
+                                ),
+                            }
                         }
                     }
+                    Err(e) => warn!(
+                        error = %e,
+                        title_id = %title_id,
+                        "failed to list recycle entries for deleted title"
+                    ),
                 }
-                Err(e) => warn!(
-                    error = %e,
-                    title_id = %title_id,
-                    "failed to list recycle entries for deleted title"
-                ),
             }
             if purged > 0 {
                 info!(

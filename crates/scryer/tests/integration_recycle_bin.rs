@@ -475,6 +475,52 @@ async fn custom_recycle_bin_path_lists_entries_once_across_libraries() {
 }
 
 #[tokio::test]
+async fn delete_title_purges_recycle_entries_from_all_library_roots() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root_a = tempfile::tempdir().expect("library root a");
+    let root_b = tempfile::tempdir().expect("library root b");
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor(),
+            MediaFacet::Movie,
+            "Movies Multi Root".to_string(),
+            vec![
+                LibraryRootDraft {
+                    path: root_a.path().to_string_lossy().to_string(),
+                    is_default: true,
+                },
+                LibraryRootDraft {
+                    path: root_b.path().to_string_lossy().to_string(),
+                    is_default: false,
+                },
+            ],
+            None,
+        )
+        .await
+        .expect("create multi-root library");
+    seed_title(&ctx, "title-multi-root-delete", &library).await;
+    let entry_a = seed_recycled_file(root_a.path(), "title-multi-root-delete", "movie-a").await;
+    let entry_b = seed_recycled_file(root_b.path(), "title-multi-root-delete", "movie-b").await;
+
+    let manager = manage_titles_actor("manager", std::slice::from_ref(&library.id));
+    ctx.app
+        .delete_title(&manager, "title-multi-root-delete", false, None)
+        .await
+        .expect("delete title");
+
+    assert!(
+        !root_a.path().join(".scryer-recycle").join(entry_a).exists(),
+        "old-root recycle entry should be purged"
+    );
+    assert!(
+        !root_b.path().join(".scryer-recycle").join(entry_b).exists(),
+        "new-root recycle entry should be purged"
+    );
+}
+
+#[tokio::test]
 async fn recycle_bin_config_resolution_deduplicates_roots_by_base_path() {
     let ctx = TestContext::new().await;
     seed_recycle_bin_setting_definition(&ctx).await;
@@ -515,6 +561,28 @@ async fn recycle_bin_config_resolution_keeps_distinct_default_roots() {
             .iter()
             .any(|(_, config)| { config.base_path == root_b.path().join(".scryer-recycle") })
     );
+}
+
+#[tokio::test]
+async fn recycle_bin_config_resolution_deduplicates_custom_path_across_roots() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root_a = tempfile::tempdir().expect("library root a");
+    let root_b = tempfile::tempdir().expect("library root b");
+    let recycle_root = tempfile::tempdir().expect("custom recycle root");
+    set_custom_recycle_bin_path(&ctx, recycle_root.path()).await;
+
+    let configs = ctx
+        .app
+        .recycle_bin_configs_for_media_roots(vec![
+            root_a.path().to_string_lossy().to_string(),
+            root_b.path().to_string_lossy().to_string(),
+        ])
+        .await;
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].0, "");
+    assert_eq!(configs[0].1.base_path, recycle_root.path());
+    assert_eq!(configs[0].1.source_roots.len(), 2);
 }
 
 #[tokio::test]

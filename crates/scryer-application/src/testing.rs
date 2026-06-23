@@ -90,6 +90,11 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         source_snapshot: import_source_snapshot_for_test(source_path)?,
     };
     let old_score = existing_file.acquisition_score.unwrap_or(0);
+    let old_file_media_root = crate::fs_safety::most_specific_containing_root(
+        &crate::stored_paths::stored_path_to_path_buf(&existing_file.file_path),
+        &recycle_config.source_roots,
+    )
+    .map(|root| crate::stored_paths::path_to_stored_string(&root));
 
     crate::upgrade::execute_upgrade(
         app,
@@ -105,6 +110,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         None,
         target_episode_ids,
         media_root,
+        old_file_media_root.as_deref().or(media_root),
         recycle_config,
         import_mode,
     )

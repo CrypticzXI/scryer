@@ -381,13 +381,20 @@ async fn seed_title_for_library(
 }
 
 fn make_recycle_config(base: &std::path::Path, source_root: &std::path::Path) -> RecycleBinConfig {
+    make_recycle_config_with_roots(base, &[source_root])
+}
+
+fn make_recycle_config_with_roots(
+    base: &std::path::Path,
+    source_roots: &[&std::path::Path],
+) -> RecycleBinConfig {
     RecycleBinConfig {
         enabled: true,
         base_path: base.to_path_buf(),
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
-        source_roots: vec![source_root.to_path_buf()],
+        source_roots: source_roots.iter().map(|root| root.to_path_buf()).collect(),
     }
 }
 
@@ -680,6 +687,85 @@ async fn upgrade_replaces_old_file_with_new() {
         existing.id.as_str(),
         Some(outcome.new_file_id.as_str()),
     );
+}
+
+#[tokio::test]
+async fn upgrade_after_root_change_recycles_old_file_from_old_root() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-root-change-upgrade").await;
+    let actor = test_actor();
+
+    let old_root = tempfile::tempdir().expect("old media root");
+    let new_root = tempfile::tempdir().expect("new media root");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = old_root.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old root video").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new root replacement video").expect("write new");
+    let new_dest = new_root.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, &title.id, &old_path, 14, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
+    let recycle_config =
+        make_recycle_config_with_roots(recycle_dir.path(), &[old_root.path(), new_root.path()]);
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(new_root.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+    )
+    .await
+    .expect("upgrade should succeed with split old and replacement roots");
+
+    let UpgradeResult::Upgraded(outcome) = result else {
+        panic!("expected upgrade to succeed");
+    };
+    assert!(outcome.recycle_entry_committed);
+    assert!(new_dest.exists(), "replacement should land on the new root");
+    assert!(
+        !old_path.exists(),
+        "old file should be recycled from the old root"
+    );
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(recycle_entries.len(), 1);
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(
+        manifest.media_root.as_deref(),
+        Some(old_root.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(new_dest.to_string_lossy().as_ref())
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, new_dest.to_string_lossy());
 }
 
 #[tokio::test]
