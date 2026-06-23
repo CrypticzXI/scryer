@@ -11,6 +11,7 @@ use scryer_application::{
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
 use scryer_interface_settings::SettingsQueries;
+use std::{fs, io, path::Path};
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
@@ -28,6 +29,31 @@ use crate::mappers::{
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
+
+fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
+    let target = Path::new(path);
+    if !target.is_absolute() {
+        return Err(AppError::Validation("Path must be absolute.".to_string()));
+    }
+
+    let metadata = fs::metadata(target).map_err(|error| browse_path_io_error(path, error))?;
+    if !metadata.is_dir() {
+        return Err(AppError::Validation(format!(
+            "Path is not a directory: {path}"
+        )));
+    }
+
+    fs::read_dir(target).map_err(|error| browse_path_io_error(path, error))
+}
+
+fn browse_path_io_error(path: &str, error: io::Error) -> AppError {
+    let message = match error.kind() {
+        io::ErrorKind::NotFound => format!("Directory does not exist: {path}"),
+        io::ErrorKind::PermissionDenied => format!("Directory is not readable: {path}"),
+        _ => format!("Directory cannot be opened: {path}"),
+    };
+    AppError::Validation(message)
+}
 
 async fn require_library_settings_permission(ctx: &Context<'_>) -> GqlResult<()> {
     let app = app_from_ctx(ctx)?;
@@ -1933,15 +1959,7 @@ impl UtilityQueries {
         #[graphql(default_with = "String::from(\"/\")")] path: String,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
         require_library_settings_permission(ctx).await?;
-        let target = std::path::Path::new(&path);
-        if !target.is_absolute() {
-            return Err(to_gql_error(AppError::Validation(
-                "path must be absolute".to_string(),
-            )));
-        }
-        let read_dir = std::fs::read_dir(target).map_err(|e| {
-            to_gql_error(AppError::Repository(format!("cannot read directory: {e}")))
-        })?;
+        let read_dir = browse_path_read_dir(&path).map_err(to_gql_error)?;
         let mut entries: Vec<DirectoryEntryPayload> = Vec::new();
         for entry in read_dir.flatten() {
             let ft = match entry.file_type() {

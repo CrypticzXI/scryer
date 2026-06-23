@@ -15,6 +15,12 @@ use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, symlink};
+#[cfg(windows)]
+use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
+};
 
 const TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO: i32 = 9;
 const IMPORT_COPY_MAX_ATTEMPTS: usize = 3;
@@ -52,12 +58,14 @@ struct FileFingerprint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryFingerprint {
-    #[cfg(not(unix))]
-    modified: Option<SystemTime>,
     #[cfg(unix)]
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    #[cfg(windows)]
+    volume_serial_number: u32,
+    #[cfg(windows)]
+    file_index: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,22 +276,60 @@ fn fingerprint_from_metadata(metadata: &std::fs::Metadata) -> AppResult<FileFing
     })
 }
 
-fn directory_fingerprint_from_metadata(
-    metadata: &std::fs::Metadata,
-) -> AppResult<DirectoryFingerprint> {
+fn directory_fingerprint_from_path(path: &Path) -> AppResult<DirectoryFingerprint> {
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        AppError::Repository(format!(
+            "failed to stat destination directory {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
     if !metadata.is_dir() {
         return Err(AppError::Repository(
             "import destination parent is not a directory".into(),
         ));
     }
-    Ok(DirectoryFingerprint {
-        #[cfg(not(unix))]
-        modified: metadata.modified().ok(),
-        #[cfg(unix)]
-        dev: metadata.dev(),
-        #[cfg(unix)]
-        ino: metadata.ino(),
-    })
+    #[cfg(unix)]
+    {
+        Ok(DirectoryFingerprint {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .map_err(|e| {
+                AppError::Repository(format!(
+                    "failed to open destination directory {} for identity check: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let result =
+            unsafe { GetFileInformationByHandle(directory.as_raw_handle(), info.as_mut_ptr()) };
+        if result == 0 {
+            return Err(AppError::Repository(format!(
+                "failed to read destination directory identity {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        let info = unsafe { info.assume_init() };
+        let file_index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+        Ok(DirectoryFingerprint {
+            volume_serial_number: info.dwVolumeSerialNumber,
+            file_index,
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Ok(DirectoryFingerprint {})
+    }
 }
 
 fn ensure_same_source(path: &Path, expected: &ImportSourceFingerprint) -> AppResult<()> {
@@ -494,15 +540,7 @@ fn prepare_import_destination(
             e
         ))
     })?;
-    let approved_parent_fingerprint = std::fs::metadata(parent)
-        .map_err(|e| {
-            AppError::Repository(format!(
-                "failed to stat destination directory {}: {}",
-                parent.display(),
-                e
-            ))
-        })
-        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+    let approved_parent_fingerprint = directory_fingerprint_from_path(parent)?;
 
     Ok((
         source_fingerprint,
@@ -516,7 +554,7 @@ fn prepare_import_destination(
     ))
 }
 
-fn validate_import_destination_guard(
+fn validate_import_destination_parent(
     guard: &ImportDestinationGuard,
     returned_dest: &Path,
 ) -> AppResult<()> {
@@ -543,15 +581,7 @@ fn validate_import_destination_guard(
             current_parent_canonical.display()
         )));
     }
-    let current_parent_fingerprint = std::fs::metadata(&guard.parent_path)
-        .map_err(|e| {
-            AppError::Repository(format!(
-                "failed to stat destination directory {} after placement: {}",
-                guard.parent_path.display(),
-                e
-            ))
-        })
-        .and_then(|metadata| directory_fingerprint_from_metadata(&metadata))?;
+    let current_parent_fingerprint = directory_fingerprint_from_path(&guard.parent_path)?;
     if current_parent_fingerprint != guard.approved_parent_fingerprint {
         return Err(AppError::Repository(format!(
             "import destination parent changed during placement: {}",
@@ -559,6 +589,10 @@ fn validate_import_destination_guard(
         )));
     }
 
+    Ok(())
+}
+
+fn validate_import_destination_file(guard: &ImportDestinationGuard) -> AppResult<()> {
     let metadata = std::fs::symlink_metadata(&guard.requested_path).map_err(|e| {
         AppError::Repository(format!(
             "failed to inspect imported destination {}: {}",
@@ -575,6 +609,38 @@ fn validate_import_destination_guard(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn validate_import_destination_guard(
+    guard: &ImportDestinationGuard,
+    returned_dest: &Path,
+) -> AppResult<()> {
+    validate_import_destination_parent(guard, returned_dest)?;
+    validate_import_destination_file(guard)
+}
+
+fn validate_import_destination_guard_after_placement(
+    guard: &ImportDestinationGuard,
+    returned_dest: &Path,
+) -> AppResult<()> {
+    validate_import_destination_parent(guard, returned_dest)?;
+    match validate_import_destination_file(guard) {
+        Ok(()) => Ok(()),
+        Err(validation_error) => {
+            let validation_message = validation_error.to_string();
+            match std::fs::remove_file(returned_dest) {
+                Ok(()) => Err(validation_error),
+                Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                    Err(validation_error)
+                }
+                Err(cleanup_error) => Err(AppError::Repository(format!(
+                    "{validation_message}; additionally failed to remove placed import destination {} after validation failure: {cleanup_error}",
+                    returned_dest.display()
+                ))),
+            }
+        }
+    }
 }
 
 fn import_symlink_source(
@@ -955,7 +1021,7 @@ fn import_hardlink_or_copy_blocking(
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
         import_symlink_source(&source, &dest, &source_fingerprint, size)?;
-        validate_import_destination_guard(&destination_guard, &dest)?;
+        validate_import_destination_guard_after_placement(&destination_guard, &dest)?;
         let source_cleanup = cleanup_guard_after_placement(
             source_cleanup_required,
             &source,
@@ -983,7 +1049,10 @@ fn import_hardlink_or_copy_blocking(
                 }
                 match std::fs::metadata(&dest) {
                     Ok(dest_meta) if dest_meta.len() == size => {
-                        validate_import_destination_guard(&destination_guard, &dest)?;
+                        validate_import_destination_guard_after_placement(
+                            &destination_guard,
+                            &dest,
+                        )?;
                         let source_cleanup = cleanup_guard_after_placement(
                             source_cleanup_required,
                             &source,
@@ -1041,7 +1110,7 @@ fn import_hardlink_or_copy_blocking(
         options,
         progress.as_ref(),
     )?;
-    validate_import_destination_guard(&destination_guard, &dest)?;
+    validate_import_destination_guard_after_placement(&destination_guard, &dest)?;
 
     let source_cleanup = cleanup_guard_after_placement(
         source_cleanup_required,
@@ -1250,6 +1319,75 @@ mod tests {
                 .to_string()
                 .contains("import destination parent changed during placement")
         );
+    }
+
+    #[test]
+    fn destination_guard_allows_child_creation_in_approved_parent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let parent = dir.path().join("library");
+        let dest = parent.join("Imported.Movie.mkv");
+        let (_source_fingerprint, _size, guard) =
+            prepare_import_destination(&source, &dest).expect("prepare destination");
+
+        std::fs::write(&dest, b"fake video bytes").expect("write destination");
+
+        validate_import_destination_guard(&guard, &dest)
+            .expect("normal child creation should not change parent identity");
+    }
+
+    #[test]
+    fn destination_guard_after_placement_preserves_files_when_parent_changed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let parent = dir.path().join("library");
+        let dest = parent.join("Imported.Movie.mkv");
+        let (_source_fingerprint, _size, guard) =
+            prepare_import_destination(&source, &dest).expect("prepare destination");
+
+        std::fs::write(&dest, b"placed video bytes").expect("write placed destination");
+        let old_parent = dir.path().join("library-old");
+        std::fs::rename(&parent, &old_parent).expect("replace approved parent");
+        std::fs::create_dir_all(&parent).expect("create replacement parent");
+        std::fs::write(&dest, b"replacement parent bytes").expect("write replacement occupant");
+
+        let error = validate_import_destination_guard_after_placement(&guard, &dest)
+            .expect_err("changed parent should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("import destination parent changed during placement")
+        );
+        assert_eq!(
+            std::fs::read(old_parent.join("Imported.Movie.mkv")).expect("read placed destination"),
+            b"placed video bytes"
+        );
+        assert_eq!(
+            std::fs::read(&dest).expect("read replacement occupant"),
+            b"replacement parent bytes"
+        );
+    }
+
+    #[test]
+    fn destination_guard_after_placement_reports_cleanup_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let parent = dir.path().join("library");
+        let dest = parent.join("Imported.Movie.mkv");
+        let (_source_fingerprint, _size, guard) =
+            prepare_import_destination(&source, &dest).expect("prepare destination");
+
+        std::fs::create_dir(&dest).expect("create non-file destination");
+
+        let error = validate_import_destination_guard_after_placement(&guard, &dest)
+            .expect_err("directory destination should be rejected");
+        let message = error.to_string();
+        assert!(message.contains("import destination is not a file or symlink"));
+        assert!(message.contains("additionally failed to remove placed import destination"));
+        assert!(dest.exists());
     }
 
     #[tokio::test]

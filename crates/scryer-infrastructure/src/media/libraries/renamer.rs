@@ -1,10 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
     AppError, AppResult, LibraryRenamer, RenameApplyItemResult, RenameApplyStatus, RenamePlan,
     RenameWriteAction,
 };
+#[cfg(windows)]
+use scryer_domain::Id;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -36,7 +39,7 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
                 continue;
             }
 
-            let source = Path::new(&item.current_path);
+            let source = stored_path_to_path_buf(&item.current_path);
             let source_meta = fs::metadata(source)
                 .await
                 .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -53,13 +56,16 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
                 ));
             };
 
-            if let Some(parent) = Path::new(target_path).parent() {
+            let target = stored_path_to_path_buf(target_path);
+            if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)
                     .await
                     .map_err(|err| AppError::Repository(err.to_string()))?;
             }
 
-            if target_path != item.current_path && fs::metadata(target_path).await.is_ok() {
+            if !rename_paths_equivalent(&item.current_path, target_path)
+                && fs::metadata(target).await.is_ok()
+            {
                 return Err(AppError::Validation(format!(
                     "rename target already exists: {target_path}"
                 )));
@@ -159,36 +165,48 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
 }
 
 async fn move_file(source: &str, target: &str, replace: bool) -> std::io::Result<()> {
-    if replace && target != source && fs::metadata(target).await.is_ok() {
-        fs::remove_file(target).await?;
+    let source_path = stored_path_to_path_buf(source);
+    let target_path = stored_path_to_path_buf(target);
+
+    if replace
+        && !rename_paths_equivalent(source, target)
+        && fs::metadata(&target_path).await.is_ok()
+    {
+        fs::remove_file(&target_path).await?;
     }
 
-    if let Some(parent) = Path::new(target).parent() {
+    if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).await?;
     }
 
-    match fs::rename(source, target).await {
+    #[cfg(windows)]
+    if requires_case_only_intermediate_move(source, target) {
+        return move_case_only_file(&source_path, &target_path).await;
+    }
+
+    match fs::rename(&source_path, &target_path).await {
         Ok(()) => Ok(()),
         Err(err) if is_cross_device_error(&err) => {
-            fs::copy(source, target).await?;
-            let mut file = fs::OpenOptions::new().write(true).open(target).await?;
+            fs::copy(&source_path, &target_path).await?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(&target_path)
+                .await?;
             file.flush().await?;
             file.sync_all().await?;
             // Prove the destination is a faithful copy using the sampled size +
             // first/last MiB BLAKE3 verifier before deleting the source.
-            if let Err(verify_error) = scryer_application::fs_integrity::verify_same_file_async(
-                Path::new(source),
-                Path::new(target),
-            )
-            .await
+            if let Err(verify_error) =
+                scryer_application::fs_integrity::verify_same_file_async(&source_path, &target_path)
+                    .await
             {
-                let _ = fs::remove_file(target).await;
+                let _ = fs::remove_file(&target_path).await;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     verify_error.to_string(),
                 ));
             }
-            fs::remove_file(source).await?;
+            fs::remove_file(&source_path).await?;
             Ok(())
         }
         Err(err) => Err(err),
@@ -196,5 +214,137 @@ async fn move_file(source: &str, target: &str, replace: bool) -> std::io::Result
 }
 
 fn is_cross_device_error(error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(18)
+    matches!(error.raw_os_error(), Some(18) | Some(17))
+}
+
+fn rename_paths_equivalent(source: &str, target: &str) -> bool {
+    rename_path_key(source) == rename_path_key(target)
+}
+
+#[cfg(windows)]
+fn requires_case_only_intermediate_move(source: &str, target: &str) -> bool {
+    source != target && rename_paths_equivalent(source, target)
+}
+
+#[cfg(windows)]
+fn rename_path_key(stored_path: &str) -> String {
+    lexically_normalize(&stored_path_to_path_buf(stored_path))
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn rename_path_key(stored_path: &str) -> String {
+    lexically_normalize(&stored_path_to_path_buf(stored_path))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(segment) => normalized.push(segment),
+        }
+    }
+    normalized
+}
+
+#[cfg(windows)]
+async fn move_case_only_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    let parent = source.parent().unwrap_or_else(|| Path::new("."));
+    let mut last_claim_error = None;
+    for _ in 0..10 {
+        let id = Id::new().0;
+        let short_id = &id[..8];
+        let intermediate = parent.join(format!(".scryer-rename-{short_id}.tmp"));
+        if fs::metadata(&intermediate).await.is_ok() {
+            continue;
+        }
+
+        match fs::rename(source, &intermediate).await {
+            Ok(()) => {
+                return match fs::rename(&intermediate, target).await {
+                    Ok(()) => Ok(()),
+                    Err(rename_error) => {
+                        let rollback_result = fs::rename(&intermediate, source).await;
+                        if let Err(rollback_error) = rollback_result {
+                            return Err(std::io::Error::new(
+                                rename_error.kind(),
+                                format!(
+                                    "failed case-only rename {} -> {} after moving through {}; rollback to {} also failed: {}; original error: {}",
+                                    source.display(),
+                                    target.display(),
+                                    intermediate.display(),
+                                    source.display(),
+                                    rollback_error,
+                                    rename_error
+                                ),
+                            ));
+                        }
+                        Err(rename_error)
+                    }
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_claim_error = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_claim_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "failed to claim intermediate path for case-only rename {} -> {}",
+                source.display(),
+                target.display()
+            ),
+        )
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_device_error_matches_unix_and_windows_codes() {
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+            18
+        )));
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+            17
+        )));
+        assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
+            5
+        )));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rename_path_key_preserves_case_on_non_windows() {
+        assert_ne!(
+            rename_path_key("/media/Movie.mkv"),
+            rename_path_key("/media/movie.mkv")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_path_key_folds_case_and_separators_on_windows() {
+        assert_eq!(
+            rename_path_key(r"C:\Media\Movie.mkv"),
+            rename_path_key("C:/media/movie.mkv")
+        );
+    }
 }

@@ -93,6 +93,50 @@ async fn graphql_runtime_browse_and_download_client_permissions() {
     assert_no_errors(&browse_body);
     assert!(browse_body["data"]["browsePath"].is_array());
 
+    let relative_browse_body = schema_exec(
+        &ctx,
+        "{ browsePath(path: \"relative/path\") { path } }",
+        Some(catalog_user.clone()),
+    )
+    .await;
+    let (relative_message, relative_code) =
+        first_graphql_error_message_and_code(&relative_browse_body);
+    assert_eq!(relative_code, "VALIDATION_ERROR");
+    assert!(relative_message.contains("Path must be absolute."));
+
+    let browse_validation_root = tempfile::tempdir().expect("browse validation root");
+    let missing_path = browse_validation_root.path().join("missing");
+    let missing_path_string = missing_path.to_string_lossy().into_owned();
+    let missing_path_json =
+        serde_json::to_string(&missing_path_string).expect("serialize missing path");
+    let missing_browse_query = format!("{{ browsePath(path: {missing_path_json}) {{ path }} }}");
+    let missing_browse_body =
+        schema_exec(&ctx, &missing_browse_query, Some(catalog_user.clone())).await;
+    let (missing_message, missing_code) =
+        first_graphql_error_message_and_code(&missing_browse_body);
+    assert_eq!(missing_code, "VALIDATION_ERROR");
+    assert!(missing_message.contains("Directory does not exist:"));
+    let missing_error = missing_browse_body["errors"][0]
+        .as_object()
+        .expect("missing path graphql error");
+    assert!(
+        missing_error
+            .get("extensions")
+            .and_then(|extensions| extensions.get("errorId"))
+            .is_none(),
+        "missing browse path should not be masked as an internal error: {missing_browse_body}"
+    );
+
+    let file_path = browse_validation_root.path().join("not-a-directory.txt");
+    std::fs::write(&file_path, b"not a directory").expect("write browse validation file");
+    let file_path_string = file_path.to_string_lossy().into_owned();
+    let file_path_json = serde_json::to_string(&file_path_string).expect("serialize file path");
+    let file_browse_query = format!("{{ browsePath(path: {file_path_json}) {{ path }} }}");
+    let file_browse_body = schema_exec(&ctx, &file_browse_query, Some(catalog_user.clone())).await;
+    let (file_message, file_code) = first_graphql_error_message_and_code(&file_browse_body);
+    assert_eq!(file_code, "VALIDATION_ERROR");
+    assert!(file_message.contains("Path is not a directory:"));
+
     let browse_denied = schema_exec(&ctx, &browse_query, Some(limited)).await;
     assert!(
         browse_denied.get("errors").is_some(),

@@ -1451,6 +1451,34 @@ mod tests {
     }
 
     #[test]
+    fn import_rejected_projects_to_title_scoped_activity() {
+        let activity = activity_event_from_domain_event(&event(
+            1,
+            Utc::now(),
+            DomainEventPayload::ImportRejected(ImportRejectedEventData {
+                title: Some(title_snapshot("Example", MediaFacet::Series)),
+                status: ImportStatus::Failed,
+                import_id: Some("import-1".to_string()),
+                source_system: Some("sabnzbd".to_string()),
+                source_ref: Some("job-1".to_string()),
+                source_title: Some("Example.S01E01.1080p".to_string()),
+                source_path: Some("/downloads/Example.S01E01.1080p".to_string()),
+                dest_path: None,
+                quality: Some("1080p".to_string()),
+                reason: Some("Policy mismatch".to_string()),
+                skip_reason: None,
+                episode_ids: vec!["ep-1".to_string()],
+            }),
+        ))
+        .expect("import rejected should project to activity");
+
+        assert_eq!(activity.kind, ActivityKind::ImportRejected);
+        assert_eq!(activity.severity, ActivitySeverity::Warning);
+        assert_eq!(activity.title_id.as_deref(), Some("title-1"));
+        assert_eq!(activity.facet.as_deref(), Some("series"));
+    }
+
+    #[test]
     fn sorted_download_queue_items_matches_query_ordering_contract() {
         let items = HashMap::from([
             (

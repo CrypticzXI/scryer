@@ -888,6 +888,64 @@ pub(crate) async fn restore_from_recycle_with_roots(
     restore_from_recycle_inner(recycled_path, original_path, overwrite, Some(allowed_roots)).await
 }
 
+pub(crate) async fn restore_recycled_file_exact(
+    recycled_path: &Path,
+    destination: &Path,
+) -> AppResult<()> {
+    ensure_recycled_restore_source_is_regular(recycled_path).await?;
+    match tokio::fs::symlink_metadata(destination).await {
+        Ok(_) => {
+            return Err(AppError::Validation(format!(
+                "refusing to restore recycled file {} because destination is occupied: {}",
+                recycled_path.display(),
+                destination.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to stat recycle restore destination {}: {}",
+                destination.display(),
+                error
+            )));
+        }
+    }
+
+    if let Some(parent) = destination.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            AppError::Repository(format!(
+                "failed to create restore parent directory {}: {}",
+                parent.display(),
+                error
+            ))
+        })?;
+    }
+
+    let destination_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to claim exact restore destination {}: {}",
+                destination.display(),
+                error
+            ))
+        })?;
+    copy_recycled_to_claimed_destination(recycled_path, destination, destination_file).await?;
+    crate::fs_safety::remove_file_safely(recycled_path)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to remove recycled source {} after exact restore to {}: {}",
+                recycled_path.display(),
+                destination.display(),
+                error
+            ))
+        })
+}
+
 async fn restore_from_recycle_inner(
     recycled_path: &Path,
     original_path: &Path,
@@ -2064,6 +2122,58 @@ mod tests {
         assert!(source.exists());
         let restored = tokio::fs::read(&source).await.unwrap();
         assert_eq!(restored, content);
+    }
+
+    #[tokio::test]
+    async fn test_exact_restore_returns_file_to_absent_destination() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        let source = tmp.path().join("test.mkv");
+        let content = b"video data for exact restore";
+        tokio::fs::write(&source, content).await.unwrap();
+
+        let config = test_config(&recycle_dir);
+        let result = recycle_file(&config, &source, test_manifest())
+            .await
+            .unwrap()
+            .unwrap();
+
+        restore_recycled_file_exact(&result.recycled_path, &source)
+            .await
+            .unwrap();
+
+        assert_eq!(tokio::fs::read(&source).await.unwrap(), content);
+        assert!(
+            !result.recycled_path.exists(),
+            "exact restore should remove the recycled source"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exact_restore_refuses_occupied_destination_and_keeps_recycled_source() {
+        let tmp = TempDir::new().unwrap();
+        let recycled_path = tmp.path().join("movie.recycled");
+        let destination = tmp.path().join("movie.mkv");
+        tokio::fs::write(&recycled_path, b"old bytes")
+            .await
+            .unwrap();
+        tokio::fs::write(&destination, b"unexpected occupant")
+            .await
+            .unwrap();
+
+        let error = restore_recycled_file_exact(&recycled_path, &destination)
+            .await
+            .expect_err("occupied destination must be refused");
+
+        assert!(
+            error.to_string().contains("destination is occupied"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(tokio::fs::read(&recycled_path).await.unwrap(), b"old bytes");
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"unexpected occupant"
+        );
     }
 
     #[tokio::test]

@@ -1619,19 +1619,19 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   />
                 </TableCell>
               ) : null}
-              <TableCell className="min-w-0">
+              <TableCell className="w-[28%] min-w-72">
                 <ActivityQueueTitleContent
                   displayTitle={row.displayTitle}
                   releaseTitle={row.releaseTitle}
                 />
               </TableCell>
-              <TableCell className="min-w-0 align-middle">
+              <TableCell className="w-36 min-w-36 align-middle">
                 <p className="break-words whitespace-normal text-sm">
                   {queueItem.clientName || queueItem.clientType}
                 </p>
                 <p className="text-xs text-muted-foreground">{queueItem.clientType}</p>
               </TableCell>
-              <TableCell className="min-w-0 align-middle">
+              <TableCell className="w-44 min-w-44 align-middle">
                 <ActivityQueueStatusBadge
                   stateKey={row.displayStateKey}
                   statusLabel={row.statusLabel}
@@ -1654,7 +1654,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 )}
               </TableCell>
               {activeTab === "activity" || activeTab === "import" ? (
-                <TableCell className="w-52 min-w-52 align-middle">
+                <TableCell className="w-48 min-w-48 align-middle">
                   <ActivityProgressBar
                     percent={row.percent}
                     remainingLabel={row.remainingLabel}
@@ -2063,7 +2063,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   className={cn(
                     "table-fixed",
                     activeTab === "activity" || activeTab === "import"
-                      ? "min-w-[820px]"
+                      ? "min-w-[1160px]"
                       : "min-w-[700px]",
                   )}
                 >
@@ -2085,11 +2085,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                           />
                         </TableHead>
                       ) : null}
-                      {renderSortableHeader("title", t("queue.title"), "w-[34%] min-w-0")}
-                      {renderSortableHeader("client", t("queue.client"), "w-32 min-w-0")}
-                      {renderSortableHeader("status", t("queue.status"), "w-44 min-w-0")}
+                      {renderSortableHeader("title", t("queue.title"), "w-[28%] min-w-72")}
+                      {renderSortableHeader("client", t("queue.client"), "w-36 min-w-36")}
+                      {renderSortableHeader("status", t("queue.status"), "w-44 min-w-44")}
                       {activeTab === "activity" || activeTab === "import"
-                        ? renderSortableHeader("progress", t("queue.progress"), "w-52 min-w-52")
+                        ? renderSortableHeader("progress", t("queue.progress"), "w-48 min-w-48")
                         : null}
                       {renderSortableHeader("size", t("queue.size"), "w-24 min-w-24")}
                       <TableHead className="w-44 min-w-44 text-right">{t("label.actions")}</TableHead>

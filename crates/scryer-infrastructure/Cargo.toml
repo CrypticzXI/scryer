@@ -56,6 +56,7 @@ ravif = { version = "0.13", features = ["threading"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring-core = { workspace = true }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-native-keyring-store = { workspace = true }
 
 [dev-dependencies]

@@ -34,6 +34,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
+import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh-kinds";
 import type { Release, TitleAcquisitionDiagnostics, WantedItem } from "@/lib/types";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
@@ -1091,24 +1092,12 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
     (mediaFileDeletePreview.requiresTypedConfirmation &&
       mediaFileDeleteTypedConfirmation.trim() !== "DELETE");
 
-  const IMPORT_KINDS = React.useMemo(
-    () =>
-      new Set([
-        "movie_downloaded",
-        "series_episode_imported",
-        "file_analyzed",
-        "file_upgraded",
-        "subtitle_downloaded",
-      ]),
-    [],
-  );
-
   useTitleOverviewReactiveRefresh({
     titleId,
     blocklistLimit: 200,
     applyNativeSnapshot: applyNativeTitleDetailSnapshot,
     applyDownloadFeedbackSnapshot,
-    importKinds: IMPORT_KINDS,
+    importKinds: TITLE_OVERVIEW_REFRESH_KINDS,
     downloadFeedbackEnabled: hasDownloadClients,
     pause: !titleId,
   });

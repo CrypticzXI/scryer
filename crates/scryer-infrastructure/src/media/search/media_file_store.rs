@@ -659,19 +659,42 @@ impl MediaFileRepository for MediaFileStore {
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
         let dialect = dialect_for_datastore(&self.datastore);
+        #[cfg(windows)]
+        let (where_clause, args) = if file_path.starts_with("scryer-path-v1:") {
+            (
+                "mf.file_path = {}".to_string(),
+                vec![SqlArg::Text(file_path.to_string())],
+            )
+        } else {
+            let normalized_path = normalize_windows_plain_media_file_path_lookup(file_path);
+            (
+                "(
+                    mf.file_path = {}
+                    OR (
+                        mf.file_path NOT LIKE 'scryer-path-v1:%'
+                        AND lower(replace(mf.file_path, '/', '\\')) = {}
+                    )
+                )"
+                .to_string(),
+                vec![
+                    SqlArg::Text(file_path.to_string()),
+                    SqlArg::Text(normalized_path),
+                ],
+            )
+        };
+        #[cfg(not(windows))]
+        let (where_clause, args) = (
+            "mf.file_path = {}".to_string(),
+            vec![SqlArg::Text(file_path.to_string())],
+        );
         let sql = format!(
             "SELECT {}
              FROM media_files mf
-             WHERE mf.file_path = {{}}
+             WHERE {where_clause}
              LIMIT 1",
             media_file_select_columns(dialect, "NULL")
         );
-        fetch_optional_media_file(
-            self.datastore.read_exec(),
-            &sql,
-            &[SqlArg::Text(file_path.to_string())],
-        )
-        .await
+        fetch_optional_media_file(self.datastore.read_exec(), &sql, &args).await
     }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
@@ -684,6 +707,11 @@ impl MediaFileRepository for MediaFileStore {
         .await?;
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn normalize_windows_plain_media_file_path_lookup(file_path: &str) -> String {
+    file_path.replace('/', "\\").to_lowercase()
 }
 
 fn dialect_for_datastore(datastore: &StoreDatastore) -> SqlDialect {
@@ -1064,6 +1092,15 @@ mod tests {
         AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
     };
     use scryer_domain::{Collection, CollectionType, Episode, MediaFacet, Title};
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_plain_media_file_path_lookup_normalizes_case_and_separators() {
+        assert_eq!(
+            normalize_windows_plain_media_file_path_lookup("C:/Media/Show/Episode.mkv"),
+            "c:\\media\\show\\episode.mkv"
+        );
+    }
 
     fn make_test_series_title(id: &str) -> Title {
         Title {

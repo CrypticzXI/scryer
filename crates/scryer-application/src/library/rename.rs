@@ -201,6 +201,8 @@ const RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY: &str = "rename.missing_metadata
 const DEFAULT_COLLISION_POLICY: RenameCollisionPolicy = RenameCollisionPolicy::Skip;
 const DEFAULT_MISSING_METADATA_POLICY: RenameMissingMetadataPolicy =
     RenameMissingMetadataPolicy::FallbackTitle;
+const GENERATED_COMPONENT_MAX_BYTES: usize = 240;
+const GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES: usize = 24;
 
 #[derive(Default)]
 struct RenamePersistenceState {
@@ -1141,7 +1143,7 @@ fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, Strin
 }
 
 pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    restore_rename_literal_sentinels(&sanitize_filesystem_component(
+    finalize_generated_filename_component(&restore_rename_literal_sentinels(
         &render_rename_template_tokens(template, tokens),
     ))
 }
@@ -1170,10 +1172,14 @@ fn restore_rename_literal_sentinels(value: &str) -> String {
         .collect()
 }
 
+fn finalize_generated_filename_component(value: &str) -> String {
+    truncate_generated_filename_component(&sanitize_filesystem_component(value))
+}
+
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
     let raw = render_template_tokens(template, tokens);
     let cleaned = strip_empty_folder_template_groups(&raw);
-    sanitize_filesystem_component(cleaned.trim())
+    truncate_generated_folder_component(&sanitize_filesystem_component(cleaned.trim()))
 }
 
 pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
@@ -1303,6 +1309,7 @@ pub(crate) fn configured_title_folder_path(
         tokens
             .get("title")
             .map(|value| sanitize_filesystem_component(value))
+            .map(|value| truncate_generated_folder_component(&value))
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "untitled".to_string())
     } else {
@@ -1343,7 +1350,7 @@ pub(crate) fn title_folder_path_for_renamed_file(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(stored_path_to_path_buf)
     else {
         return desired_root;
     };
@@ -1362,15 +1369,17 @@ fn infer_title_folder_path_after_rename(
     current_path: &str,
     final_path: &str,
 ) -> Option<String> {
-    let final_parent = Path::new(final_path).parent()?;
+    let final_path = stored_path_to_path_buf(final_path);
+    let final_parent = final_path.parent()?;
     if let Some(existing_root) = title
         .folder_path
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(stored_path_to_path_buf)
     {
-        let current_parent = Path::new(current_path).parent()?;
+        let current_path = stored_path_to_path_buf(current_path);
+        let current_parent = current_path.parent()?;
         if let Ok(relative_parent) = current_parent.strip_prefix(&existing_root) {
             let mut new_root = final_parent.to_path_buf();
             for _ in relative_parent.components() {
@@ -1742,7 +1751,40 @@ fn resolve_rendered_rename_filename(
         rendered = format!("{rendered}.{}", source.extension);
     }
 
+    rendered = finalize_generated_filename_component(&rendered);
+
     Ok(rendered)
+}
+
+fn rename_planning_path_key(stored_path: &str) -> String {
+    let normalized = lexically_normalize_rename_path(&stored_path_to_path_buf(stored_path));
+    #[cfg(windows)]
+    {
+        normalized
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        normalized.to_string_lossy().into_owned()
+    }
+}
+
+fn lexically_normalize_rename_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(segment) => normalized.push(segment),
+        }
+    }
+    normalized
 }
 
 fn finalize_rename_plan_item(
@@ -1754,6 +1796,8 @@ fn finalize_rename_plan_item(
     planned_targets: &mut HashSet<String>,
 ) -> RenamePlanItem {
     let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
+    let proposed_path_key = rename_planning_path_key(&proposed_path_str);
+    let current_path_key = rename_planning_path_key(&source.current_path);
 
     if proposed_path_str == source.current_path {
         return source.build_item(
@@ -1766,7 +1810,7 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if !planned_targets.insert(proposed_path_str.clone()) {
+    if !planned_targets.insert(proposed_path_key.clone()) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -1777,7 +1821,8 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if Path::new(&proposed_path_str).exists() {
+    if proposed_path_key != current_path_key && stored_path_to_path_buf(&proposed_path_str).exists()
+    {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -2457,7 +2502,7 @@ fn replace_token_whitespace(value: &str, replacement: &str) -> String {
 pub fn sanitize_filesystem_component(raw: &str) -> String {
     let mut sanitized = String::with_capacity(raw.len());
     for ch in raw.chars() {
-        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch <= '\u{1f}' {
             sanitized.push(' ');
         } else {
             sanitized.push(ch);
@@ -2465,6 +2510,73 @@ pub fn sanitize_filesystem_component(raw: &str) -> String {
     }
 
     disarm_windows_reserved_device_name(&collapse_separators(&sanitized))
+}
+
+fn truncate_generated_filename_component(component: &str) -> String {
+    truncate_generated_component(component, true)
+}
+
+fn truncate_generated_folder_component(component: &str) -> String {
+    truncate_generated_component(component, false)
+}
+
+fn truncate_generated_component(component: &str, preserve_extension: bool) -> String {
+    let budget =
+        GENERATED_COMPONENT_MAX_BYTES.saturating_sub(GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES);
+    if component.len() <= budget {
+        return component.to_string();
+    }
+
+    if preserve_extension {
+        let path = Path::new(component);
+        if let Some(extension) = path.extension().and_then(|value| value.to_str())
+            && !extension.is_empty()
+        {
+            let extension_with_dot = format!(".{extension}");
+            if extension_with_dot.len() < budget {
+                let stem = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(component);
+                let stem_budget = budget - extension_with_dot.len();
+                let stem = trim_truncated_component_end(&truncate_utf8_bytes(stem, stem_budget));
+                if !stem.is_empty() {
+                    return disarm_windows_reserved_device_name(&format!(
+                        "{stem}{extension_with_dot}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let truncated = trim_truncated_component_end(&truncate_utf8_bytes(component, budget));
+    if truncated.is_empty() {
+        String::new()
+    } else {
+        disarm_windows_reserved_device_name(&truncated)
+    }
+}
+
+fn truncate_utf8_bytes(value: &str, budget: usize) -> String {
+    if value.len() <= budget {
+        return value.to_string();
+    }
+
+    let mut end = 0usize;
+    for (index, ch) in value.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > budget {
+            break;
+        }
+        end = next;
+    }
+    value[..end].to_string()
+}
+
+fn trim_truncated_component_end(value: &str) -> String {
+    value
+        .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '.' | '-' | '_'))
+        .to_string()
 }
 
 fn disarm_windows_reserved_device_name(component: &str) -> String {
