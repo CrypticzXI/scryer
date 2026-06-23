@@ -224,12 +224,12 @@ async fn enroll_totp_for_test_and_current_code(ctx: &TestContext, user: &User) -
         .totp_enrollment_start(user)
         .await
         .expect("start TOTP enrollment");
-    let code = test_totp_code_for_step_offset(&enrollment.secret_base32, -1);
+    let code = test_totp_code(&enrollment.secret_base32);
     ctx.app
         .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
         .await
         .expect("complete TOTP enrollment");
-    test_totp_code(&enrollment.secret_base32)
+    test_totp_code_for_step_offset(&enrollment.secret_base32, 1)
 }
 
 async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
