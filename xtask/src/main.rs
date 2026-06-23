@@ -25,6 +25,7 @@ mod seed;
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
 const DEFAULT_SERVE_FRONTEND_PORT: u16 = 3000;
+const DEFAULT_SERVE_BACKEND_RUST_MIN_STACK: &str = "16777216";
 
 #[cfg(unix)]
 struct SignalForwarder {
@@ -1036,6 +1037,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         std::env::var("SCRYER_VITE_USE_POLLING").unwrap_or_else(|_| "true".to_string());
     let vite_poll_interval =
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
+    let backend_rust_min_stack = dotenv_or_process_env(&dotenv_envs, "RUST_MIN_STACK")
+        .unwrap_or_else(|| DEFAULT_SERVE_BACKEND_RUST_MIN_STACK.to_string());
     let datastore = prepare_serve_datastore(ctx, &args, mode)?;
     let encryption_key = serve_encryption_key();
     let webauthn_rp_id = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ID")
@@ -1077,6 +1080,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Vite dev server: {frontend_url}");
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
+    println!("   Backend RUST_MIN_STACK: {backend_rust_min_stack}");
     println!("   WebAuthn RP ID: {webauthn_rp_id}");
     println!("   WebAuthn RP origin: {webauthn_rp_origin}");
     match datastore.kind {
@@ -1113,6 +1117,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         .env("SCRYER_WEBAUTHN_RP_ID", &webauthn_rp_id)
         .env("SCRYER_WEBAUTHN_RP_ORIGIN", &webauthn_rp_origin)
         .env("SCRYER_BIND", &args.bind)
+        .env("RUST_MIN_STACK", &backend_rust_min_stack)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     let mut backend = serve.spawn()?;
