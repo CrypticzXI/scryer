@@ -82,8 +82,8 @@ mod tests {
 
     #[test]
     fn external_auth_runtime_settings_maps_clean_connections() {
-        let payload =
-            from_external_auth_runtime_settings(scryer_application::ExternalAuthRuntimeSettings {
+        let payload = from_external_auth_runtime_settings(
+            scryer_application::ExternalAuthRuntimeSettings {
                 login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
                 linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
                 connections: vec![
@@ -102,7 +102,9 @@ mod tests {
                         linking_enabled: true,
                     },
                 ],
-            });
+            },
+            true,
+        );
 
         assert!(matches!(
             payload.login_providers.as_slice(),
@@ -121,6 +123,33 @@ mod tests {
         assert_eq!(payload.connections[0].display_name, "Main Jellyfin");
         assert!(payload.connections[0].login_enabled);
         assert!(!payload.connections[0].linking_enabled);
+    }
+
+    #[test]
+    fn external_auth_runtime_settings_hides_login_when_form_login_disabled() {
+        let payload = from_external_auth_runtime_settings(
+            scryer_application::ExternalAuthRuntimeSettings {
+                login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
+                connections: vec![scryer_application::ExternalAuthRuntimeConnection {
+                    id: "jellyfin-main".to_string(),
+                    provider: scryer_domain::ExternalAccountProvider::Jellyfin,
+                    display_name: "Main Jellyfin".to_string(),
+                    login_enabled: true,
+                    linking_enabled: true,
+                }],
+            },
+            false,
+        );
+
+        assert!(payload.login_providers.is_empty());
+        assert!(matches!(
+            payload.linking_providers.as_slice(),
+            [ExternalAccountProviderValue::Plex]
+        ));
+        assert_eq!(payload.connections.len(), 1);
+        assert!(!payload.connections[0].login_enabled);
+        assert!(payload.connections[0].linking_enabled);
     }
 }
 
@@ -194,13 +223,18 @@ fn from_security_settings(
 
 fn from_external_auth_runtime_settings(
     settings: scryer_application::ExternalAuthRuntimeSettings,
+    effective_form_login_enabled: bool,
 ) -> ExternalAuthRuntimeSettingsPayload {
     ExternalAuthRuntimeSettingsPayload {
-        login_providers: settings
-            .login_providers
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
+        login_providers: if effective_form_login_enabled {
+            settings
+                .login_providers
+                .into_iter()
+                .map(ExternalAccountProviderValue::from_domain)
+                .collect()
+        } else {
+            Vec::new()
+        },
         linking_providers: settings
             .linking_providers
             .into_iter()
@@ -213,7 +247,7 @@ fn from_external_auth_runtime_settings(
                 id: connection.id.into(),
                 provider: ExternalAccountProviderValue::from_domain(connection.provider),
                 display_name: connection.display_name,
-                login_enabled: connection.login_enabled,
+                login_enabled: effective_form_login_enabled && connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
             })
             .collect(),
@@ -367,9 +401,14 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<ExternalAuthRuntimeSettingsPayload> {
         let app = app_from_ctx(ctx)?;
+        let effective_form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
         app.get_external_auth_runtime_settings()
             .await
-            .map(from_external_auth_runtime_settings)
+            .map(|settings| {
+                from_external_auth_runtime_settings(settings, effective_form_login_enabled)
+            })
             .map_err(to_gql_error)
     }
 

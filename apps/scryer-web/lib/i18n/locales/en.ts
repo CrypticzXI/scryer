@@ -168,6 +168,9 @@ const en: LocaleDictionary = {
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.externalAuthLoginEnabled": "Login enabled",
+  "settings.mediaServerLoginRequiresFormLogin":
+    "Enable form login before enabling media-server login.",
+  "settings.openSecuritySettings": "Open security settings",
   "settings.externalAuthLinkingEnabled": "Linking enabled",
   "settings.addConnection": "Add",
   "settings.removeConnection": "Remove connection",

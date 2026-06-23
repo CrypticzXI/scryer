@@ -29,6 +29,9 @@ use scryer_interface_media::types::*;
 #[derive(Default)]
 pub struct SettingsMutations;
 
+const MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN: &str =
+    "Enable form login before enabling media-server login.";
+
 fn parse_import_mode_input(raw: Option<String>) -> GqlResult<Option<scryer_domain::ImportMode>> {
     raw.map(|value| {
         scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
@@ -196,6 +199,19 @@ fn media_server_path_mappings(
             sort_order: index as i64,
         })
         .collect()
+}
+
+fn ensure_media_server_login_allowed(
+    requested_login_enabled: Option<bool>,
+    effective_form_login_enabled: bool,
+) -> Result<(), AppError> {
+    if requested_login_enabled.unwrap_or(false) && !effective_form_login_enabled {
+        Err(AppError::Validation(
+            MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN.to_string(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerConnectionDraft {
@@ -838,6 +854,13 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
+        ensure_media_server_login_allowed(
+            input.login_enabled,
+            auth_runtime_from_ctx(ctx)
+                .snapshot()
+                .effective_form_login_enabled,
+        )
+        .map_err(to_gql_error)?;
         app.create_media_server_connection(&actor, media_server_draft(input))
             .await
             .map(from_media_server_connection)
@@ -853,6 +876,13 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
+        ensure_media_server_login_allowed(
+            input.login_enabled,
+            auth_runtime_from_ctx(ctx)
+                .snapshot()
+                .effective_form_login_enabled,
+        )
+        .map_err(to_gql_error)?;
         app.update_media_server_connection(&actor, media_server_patch(input))
             .await
             .map(from_media_server_connection)
@@ -1488,5 +1518,27 @@ impl SettingsMutations {
                 .await?;
         let completed = app.complete_setup(&actor).await.map_err(to_gql_error)?;
         Ok(CompleteSetupPayload { completed })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_server_login_requires_effective_form_login() {
+        let error = ensure_media_server_login_allowed(Some(true), false).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::Validation(message) if message == MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN
+        ));
+    }
+
+    #[test]
+    fn media_server_login_guard_allows_disabling_while_form_login_disabled() {
+        assert!(ensure_media_server_login_allowed(Some(false), false).is_ok());
+        assert!(ensure_media_server_login_allowed(None, false).is_ok());
+        assert!(ensure_media_server_login_allowed(Some(true), true).is_ok());
     }
 }

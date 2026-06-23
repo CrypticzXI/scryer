@@ -9,6 +9,7 @@ import {
   updateMediaServerConnectionMutation,
 } from "@/lib/graphql/mutations";
 import {
+  authRuntimeStateQuery,
   librariesQuery,
   mediaServerConnectionsQuery,
 } from "@/lib/graphql/queries";
@@ -159,14 +160,18 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
   };
 }
 
-function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
+function buildCreateInput(
+  draft: MediaServerConnectionDraft,
+  plexAuthToken: string | null,
+  effectiveFormLoginEnabled: boolean,
+) {
   const supportsAuth = draft.provider === "jellyfin" || draft.provider === "plex";
   const input: Record<string, unknown> = {
     provider: draft.provider,
     displayName: draft.displayName.trim(),
     baseUrl: draft.baseUrl.trim(),
     enabled: draft.enabled,
-    loginEnabled: supportsAuth && draft.loginEnabled,
+    loginEnabled: supportsAuth && effectiveFormLoginEnabled && draft.loginEnabled,
     linkingEnabled: supportsAuth && draft.linkingEnabled,
     autoAddEnabled: supportsAuth && draft.autoAddEnabled,
     defaultAppPermissions: supportsAuth ? draft.defaultAppPermissions : [],
@@ -194,10 +199,16 @@ function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: stri
   return input;
 }
 
-function buildUpdateInput(id: string, draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
-  const input = buildCreateInput(draft, plexAuthToken);
+function buildUpdateInput(
+  id: string,
+  draft: MediaServerConnectionDraft,
+  plexAuthToken: string | null,
+  effectiveFormLoginEnabled: boolean,
+) {
+  const input = buildCreateInput(draft, plexAuthToken, effectiveFormLoginEnabled);
   const apiKey = normalizeOptional(draft.apiKey);
   input.id = id;
+  if (!effectiveFormLoginEnabled) delete input.loginEnabled;
   if (!apiKey) delete input.apiKey;
   if (draft.clearApiKey) input.clearApiKey = true;
   return input;
@@ -232,6 +243,7 @@ export function SettingsMediaServersContainer() {
   const [localPathStyle, setLocalPathStyle] =
     useState<LocalPathStyle | undefined>(undefined);
   const [pathMappingsValid, setPathMappingsValid] = useState(true);
+  const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState(false);
 
   const isDraftDirty = JSON.stringify(draft) !== JSON.stringify(draftBaseline);
 
@@ -258,9 +270,17 @@ export function SettingsMediaServersContainer() {
     setLibraries((data?.libraries ?? []) as LibraryRecord[]);
   }, [client]);
 
+  const refreshAuthRuntimeState = useCallback(async () => {
+    const { data, error } = await client
+      .query(authRuntimeStateQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setEffectiveFormLoginEnabled(data?.authRuntimeState?.effectiveFormLoginEnabled === true);
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([refreshConnections(), refreshLibraries()])
+    void Promise.all([refreshConnections(), refreshLibraries(), refreshAuthRuntimeState()])
       .catch((error: unknown) => {
         if (!cancelled) {
           setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
@@ -269,7 +289,7 @@ export function SettingsMediaServersContainer() {
     return () => {
       cancelled = true;
     };
-  }, [refreshConnections, refreshLibraries, setGlobalStatus, t]);
+  }, [refreshConnections, refreshLibraries, refreshAuthRuntimeState, setGlobalStatus, t]);
 
   const resetDraft = useCallback(() => {
     setEditingConnectionId(null);
@@ -420,13 +440,18 @@ export function SettingsMediaServersContainer() {
     try {
       if (editingConnectionId) {
         const { error } = await client.mutation(updateMediaServerConnectionMutation, {
-          input: buildUpdateInput(editingConnectionId, draft, plexDiscoveryToken),
+          input: buildUpdateInput(
+            editingConnectionId,
+            draft,
+            plexDiscoveryToken,
+            effectiveFormLoginEnabled,
+          ),
         }).toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.mediaServerUpdated"));
       } else {
         const { error } = await client.mutation(createMediaServerConnectionMutation, {
-          input: buildCreateInput(draft, plexDiscoveryToken),
+          input: buildCreateInput(draft, plexDiscoveryToken, effectiveFormLoginEnabled),
         }).toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.mediaServerCreated"));
@@ -564,6 +589,7 @@ export function SettingsMediaServersContainer() {
         localPathStyle={localPathStyle}
         pathMappingsValid={pathMappingsValid}
         onPathMappingsValidityChange={setPathMappingsValid}
+        effectiveFormLoginEnabled={effectiveFormLoginEnabled}
         editingConnectionId={editingConnectionId}
         mutatingConnectionId={mutatingConnectionId}
         testingConnectionId={testingConnectionId}
