@@ -488,15 +488,22 @@ async fn cleanup_superseded_episode_incumbents(
         let mut recycle_result = None;
         let old_path = crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
         if old_path.exists() {
-            let manifest = crate::recycle_bin::RecycleManifest::pending_upgrade(
-                incumbent.media_file.file_path.clone(),
-                incumbent.media_file.id.clone(),
-                incumbent.media_file.size_bytes as u64,
-                title.id.clone(),
-                media_root.map(str::to_string),
-            );
+            let metadata = crate::recycle_bin::ReplacedMediaRecycleMetadata {
+                original_path: &incumbent.media_file.file_path,
+                original_file_id: &incumbent.media_file.id,
+                size_bytes: incumbent.media_file.size_bytes as u64,
+                title_id: &title.id,
+                media_root,
+            };
 
-            match crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await {
+            match crate::recycle_bin::recycle_replaced_media_file(
+                recycle_config,
+                &old_path,
+                metadata,
+                true,
+            )
+            .await
+            {
                 Ok(result) => recycle_result = result,
                 Err(error) => {
                     // Physical cleanup failed or was refused for safety. The file is
@@ -537,10 +544,7 @@ async fn cleanup_superseded_episode_incumbents(
         }
 
         let deleted_record = match app
-            .services
-            .library
-            .media_files
-            .delete_media_file(&incumbent.media_file.id)
+            .delete_media_file_record_with_dependents(&incumbent.media_file.id)
             .await
         {
             Ok(()) => true,

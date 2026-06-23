@@ -158,11 +158,11 @@ mod tests {
         let last_sample = vec![b'l'; IMPORT_CONTENT_PROOF_SAMPLE_BYTES];
         let mut left = Vec::new();
         left.extend_from_slice(&first_sample);
-        left.extend_from_slice(&vec![b'a'; 128]);
+        left.extend_from_slice(&[b'a'; 128]);
         left.extend_from_slice(&last_sample);
         let mut right = Vec::new();
         right.extend_from_slice(&first_sample);
-        right.extend_from_slice(&vec![b'b'; 256]);
+        right.extend_from_slice(&[b'b'; 256]);
         right.extend_from_slice(&last_sample);
         std::fs::write(&a, left).unwrap();
         std::fs::write(&b, right).unwrap();

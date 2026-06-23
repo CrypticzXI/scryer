@@ -331,6 +331,55 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
     title
 }
 
+async fn seed_title_for_library(
+    ctx: &TestContext,
+    id: &str,
+    name: &str,
+    library_id: &str,
+    root_path: &Path,
+) -> Title {
+    let title = Title {
+        id: id.to_string(),
+        name: name.to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library_id.to_string(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            root_path.to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+    title
+}
+
 fn make_recycle_config(base: &std::path::Path, source_root: &std::path::Path) -> RecycleBinConfig {
     RecycleBinConfig {
         enabled: true,
@@ -1981,6 +2030,135 @@ async fn housekeeping_decodes_stored_paths_before_orphan_cleanup() {
         .await
         .expect("lookup media file");
     assert!(row.is_some(), "existing encoded-path row should survive");
+}
+
+#[tokio::test]
+async fn housekeeping_skips_orphan_cleanup_when_root_is_empty() {
+    let ctx = TestContext::new().await;
+    let catalog_actor =
+        app_permission_actor("catalog-empty-root", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-empty-root",
+        [AppPermission::ManageSystemSettings],
+    );
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Empty Root Housekeeping Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+    let title = seed_title_for_library(
+        &ctx,
+        "title-empty-root-housekeeping",
+        "Empty Root Movie",
+        &library.id,
+        media_dir.path(),
+    )
+    .await;
+
+    let missing_path = media_dir.path().join("Missing.mkv");
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: missing_path.to_string_lossy().to_string(),
+            size_bytes: 42,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(400),
+            ..Default::default()
+        })
+        .await
+        .expect("insert missing media file");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    let row = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup media file");
+    assert!(
+        row.is_some(),
+        "empty root should be treated as unavailable and keep catalog rows"
+    );
+}
+
+#[tokio::test]
+async fn housekeeping_removes_missing_rows_when_root_is_non_empty() {
+    let ctx = TestContext::new().await;
+    let catalog_actor = app_permission_actor(
+        "catalog-non-empty-root",
+        [AppPermission::ManageCatalogSettings],
+    );
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-non-empty-root",
+        [AppPermission::ManageSystemSettings],
+    );
+    let media_dir = tempfile::tempdir().expect("media dir");
+    std::fs::write(media_dir.path().join(".mounted"), b"mounted").expect("write mount marker");
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Non Empty Root Housekeeping Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+    let title = seed_title_for_library(
+        &ctx,
+        "title-non-empty-root-housekeeping",
+        "Non Empty Root Movie",
+        &library.id,
+        media_dir.path(),
+    )
+    .await;
+
+    let missing_path = media_dir.path().join("Missing.mkv");
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: missing_path.to_string_lossy().to_string(),
+            size_bytes: 42,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(400),
+            ..Default::default()
+        })
+        .await
+        .expect("insert missing media file");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    let row = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup media file");
+    assert!(
+        row.is_none(),
+        "available non-empty root should allow DB-only orphan cleanup"
+    );
 }
 
 #[tokio::test]

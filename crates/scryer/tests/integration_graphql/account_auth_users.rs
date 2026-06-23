@@ -10,6 +10,160 @@ async fn graphql_me_query() {
 }
 
 #[tokio::test]
+async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other_user_password() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-recovery-old-pass1".to_string())
+        .await
+        .expect("set initial admin password");
+    ctx.app.set_recovery_admin_login_enabled(true);
+    let recovery_admin = ctx
+        .app
+        .recover_reserved_admin_access("recovery-admin-pass1")
+        .await
+        .expect("create recovery admin");
+    let snapshot = ctx.auth_runtime.apply_saved_security_settings(true, false);
+    assert!(snapshot.effective_form_login_enabled);
+    assert!(!snapshot.skip_login_for_local_ips);
+
+    let unauthenticated_me = gql(&ctx, "{ me { username } }", json!({})).await;
+    assert_eq!(
+        unauthenticated_me["data"]["me"],
+        Value::Null,
+        "recovery form-login mode should not resolve an unauthenticated actor: {unauthenticated_me}"
+    );
+
+    let login = gql(
+        &ctx,
+        r#"
+        mutation RecoveryAdminLogin($username: String!, $password: String!) {
+          login(input: { username: $username, password: $password }) {
+            token
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "username": "recovery-admin",
+            "password": "recovery-admin-pass1",
+        }),
+    )
+    .await;
+    assert_no_errors(&login);
+    assert_eq!(login["data"]["login"]["user"]["username"], "recovery-admin");
+    let recovery_token = login["data"]["login"]["token"]
+        .as_str()
+        .expect("recovery admin login token");
+
+    let me = gql_with_token(
+        &ctx,
+        r#"query { me { id username appPermissions } }"#,
+        json!({}),
+        recovery_token,
+    )
+    .await;
+    assert_no_errors(&me);
+    assert_eq!(me["data"]["me"]["id"], recovery_admin.id);
+    assert_eq!(me["data"]["me"]["username"], "recovery-admin");
+    assert!(
+        me["data"]["me"]["appPermissions"]
+            .as_array()
+            .is_some_and(|permissions| permissions.contains(&json!("manageUsers"))),
+        "recovery admin should resolve with ManageUsers: {me}"
+    );
+
+    let self_without_current_password = gql_with_token(
+        &ctx,
+        r#"
+        mutation($input: SetUserPasswordInput!) {
+          setUserPassword(input: $input) { id username }
+        }
+        "#,
+        json!({
+            "input": {
+                "userId": recovery_admin.id,
+                "password": "recovery-admin-pass2",
+            }
+        }),
+        recovery_token,
+    )
+    .await;
+    assert!(
+        self_without_current_password
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "self password reset without current password should fail: {self_without_current_password}"
+    );
+
+    let reset_admin = gql_with_token(
+        &ctx,
+        r#"
+        mutation($input: SetUserPasswordInput!) {
+          setUserPassword(input: $input) { id username hasPassword }
+        }
+        "#,
+        json!({
+            "input": {
+                "userId": admin.id,
+                "password": "admin-recovery-new-pass1",
+            }
+        }),
+        recovery_token,
+    )
+    .await;
+    assert_no_errors(&reset_admin);
+    assert_eq!(reset_admin["data"]["setUserPassword"]["username"], "admin");
+    ctx.app
+        .authenticate_credentials("admin", "admin-recovery-new-pass1")
+        .await
+        .expect("admin password was reset by recovery admin");
+
+    let ordinary = ctx
+        .app
+        .create_user(
+            &admin,
+            "recovery_reset_denied".to_string(),
+            "ordinary-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create ordinary user");
+    let ordinary_token = ctx
+        .app
+        .issue_access_token(&ordinary)
+        .await
+        .expect("issue ordinary user token");
+    let denied = gql_with_token(
+        &ctx,
+        r#"
+        mutation($input: SetUserPasswordInput!) {
+          setUserPassword(input: $input) { id username }
+        }
+        "#,
+        json!({
+            "input": {
+                "userId": admin.id,
+                "password": "admin-recovery-denied-pass1",
+            }
+        }),
+        &ordinary_token,
+    )
+    .await;
+    assert!(
+        denied
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "ordinary user should not reset another user's password: {denied}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

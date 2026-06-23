@@ -666,10 +666,7 @@ async fn cleanup_missing_movie_title_records(
     for media_file in media_files {
         if movie_scope.file_is_outside_canonical_folder(&media_file.file_path) {
             if let Err(error) = app
-                .services
-                .library
-                .media_files
-                .delete_media_file(&media_file.id)
+                .delete_media_file_record_with_dependents(&media_file.id)
                 .await
             {
                 warn!(
@@ -690,10 +687,7 @@ async fn cleanup_missing_movie_title_records(
             continue;
         }
         if let Err(error) = app
-            .services
-            .library
-            .media_files
-            .delete_media_file(&media_file.id)
+            .delete_media_file_record_with_dependents(&media_file.id)
             .await
         {
             warn!(
@@ -1782,10 +1776,7 @@ impl AppUseCase {
                     }
                     let db_started = Instant::now();
                     let delete_result = self
-                        .services
-                        .library
-                        .media_files
-                        .delete_media_file(&record.id)
+                        .delete_media_file_record_with_dependents(&record.id)
                         .await;
                     db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                     if let Err(error) = delete_result {

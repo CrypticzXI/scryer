@@ -211,6 +211,10 @@ impl AuthModeConfig {
             .unwrap_or(saved_form_login_enabled)
     }
 
+    fn effective_skip_login_for_local_ips(&self, saved_skip_login_for_local_ips: bool) -> bool {
+        saved_skip_login_for_local_ips && !self.recovery_active()
+    }
+
     fn recovery_active(&self) -> bool {
         self.recovery_admin_password_set
     }
@@ -1235,7 +1239,7 @@ async fn bootstrap_application(
             .ok_or_else(|| format!("{RECOVERY_ADMIN_PASSWORD_ENV} was set but empty"))?;
         tracing::warn!(
             env = RECOVERY_ADMIN_PASSWORD_ENV,
-            "instance recovery mode is active; authentication is disabled for this boot and the reserved recovery-admin account will be created or repaired"
+            "instance recovery mode is active; form login is enabled for this boot and the reserved recovery-admin account will be created or repaired"
         );
         app_use_case
             .recover_reserved_admin_access(&recovery_password)
@@ -1253,9 +1257,11 @@ async fn bootstrap_application(
         .map_err(|error| format!("failed to load security settings: {error}"))?;
     let effective_form_login_enabled =
         auth_mode.effective_form_login_enabled(saved_security_settings.form_login_enabled);
+    let effective_skip_login_for_local_ips = auth_mode
+        .effective_skip_login_for_local_ips(saved_security_settings.skip_login_for_local_ips);
     let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
         form_login_enabled: saved_security_settings.form_login_enabled,
-        skip_login_for_local_ips: saved_security_settings.skip_login_for_local_ips,
+        skip_login_for_local_ips: effective_skip_login_for_local_ips,
         effective_form_login_enabled,
         webauthn_configured,
         passkey_enabled: webauthn_configured && effective_form_login_enabled,
@@ -1295,8 +1301,15 @@ async fn bootstrap_application(
         );
     }
     if auth_runtime.snapshot().effective_form_login_enabled {
-        tracing::info!("running with authentication enabled");
-        ensure_admin_password_configured(&app_use_case).await?;
+        if auth_mode.recovery_active() {
+            tracing::warn!(
+                env = RECOVERY_ADMIN_PASSWORD_ENV,
+                "running with authentication enabled in recovery mode; recovery-admin credentials are available for this boot"
+            );
+        } else {
+            tracing::info!("running with authentication enabled");
+            ensure_admin_password_configured(&app_use_case).await?;
+        }
     } else {
         app_use_case
             .find_or_create_default_user()
@@ -1304,20 +1317,7 @@ async fn bootstrap_application(
             .map_err(|error| {
                 format!("failed to ensure default admin for disabled-auth mode: {error}")
             })?;
-        if auth_mode.recovery_active() {
-            if authless_access_allowlist.is_configured() {
-                tracing::warn!(
-                    env = RECOVERY_ADMIN_PASSWORD_ENV,
-                    allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
-                    "running in recovery mode with authentication disabled; private/local clients and matching allowlist clients are allowed"
-                );
-            } else {
-                tracing::warn!(
-                    env = RECOVERY_ADMIN_PASSWORD_ENV,
-                    "running in recovery mode with authentication disabled; only private/local clients are allowed"
-                );
-            }
-        } else if auth_mode.allow_unauthenticated_public_access
+        if auth_mode.allow_unauthenticated_public_access
             || authless_access_allowlist.is_configured()
         {
             if authless_access_allowlist.is_configured() {
@@ -1418,7 +1418,6 @@ async fn bootstrap_application(
     let rate_limiter = ScryerRateLimiter::from_env();
     let authless_access_policy = AuthlessAccessPolicy {
         allow_unauthenticated_public_access: auth_mode.allow_unauthenticated_public_access,
-        recovery_mode: auth_mode.recovery_active(),
     };
     let authless_web_client_proof = AuthlessWebClientProofState::new();
     let auth_state = AuthState {
@@ -2014,9 +2013,9 @@ fn resolve_auth_mode(
             ));
         }
         return Ok(AuthModeConfig {
-            env_override_form_login_enabled: Some(false),
+            env_override_form_login_enabled: Some(true),
             env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
-            used_legacy_dev_auto_login,
+            used_legacy_dev_auto_login: false,
             recovery_admin_password_set: true,
             allow_unauthenticated_public_access: false,
         });
@@ -3353,16 +3352,43 @@ mod tests {
     }
 
     #[test]
-    fn recovery_admin_password_implies_auth_disabled_and_wins_over_auth_enabled() {
-        assert_eq!(
-            resolve_auth_mode(Some("true"), None, Some("new-password"), None).expect("auth mode"),
-            AuthModeConfig {
-                env_override_form_login_enabled: Some(false),
-                env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
-                used_legacy_dev_auto_login: false,
-                recovery_admin_password_set: true,
-                allow_unauthenticated_public_access: false,
-            }
+    fn recovery_admin_password_forces_form_login_and_suppresses_local_bypass() {
+        for (auth_enabled, legacy_dev_auto_login) in [
+            (Some("true"), None),
+            (Some("false"), None),
+            (None, Some("true")),
+        ] {
+            let auth_mode = resolve_auth_mode(
+                auth_enabled,
+                legacy_dev_auto_login,
+                Some("new-password"),
+                None,
+            )
+            .expect("auth mode");
+            assert_eq!(
+                auth_mode,
+                AuthModeConfig {
+                    env_override_form_login_enabled: Some(true),
+                    env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
+                    used_legacy_dev_auto_login: false,
+                    recovery_admin_password_set: true,
+                    allow_unauthenticated_public_access: false,
+                }
+            );
+            assert!(auth_mode.effective_form_login_enabled(false));
+            assert!(!auth_mode.effective_skip_login_for_local_ips(true));
+            assert!(!auth_mode.effective_skip_login_for_local_ips(false));
+        }
+    }
+
+    #[test]
+    fn non_recovery_mode_preserves_saved_local_bypass() {
+        let auth_mode = resolve_auth_mode(Some("true"), None, None, None).expect("auth mode");
+        assert!(auth_mode.effective_skip_login_for_local_ips(true));
+        assert!(!auth_mode.effective_skip_login_for_local_ips(false));
+        assert!(
+            auth_mode.effective_form_login_enabled(false),
+            "explicit auth enabled should still force form login"
         );
     }
 
@@ -3402,12 +3428,6 @@ mod tests {
 
         assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
         assert!(error.contains("no valid IP, CIDR, or DNS entries"));
-    }
-
-    #[test]
-    fn unauthenticated_public_access_allowlist_accepts_recovery_mode() {
-        validate_unauthenticated_public_access_allowlist_config(true, true)
-            .expect("valid allowlist should permit narrowed public recovery access");
     }
 
     #[test]

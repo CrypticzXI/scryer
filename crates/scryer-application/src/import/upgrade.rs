@@ -8,7 +8,7 @@ use crate::domain_events::{
     DomainEventActor, created_media_update, deleted_media_update, modified_media_update,
     new_title_domain_event, title_context_snapshot,
 };
-use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
+use crate::recycle_bin::{self, RecycleBinConfig};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
@@ -697,10 +697,7 @@ async fn restore_same_path_guard_before_db_swap(
     remove_imported_replacement(&staged_replacement_path).await;
 
     if let Err(error) = app
-        .services
-        .library
-        .media_files
-        .delete_media_file(&manifest.replacement_file_id)
+        .delete_media_file_record_with_dependents(&manifest.replacement_file_id)
         .await
     {
         tracing::warn!(
@@ -773,15 +770,20 @@ async fn dispose_same_path_guard_after_confirmed_db_swap(
         .recycle_bin_config_for_media_root_path(Some(&manifest_media_root))
         .await;
     if recycle_config.enabled {
-        let recycle_manifest = RecycleManifest::pending_upgrade(
-            manifest.final_path.clone(),
-            manifest.old_file_id.clone(),
-            manifest.old_size_bytes,
-            manifest.title_id.clone(),
-            Some(manifest.media_root.clone()),
-        );
-        let recycle_result =
-            recycle_bin::recycle_file(&recycle_config, backup_path, recycle_manifest).await?;
+        let recycle_metadata = recycle_bin::ReplacedMediaRecycleMetadata {
+            original_path: &manifest.final_path,
+            original_file_id: &manifest.old_file_id,
+            size_bytes: manifest.old_size_bytes,
+            title_id: &manifest.title_id,
+            media_root: Some(&manifest.media_root),
+        };
+        let recycle_result = recycle_bin::recycle_replaced_media_file(
+            &recycle_config,
+            backup_path,
+            recycle_metadata,
+            true,
+        )
+        .await?;
         let replacement_path = stored_path_to_path_buf(&manifest.replacement_path);
         recycle_bin::commit_recycle_entry(
             &recycle_result,
@@ -1101,20 +1103,25 @@ async fn prepare_old_file_disposition_for_upgrade(
     media_root: Option<&str>,
 ) -> AppResult<OldFileDisposition> {
     if recycle_config.enabled {
-        let manifest = RecycleManifest::pending_upgrade(
-            manifest_original_path.to_string(),
-            existing_file.id.clone(),
-            existing_file.size_bytes as u64,
-            title.id.clone(),
-            media_root.map(str::to_string),
-        );
-        return recycle_bin::recycle_file_pending(recycle_config, old_file_source_path, manifest)
-            .await
-            .map(|result| {
-                result
-                    .map(OldFileDisposition::PendingRecycle)
-                    .unwrap_or(OldFileDisposition::Noop)
-            });
+        let metadata = recycle_bin::ReplacedMediaRecycleMetadata {
+            original_path: manifest_original_path,
+            original_file_id: &existing_file.id,
+            size_bytes: existing_file.size_bytes as u64,
+            title_id: &title.id,
+            media_root,
+        };
+        return recycle_bin::recycle_replaced_media_file(
+            recycle_config,
+            old_file_source_path,
+            metadata,
+            false,
+        )
+        .await
+        .map(|result| {
+            result
+                .map(OldFileDisposition::PendingRecycle)
+                .unwrap_or(OldFileDisposition::Noop)
+        });
     }
 
     recycle_bin::ensure_source_within_roots(recycle_config, old_file_source_path)?;
@@ -1409,15 +1416,20 @@ async fn dispose_old_file_after_verified_upgrade(
         return Ok(false);
     }
 
-    let manifest = RecycleManifest::pending_upgrade(
-        manifest_original_path.to_string(),
-        existing_file.id.clone(),
-        existing_file.size_bytes as u64,
-        title.id.clone(),
-        media_root.map(str::to_string),
-    );
-    let recycle_result =
-        recycle_bin::recycle_file(recycle_config, old_file_source_path, manifest).await?;
+    let metadata = recycle_bin::ReplacedMediaRecycleMetadata {
+        original_path: manifest_original_path,
+        original_file_id: &existing_file.id,
+        size_bytes: existing_file.size_bytes as u64,
+        title_id: &title.id,
+        media_root,
+    };
+    let recycle_result = recycle_bin::recycle_replaced_media_file(
+        recycle_config,
+        old_file_source_path,
+        metadata,
+        true,
+    )
+    .await?;
 
     if recycle_result.is_none() {
         return Ok(false);
@@ -1572,10 +1584,7 @@ async fn validate_original_inactive_for_delete(
 
 async fn rollback_new_replacement(app: &AppUseCase, new_file_id: &str, path: &Path) {
     let _ = app
-        .services
-        .library
-        .media_files
-        .delete_media_file(new_file_id)
+        .delete_media_file_record_with_dependents(new_file_id)
         .await;
     remove_imported_replacement(path).await;
 }

@@ -53,7 +53,6 @@ const AUTHLESS_ACCESS_ALLOWLIST_DNS_NEGATIVE_CACHE_TTL: Duration = Duration::fro
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthlessAccessPolicy {
     pub(crate) allow_unauthenticated_public_access: bool,
-    pub(crate) recovery_mode: bool,
 }
 
 #[derive(Clone)]
@@ -1181,7 +1180,6 @@ pub(crate) async fn enforce_authless_access_guard(
                 remote_addr = %remote_addr,
                 method = %method,
                 path = %path,
-                recovery_mode = state.policy.recovery_mode,
                 reason = %reason,
                 "rejecting auth-disabled request from non-local client"
             );
@@ -1749,7 +1747,7 @@ fn authless_access_decision(
         return AuthlessAccessDecision::Allow;
     }
 
-    if policy.allow_unauthenticated_public_access && !policy.recovery_mode {
+    if policy.allow_unauthenticated_public_access {
         return AuthlessAccessDecision::Allow;
     }
 
@@ -1792,9 +1790,7 @@ async fn authless_access_decision_with_allowlist(
     }
 
     let allowlist_configured = allowlist.is_configured();
-    let unrestricted_public_access_open =
-        policy.allow_unauthenticated_public_access && !policy.recovery_mode;
-    if unrestricted_public_access_open && !allowlist_configured {
+    if policy.allow_unauthenticated_public_access && !allowlist_configured {
         return AuthlessAccessDecision::Allow;
     }
 
@@ -2477,28 +2473,12 @@ mod tests {
     fn protected_authless_policy() -> AuthlessAccessPolicy {
         AuthlessAccessPolicy {
             allow_unauthenticated_public_access: false,
-            recovery_mode: false,
         }
     }
 
     fn public_authless_policy() -> AuthlessAccessPolicy {
         AuthlessAccessPolicy {
             allow_unauthenticated_public_access: true,
-            recovery_mode: false,
-        }
-    }
-
-    fn recovery_public_authless_policy() -> AuthlessAccessPolicy {
-        AuthlessAccessPolicy {
-            allow_unauthenticated_public_access: true,
-            recovery_mode: true,
-        }
-    }
-
-    fn recovery_authless_policy() -> AuthlessAccessPolicy {
-        AuthlessAccessPolicy {
-            allow_unauthenticated_public_access: false,
-            recovery_mode: true,
         }
     }
 
@@ -2622,44 +2602,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authless_guard_recovery_mode_allowlist_allows_matching_public_ip() {
-        let headers = HeaderMap::new();
-        let allowlist = AuthlessAccessAllowlist::parse("8.8.8.8");
-
-        assert_eq!(
-            authless_access_decision_with_allowlist(
-                &auth_disabled_snapshot(),
-                recovery_authless_policy(),
-                &allowlist,
-                &headers,
-                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
-            )
-            .await,
-            AuthlessAccessDecision::Allow
-        );
-    }
-
-    #[tokio::test]
-    async fn authless_guard_recovery_mode_allowlist_rejects_unlisted_public_ip() {
-        let headers = HeaderMap::new();
-        let allowlist = AuthlessAccessAllowlist::parse("203.0.113.10");
-
-        assert_eq!(
-            authless_access_decision_with_allowlist(
-                &auth_disabled_snapshot(),
-                recovery_authless_policy(),
-                &allowlist,
-                &headers,
-                Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
-            )
-            .await,
-            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
-                Ipv4Addr::new(8, 8, 8, 8)
-            )))
-        );
-    }
-
-    #[tokio::test]
     async fn authless_guard_public_override_allowlist_ignores_invalid_entries_when_valid_remains() {
         let headers = HeaderMap::new();
         let allowlist = AuthlessAccessAllowlist::parse("https://bad.example, 8.8.8.8");
@@ -2768,19 +2710,17 @@ mod tests {
     }
 
     #[test]
-    fn authless_guard_public_override_does_not_bypass_recovery_mode() {
+    fn authless_guard_public_override_allows_public_peer() {
         let headers = HeaderMap::new();
 
         assert_eq!(
             authless_access_decision(
                 &auth_disabled_snapshot(),
-                recovery_public_authless_policy(),
+                public_authless_policy(),
                 &headers,
                 Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
             ),
-            AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::PublicPeer(IpAddr::V4(
-                Ipv4Addr::new(8, 8, 8, 8)
-            )))
+            AuthlessAccessDecision::Allow
         );
     }
 
@@ -3193,27 +3133,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authless_guard_middleware_recovery_mode_allowlist_allows_matching_graphql_request() {
-        let proof_state = AuthlessWebClientProofState::new();
-        let app = authless_guard_test_app_with_allowlist(
-            auth_disabled_snapshot(),
-            recovery_authless_policy(),
-            AuthlessAccessAllowlist::parse("8.8.8.8"),
-        );
-
-        let response = app
-            .oneshot(request_with_peer_and_authless_proof(
-                "/graphql",
-                SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
-                &proof_state,
-            ))
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
     async fn authless_guard_middleware_rejects_public_websocket_route_before_handler() {
         let app = authless_guard_test_app(auth_disabled_snapshot(), protected_authless_policy());
 
@@ -3528,23 +3447,6 @@ mod tests {
         let response = authless_web_client_test_app_with_allowlist(
             auth_disabled_snapshot(),
             protected_authless_policy(),
-            AuthlessAccessAllowlist::parse("8.8.8.8"),
-        )
-        .oneshot(request_with_peer(
-            "/authless-client",
-            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000)),
-        ))
-        .await
-        .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn authless_web_client_proof_recovery_mode_allowlist_allows_matching_public_peer() {
-        let response = authless_web_client_test_app_with_allowlist(
-            auth_disabled_snapshot(),
-            recovery_authless_policy(),
             AuthlessAccessAllowlist::parse("8.8.8.8"),
         )
         .oneshot(request_with_peer(

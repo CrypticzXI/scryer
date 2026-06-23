@@ -596,13 +596,7 @@ impl AppUseCase {
             .await?;
         }
 
-        self.cleanup_media_file_subtitle_state(file_id).await?;
-
-        self.services
-            .library
-            .media_files
-            .delete_media_file(file_id)
-            .await?;
+        self.delete_media_file_record_with_dependents(file_id).await?;
         for collection_id in matching_movie_collection_ids {
             if let Err(error) = self
                 .services
@@ -688,6 +682,18 @@ impl AppUseCase {
         }
 
         Ok(())
+    }
+
+    pub(crate) async fn delete_media_file_record_with_dependents(
+        &self,
+        file_id: &str,
+    ) -> AppResult<()> {
+        self.cleanup_media_file_subtitle_state(file_id).await?;
+        self.services
+            .library
+            .media_files
+            .delete_media_file(file_id)
+            .await
     }
 }
 impl AppUseCase {

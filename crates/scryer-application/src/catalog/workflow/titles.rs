@@ -851,11 +851,10 @@ impl AppUseCase {
                             .purge_recycle_entry_after_validation(
                                 &media_root,
                                 &config,
-                                &entry.entry_dir,
-                                &entry.manifest,
+                                &entry,
                                 actor.clone(),
                             )
-                        .await
+                            .await
                         {
                             Ok(true) => {
                                 purged += 1;

@@ -760,7 +760,7 @@ where
         };
 
         for root in &normalized_roots {
-            if !normalized_file_path.starts_with(root) {
+            if !path_is_under_root(&normalized_file_path, root) {
                 continue;
             }
 
@@ -820,10 +820,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
         )));
     }
 
-    if normalized_roots
-        .iter()
-        .all(|root| !normalized_folder.starts_with(root))
-    {
+    if !path_is_under_any_root(&normalized_folder, &normalized_roots) {
         return Err(AppError::Validation(format!(
             "refusing to delete title folder {} because it is outside the configured root folders",
             normalized_folder.display()
@@ -832,7 +829,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
 
     for tracked in other_titles {
         let other_path = normalize_absolute_path(&stored_path_to_path_buf(&tracked.folder_path))?;
-        if other_path == normalized_folder || other_path.starts_with(&normalized_folder) {
+        if other_path == normalized_folder || path_is_under_root(&other_path, &normalized_folder) {
             return Err(AppError::Validation(format!(
                 "refusing to delete title folder {} because it includes tracked title folder {} ({})",
                 normalized_folder.display(),
@@ -928,11 +925,7 @@ fn ensure_delete_context_roots_available(context: &UserDeleteContext) -> AppResu
             let roots =
                 normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
             let path = normalize_absolute_path(&stored_path_to_path_buf(folder_path))?;
-            crate::fs_safety::resolve_available_root_for_path(
-                &path,
-                &roots,
-                crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
-            )?;
+            crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
             Ok(())
         }
         UserDeleteContext::MediaFile(context) => {
@@ -943,11 +936,7 @@ fn ensure_delete_context_roots_available(context: &UserDeleteContext) -> AppResu
             raw_paths.extend(context.subtitle_paths.iter().map(String::as_str));
             for raw_path in raw_paths {
                 let path = normalize_absolute_path(&stored_path_to_path_buf(raw_path))?;
-                crate::fs_safety::resolve_available_root_for_path(
-                    &path,
-                    &roots,
-                    crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
-                )?;
+                crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
             }
             Ok(())
         }
@@ -955,11 +944,7 @@ fn ensure_delete_context_roots_available(context: &UserDeleteContext) -> AppResu
             let roots =
                 normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
             let path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
-            crate::fs_safety::resolve_available_root_for_path(
-                &path,
-                &roots,
-                crate::fs_safety::RootAvailabilityPolicy::RequireNonEmpty,
-            )?;
+            crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
             Ok(())
         }
     }
@@ -977,7 +962,7 @@ fn ensure_paths_within_roots(
 ) -> AppResult<()> {
     let normalized_roots = normalize_root_folders(root_folders, facet)?;
     for path in paths {
-        if normalized_roots.iter().all(|root| !path.starts_with(root)) {
+        if !path_is_under_any_root(path, &normalized_roots) {
             return Err(AppError::Validation(format!(
                 "refusing to delete {label} {} because it is outside the configured root folders",
                 path.display()
@@ -1004,11 +989,7 @@ fn ensure_leaf_paths_within_roots(
                 path.display()
             )));
         };
-        if path.file_name().is_none()
-            || normalized_roots
-                .iter()
-                .all(|root| !parent.starts_with(root))
-        {
+        if path.file_name().is_none() || !path_is_under_any_root(parent, &normalized_roots) {
             return Err(AppError::Validation(format!(
                 "refusing to delete {label} {} because it is outside the configured root folders",
                 path.display()
@@ -1016,6 +997,14 @@ fn ensure_leaf_paths_within_roots(
         }
     }
     Ok(())
+}
+
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    crate::recycle_bin::path_is_under_configured_root(path, root)
+}
+
+fn path_is_under_any_root(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path_is_under_root(path, root))
 }
 
 fn normalize_root_folders(

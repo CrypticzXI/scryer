@@ -2,12 +2,6 @@ use std::path::{Path, PathBuf};
 
 use crate::{AppError, AppResult};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RootAvailabilityPolicy {
-    RequireNonEmpty,
-    AllowEmpty,
-}
-
 pub(crate) fn most_specific_containing_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
@@ -16,22 +10,18 @@ pub(crate) fn most_specific_containing_root(path: &Path, roots: &[PathBuf]) -> O
         .cloned()
 }
 
-pub(crate) fn resolve_available_root_for_path(
-    path: &Path,
-    roots: &[PathBuf],
-    policy: RootAvailabilityPolicy,
-) -> AppResult<()> {
+pub(crate) fn resolve_available_root_for_path(path: &Path, roots: &[PathBuf]) -> AppResult<()> {
     let root = most_specific_containing_root(path, roots).ok_or_else(|| {
         AppError::Validation(format!(
             "refusing filesystem operation for {} because it is outside configured media roots",
             path.display()
         ))
     })?;
-    ensure_root_available(&root, policy)?;
+    ensure_root_available(&root)?;
     Ok(())
 }
 
-pub(crate) fn ensure_root_available(root: &Path, policy: RootAvailabilityPolicy) -> AppResult<()> {
+pub(crate) fn ensure_root_available(root: &Path) -> AppResult<()> {
     let metadata = std::fs::symlink_metadata(root).map_err(|error| {
         AppError::Validation(format!(
             "configured media root {} is unavailable: {}",
@@ -59,22 +49,20 @@ pub(crate) fn ensure_root_available(root: &Path, policy: RootAvailabilityPolicy)
             error
         ))
     })?;
-    if matches!(policy, RootAvailabilityPolicy::RequireNonEmpty) {
-        match entries.next() {
-            Some(Ok(_)) => {}
-            Some(Err(error)) => {
-                return Err(AppError::Validation(format!(
-                    "configured media root {} is unreadable: {}",
-                    root.display(),
-                    error
-                )));
-            }
-            None => {
-                return Err(AppError::Validation(format!(
-                    "configured media root {} is empty",
-                    root.display()
-                )));
-            }
+    match entries.next() {
+        Some(Ok(_)) => {}
+        Some(Err(error)) => {
+            return Err(AppError::Validation(format!(
+                "configured media root {} is unreadable: {}",
+                root.display(),
+                error
+            )));
+        }
+        None => {
+            return Err(AppError::Validation(format!(
+                "configured media root {} is empty",
+                root.display()
+            )));
         }
     }
     Ok(())
@@ -243,29 +231,28 @@ mod tests {
         let target = tempdir.path().join("missing.mkv");
         let roots = vec![tempdir.path().to_path_buf()];
 
-        let empty_result = resolve_available_root_for_path(
-            &target,
-            &roots,
-            RootAvailabilityPolicy::RequireNonEmpty,
-        );
+        let empty_result = resolve_available_root_for_path(&target, &roots);
         assert!(
             matches!(empty_result, Err(AppError::Validation(_))),
             "empty roots should fail closed for destructive user disk deletes"
         );
 
         std::fs::write(tempdir.path().join(".mounted"), b"mounted").expect("write mount marker");
-        resolve_available_root_for_path(&target, &roots, RootAvailabilityPolicy::RequireNonEmpty)
+        resolve_available_root_for_path(&target, &roots)
             .expect("non-empty roots should prove availability even when target is missing");
     }
 
     #[test]
-    fn root_availability_allows_empty_roots_for_db_only_housekeeping_policy() {
+    fn root_availability_rejects_empty_roots_for_housekeeping_policy() {
         let tempdir = tempfile::tempdir().expect("create temp dir");
         let target = tempdir.path().join("missing.mkv");
         let roots = vec![tempdir.path().to_path_buf()];
 
-        resolve_available_root_for_path(&target, &roots, RootAvailabilityPolicy::AllowEmpty)
-            .expect("DB-only housekeeping may clean stale rows under an empty mounted root");
+        let result = resolve_available_root_for_path(&target, &roots);
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "DB-only housekeeping must also fail closed for empty roots"
+        );
     }
 
     #[test]
@@ -278,8 +265,7 @@ mod tests {
             .join("outside.mkv");
         let roots = vec![tempdir.path().join("media")];
 
-        let result =
-            resolve_available_root_for_path(&outside, &roots, RootAvailabilityPolicy::AllowEmpty);
+        let result = resolve_available_root_for_path(&outside, &roots);
         assert!(
             matches!(result, Err(AppError::Validation(_))),
             "targets outside configured roots must fail closed"

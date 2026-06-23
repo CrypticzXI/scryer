@@ -55,7 +55,8 @@ fn recycled_item_from_entry(
     entry: crate::recycle_bin::RecycleEntry,
     library: &RecycleEntryLibrary,
 ) -> RecycledItem {
-    let file_name = Path::new(&entry.manifest.original_path)
+    let original_path = entry.manifest.original_path_buf();
+    let file_name = original_path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -214,8 +215,7 @@ impl AppUseCase {
                 .purge_recycle_entry_after_validation(
                     media_root,
                     config,
-                    &entry.entry_dir,
-                    &entry.manifest,
+                    &entry,
                     DomainEventActor::system(),
                 )
                 .await?
@@ -230,27 +230,27 @@ impl AppUseCase {
         &self,
         media_root: &str,
         config: &crate::recycle_bin::RecycleBinConfig,
-        entry_dir: &std::path::Path,
-        manifest: &crate::recycle_bin::RecycleManifest,
+        entry: &crate::recycle_bin::CommittedRecycleEntry,
         actor: impl Into<DomainEventActor>,
     ) -> AppResult<bool> {
         let actor = actor.into();
         if let Err(reason) = self
-            .validate_recycle_entry_before_permanent_delete(manifest)
+            .validate_recycle_entry_before_permanent_delete(&entry.manifest)
             .await
         {
             warn!(
                 media_root = %media_root,
-                path = %entry_dir.display(),
+                path = %entry.entry_dir.display(),
                 reason = %reason,
                 "quarantining recycle entry that failed purge validation"
             );
             if let Err(error) =
-                crate::recycle_bin::quarantine_entry(entry_dir, manifest, &reason).await
+                crate::recycle_bin::quarantine_entry(&entry.entry_dir, &entry.manifest, &reason)
+                    .await
             {
                 warn!(
                     media_root = %media_root,
-                    path = %entry_dir.display(),
+                    path = %entry.entry_dir.display(),
                     error = %error,
                     "failed to quarantine unsafe recycle entry"
                 );
@@ -258,9 +258,9 @@ impl AppUseCase {
             return Ok(false);
         }
 
-        let purged = crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await?;
+        let purged = crate::recycle_bin::purge_committed_entry(config, entry).await?;
         if purged {
-            self.record_recycle_entry_purged_event(actor, manifest)
+            self.record_recycle_entry_purged_event(actor, &entry.manifest)
                 .await;
         }
         Ok(purged)
@@ -464,7 +464,7 @@ impl AppUseCase {
                 .housekeeping
                 .list_media_files_with_roots()
                 .await?;
-            let mut orphan_ids = Vec::new();
+            let mut orphaned_media_files = 0u32;
             for media_file in all_files {
                 if protected_upgrade_file_ids.contains(&media_file.media_file_id) {
                     continue;
@@ -476,11 +476,9 @@ impl AppUseCase {
                     .iter()
                     .map(|root| crate::stored_paths::stored_path_to_path_buf(root))
                     .collect::<Vec<_>>();
-                if let Err(error) = crate::fs_safety::resolve_available_root_for_path(
-                    &file_path,
-                    &roots,
-                    crate::fs_safety::RootAvailabilityPolicy::AllowEmpty,
-                ) {
+                if let Err(error) =
+                    crate::fs_safety::resolve_available_root_for_path(&file_path, &roots)
+                {
                     warn!(
                         error = %error,
                         file_id = %media_file.media_file_id,
@@ -505,27 +503,19 @@ impl AppUseCase {
                 }
 
                 if let Err(error) = self
-                    .cleanup_media_file_subtitle_state(&media_file.media_file_id)
+                    .delete_media_file_record_with_dependents(&media_file.media_file_id)
                     .await
                 {
                     warn!(
                         error = %error,
                         file_id = %media_file.media_file_id,
-                        "skipping orphan media-file cleanup because subtitle state cleanup failed"
+                        "skipping orphan media-file cleanup because row cleanup failed"
                     );
                     continue;
                 }
-                orphan_ids.push(media_file.media_file_id);
+                orphaned_media_files = orphaned_media_files.saturating_add(1);
             }
-            if !orphan_ids.is_empty() {
-                self.services
-                    .workflow
-                    .housekeeping
-                    .delete_media_files_by_ids(&orphan_ids)
-                    .await?
-            } else {
-                0
-            }
+            orphaned_media_files
         };
 
         let general_settings = self.general_settings().await?;
@@ -762,10 +752,10 @@ impl AppUseCase {
                     scryer_domain::LibraryPermission::ManageTitles,
                 )
                 .await?;
-                let original_path = std::path::Path::new(&manifest.original_path);
+                let original_path = manifest.original_path_buf();
                 let library_roots = recycle_library_root_paths(&library, &roots);
                 if !recycle_restore_destination_is_under_library_roots(
-                    original_path,
+                    &original_path,
                     &library_roots,
                 ) {
                     return Err(AppError::Validation(format!(
@@ -791,7 +781,7 @@ impl AppUseCase {
                 // sibling on conflict and returns where it actually landed.
                 let restored_to = crate::recycle_bin::restore_from_recycle_with_roots(
                     &recycled_file,
-                    original_path,
+                    &original_path,
                     false,
                     &library_roots,
                 )
@@ -873,12 +863,12 @@ impl AppUseCase {
         let roots = self.recycle_root_libraries().await?;
 
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            if let Some((entry_dir, manifest)) =
-                crate::recycle_bin::find_entry(&config, entry_id).await?
+            if let Some(committed_entry) =
+                crate::recycle_bin::find_committed_entry(&config, entry_id).await?
             {
                 let entry = crate::recycle_bin::RecycleEntry {
                     entry_id: entry_id.to_string(),
-                    manifest: manifest.clone(),
+                    manifest: committed_entry.manifest.clone(),
                     media_root: media_root.clone(),
                 };
                 let library = self
@@ -898,8 +888,7 @@ impl AppUseCase {
                     .purge_recycle_entry_after_validation(
                         &media_root,
                         &config,
-                        &entry_dir,
-                        &manifest,
+                        &committed_entry,
                         actor,
                     )
                     .await;
@@ -953,8 +942,7 @@ impl AppUseCase {
                             .purge_recycle_entry_after_validation(
                                 &media_root,
                                 &config,
-                                &entry.entry_dir,
-                                &entry.manifest,
+                                &entry,
                                 actor,
                             )
                             .await
