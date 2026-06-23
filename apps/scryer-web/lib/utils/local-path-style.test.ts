@@ -10,7 +10,7 @@ import {
 test("Unix runtime local path validation accepts only Unix absolute paths", () => {
   assert.equal(isAbsoluteLocalPathForStyle("/data/downloads", "unix"), true);
   assert.equal(
-    isAbsoluteLocalPathForStyle("/home/benwa/files/downloads", "unix"),
+    isAbsoluteLocalPathForStyle("/srv/media/files/downloads", "unix"),
     true,
   );
   assert.equal(isAbsoluteLocalPathForStyle("C:\\Downloads", "unix"), false);

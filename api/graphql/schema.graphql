@@ -2837,6 +2837,7 @@ type QueryRoot {
 	downloadClientConfigs(clientType: String): [DownloadClientConfigPayload!]!
 	subtitleProviderConfigs(providerType: String): [SubtitleProviderConfigPayload!]!
 	users: [UserPayload!]!
+	runtimeInfo: RuntimeInfoPayload!
 	systemHealth: SystemHealthPayload!
 	scryerVersion: String!
 	smgVersionCompatibilityNotice: SmgVersionCompatibilityNoticePayload
@@ -3180,6 +3181,15 @@ type RuleValidationResultPayload {
 	errors: [String!]!
 }
 
+type RuntimeInfoPayload {
+	runtimePathStyle: RuntimePathStyleValue!
+}
+
+enum RuntimePathStyleValue {
+	UNIX
+	WINDOWS
+}
+
 input SaveQualityProfileSettingsInput {
 	profiles: [QualityProfileInput!]!
 	globalProfileId: ID
@@ -3488,6 +3498,7 @@ type SystemHealthPayload {
 	dbPath: String!
 	datastoreEngine: String!
 	datastoreMigrationKey: String
+	runtimePathStyle: RuntimePathStyleValue!
 	totalTitles: Int!
 	monitoredTitles: Int!
 	totalUsers: Int!
@@ -3737,7 +3748,7 @@ type TitlePayload {
 	minAvailability: String
 	digitalReleaseDate: Date
 	qualityProfileId: ID
-	rootFolderId: ID
+	rootFolderId: ID!
 	monitorType: MonitorTypeValue
 	useSeasonFolders: Boolean
 	monitorSpecials: Boolean
@@ -3768,7 +3779,7 @@ type TitlePayload {
 	Total episode count, excluding specials, populated in list queries.
 	"""
 	episodesTotal: Int
-	rootFolderPath: String
+	rootFolderPath: String!
 	requiredAudioLanguagesOverride: [String!]
 	effectiveRequiredAudioLanguages: [String!]!
 	inheritsRequiredAudioLanguages: Boolean!
@@ -3946,7 +3957,6 @@ input UpdateLibraryPathsInput {
 }
 
 input UpdateLibraryRootInput {
-	id: ID
 	path: String!
 	isDefault: Boolean!
 }
