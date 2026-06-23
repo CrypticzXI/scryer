@@ -32,7 +32,7 @@ export function externalImportDownloadClientNeedsUserSuppliedApiKey(
     downloadClient.scryerClientType?.trim().toLowerCase() ?? null;
   return (
     downloadClient.supported &&
-    downloadClient.apiKey === null &&
+    !downloadClient.apiKeyPresent &&
     normalizedClientType !== null &&
     IMPORT_DOWNLOAD_CLIENT_TYPES_REQUIRING_API_KEY.has(normalizedClientType)
   );
@@ -51,7 +51,7 @@ export function externalImportIndexerNeedsUserSuppliedApiKey(
   return (
     indexer.supported &&
     (indexer.requiresApiKeyOverride ||
-      (indexer.apiKey === null && providerRequiresApiKey(providerConfigFields)))
+      (!indexer.apiKeyPresent && providerRequiresApiKey(providerConfigFields)))
   );
 }
 

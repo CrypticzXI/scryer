@@ -347,3 +347,29 @@ pub async fn publish_download_queue_snapshot_events(
         tracing::warn!(error = %error, "failed to append download queue domain events");
     }
 }
+
+pub async fn publish_download_queue_upsert_events(
+    app: &AppUseCase,
+    actor: impl Into<DomainEventActor>,
+    items: &[DownloadQueueItem],
+) {
+    let actor = actor.into();
+    let domain_events = items
+        .iter()
+        .map(|item| {
+            new_download_queue_domain_event(
+                actor.clone(),
+                download_queue_projection_key(item),
+                DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
+                    item: item.clone(),
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if !domain_events.is_empty()
+        && let Err(error) = app.append_domain_events(domain_events).await
+    {
+        tracing::warn!(error = %error, "failed to append download queue upsert events");
+    }
+}

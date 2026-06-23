@@ -183,7 +183,7 @@ export function RouteCommandPalette({
     setCatalogLoading(true);
     const timer = window.setTimeout(() => {
       void client
-        .query(commandPaletteTitlesQuery, { facet: null, query }, { requestPolicy: "network-only" })
+        .query(commandPaletteTitlesQuery, { facet: null, query, limit: CATALOG_COMMAND_RESULT_LIMIT }, { requestPolicy: "network-only" })
         .toPromise()
         .then(({ data, error }) => {
           if (requestSeq !== catalogRequestSeqRef.current) {
@@ -193,7 +193,7 @@ export function RouteCommandPalette({
             throw error;
           }
           setCatalogResults(
-            ((data?.titles ?? []) as TitleRecord[]).slice(
+            ((data?.titles?.items ?? []) as TitleRecord[]).slice(
               0,
               CATALOG_COMMAND_RESULT_LIMIT,
             ),

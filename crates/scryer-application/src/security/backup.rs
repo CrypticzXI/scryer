@@ -365,16 +365,6 @@ where
         .map_err(|_| AppError::Repository(backup_timeout_error_message()))?
 }
 
-pub trait BackupService {
-    fn backup_dir(&self) -> PathBuf;
-}
-
-impl BackupService for AppUseCase {
-    fn backup_dir(&self) -> PathBuf {
-        self.services.config.backup_dir.clone()
-    }
-}
-
 impl AppUseCase {
     async fn collect_backup_export_secrets(&self) -> AppResult<BackupExportSecrets> {
         let encryption_master_key = self
@@ -402,7 +392,7 @@ impl AppUseCase {
         trigger: BackupTrigger,
         encrypted: bool,
     ) -> AppResult<PreparedBackupRequest> {
-        let dir = self.backup_dir();
+        let dir = self.effective_backup_dir().await?;
         std::fs::create_dir_all(&dir).map_err(|error| {
             AppError::Repository(format!("failed to create backup directory: {error}"))
         })?;
@@ -534,10 +524,8 @@ impl AppUseCase {
             ));
         };
 
-        if has_creating_backup_for_trigger(
-            &list_backup_files(&self.backup_dir()),
-            BackupTrigger::Manual,
-        ) {
+        let backup_dir = self.effective_backup_dir().await?;
+        if has_creating_backup_for_trigger(&list_backup_files(&backup_dir), BackupTrigger::Manual) {
             return Err(AppError::Validation(
                 "a manual backup is already running".to_string(),
             ));
@@ -574,7 +562,8 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        Ok(list_backup_files(&self.backup_dir()))
+        let backup_dir = self.effective_backup_dir().await?;
+        Ok(list_backup_files(&backup_dir))
     }
 
     pub async fn prepare_backup_download(
@@ -589,7 +578,7 @@ impl AppUseCase {
             return Err(AppError::Validation("invalid backup filename".into()));
         }
 
-        let backup_dir = self.backup_dir();
+        let backup_dir = self.effective_backup_dir().await?;
         let info = list_backup_files(&backup_dir)
             .into_iter()
             .find(|entry| entry.filename == filename)
@@ -634,7 +623,8 @@ impl AppUseCase {
             return Err(AppError::Validation("invalid backup filename".into()));
         }
 
-        let deleted = remove_backup_artifacts(&self.backup_dir(), filename)?;
+        let backup_dir = self.effective_backup_dir().await?;
+        let deleted = remove_backup_artifacts(&backup_dir, filename)?;
         if !deleted {
             return Ok(false);
         }
@@ -652,7 +642,7 @@ impl AppUseCase {
     }
 
     async fn enforce_auto_backup_retention(&self, retention_count: usize) -> AppResult<u32> {
-        let dir = self.backup_dir();
+        let dir = self.effective_backup_dir().await?;
         let entries = list_backup_files(&dir);
         let mut deleted = 0u32;
 
@@ -674,7 +664,7 @@ impl AppUseCase {
         Ok(deleted)
     }
 
-    pub(crate) async fn auto_backup_settings(&self) -> AppResult<crate::AutoBackupSettings> {
+    pub async fn auto_backup_settings(&self) -> AppResult<crate::AutoBackupSettings> {
         self.load_auto_backup_settings().await
     }
 
@@ -698,7 +688,7 @@ impl AppUseCase {
             });
         };
 
-        let dir = self.backup_dir();
+        let dir = self.effective_backup_dir().await?;
         let entries = list_backup_files(&dir);
         if has_creating_backup_for_trigger(&entries, BackupTrigger::Auto) {
             return Ok(AutoBackupRunOutcome::Skipped {
@@ -735,7 +725,7 @@ struct PreparedBackupRequest {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum AutoBackupRunOutcome {
+pub enum AutoBackupRunOutcome {
     Created { info: BackupInfo, pruned_count: u32 },
     Skipped { reason: String },
 }
@@ -1035,6 +1025,39 @@ mod tests {
         let pruned = auto_backup_filenames_to_prune(&entries, 5);
 
         assert_eq!(pruned, vec!["auto-01.sbk".to_string()]);
+    }
+
+    #[test]
+    fn retention_prune_leaves_unrelated_files_in_custom_directory() {
+        let dir = tempdir().expect("tempdir");
+        let foreign_file = dir.path().join("notes.txt");
+        std::fs::write(&foreign_file, b"not a backup").expect("write foreign file");
+        let entries = vec![
+            backup_info(
+                "auto-new.sbk",
+                "2026-05-14T06:00:00Z",
+                BackupTrigger::Auto,
+                BackupStatus::Ready,
+            ),
+            backup_info(
+                "auto-old.sbk",
+                "2026-05-14T05:00:00Z",
+                BackupTrigger::Auto,
+                BackupStatus::Ready,
+            ),
+        ];
+        for entry in &entries {
+            std::fs::write(dir.path().join(&entry.filename), b"backup").expect("write backup");
+            write_backup_metadata(dir.path(), entry).expect("write metadata");
+        }
+
+        for filename in auto_backup_filenames_to_prune(&entries, 1) {
+            remove_backup_artifacts(dir.path(), &filename).expect("remove backup");
+        }
+
+        assert!(foreign_file.exists());
+        assert!(dir.path().join("auto-new.sbk").exists());
+        assert!(!dir.path().join("auto-old.sbk").exists());
     }
 
     #[test]

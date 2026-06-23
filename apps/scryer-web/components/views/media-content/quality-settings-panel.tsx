@@ -89,6 +89,9 @@ export function QualitySettingsPanel({
 
   const [personaSaving, setPersonaSaving] = React.useState(false);
   const traits = PERSONA_SCORING_TRAITS[resolvedPersona];
+  const globalScoringPersonaLabelKey =
+    SCORING_PERSONA_CHOICES.find((choice) => choice.value === globalScoringPersona)
+      ?.labelKey ?? "qualityProfile.personaBalanced";
 
   return (
     <div className="space-y-4">
@@ -174,7 +177,7 @@ export function QualitySettingsPanel({
                 <SelectContent>
                   <SelectItem value="__default__">
                     {t("facetSettings.scoringPersonaUseDefault")}
-                    {` (${globalScoringPersona})`}
+                    {` (${t(globalScoringPersonaLabelKey)})`}
                   </SelectItem>
                   {SCORING_PERSONA_CHOICES.map((choice) => (
                     <SelectItem key={choice.value} value={choice.value}>

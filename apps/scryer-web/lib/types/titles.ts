@@ -47,7 +47,8 @@ export type TitleRecord = {
   metadataFetchedAt?: string | null;
   minAvailability?: string | null;
   qualityProfileId?: string | null;
-  rootFolderPath?: string | null;
+  rootFolderId?: string;
+  rootFolderPath?: string;
   monitorType?: string | null;
   useSeasonFolders?: boolean | null;
   monitorSpecials?: boolean | null;
@@ -57,6 +58,7 @@ export type TitleRecord = {
 };
 
 export type RootFolderOption = {
+  id?: string;
   path: string;
   isDefault: boolean;
 };

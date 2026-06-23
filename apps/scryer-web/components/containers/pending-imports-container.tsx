@@ -711,9 +711,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     try {
       const { error: mutationError } = await client
         .mutation(ignorePendingImportMutation, {
-          input: {
-            pendingImportId: ignoreTargetItem.id,
-          },
+          pendingImportId: ignoreTargetItem.id,
         })
         .toPromise();
       if (mutationError) {

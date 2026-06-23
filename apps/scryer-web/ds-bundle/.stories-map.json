@@ -1,0 +1,196 @@
+{
+  "global": "ScryerWeb",
+  "pkg": "scryer-web",
+  "pkgDir": "apps/scryer-web",
+  "extraEntries": [],
+  "exported": [],
+  "storybookStatic": null,
+  "keyRecipe": 7,
+  "cfgSliceGlobal": "a139d95ad8ab0a8ba08b44a258c54602e36090304087f48fe923c61aa5a8ae08",
+  "components": [
+    {
+      "name": "Button",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "417e4c21cd8687f5",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Card",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "794d9b5008facaed",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Checkbox",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "691cceb17d3dd957",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Collapsible",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "79b9cedb2c9de820",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Command",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "4c7d891a0064ae03",
+      "cfgSlice": "67838e5d0551214ad2d3eb64dfd77c0a35ff005183061dbb4549ea903e8dbfe9",
+      "stories": []
+    },
+    {
+      "name": "Dialog",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "8ef19294ee36beb4",
+      "cfgSlice": "5764f3c4ef98085f47f7ae370e3b74f4f968aee8f70e528651efb1f00b8ee52a",
+      "stories": []
+    },
+    {
+      "name": "HoverCard",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "02c02ffcbe40761c",
+      "cfgSlice": "a759e58c8036bb1e71bdb1b7e681c803f2dee981cffb185bff0550bffb4f803d",
+      "stories": []
+    },
+    {
+      "name": "Input",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "930642d5079ef5ba",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Label",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "d1561114defd62f4",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Popover",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "f4efe9d167f15fde",
+      "cfgSlice": "027fbf9c19d6340b18441fb38c554da6f22451a6b38ff04a18d2af4ee51a579c",
+      "stories": []
+    },
+    {
+      "name": "Progress",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "da509aee4f49dbcb",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Select",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "0e9534c05d608f14",
+      "cfgSlice": "c3183f6464c425ee20ef4bd1244419d79fb1d362375676f2934b71a1404cddce",
+      "stories": []
+    },
+    {
+      "name": "Separator",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "41acade4a39eb32a",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Sheet",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "84b6626e352fe077",
+      "cfgSlice": "75475e6468c697c89a5f846023e88ca094fbe225725f0325476a2eaecc523345",
+      "stories": []
+    },
+    {
+      "name": "Sidebar",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "94420c1300c0e71c",
+      "cfgSlice": "2cca4e3106123894ccc4fbb2b322f5e8f3139b5735141e0e7d6d86e68a034ad3",
+      "stories": []
+    },
+    {
+      "name": "Skeleton",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "d3c736dc932dad28",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Table",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "4f11d671a4574b62",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Tabs",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "cde07537f8fe64ca",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Textarea",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "1dbe0f51a7bd3e87",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "TimePicker",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "f65fedc14eb26afa",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Toaster",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "b08208d13bda7921",
+      "cfgSlice": "3c4490fcee670a36d1350f0f464453080e83999d7a451bacf930326195bdf45e",
+      "stories": []
+    },
+    {
+      "name": "ToggleGroup",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "34a9955429d5a44c",
+      "cfgSlice": "5ff899b099eb6923833804cda955efdd69101524bec86f67dac5537cd81802e8",
+      "stories": []
+    },
+    {
+      "name": "Tooltip",
+      "group": "general",
+      "srcSha": null,
+      "sourceKey": "6aa2bba3d06ba7e3",
+      "cfgSlice": "7d91422679b40f305879a1b48a4afcfca481f316d63eb9b5c7813a910856d7a4",
+      "stories": []
+    }
+  ]
+}

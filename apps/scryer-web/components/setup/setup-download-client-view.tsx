@@ -46,7 +46,7 @@ interface SetupDownloadClientViewProps {
   t: (key: string) => string;
   draft: DownloadClientDraft;
   downloadClientTypeOptions: DownloadClientTypeOption[];
-  localPathStyle: LocalPathStyle;
+  localPathStyle: LocalPathStyle | undefined;
   onDraftChange: (updates: Partial<DownloadClientDraft>) => void;
   onTestConnection: () => void;
   onNext: () => void;

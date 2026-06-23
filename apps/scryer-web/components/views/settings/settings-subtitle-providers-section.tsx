@@ -327,9 +327,7 @@ function DynamicSubtitleConfigField({
   }
 
   const isSecretField =
-    field.fieldType === "password" ||
-    field.fieldType === "secret" ||
-    looksLikeSecretConfigKey(field.key);
+    field.fieldType === "password" || looksLikeSecretConfigKey(field.key);
 
   return (
     <label>

@@ -45,6 +45,10 @@ import {
   areNzbgetRoutingMapsEqual,
   areRoutingOrdersEqual,
 } from "@/lib/utils/media-content";
+import {
+  isLocalPathFormatValidForStyle,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
 
 const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
@@ -88,9 +92,12 @@ type MediaLibrarySettingsPanelProps = {
   scanLoading: boolean;
   scanNotice?: string | null;
   scanSummary: LibraryScanSummary | null;
+  localPathStyle: LocalPathStyle | undefined;
   qualityProfiles: ParsedQualityProfile[];
   downloadClients: DownloadClientRecord[];
   downloadClientsLoading: boolean;
+  canCreateLibrary: boolean;
+  canManageDownloadClientRouting: boolean;
   loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
   loadFacetDownloadClientRouting: (
     scopeId: LibraryRecord["facet"],
@@ -105,6 +112,7 @@ const NEW_LIBRARY_VALUE = "__new_library__";
 
 function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   return (library?.roots ?? []).map((root) => ({
+    id: root.id,
     path: root.path,
     isDefault: root.isDefault,
   }));
@@ -129,7 +137,7 @@ function normalizeRoots(roots: RootFolderOption[]): RootFolderOption[] {
     if (isDefault) {
       hasDefault = true;
     }
-    next.push({ path, isDefault });
+    next.push({ id: root.id, path, isDefault });
   });
 
   if (next.length > 0 && !hasDefault) {
@@ -199,9 +207,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   scanLoading,
   scanNotice,
   scanSummary,
+  localPathStyle,
   qualityProfiles,
   downloadClients,
   downloadClientsLoading,
+  canCreateLibrary,
+  canManageDownloadClientRouting,
   loadLibrarySettings,
   loadFacetDownloadClientRouting,
   onCreateLibrary,
@@ -245,6 +256,13 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
     [activeLibraryId, libraries],
   );
+  React.useEffect(() => {
+    if (canCreateLibrary || mode !== "new") {
+      return;
+    }
+    setMode("existing");
+    setActiveLibraryId(libraries[0]?.id ?? null);
+  }, [canCreateLibrary, libraries, mode]);
   const currentFacet = activeLibrary?.facet ?? facet;
   const isAnimeFacet = currentFacet === "anime";
   const showPlexmatch = currentFacet === "series" || currentFacet === "anime";
@@ -450,6 +468,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     [normalizedDraftRoots],
   );
   const hasRootFolderConflicts = conflictingLibraryNamesByRootPath.size > 0;
+  const invalidRootFolderPaths = React.useMemo(() => {
+    const invalidPaths = new Set<string>();
+    normalizedDraftRoots.forEach((root) => {
+      if (!isLocalPathFormatValidForStyle(root.path, localPathStyle)) {
+        invalidPaths.add(root.path);
+      }
+    });
+    return invalidPaths;
+  }, [localPathStyle, normalizedDraftRoots]);
+  const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
   const downloadClientRoutingBusy =
@@ -472,39 +500,45 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     ],
   );
   const settingsDraft = React.useMemo<LibrarySettingsDraft>(
-    () => ({
-      requiredAudioLanguages:
-        draftRequiredAudioLanguages.length > 0 ? draftRequiredAudioLanguages : null,
-      qualityProfileId:
-        draftQualityProfileId === INHERIT_VALUE ? null : draftQualityProfileId,
-      requestQualityProfileIds:
-        draftRequestQualityProfileIds.length > 0
-          ? draftRequestQualityProfileIds
+    () => {
+      const draft: LibrarySettingsDraft = {
+        requiredAudioLanguages:
+          draftRequiredAudioLanguages.length > 0 ? draftRequiredAudioLanguages : null,
+        qualityProfileId:
+          draftQualityProfileId === INHERIT_VALUE ? null : draftQualityProfileId,
+        requestQualityProfileIds:
+          draftRequestQualityProfileIds.length > 0
+            ? draftRequestQualityProfileIds
+            : null,
+        scoringPersona:
+          draftScoringPersona === INHERIT_VALUE
+            ? null
+            : (draftScoringPersona as ScoringPersonaId),
+        fillerPolicy:
+          isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? draftFillerPolicy : null,
+        recapPolicy:
+          isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? draftRecapPolicy : null,
+        monitorSpecials:
+          isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorSpecials) : null,
+        interSeasonMovies:
+          isAnimeFacet ? booleanOverrideFromSelectValue(draftInterSeasonMovies) : null,
+        monitorFillerMovies:
+          isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorFillerMovies) : null,
+        nfoWriteOnImport: booleanOverrideFromSelectValue(draftNfoWriteOnImport),
+        plexmatchWriteOnImport: showPlexmatch
+          ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
           : null,
-      scoringPersona:
-        draftScoringPersona === INHERIT_VALUE
-          ? null
-          : (draftScoringPersona as ScoringPersonaId),
-      fillerPolicy:
-        isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? draftFillerPolicy : null,
-      recapPolicy:
-        isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? draftRecapPolicy : null,
-      monitorSpecials:
-        isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorSpecials) : null,
-      interSeasonMovies:
-        isAnimeFacet ? booleanOverrideFromSelectValue(draftInterSeasonMovies) : null,
-      monitorFillerMovies:
-        isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorFillerMovies) : null,
-      nfoWriteOnImport: booleanOverrideFromSelectValue(draftNfoWriteOnImport),
-      plexmatchWriteOnImport: showPlexmatch
-        ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
-        : null,
-      importMode:
-        draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
-      indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
-      downloadClientRouting: draftDownloadClientRoutingEntries,
-    }),
+        importMode:
+          draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
+        indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
+      };
+      if (canManageDownloadClientRouting) {
+        draft.downloadClientRouting = draftDownloadClientRoutingEntries;
+      }
+      return draft;
+    },
     [
+      canManageDownloadClientRouting,
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
       draftImportMode,
@@ -542,17 +576,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.plexmatchWriteOnImport !==
           savedSettings.plexmatchWriteOnImportOverride ||
         settingsDraft.importMode !== savedSettings.importModeOverride ||
-        (draftDownloadClientRoutingMode === "custom") !==
-          Boolean(savedDownloadClientRoutingEntries) ||
-        (draftDownloadClientRoutingMode === "custom" &&
-          (!areNzbgetRoutingMapsEqual(
-            draftDownloadClientRouting,
-            savedDownloadClientRoutingState.routing,
-          ) ||
-            !areRoutingOrdersEqual(
-              draftDownloadClientRoutingOrder,
-              savedDownloadClientRoutingState.order,
-            )))));
+        (canManageDownloadClientRouting &&
+          ((draftDownloadClientRoutingMode === "custom") !==
+            Boolean(savedDownloadClientRoutingEntries) ||
+            (draftDownloadClientRoutingMode === "custom" &&
+              (!areNzbgetRoutingMapsEqual(
+                draftDownloadClientRouting,
+                savedDownloadClientRoutingState.routing,
+              ) ||
+                !areRoutingOrdersEqual(
+                  draftDownloadClientRoutingOrder,
+                  savedDownloadClientRoutingState.order,
+                )))))));
   const hasDraftChanges =
     mode === "new" ||
     draftName.trim() !== (activeLibrary?.name ?? "") ||
@@ -562,6 +597,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
   const handleSelectLibrary = (value: string) => {
     if (value === NEW_LIBRARY_VALUE) {
+      if (!canCreateLibrary) {
+        return;
+      }
       setMode("new");
       setActiveLibraryId(null);
       setDraftName("");
@@ -642,6 +680,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   };
 
   const handleNewLibrary = () => {
+    if (!canCreateLibrary) {
+      return;
+    }
     setMode("new");
     setActiveLibraryId(null);
     setDraftName("");
@@ -766,6 +807,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     const roots = normalizeRoots(draftRoots);
     setDraftRoots(roots);
     if (mode === "new") {
+      if (!canCreateLibrary) {
+        return null;
+      }
       const created = await onCreateLibrary({ name, roots, settings: settingsDraft });
       if (created?.id) {
         try {
@@ -874,7 +918,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 <SelectValue placeholder={t("settings.librariesLabel")} />
               </SelectTrigger>
               <SelectContent>
-                {mode === "new" ? (
+                {canCreateLibrary && mode === "new" ? (
                   <SelectItem value={NEW_LIBRARY_VALUE}>{t("settings.libraryNew")}</SelectItem>
                 ) : null}
                 {libraries.map((library) => (
@@ -884,16 +928,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 ))}
               </SelectContent>
             </Select>
-            <Button
-              id="media-library-new"
-              type="button"
-              variant="outline"
-              onClick={handleNewLibrary}
-              disabled={actionBusy}
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              {t("settings.libraryNewButton")}
-            </Button>
+            {canCreateLibrary ? (
+              <Button
+                id="media-library-new"
+                type="button"
+                variant="outline"
+                onClick={handleNewLibrary}
+                disabled={actionBusy}
+              >
+                <Plus className="mr-1.5 h-4 w-4" />
+                {t("settings.libraryNewButton")}
+              </Button>
+            ) : null}
           </div>
 
           {scanSummary ? (
@@ -933,6 +979,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   {sortedFolders.map(({ rf, originalIndex: index }) => {
                     const conflictingLibraryNames =
                       conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
+                    const pathIsInvalid = invalidRootFolderPaths.has(rf.path);
 
                     return (
                       <li
@@ -997,6 +1044,11 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             {t("settings.rootFolderConflict", {
                               libraries: conflictingLibraryNames.join(", "),
                             })}
+                          </p>
+                        ) : null}
+                        {pathIsInvalid ? (
+                          <p className="text-xs text-destructive">
+                            {t("settings.downloadClientRemotePathMappingsLocalRequired")}
                           </p>
                         ) : null}
                       </li>
@@ -1165,46 +1217,48 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 </div>
               </div>
 
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <Label>{t("settings.downloadClientRouting")}</Label>
-                  <Select
-                    value={draftDownloadClientRoutingMode}
-                    onValueChange={(value) => {
-                      void handleDownloadClientRoutingModeChange(
-                        value as "inherit" | "custom",
-                      );
-                    }}
-                    disabled={settingsBusy || downloadClientRoutingBusy}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="inherit">
-                        {t("settings.libraryInheritFacet")}
-                      </SelectItem>
-                      <SelectItem value="custom">
-                        {t("settings.libraryCustomRouting")}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
+              {canManageDownloadClientRouting ? (
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <Label>{t("settings.downloadClientRouting")}</Label>
+                    <Select
+                      value={draftDownloadClientRoutingMode}
+                      onValueChange={(value) => {
+                        void handleDownloadClientRoutingModeChange(
+                          value as "inherit" | "custom",
+                        );
+                      }}
+                      disabled={settingsBusy || downloadClientRoutingBusy}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">
+                          {t("settings.libraryInheritFacet")}
+                        </SelectItem>
+                        <SelectItem value="custom">
+                          {t("settings.libraryCustomRouting")}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {draftDownloadClientRoutingMode === "custom" ? (
+                    <DownloadClientRoutingPanel
+                      scopeLabel={activeLibrary?.name ?? settingsTitle}
+                      downloadClients={downloadClients}
+                      activeScopeRouting={draftDownloadClientRouting}
+                      activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
+                      downloadClientRoutingLoading={downloadClientRoutingBusy}
+                      downloadClientRoutingSaving={saving}
+                      updateDownloadClientRoutingForScope={
+                        updateDownloadClientRoutingDraft
+                      }
+                      moveDownloadClientInScope={moveDownloadClientRoutingDraft}
+                    />
+                  ) : null}
                 </div>
-                {draftDownloadClientRoutingMode === "custom" ? (
-                  <DownloadClientRoutingPanel
-                    scopeLabel={activeLibrary?.name ?? settingsTitle}
-                    downloadClients={downloadClients}
-                    activeScopeRouting={draftDownloadClientRouting}
-                    activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
-                    downloadClientRoutingLoading={downloadClientRoutingBusy}
-                    downloadClientRoutingSaving={saving}
-                    updateDownloadClientRoutingForScope={
-                      updateDownloadClientRoutingDraft
-                    }
-                    moveDownloadClientInScope={moveDownloadClientRoutingDraft}
-                  />
-                ) : null}
-              </div>
+              ) : null}
 
               <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
                 <div className="space-y-1">
@@ -1460,7 +1514,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
-                    hasRootFolderConflicts
+                    hasRootFolderConflicts ||
+                    hasInvalidRootFolderPaths
                   }
                 >
                   <Save className="mr-1.5 h-4 w-4" />
@@ -1476,7 +1531,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
-                    hasRootFolderConflicts
+                    hasRootFolderConflicts ||
+                    hasInvalidRootFolderPaths
                   }
                 >
                   {t("settings.librarySaveOnlyButton")}

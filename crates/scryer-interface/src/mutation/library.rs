@@ -1,5 +1,5 @@
-use async_graphql::{Context, Error, Object, Result as GqlResult};
-use scryer_application::DeleteExecutionConfirmation;
+use async_graphql::{Context, ID, Object, Result as GqlResult};
+use scryer_application::{AppError, DeleteExecutionConfirmation};
 use scryer_domain::AppPermission;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
@@ -22,16 +22,22 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 
     let normalized = raw_key.trim();
     if normalized.is_empty() {
-        return Err(Error::new("idempotencyKey cannot be empty"));
+        return Err(to_gql_error(AppError::Validation(
+            "idempotencyKey cannot be empty".to_string(),
+        )));
     }
 
     let composite = format!("{scope}:{normalized}");
     let store = &*RENAME_IDEMPOTENCY_KEYS;
-    let mut guard = store
-        .lock()
-        .map_err(|_| Error::new("failed to lock rename idempotency key store"))?;
+    let mut guard = store.lock().map_err(|_| {
+        to_gql_error(AppError::Repository(
+            "failed to lock rename idempotency key store".to_string(),
+        ))
+    })?;
     if !guard.insert(composite.clone()) {
-        return Err(Error::new("duplicate idempotencyKey"));
+        return Err(to_gql_error(AppError::Validation(
+            "duplicate idempotencyKey".to_string(),
+        )));
     }
 
     Ok(Some(composite))
@@ -43,15 +49,20 @@ fn library_settings_draft(
     let import_mode = input
         .import_mode
         .map(|value| {
-            scryer_domain::ImportMode::from_setting(&value)
-                .map_err(|message| Error::new(format!("invalid importMode: {message}")))
+            scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
+                to_gql_error(AppError::Validation(format!(
+                    "invalid importMode: {message}"
+                )))
+            })
         })
         .transpose()?;
 
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
-        quality_profile_id: input.quality_profile_id,
-        request_quality_profile_ids: input.request_quality_profile_ids,
+        quality_profile_id: input.quality_profile_id.map(String::from),
+        request_quality_profile_ids: input
+            .request_quality_profile_ids
+            .map(|ids| ids.into_iter().map(String::from).collect()),
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
@@ -67,7 +78,7 @@ fn library_settings_draft(
             entries
                 .into_iter()
                 .map(|entry| scryer_application::IndexerRoutingSettingsEntry {
-                    indexer_id: entry.indexer_id,
+                    indexer_id: entry.indexer_id.to_string(),
                     enabled: entry.enabled,
                     categories: entry.categories,
                     priority: entry.priority,
@@ -79,7 +90,7 @@ fn library_settings_draft(
                 .into_iter()
                 .map(
                     |entry| scryer_application::DownloadClientRoutingSettingsEntry {
-                        client_id: entry.client_id,
+                        client_id: entry.client_id.to_string(),
                         enabled: entry.enabled,
                         category: entry.category,
                         recent_queue_priority: entry.recent_queue_priority,
@@ -133,8 +144,7 @@ impl LibraryMutations {
         input: UpdateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor =
-            require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
         let roots = input.roots.map(|roots| {
             roots
                 .into_iter()
@@ -147,7 +157,7 @@ impl LibraryMutations {
         let library = app
             .update_library(
                 &actor,
-                &input.library_id,
+                input.library_id.as_ref(),
                 input.name,
                 roots,
                 input.settings.map(library_settings_draft).transpose()?,
@@ -157,28 +167,33 @@ impl LibraryMutations {
         Ok(from_library(library))
     }
 
-    async fn delete_library(
-        &self,
-        ctx: &Context<'_>,
-        input: DeleteLibraryInput,
-    ) -> GqlResult<bool> {
+    async fn delete_library(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteLibraryPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor =
-            require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
-        app.delete_library(&actor, &input.library_id)
+        let actor = actor_from_ctx(ctx)?;
+        let id = id.to_string();
+        let deleted = app
+            .delete_library(&actor, &id)
             .await
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(DeleteLibraryPayload {
+            id: ID::from(id),
+            deleted,
+        })
     }
 
     async fn scan_library(
         &self,
         ctx: &Context<'_>,
-        library_id: String,
-        import_warmup_session_id: Option<String>,
+        input: ScanLibraryInput,
     ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let scan_hints = match import_warmup_session_id.as_deref() {
+        let library_id = input.library_id.to_string();
+        let scan_hints = match input
+            .import_warmup_session_id
+            .as_ref()
+            .map(|session_id| session_id.as_str())
+        {
             Some(session_id) if !session_id.trim().is_empty() => {
                 app.external_import_monitor_warmup_scan_hints(&actor, session_id)
                     .await
@@ -195,12 +210,13 @@ impl LibraryMutations {
     async fn scan_title_library(
         &self,
         ctx: &Context<'_>,
-        input: TitleIdInput,
+        title_id: ID,
     ) -> GqlResult<LibraryScanSummaryPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let title_id = title_id.to_string();
         let summary = app
-            .scan_title_library(&actor, &input.title_id)
+            .scan_title_library(&actor, &title_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_summary(summary))
@@ -209,12 +225,13 @@ impl LibraryMutations {
     async fn cancel_library_scan(
         &self,
         ctx: &Context<'_>,
-        input: CancelLibraryScanInput,
+        session_id: ID,
     ) -> GqlResult<CancelLibraryScanPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let session_id = session_id.to_string();
         let result = app
-            .cancel_library_scan(&actor, &input.session_id)
+            .cancel_library_scan(&actor, &session_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_cancel_library_scan_result(result))
@@ -227,8 +244,9 @@ impl LibraryMutations {
     ) -> GqlResult<ResolvePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let pending_import_id = input.pending_import_id.to_string();
         let result = app
-            .resolve_pending_import(&actor, &input.pending_import_id, &input.tvdb_id)
+            .resolve_pending_import(&actor, &pending_import_id, &input.tvdb_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_resolve_pending_import_result(result))
@@ -241,12 +259,19 @@ impl LibraryMutations {
     ) -> GqlResult<ResolvePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let pending_import_id = input.pending_import_id.to_string();
+        let collection_id = input.collection_id.map(String::from);
+        let episode_ids = input
+            .episode_ids
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
         let result = app
             .bind_title_bound_pending_import(
                 &actor,
-                &input.pending_import_id,
-                input.collection_id.as_deref(),
-                &input.episode_ids,
+                &pending_import_id,
+                collection_id.as_deref(),
+                &episode_ids,
             )
             .await
             .map_err(to_gql_error)?;
@@ -256,12 +281,13 @@ impl LibraryMutations {
     async fn ignore_pending_import(
         &self,
         ctx: &Context<'_>,
-        input: IgnorePendingImportInput,
+        pending_import_id: ID,
     ) -> GqlResult<IgnorePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let pending_import_id = pending_import_id.to_string();
         let result = app
-            .ignore_pending_import(&actor, &input.pending_import_id)
+            .ignore_pending_import(&actor, &pending_import_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_ignore_pending_import_result(result))
@@ -280,6 +306,7 @@ impl LibraryMutations {
             fingerprint,
             idempotency_key,
         } = input;
+        let title_id = title_id.to_string();
         let facet = facet.into_domain();
         let facet_name = facet.as_str();
         let idempotency_key = claim_rename_idempotency_key("apply_media_rename", idempotency_key)?;
@@ -306,13 +333,14 @@ impl LibraryMutations {
         &self,
         ctx: &Context<'_>,
         input: DeleteMediaFileInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<DeleteMediaFilePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let file_id = input.file_id.to_string();
         app.delete_media_file(
             &actor,
-            &input.file_id,
-            input.delete_from_disk.unwrap_or(true),
+            &file_id,
+            input.delete_from_disk.unwrap_or(false),
             input
                 .preview_fingerprint
                 .map(|preview_fingerprint| DeleteExecutionConfirmation {
@@ -321,8 +349,11 @@ impl LibraryMutations {
                 }),
         )
         .await
-        .map(|_| true)
-        .map_err(to_gql_error)
+        .map_err(to_gql_error)?;
+        Ok(DeleteMediaFilePayload {
+            id: ID::from(file_id),
+            deleted: true,
+        })
     }
 
     async fn apply_media_rename_bulk(
@@ -360,9 +391,14 @@ impl LibraryMutations {
         Ok(from_media_rename_apply(result))
     }
 
-    async fn rehydrate_all_metadata(&self, ctx: &Context<'_>, language: String) -> GqlResult<bool> {
+    async fn rehydrate_all_metadata(
+        &self,
+        ctx: &Context<'_>,
+        input: RehydrateAllMetadataInput,
+    ) -> GqlResult<RehydrateAllMetadataPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let language = input.language;
         let cleared = app
             .rehydrate_all_metadata(&actor, &language)
             .await
@@ -374,6 +410,10 @@ impl LibraryMutations {
             "metadata rehydration accepted"
         );
 
-        Ok(true)
+        Ok(RehydrateAllMetadataPayload {
+            language,
+            titles_cleared: i64::try_from(cleared).unwrap_or(i64::MAX),
+            accepted: true,
+        })
     }
 }

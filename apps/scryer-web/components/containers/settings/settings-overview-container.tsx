@@ -83,7 +83,7 @@ export function SettingsOverviewContainer({
       // Trigger backend metadata rehydration
       const { error } = await client.mutation(
         rehydrateAllMetadataMutation,
-        { language: pendingLanguage },
+        { input: { language: pendingLanguage } },
       ).toPromise();
 
       if (error) {

@@ -8,7 +8,10 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use scryer_application::{AppError, AppUseCase, JwtSessionScope, OAUTH_LIBRARY_SCOPE};
+use scryer_application::{
+    AppError, AppUseCase, JwtSessionScope, OAUTH_LIBRARY_SCOPE, OAuthAuthorizationSource,
+};
+use scryer_interface::context::AuthRuntimeStateHandle;
 
 use crate::base_path::BasePath;
 use crate::middleware::parse_bearer_token;
@@ -17,6 +20,7 @@ use crate::middleware::parse_bearer_token;
 pub(crate) struct OAuthRouteState {
     pub(crate) app: AppUseCase,
     pub(crate) base_path: BasePath,
+    pub(crate) auth_runtime: AuthRuntimeStateHandle,
 }
 
 pub(crate) fn oauth_router(state: OAuthRouteState) -> Router {
@@ -112,34 +116,47 @@ async fn oauth_authorize_decision_inner(
     headers: HeaderMap,
     input: OAuthAuthorizeDecisionRequest,
 ) -> Result<OAuthAuthorizeDecisionResponse, Response> {
-    let token = bearer_token_from_headers(&headers).ok_or_else(|| {
-        oauth_error(
-            StatusCode::UNAUTHORIZED,
-            "invalid_request",
-            "authorization requires a logged-in Scryer session",
+    let authless_authorization = !state.auth_runtime.snapshot().effective_form_login_enabled;
+    let (user, authorization_source) = if authless_authorization {
+        (
+            state
+                .app
+                .find_or_create_default_user()
+                .await
+                .map_err(oauth_app_error)?,
+            OAuthAuthorizationSource::Authless,
         )
-    })?;
-    let (user, claims) = state
-        .app
-        .authenticate_token_with_claims(token)
-        .await
-        .map_err(|_| {
+    } else {
+        let token = bearer_token_from_headers(&headers).ok_or_else(|| {
             oauth_error(
                 StatusCode::UNAUTHORIZED,
                 "invalid_request",
-                "invalid session",
+                "authorization requires a logged-in Scryer session",
             )
         })?;
-    if claims.session_scope != JwtSessionScope::Full
-        || claims.is_oauth_access_token()
-        || AppUseCase::is_reserved_recovery_username(&user.username)
-    {
-        return Err(oauth_error(
-            StatusCode::FORBIDDEN,
-            "access_denied",
-            "this session cannot authorize OAuth clients",
-        ));
-    }
+        let (user, claims) = state
+            .app
+            .authenticate_token_with_claims(token)
+            .await
+            .map_err(|_| {
+                oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_request",
+                    "invalid session",
+                )
+            })?;
+        if claims.session_scope != JwtSessionScope::Full
+            || claims.is_oauth_access_token()
+            || AppUseCase::is_reserved_recovery_username(&user.username)
+        {
+            return Err(oauth_error(
+                StatusCode::FORBIDDEN,
+                "access_denied",
+                "this session cannot authorize OAuth clients",
+            ));
+        }
+        (user, OAuthAuthorizationSource::Authenticated)
+    };
     state
         .app
         .validate_oauth_redirect_uri(&input.client_id, &input.redirect_uri)
@@ -189,6 +206,7 @@ async fn oauth_authorize_decision_inner(
             &scope,
             &input.code_challenge,
             &input.code_challenge_method,
+            authorization_source,
         )
         .await
         .map_err(oauth_validation_error)?;
@@ -260,9 +278,17 @@ async fn oauth_token(
                     "code_verifier is required",
                 );
             };
+            let authless_codes_allowed =
+                !state.auth_runtime.snapshot().effective_form_login_enabled;
             state
                 .app
-                .exchange_oauth_authorization_code(client_id, code, redirect_uri, code_verifier)
+                .exchange_oauth_authorization_code(
+                    client_id,
+                    code,
+                    redirect_uri,
+                    code_verifier,
+                    authless_codes_allowed,
+                )
                 .await
         }
         "refresh_token" => {
@@ -273,9 +299,11 @@ async fn oauth_token(
                     "refresh_token is required",
                 );
             };
+            let authless_grants_allowed =
+                !state.auth_runtime.snapshot().effective_form_login_enabled;
             state
                 .app
-                .refresh_oauth_token(client_id, refresh_token)
+                .refresh_oauth_token(client_id, refresh_token, authless_grants_allowed)
                 .await
         }
         _ => {

@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { InfoHelp } from "@/components/common/info-help";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -79,6 +80,7 @@ type SettingsNotificationsSectionProps = {
   isSubscriptionEditorOpen: boolean;
   subscriptionEditorMode: "create" | "edit";
   startCreateSubscription: (target?: Pick<NotificationTarget, "targetKind" | "id">) => void;
+  localPathStyle: LocalPathStyle | undefined;
 };
 
 const SCOPE_OPTIONS = ["global", "facet", "title"] as const;
@@ -225,10 +227,12 @@ function DynamicConfigField({
   field,
   value,
   onChange,
+  localPathStyle,
 }: {
   field: ConfigFieldDef;
   value: string;
   onChange: (key: string, value: string) => void;
+  localPathStyle: LocalPathStyle | undefined;
 }) {
   const fieldId = selectorId("settings-notification-field", field.key);
   const help = field.helpText ? (
@@ -296,6 +300,7 @@ function DynamicConfigField({
           value={value}
           helpText={field.helpText}
           required={field.required}
+          localPathStyle={localPathStyle}
           onChange={onChange}
         />
       );
@@ -333,7 +338,7 @@ function DynamicConfigField({
         onChange={(e) => onChange(field.key, e.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password" || field.fieldType === "secret"
+          field.fieldType === "password"
             ? "password"
             : field.fieldType === "number"
               ? "number"
@@ -492,6 +497,7 @@ export function SettingsNotificationsSection({
   isSubscriptionEditorOpen,
   subscriptionEditorMode,
   startCreateSubscription,
+  localPathStyle,
 }: SettingsNotificationsSectionProps) {
   const t = useTranslate();
   const normalizedChannelType = channelDraft.channelType.trim().toLowerCase();
@@ -832,6 +838,7 @@ export function SettingsNotificationsSection({
                           field={field}
                           value={channelDraft.configValues[field.key] ?? field.defaultValue ?? ""}
                           onChange={handleConfigValueChange}
+                          localPathStyle={localPathStyle}
                         />
                       ))}
                   </div>
@@ -845,6 +852,7 @@ export function SettingsNotificationsSection({
                             field={field}
                             value={channelDraft.configValues[field.key] ?? field.defaultValue ?? "false"}
                             onChange={handleConfigValueChange}
+                            localPathStyle={localPathStyle}
                           />
                         ))}
                     </div>

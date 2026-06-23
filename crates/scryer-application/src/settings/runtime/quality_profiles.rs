@@ -248,10 +248,13 @@ impl AppUseCase {
         let can_manage_titles = self
             .has_any_library_permission(actor, scryer_domain::LibraryPermission::ManageTitles)
             .await?;
+        let can_manage_library = self
+            .has_any_granted_library_permission(actor, scryer_domain::LibraryPermission::ManageLibrary)
+            .await?;
         let can_request = self
             .has_any_library_permission(actor, scryer_domain::LibraryPermission::Request)
             .await?;
-        if !can_manage_catalog && !can_manage_titles && !can_request {
+        if !can_manage_catalog && !can_manage_titles && !can_manage_library && !can_request {
             return Err(AppError::Unauthorized(
                 "You do not have permission to view quality profiles".to_string(),
             ));

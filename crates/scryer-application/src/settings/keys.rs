@@ -29,6 +29,9 @@ pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY: &str =
     "backup.auto.disabled_missing_key_notice";
+pub const BACKUP_PATH_KEY: &str = "backup.path";
+pub const AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY: &str =
+    "backup.auto.post_upgrade_pending_version";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const PASSWORD_MIN_LENGTH_KEY: &str = "auth.password_min_length";
 pub const PASSWORD_MIN_LENGTH_MIN: i64 = 8;

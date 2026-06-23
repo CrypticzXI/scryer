@@ -133,7 +133,11 @@ function applyReactiveRefreshActionResult(
         ReactiveRefreshQueryActionPlan,
         { kind: "catalogTitles" }
       >;
-      action.apply((payload[typedActionPlan.titlesAlias] ?? []) as TitleRecord[]);
+      const titlesPayload = payload[typedActionPlan.titlesAlias] as
+        | { items?: unknown[] }
+        | null
+        | undefined;
+      action.apply((titlesPayload?.items ?? []) as TitleRecord[]);
       return;
     }
     case "catalogTitle": {
@@ -152,17 +156,21 @@ function applyReactiveRefreshActionResult(
         ReactiveRefreshQueryActionPlan,
         { kind: "titleOverviewNative" }
       >;
+      const titleHistoryPage = payload[typedActionPlan.titleHistoryAlias] as
+        | { records?: unknown[] }
+        | null
+        | undefined;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
         acquisitionDiagnostics:
           payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
-        titleEvents: (payload[typedActionPlan.titleEventsAlias] ?? []) as TitleOverviewNativeSnapshot<
+        titleHistory: (titleHistoryPage?.records ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
-        >["titleEvents"],
+        >["titleHistory"],
         titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewNativeSnapshot<
           unknown,
           unknown,
@@ -224,7 +232,7 @@ function reactiveRefreshActionAliases(
       return [
         actionPlan.titleAlias,
         actionPlan.titleAcquisitionDiagnosticsAlias,
-        actionPlan.titleEventsAlias,
+        actionPlan.titleHistoryAlias,
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.externalSubtitlesAlias,
         actionPlan.setupStatusAlias,
@@ -258,7 +266,7 @@ function isTitleOverviewNativePartialHistoryError(
   return actionPlan.kind === "titleOverviewNative"
     && graphQlErrors.length > 0
     && graphQlErrors.every(
-      (graphQlError) => graphQlErrorAlias(graphQlError) === actionPlan.titleEventsAlias,
+      (graphQlError) => graphQlErrorAlias(graphQlError) === actionPlan.titleHistoryAlias,
     );
 }
 

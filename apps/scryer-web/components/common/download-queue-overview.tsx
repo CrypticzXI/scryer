@@ -53,11 +53,11 @@ function formatProgress(progressPercent: number): number {
   return Math.round(progressPercent);
 }
 
-function parseByteCount(sizeBytes: string | null): number | null {
-  if (!sizeBytes) {
+function parseByteCount(sizeBytes: number | string | null): number | null {
+  if (sizeBytes === null || sizeBytes === "") {
     return null;
   }
-  const bytes = Number.parseFloat(sizeBytes);
+  const bytes = typeof sizeBytes === "number" ? sizeBytes : Number.parseFloat(sizeBytes);
   if (!Number.isFinite(bytes) || bytes < 0) {
     return null;
   }

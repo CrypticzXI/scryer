@@ -6,7 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DownloadQueueItem, Title, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
+    CompletedDownload, DownloadQueueItem, Title, TitleMatchType, TrackedDownloadState,
+    TrackedDownloadStatus,
 };
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
@@ -52,6 +53,8 @@ pub struct TrackedDownload {
     /// Whether import() has been called at least once. Prevents check() from
     /// re-evaluating a post-import ImportBlocked back to ImportPending.
     pub import_attempted: bool,
+    /// Completed item is waiting for the client to expose matching history.
+    pub waiting_for_completed_history: bool,
     /// When a completed download path first became unavailable.
     pub path_missing_since: Option<DateTime<Utc>>,
     /// Runtime-only retry state for completed imports that temporarily contain no videos.
@@ -134,6 +137,7 @@ impl TrackedDownload {
         self.notified_manual_interaction = finished.notified_manual_interaction;
         self.match_type = finished.match_type;
         self.import_attempted = finished.import_attempted;
+        self.waiting_for_completed_history = finished.waiting_for_completed_history;
         self.path_missing_since = finished.path_missing_since;
         self.no_video_import_retry = finished.no_video_import_retry;
     }
@@ -143,6 +147,7 @@ impl TrackedDownload {
         self.status = TrackedDownloadStatus::Ok;
         self.status_messages.clear();
         self.import_attempted = false;
+        self.waiting_for_completed_history = false;
         self.path_missing_since = None;
         self.no_video_import_retry = None;
         self.skip_reacquire_on_failure = false;
@@ -161,6 +166,7 @@ impl TrackedDownload {
             next_retry_at,
         });
         self.state = TrackedDownloadState::ImportPending;
+        self.waiting_for_completed_history = false;
         self.status = TrackedDownloadStatus::Warning;
         self.status_messages = vec![message.into()];
     }
@@ -168,6 +174,7 @@ impl TrackedDownload {
     pub(crate) fn block_no_video_import_after_retries(&mut self, message: impl Into<String>) {
         self.no_video_import_retry = None;
         self.state = TrackedDownloadState::ImportBlocked;
+        self.waiting_for_completed_history = false;
         self.status = TrackedDownloadStatus::Warning;
         self.status_messages = vec![message.into()];
     }
@@ -251,6 +258,7 @@ impl TrackedDownloadService {
             status_messages: Vec::new(),
             client_item,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,
@@ -308,14 +316,49 @@ impl TrackedDownloadService {
     /// Mark downloads no longer visible in any client as untrackable.
     pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) {
         for td in self.cache.values_mut() {
-            let should_preserve_tracking = matches!(
-                td.state,
-                TrackedDownloadState::ImportPending
-                    | TrackedDownloadState::Importing
-                    | TrackedDownloadState::ImportBlocked
-                    | TrackedDownloadState::FailedPending
-            );
-            if !seen_ids.contains(&td.id) && !should_preserve_tracking {
+            if !seen_ids.contains(&td.id) && !should_preserve_tracking(td.state) {
+                td.is_trackable = false;
+            }
+        }
+        self.prune_cache();
+    }
+
+    /// Mark downloads no longer visible in non-excluded clients as untrackable.
+    pub fn update_trackable_excluding_client_types(
+        &mut self,
+        seen_ids: &HashSet<String>,
+        excluded_client_types: &[&str],
+    ) {
+        for td in self.cache.values_mut() {
+            if tracked_client_type_is_excluded(&td.client_type, excluded_client_types) {
+                continue;
+            }
+            if !seen_ids.contains(&td.id) && !should_preserve_tracking(td.state) {
+                td.is_trackable = false;
+            }
+        }
+        self.prune_cache();
+    }
+
+    /// Mark downloads absent from an authoritative client-scoped snapshot as untrackable.
+    pub fn update_trackable_for_scope(
+        &mut self,
+        seen_ids: &HashSet<String>,
+        scope: &TrackedDownloadSnapshotScope,
+    ) {
+        let TrackedDownloadSnapshotScope::AuthoritativeForClient {
+            client_id,
+            client_type,
+        } = scope
+        else {
+            return;
+        };
+
+        for td in self.cache.values_mut() {
+            if tracked_matches_snapshot_scope(td, client_id.as_deref(), client_type)
+                && !seen_ids.contains(&td.id)
+                && !should_preserve_tracking(td.state)
+            {
                 td.is_trackable = false;
             }
         }
@@ -864,6 +907,41 @@ pub enum TrackedDownloadCommand {
     },
 }
 
+#[derive(Clone, Debug)]
+pub enum TrackedDownloadSnapshotScope {
+    AuthoritativeForClient {
+        client_id: Option<String>,
+        client_type: String,
+    },
+    Delta,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrackedDownloadSnapshotUpdate {
+    pub scope: TrackedDownloadSnapshotScope,
+    pub items: Vec<DownloadQueueItem>,
+    pub completed_downloads: Vec<CompletedDownload>,
+    pub actor_id: Option<String>,
+}
+
+/// Handle for feeding download-client observations into the tracked runtime.
+#[derive(Clone)]
+pub struct TrackedDownloadSnapshotIngestHandle {
+    tx: mpsc::Sender<TrackedDownloadSnapshotUpdate>,
+}
+
+impl TrackedDownloadSnapshotIngestHandle {
+    pub fn new(tx: mpsc::Sender<TrackedDownloadSnapshotUpdate>) -> Self {
+        Self { tx }
+    }
+
+    pub async fn publish(&self, update: TrackedDownloadSnapshotUpdate) -> AppResult<()> {
+        self.tx.send(update).await.map_err(|_| {
+            crate::AppError::Repository("tracked download snapshot ingest unavailable".into())
+        })
+    }
+}
+
 /// Handle for sending commands to the tracked downloads poller.
 #[derive(Clone)]
 pub struct TrackedDownloadHandle {
@@ -978,6 +1056,45 @@ impl TrackedDownloadHandle {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+pub(crate) fn tracked_client_type_is_excluded(
+    client_type: &str,
+    excluded_client_types: &[&str],
+) -> bool {
+    excluded_client_types
+        .iter()
+        .any(|excluded| excluded.trim().eq_ignore_ascii_case(client_type.trim()))
+}
+
+fn should_preserve_tracking(state: TrackedDownloadState) -> bool {
+    matches!(
+        state,
+        TrackedDownloadState::ImportPending
+            | TrackedDownloadState::Importing
+            | TrackedDownloadState::ImportBlocked
+            | TrackedDownloadState::FailedPending
+    )
+}
+
+fn tracked_matches_snapshot_scope(
+    tracked: &TrackedDownload,
+    client_id: Option<&str>,
+    client_type: &str,
+) -> bool {
+    if !tracked
+        .client_type
+        .trim()
+        .eq_ignore_ascii_case(client_type.trim())
+    {
+        return false;
+    }
+
+    let Some(client_id) = client_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+
+    tracked.client_id.trim() == client_id
+}
 
 fn tracked_download_can_be_evicted_for_cache_pressure(tracked: &TrackedDownload) -> bool {
     if !tracked.is_trackable {
@@ -1814,6 +1931,7 @@ mod tests {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
+            _: Option<String>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -1997,6 +2115,7 @@ mod tests {
             _: Option<String>,
             _: Option<MediaFacet>,
             _: Option<Vec<String>>,
+            _: Option<String>,
         ) -> AppResult<Title> {
             Err(AppError::Repository("not needed in test".into()))
         }
@@ -2194,6 +2313,7 @@ mod tests {
             match_type: TitleMatchType::Unmatched,
             is_trackable: true,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,
@@ -2529,6 +2649,7 @@ mod tests {
             id: Id::new().0,
             name: name.to_string(),
             library_id: scryer_domain::default_library_id_for_facet(&facet),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             facet,
             monitored: true,
             tags: vec![],
@@ -3236,6 +3357,7 @@ mod tests {
                     match_type: TitleMatchType::Unmatched,
                     is_trackable: true,
                     import_attempted: false,
+                    waiting_for_completed_history: false,
                     path_missing_since: None,
                     no_video_import_retry: None,
                     skip_reacquire_on_failure: false,
@@ -3265,6 +3387,59 @@ mod tests {
                 .find("client-1:failed")
                 .is_some_and(|td| td.is_trackable)
         );
+    }
+
+    #[test]
+    fn tracked_client_type_is_excluded_trims_and_ignores_case() {
+        assert!(tracked_client_type_is_excluded("weaver", &[" Weaver "]));
+        assert!(tracked_client_type_is_excluded(" WEAVER ", &["weaver"]));
+        assert!(!tracked_client_type_is_excluded("nzbget", &[" weaver "]));
+    }
+
+    #[test]
+    fn update_trackable_excluding_client_types_preserves_excluded_realtime_clients() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut weaver = build_tracked_download("weaver-active");
+        weaver.client_type = "weaver".to_string();
+        weaver.client_item.client_type = "weaver".to_string();
+        let weaver_id = weaver.id.clone();
+        let nzb = build_tracked_download("nzbget-active");
+        let nzb_id = nzb.id.clone();
+        tracker.cache.insert(weaver_id.clone(), weaver);
+        tracker.cache.insert(nzb_id.clone(), nzb);
+
+        tracker.update_trackable_excluding_client_types(&HashSet::new(), &["weaver"]);
+
+        assert!(tracker.find(&weaver_id).is_some_and(|td| td.is_trackable));
+        if let Some(td) = tracker.find(&nzb_id) {
+            assert!(!td.is_trackable);
+        }
+
+        tracker.update_trackable_excluding_client_types(&HashSet::new(), &[]);
+
+        if let Some(td) = tracker.find(&weaver_id) {
+            assert!(!td.is_trackable);
+        }
+    }
+
+    #[test]
+    fn update_trackable_excluding_client_types_trims_excluded_client_type() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut weaver = build_tracked_download("weaver-active");
+        weaver.client_type = " Weaver ".to_string();
+        weaver.client_item.client_type = " Weaver ".to_string();
+        let weaver_id = weaver.id.clone();
+        let nzb = build_tracked_download("nzbget-active");
+        let nzb_id = nzb.id.clone();
+        tracker.cache.insert(weaver_id.clone(), weaver);
+        tracker.cache.insert(nzb_id.clone(), nzb);
+
+        tracker.update_trackable_excluding_client_types(&HashSet::new(), &[" weaver "]);
+
+        assert!(tracker.find(&weaver_id).is_some_and(|td| td.is_trackable));
+        if let Some(td) = tracker.find(&nzb_id) {
+            assert!(!td.is_trackable);
+        }
     }
 
     #[test]
@@ -3345,6 +3520,7 @@ mod tests {
             match_type: TitleMatchType::Submission,
             is_trackable: true,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,
@@ -3379,6 +3555,7 @@ mod tests {
             match_type: TitleMatchType::TitleParse,
             is_trackable: true,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,
@@ -3530,6 +3707,7 @@ mod tests {
             match_type: TitleMatchType::Submission,
             is_trackable: true,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,
@@ -3732,6 +3910,7 @@ mod tests {
             match_type: TitleMatchType::Submission,
             is_trackable: true,
             import_attempted: false,
+            waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
             skip_reacquire_on_failure: false,

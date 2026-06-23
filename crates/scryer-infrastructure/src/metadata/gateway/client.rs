@@ -74,10 +74,24 @@ fn sha256_hex(input: &str) -> String {
         })
 }
 
+fn blake3_digest(input: &str) -> String {
+    format!("blake3:{}", blake3::hash(input.as_bytes()).to_hex())
+}
+
+fn apq_cache_key(operation_name: &str, hash: &str, variables_str: &str) -> String {
+    format!("{operation_name}:{hash}:{}", blake3_digest(variables_str))
+}
+
 /// Precompute the SHA-256 hash for a static query string (APQ registration).
 fn apq_hash(query: &str) -> String {
     sha256_hex(query)
 }
+
+const OP_SEARCH_TVDB: &str = "SearchTvdb";
+const OP_SEARCH_TVDB_RICH: &str = "SearchTvdbRich";
+const OP_SEARCH_TVDB_MULTI: &str = "SearchTvdbMulti";
+const OP_GET_MOVIE: &str = "GetMovie";
+const OP_GET_SERIES: &str = "GetSeries";
 
 /// Configuration for SMG enrollment and application-layer instance auth.
 pub struct SmgEnrollmentConfig {
@@ -125,6 +139,17 @@ async fn apply_instance_auth_headers(
     url: &reqwest::Url,
     body_bytes: &[u8],
 ) -> AppResult<reqwest::RequestBuilder> {
+    apply_instance_auth_headers_with_nonce(req, auth, method, url, body_bytes, None).await
+}
+
+async fn apply_instance_auth_headers_with_nonce(
+    req: reqwest::RequestBuilder,
+    auth: &InstanceAuth,
+    method: &str,
+    url: &reqwest::Url,
+    body_bytes: &[u8],
+    nonce_override: Option<String>,
+) -> AppResult<reqwest::RequestBuilder> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| AppError::Repository(format!("system clock before UNIX_EPOCH: {e}")))?
@@ -136,12 +161,21 @@ async fn apply_instance_auth_headers(
             let body_hash = sha256_hex_bytes(body_bytes);
             let host = canonical_request_host(url)?;
             let path_and_query = canonical_request_path_and_query(url);
+            let auth_version = smg_enrollment::configured_pq_auth_version();
+            let nonce = Some(match nonce_override {
+                Some(nonce) => nonce,
+                None => smg_enrollment::generate_pq_auth_nonce().map_err(|e| {
+                    AppError::Repository(format!("failed to generate PQ auth nonce: {e}"))
+                })?,
+            });
             let signature = smg_enrollment::sign_pq_request(
                 seed_b64,
+                auth_version,
                 method,
                 &host,
                 &path_and_query,
                 timestamp,
+                nonce.as_deref(),
                 &body_hash,
             )
             .await
@@ -149,26 +183,37 @@ async fn apply_instance_auth_headers(
             debug!(
                 timestamp,
                 key_id = %key_id,
+                auth_version = auth_version.header_value(),
+                has_nonce = nonce.is_some(),
                 sig_len = signature.len(),
                 body_hash,
                 "attaching PQ X-Scryer-* instance auth headers"
             );
-            Ok(req
-                .header("X-Scryer-Auth-Version", "pqsig-v1")
+            let mut req = req
+                .header("X-Scryer-Auth-Version", auth_version.header_value())
                 .header("X-Scryer-Key-Id", &**key_id)
                 .header("X-Scryer-Timestamp", timestamp.to_string())
-                .header("X-Scryer-Signature", signature))
+                .header("X-Scryer-Signature", signature);
+            if let Some(nonce) = nonce {
+                req = req.header("X-Scryer-Nonce", nonce);
+            }
+            Ok(req)
         }
     }
 }
 
 fn canonical_request_host(url: &reqwest::Url) -> AppResult<String> {
     let host = url
-        .host_str()
+        .host()
         .ok_or_else(|| AppError::Repository("metadata gateway URL missing host".into()))?;
+    let host = match host {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(addr) => addr.to_string(),
+        url::Host::Ipv6(addr) => format!("[{addr}]"),
+    };
     Ok(match url.port() {
         Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
+        None => host,
     })
 }
 
@@ -926,6 +971,7 @@ impl MetadataGatewayClient {
     /// 3. Subsequent GETs for the same hash will hit Cloudflare edge cache.
     async fn execute_graphql_apq<T: serde::de::DeserializeOwned>(
         &self,
+        operation_name: &'static str,
         query: &str,
         hash: &str,
         variables: serde_json::Value,
@@ -942,7 +988,7 @@ impl MetadataGatewayClient {
         let extensions_str = serde_json::to_string(&extensions)
             .map_err(|e| AppError::Repository(format!("failed to serialize extensions: {e}")))?;
 
-        let cache_key = format!("{hash}:{variables_str}");
+        let cache_key = apq_cache_key(operation_name, hash, &variables_str);
 
         // Check for a cached ETag to send If-None-Match
         let cached_etag = self
@@ -952,7 +998,7 @@ impl MetadataGatewayClient {
             .get(&cache_key)
             .map(|e| e.etag.clone());
 
-        debug!(endpoint = %self.endpoint, hash, has_etag = cached_etag.is_some(), "APQ GET request");
+        debug!(endpoint = %self.endpoint, operation_name, hash, has_etag = cached_etag.is_some(), "APQ GET request");
 
         let (client, auth) = self.get_http_client().await?;
 
@@ -960,6 +1006,7 @@ impl MetadataGatewayClient {
         let mut url = reqwest::Url::parse(&self.endpoint)
             .map_err(|e| AppError::Repository(format!("invalid endpoint URL: {e}")))?;
         url.query_pairs_mut()
+            .append_pair("operationName", operation_name)
             .append_pair("extensions", &extensions_str)
             .append_pair("variables", &variables_str);
 
@@ -1035,7 +1082,12 @@ impl MetadataGatewayClient {
                     if is_not_found {
                         debug!(hash, "APQ cache miss, registering via POST");
                         return self
-                            .execute_graphql_apq_register(query, &extensions, &variables)
+                            .execute_graphql_apq_register(
+                                operation_name,
+                                query,
+                                &extensions,
+                                &variables,
+                            )
                             .await;
                     }
                     let msg = errors
@@ -1061,7 +1113,7 @@ impl MetadataGatewayClient {
                 // Cert rejection — invalidate before falling through to POST retry
                 // (execute_graphql will handle the actual re-enrollment + retry)
                 self.invalidate_enrollment().await;
-                self.execute_graphql_apq_register(query, &extensions, &variables)
+                self.execute_graphql_apq_register(operation_name, query, &extensions, &variables)
                     .await
             }
             Ok(resp) => {
@@ -1092,11 +1144,13 @@ impl MetadataGatewayClient {
     /// POST with full query + extensions to register the hash, then return the result.
     async fn execute_graphql_apq_register<T: serde::de::DeserializeOwned>(
         &self,
+        operation_name: &'static str,
         query: &str,
         extensions: &serde_json::Value,
         variables: &serde_json::Value,
     ) -> AppResult<T> {
         let payload = json!({
+            "operationName": operation_name,
             "query": query,
             "variables": variables,
             "extensions": extensions,
@@ -1937,19 +1991,425 @@ fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language:
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtworkItem, MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
-        build_bulk_mixed_query, build_search_tvdb_batch_query, compatibility_poll_phase,
+        ArtworkItem, InstanceAuth, MetadataGatewayClient, MetadataSearchQuery, MtlsState,
+        OP_SEARCH_TVDB, SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
+        apply_instance_auth_headers_with_nonce, apq_cache_key, apq_hash,
+        build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
+        canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
         enrollment_retry_delay, is_version_incompatible_response,
         next_version_compatibility_poll_delay_at, normalize_artwork_url,
         normalize_optional_artwork_url, parse_version_compatibility_incompatible,
-        parse_version_compatibility_success, pick_artwork_url, validate_search_tvdb_batch_echo,
+        parse_version_compatibility_success, pick_artwork_url, sha256_hex,
+        validate_search_tvdb_batch_echo,
     };
+    use base64::Engine as _;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
 
     use crate::{
         graphql::metadata_gateway as graphql_docs,
         smg_enrollment::{EnrollmentError, RateLimited},
     };
+    use wiremock::matchers::{body_string_contains, method, path, query_param};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    fn search_tvdb_payload() -> serde_json::Value {
+        json!({
+            "data": {
+                "searchTvdb": {
+                    "results": []
+                }
+            }
+        })
+    }
+
+    fn persisted_query_not_found_payload() -> serde_json::Value {
+        json!({
+            "errors": [
+                {
+                    "message": "PersistedQueryNotFound"
+                }
+            ]
+        })
+    }
+
+    fn unsigned_gateway_client(endpoint: String) -> MetadataGatewayClient {
+        MetadataGatewayClient::new_without_enrollment_store(
+            endpoint,
+            SmgEnrollmentConfig {
+                registration_secret: None,
+            },
+        )
+    }
+
+    async fn signed_gateway_client(endpoint: String) -> MetadataGatewayClient {
+        let client = MetadataGatewayClient::new_without_enrollment_store(
+            endpoint,
+            SmgEnrollmentConfig {
+                registration_secret: Some("fixture-secret".to_string()),
+            },
+        );
+        let seed_b64 = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        *client.mtls_state.write().await = MtlsState::Enrolled {
+            client: scryer_outbound_http::smg_reqwest_client(),
+            auth: InstanceAuth::Pq {
+                instance_id: Arc::new("fixture-instance".to_string()),
+                seed_b64: Arc::new(seed_b64),
+                key_id: Arc::new("fixture-key".to_string()),
+                enrollment_generation: Some(1),
+            },
+        };
+        client
+    }
+
+    fn test_instance_auth() -> InstanceAuth {
+        InstanceAuth::Pq {
+            instance_id: Arc::new("fixture-instance".to_string()),
+            seed_b64: Arc::new(base64::engine::general_purpose::STANDARD.encode([7u8; 32])),
+            key_id: Arc::new("fixture-key".to_string()),
+            enrollment_generation: Some(1),
+        }
+    }
+
+    fn header_value<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+        request
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    }
+
+    fn assert_v2_signed_request(request: &Request) {
+        assert_eq!(
+            header_value(request, "x-scryer-auth-version"),
+            Some("pqsig-v2")
+        );
+        assert_eq!(
+            header_value(request, "x-scryer-key-id"),
+            Some("fixture-key")
+        );
+        assert!(header_value(request, "x-scryer-timestamp").is_some());
+        assert!(header_value(request, "x-scryer-signature").is_some());
+        assert!(header_value(request, "x-scryer-nonce").is_some());
+    }
+
+    #[tokio::test]
+    async fn apq_get_includes_operation_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_SEARCH_TVDB))
+            .respond_with(ResponseTemplate::new(200).set_body_json(search_tvdb_payload()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let data: SearchTvdbResponse = client
+            .execute_graphql_apq(
+                OP_SEARCH_TVDB,
+                graphql_docs::SEARCH_TVDB_QUERY,
+                &client.search_hash,
+                json!({
+                    "query": "Fixture Query",
+                    "type": "movie",
+                    "limit": 10,
+                    "year": null,
+                }),
+            )
+            .await
+            .expect("APQ GET should succeed");
+
+        assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apq_registration_post_includes_operation_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_SEARCH_TVDB))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(persisted_query_not_found_payload()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("\"operationName\":\"SearchTvdb\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(search_tvdb_payload()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let data: SearchTvdbResponse = client
+            .execute_graphql_apq(
+                OP_SEARCH_TVDB,
+                graphql_docs::SEARCH_TVDB_QUERY,
+                &client.search_hash,
+                json!({
+                    "query": "Fixture Query",
+                    "type": "movie",
+                    "limit": 10,
+                    "year": null,
+                }),
+            )
+            .await
+            .expect("APQ registration should succeed");
+
+        assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[test]
+    fn apq_cache_key_uses_blake3_variables_digest() {
+        let variables_str = r#"{"query":"Fixture Query","type":"movie","limit":10,"year":null}"#;
+        let variables_digest = blake3::hash(variables_str.as_bytes()).to_hex().to_string();
+
+        let key = apq_cache_key(OP_SEARCH_TVDB, "query-hash", variables_str);
+
+        assert_eq!(
+            key,
+            format!("{OP_SEARCH_TVDB}:query-hash:blake3:{variables_digest}")
+        );
+        assert!(!key.contains(variables_str));
+    }
+
+    #[test]
+    fn apq_hash_uses_query_string_only() {
+        let query = graphql_docs::SEARCH_TVDB_QUERY;
+
+        assert_eq!(apq_hash(query), sha256_hex(query));
+        assert_ne!(
+            apq_hash(query),
+            sha256_hex(&format!("{OP_SEARCH_TVDB}:{query}"))
+        );
+        assert_ne!(
+            apq_hash(query),
+            sha256_hex(&format!("{query}:{{\"query\":\"Fixture Query\"}}"))
+        );
+    }
+
+    #[test]
+    fn apq_get_request_target_preserves_encoded_query() {
+        let mut url = reqwest::Url::parse("https://smg.example/graphql").expect("url");
+        url.query_pairs_mut()
+            .append_pair("operationName", OP_SEARCH_TVDB)
+            .append_pair(
+                "extensions",
+                "{\"persistedQuery\":{\"sha256Hash\":\"abc\"}}",
+            )
+            .append_pair("variables", "{\"query\":\"Fixture Query\"}");
+
+        let target = canonical_request_path_and_query(&url);
+
+        assert!(target.starts_with("/graphql?"));
+        assert!(target.contains("operationName=SearchTvdb"));
+        assert!(target.contains("extensions=%7B%22persistedQuery%22%3A"));
+        assert!(target.contains("variables=%7B%22query%22%3A%22Fixture+Query%22%7D"));
+    }
+
+    #[test]
+    fn canonical_request_host_includes_final_request_port() {
+        let url = reqwest::Url::parse("http://127.0.0.1:43210/graphql").expect("url");
+        let ipv6_url = reqwest::Url::parse("http://[::1]:43210/graphql").expect("ipv6 url");
+
+        assert_eq!(canonical_request_host(&url).unwrap(), "127.0.0.1:43210");
+        assert_eq!(canonical_request_host(&ipv6_url).unwrap(), "[::1]:43210");
+    }
+
+    #[tokio::test]
+    async fn v2_signed_graphql_post_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(|request: &Request| {
+                assert_v2_signed_request(request);
+                ResponseTemplate::new(200).set_body_json(search_tvdb_payload())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = signed_gateway_client(format!("{}/graphql", server.uri())).await;
+
+        let data: SearchTvdbResponse = client
+            .execute_graphql(json!({
+                "query": graphql_docs::SEARCH_TVDB_QUERY,
+                "variables": {
+                    "query": "Fixture Query",
+                    "type": "movie",
+                    "limit": 10,
+                    "year": null,
+                },
+            }))
+            .await
+            .expect("signed GraphQL POST should succeed");
+
+        assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn v2_signed_apq_get_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_SEARCH_TVDB))
+            .respond_with(|request: &Request| {
+                assert_v2_signed_request(request);
+                ResponseTemplate::new(200).set_body_json(search_tvdb_payload())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = signed_gateway_client(format!("{}/graphql", server.uri())).await;
+
+        let data: SearchTvdbResponse = client
+            .execute_graphql_apq(
+                OP_SEARCH_TVDB,
+                graphql_docs::SEARCH_TVDB_QUERY,
+                &client.search_hash,
+                json!({
+                    "query": "Fixture Query",
+                    "type": "movie",
+                    "limit": 10,
+                    "year": null,
+                }),
+            )
+            .await
+            .expect("signed APQ GET should succeed");
+
+        assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn v2_signed_version_compatibility_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/version-compatibility"))
+            .respond_with(|request: &Request| {
+                assert_v2_signed_request(request);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "compatibility": null,
+                    "update": null,
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = test_instance_auth();
+        let http = scryer_outbound_http::smg_reqwest_client();
+        let url = reqwest::Url::parse(&format!("{}/api/version-compatibility", server.uri()))
+            .expect("version compatibility URL");
+        let body_bytes =
+            serde_json::to_vec(&json!({ "version": "fixture" })).expect("compatibility body");
+        let response = apply_instance_auth_headers_with_nonce(
+            http.post(url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body_bytes.clone()),
+            &auth,
+            reqwest::Method::POST.as_str(),
+            &url,
+            &body_bytes,
+            None,
+        )
+        .await
+        .expect("signed version compatibility request")
+        .send()
+        .await
+        .expect("version compatibility response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn reused_v2_nonce_is_rejected_by_mock() {
+        let server = MockServer::start().await;
+        let seen = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
+        let seen_for_mock = seen.clone();
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .respond_with(move |request: &Request| {
+                assert_v2_signed_request(request);
+                let key_id = header_value(request, "x-scryer-key-id").unwrap_or_default();
+                let nonce = header_value(request, "x-scryer-nonce").unwrap_or_default();
+                let key = format!("{key_id}:{nonce}");
+                let mut seen = seen_for_mock.lock().expect("seen nonce lock");
+                if seen.insert(key) {
+                    ResponseTemplate::new(200).set_body_json(search_tvdb_payload())
+                } else {
+                    ResponseTemplate::new(401).set_body_string("reused nonce")
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let auth = test_instance_auth();
+        let client = scryer_outbound_http::smg_reqwest_client();
+        let url = reqwest::Url::parse(&format!("{}/graphql", server.uri())).expect("url");
+
+        let first = apply_instance_auth_headers_with_nonce(
+            client.get(url.clone()),
+            &auth,
+            reqwest::Method::GET.as_str(),
+            &url,
+            &[],
+            Some("fixed-nonce".to_string()),
+        )
+        .await
+        .expect("first signed request")
+        .send()
+        .await
+        .expect("first response");
+        let second = apply_instance_auth_headers_with_nonce(
+            client.get(url.clone()),
+            &auth,
+            reqwest::Method::GET.as_str(),
+            &url,
+            &[],
+            Some("fixed-nonce".to_string()),
+        )
+        .await
+        .expect("second signed request")
+        .send()
+        .await
+        .expect("second response");
+
+        assert_eq!(first.status(), reqwest::StatusCode::OK);
+        assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn missing_v2_nonce_is_rejected_by_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .respond_with(|request: &Request| {
+                if header_value(request, "x-scryer-auth-version") == Some("pqsig-v2")
+                    && header_value(request, "x-scryer-nonce").is_none()
+                {
+                    ResponseTemplate::new(401).set_body_string("missing nonce")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(search_tvdb_payload())
+                }
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = scryer_outbound_http::smg_reqwest_client()
+            .get(format!("{}/graphql", server.uri()))
+            .header("X-Scryer-Auth-Version", "pqsig-v2")
+            .header("X-Scryer-Key-Id", "fixture-key")
+            .header("X-Scryer-Timestamp", "123")
+            .header("X-Scryer-Signature", "fixture-signature")
+            .send()
+            .await
+            .expect("mock response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
 
     #[test]
     fn bulk_series_query_requests_tagged_aliases() {
@@ -2768,6 +3228,7 @@ impl MetadataGateway for MetadataGatewayClient {
 
         let data: SearchTvdbResponse = self
             .execute_graphql_apq(
+                OP_SEARCH_TVDB,
                 graphql_docs::SEARCH_TVDB_QUERY,
                 &self.search_hash,
                 variables,
@@ -2882,6 +3343,7 @@ impl MetadataGateway for MetadataGatewayClient {
 
         let data: SearchTvdbRichResponse = self
             .execute_graphql_apq(
+                OP_SEARCH_TVDB_RICH,
                 graphql_docs::SEARCH_TVDB_RICH_QUERY,
                 &self.search_rich_hash,
                 variables,
@@ -2924,6 +3386,7 @@ impl MetadataGateway for MetadataGatewayClient {
 
         let data: SearchTvdbMultiResponse = self
             .execute_graphql_apq(
+                OP_SEARCH_TVDB_MULTI,
                 graphql_docs::SEARCH_TVDB_MULTI_QUERY,
                 &self.search_multi_hash,
                 variables,
@@ -2965,7 +3428,12 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: MovieResponse = self
-            .execute_graphql_apq(graphql_docs::GET_MOVIE_QUERY, &self.movie_hash, variables)
+            .execute_graphql_apq(
+                OP_GET_MOVIE,
+                graphql_docs::GET_MOVIE_QUERY,
+                &self.movie_hash,
+                variables,
+            )
             .await?;
         let m = data.movie.movie;
 
@@ -2997,7 +3465,12 @@ impl MetadataGateway for MetadataGatewayClient {
         });
 
         let data: SeriesResponse = self
-            .execute_graphql_apq(graphql_docs::GET_SERIES_QUERY, &self.series_hash, variables)
+            .execute_graphql_apq(
+                OP_GET_SERIES,
+                graphql_docs::GET_SERIES_QUERY,
+                &self.series_hash,
+                variables,
+            )
             .await?;
         let s = data.series.series;
 

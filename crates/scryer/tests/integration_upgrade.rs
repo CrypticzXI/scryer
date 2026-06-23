@@ -2,7 +2,10 @@
 
 mod common;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use common::TestContext;
@@ -16,14 +19,14 @@ use scryer_application::testing::{
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, AppError, AppResult, CutoffUnmetQualitySummary,
-    EpisodeScopedMediaFile, FileImporter, InsertMediaFileInput, MediaFileAnalysis,
-    MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleQualitySummary, TitleRepository,
+    EpisodeScopedMediaFile, FileImporter, InsertMediaFileInput, LibraryRootDraft,
+    MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
 };
 use scryer_domain::{
-    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventPayload, DomainEventType,
-    ImportMode, LibraryPermissionMask, MediaFacet, MediaFileDeletedReason, Title, User,
-    UserAuthorization,
+    AppPermission, AppPermissionMask, DomainEvent, DomainEventActorKind, DomainEventFilter,
+    DomainEventPayload, DomainEventType, ImportMode, LibraryPermissionMask, MediaFacet,
+    MediaFileDeletedReason, Title, User, UserAuthorization,
 };
 use scryer_infrastructure::{FsFileImporter, MediaFileStore};
 
@@ -56,6 +59,24 @@ fn app_with_failing_media_path_update(
             .with_media_files(Arc::new(FailingPathUpdateMediaFileRepo {
                 inner: ctx.media_files.clone(),
                 fail_path,
+                rollback_occupant: None,
+            }))
+            .with_file_importer(Arc::new(FsFileImporter))
+    })
+}
+
+fn app_with_failing_media_path_update_and_rollback_occupant(
+    ctx: &TestContext,
+    fail_path: String,
+    occupant_path: PathBuf,
+    occupant_bytes: Vec<u8>,
+) -> scryer_application::AppUseCase {
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_media_files(Arc::new(FailingPathUpdateMediaFileRepo {
+                inner: ctx.media_files.clone(),
+                fail_path,
+                rollback_occupant: Some((occupant_path, occupant_bytes)),
             }))
             .with_file_importer(Arc::new(FsFileImporter))
     })
@@ -100,6 +121,7 @@ impl FileImporter for CleanupFailingFileImporter {
 struct FailingPathUpdateMediaFileRepo {
     inner: MediaFileStore,
     fail_path: String,
+    rollback_occupant: Option<(PathBuf, Vec<u8>)>,
 }
 
 #[async_trait]
@@ -232,6 +254,15 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         replacement_file_path: &str,
     ) -> AppResult<()> {
         if replacement_file_path == self.fail_path {
+            if let Some((path, bytes)) = &self.rollback_occupant {
+                std::fs::write(path, bytes).map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to write injected rollback occupant {}: {}",
+                        path.display(),
+                        error
+                    ))
+                })?;
+            }
             return Err(AppError::Repository(format!(
                 "injected media file replacement failure for {old_file_id} -> {replacement_file_id} at {replacement_file_path}"
             )));
@@ -293,20 +324,108 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         metadata_fetched_at: None,
         min_availability: None,
         digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         folder_path: None,
     };
     ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 
-fn make_recycle_config(base: &std::path::Path) -> RecycleBinConfig {
+async fn seed_title_for_library(
+    ctx: &TestContext,
+    id: &str,
+    name: &str,
+    library_id: &str,
+    root_path: &Path,
+) -> Title {
+    let title = Title {
+        id: id.to_string(),
+        name: name.to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library_id.to_string(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            root_path.to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+    title
+}
+
+fn make_recycle_config(base: &std::path::Path, source_root: &std::path::Path) -> RecycleBinConfig {
+    make_recycle_config_with_roots(base, &[source_root])
+}
+
+fn make_recycle_config_with_roots(
+    base: &std::path::Path,
+    source_roots: &[&std::path::Path],
+) -> RecycleBinConfig {
     RecycleBinConfig {
         enabled: true,
         base_path: base.to_path_buf(),
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: source_roots.iter().map(|root| root.to_path_buf()).collect(),
     }
+}
+
+#[cfg(unix)]
+fn force_encoded_stored_path(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut encoded = String::from("scryer-path-v1:u:");
+    for &byte in path.as_os_str().as_bytes() {
+        if (0x20..=0x7e).contains(&byte) && byte != b'%' {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+#[cfg(windows)]
+fn force_encoded_stored_path(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded = String::from("scryer-path-v1:w:");
+    for unit in path.as_os_str().encode_wide() {
+        if (0x20..=0x7e).contains(&unit) && unit != u16::from(b'%') {
+            encoded.push(char::from_u32(unit as u32).unwrap_or_default());
+        } else {
+            encoded.push_str(&format!("%u{unit:04X}"));
+        }
+    }
+    encoded
 }
 
 /// Insert a media file record in the DB and create the physical file.
@@ -423,6 +542,20 @@ fn test_actor() -> User {
     }
 }
 
+fn app_permission_actor(
+    username: &str,
+    permissions: impl IntoIterator<Item = AppPermission>,
+) -> User {
+    let mut user = User::new_admin(username);
+    user.authorization = UserAuthorization {
+        app: AppPermissionMask::from_permissions(permissions),
+        actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+        loaded: true,
+        ..Default::default()
+    };
+    user
+}
+
 // ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
@@ -454,7 +587,7 @@ async fn upgrade_replaces_old_file_with_new() {
     let existing = seed_media_file(&ctx, "title-1", &old_path, 22, 400).await;
 
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let outcome = execute_upgrade_for_test(
         &app,
@@ -557,6 +690,85 @@ async fn upgrade_replaces_old_file_with_new() {
 }
 
 #[tokio::test]
+async fn upgrade_after_root_change_recycles_old_file_from_old_root() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-root-change-upgrade").await;
+    let actor = test_actor();
+
+    let old_root = tempfile::tempdir().expect("old media root");
+    let new_root = tempfile::tempdir().expect("new media root");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = old_root.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old root video").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new root replacement video").expect("write new");
+    let new_dest = new_root.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, &title.id, &old_path, 14, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
+    let recycle_config =
+        make_recycle_config_with_roots(recycle_dir.path(), &[old_root.path(), new_root.path()]);
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(new_root.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+    )
+    .await
+    .expect("upgrade should succeed with split old and replacement roots");
+
+    let UpgradeResult::Upgraded(outcome) = result else {
+        panic!("expected upgrade to succeed");
+    };
+    assert!(outcome.recycle_entry_committed);
+    assert!(new_dest.exists(), "replacement should land on the new root");
+    assert!(
+        !old_path.exists(),
+        "old file should be recycled from the old root"
+    );
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(recycle_entries.len(), 1);
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(
+        manifest.media_root.as_deref(),
+        Some(old_root.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(new_dest.to_string_lossy().as_ref())
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, new_dest.to_string_lossy());
+}
+
+#[tokio::test]
 async fn upgrade_audit_events_survive_move_source_cleanup_failure() {
     let ctx = TestContext::new().await;
     let app = app_with_cleanup_failing_importer(&ctx);
@@ -577,7 +789,7 @@ async fn upgrade_audit_events_survive_move_source_cleanup_failure() {
     let new_dest = media_dir.path().join("Movie.1080p.mkv");
     let existing = seed_media_file(&ctx, &title.id, &old_path, 22, 400).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL.x264");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test_with_import_mode(
         &app,
@@ -633,7 +845,7 @@ async fn upgrade_restores_old_file_on_import_failure() {
 
     let existing = seed_media_file(&ctx, "title-2", &old_path, 17, 400).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test(
         &app,
@@ -712,6 +924,7 @@ async fn upgrade_with_disabled_recycle_bin() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -745,6 +958,143 @@ async fn upgrade_with_disabled_recycle_bin() {
 }
 
 #[tokio::test]
+async fn upgrade_with_unknown_source_roots_keeps_old_record() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-rootless").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old content").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new content 1080p better").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-rootless", &old_path, 11, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let rootless_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+        source_roots: Vec::new(),
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 600,
+            target_episode_ids: &[],
+            media_root: None,
+            recycle_config: &rootless_config,
+        },
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("rootless recycle config should refuse old-file cleanup"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("no configured media roots"),
+        "unexpected error: {error}"
+    );
+    assert!(old_path.exists(), "old file should remain on disk");
+    let existing_after = ctx
+        .media_files
+        .get_media_file_by_id(&existing.id)
+        .await
+        .expect("lookup existing media file")
+        .expect("existing DB row should remain");
+    assert_eq!(
+        existing_after.file_path,
+        old_path.to_string_lossy().to_string()
+    );
+}
+
+#[tokio::test]
+async fn upgrade_with_out_of_root_old_path_keeps_old_record_before_replacement() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-out-of-root").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let outside_dir = tempfile::tempdir().expect("outside dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = outside_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old content").expect("write old");
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new content 1080p better").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-out-of-root", &old_path, 11, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 600,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &config,
+        },
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("out-of-root old file should refuse old-file cleanup before replacement"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("outside the configured media roots"),
+        "unexpected error: {error}"
+    );
+    assert!(old_path.exists(), "old file should remain on disk");
+    assert!(
+        !new_dest.exists(),
+        "replacement should not be imported after preflight refusal"
+    );
+    let existing_after = ctx
+        .media_files
+        .get_media_file_by_id(&existing.id)
+        .await
+        .expect("lookup existing media file")
+        .expect("existing DB row should remain");
+    assert_eq!(
+        existing_after.file_path,
+        old_path.to_string_lossy().to_string()
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
     let ctx = TestContext::new().await;
     let app = app_with_real_fs(&ctx);
@@ -768,6 +1118,7 @@ async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -837,7 +1188,7 @@ async fn recycle_bin_same_path_upgrade_recycles_original_filename() {
 
     let existing = seed_media_file(&ctx, "title-4a", &old_path, 21, 300).await;
     let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
-    let recycle_config = make_recycle_config(recycle_dir.path());
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
 
     let result = execute_upgrade_for_test(
         &app,
@@ -937,6 +1288,7 @@ async fn disabled_recycle_bin_same_path_path_update_failure_preserves_old_file()
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(
@@ -984,6 +1336,918 @@ async fn disabled_recycle_bin_same_path_path_update_failure_preserves_old_file()
 }
 
 #[tokio::test]
+async fn recycle_upgrade_db_replacement_failure_restores_old_file_from_pending_entry() {
+    let ctx = TestContext::new().await;
+    let title = seed_title(&ctx, "title-4c").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old distinct content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new distinct content").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-4c", &old_path, 20, 300).await;
+    let app = app_with_failing_media_path_update(&ctx, new_dest.to_string_lossy().to_string());
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let recycle_config = make_recycle_config(recycle_dir.path(), media_dir.path());
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "DB replacement failure should abort upgrade"
+    );
+    assert_eq!(
+        std::fs::read(&old_path).expect("old file restored"),
+        b"old distinct content"
+    );
+    assert!(
+        !new_dest.exists(),
+        "replacement file should be rolled back after DB failure"
+    );
+    let recycle_entries = std::fs::read_dir(recycle_dir.path())
+        .expect("read recycle dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect::<Vec<_>>();
+    assert!(
+        recycle_entries.is_empty(),
+        "pending recycle entry should be removed after rollback"
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4c")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, existing.id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn disabled_recycle_distinct_path_rollback_refuses_occupied_original_path() {
+    let ctx = TestContext::new().await;
+    let title = seed_title(&ctx, "title-4d").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old distinct content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new distinct content").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-4d", &old_path, 20, 300).await;
+    let app = app_with_failing_media_path_update_and_rollback_occupant(
+        &ctx,
+        new_dest.to_string_lossy().to_string(),
+        old_path.clone(),
+        b"unexpected rollback occupant".to_vec(),
+    );
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let disabled_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &disabled_config,
+        },
+    )
+    .await;
+    let error = match result {
+        Ok(_) => panic!("occupied rollback destination should fail closed"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error.to_string().contains("destination is occupied"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&old_path).expect("read occupied original path"),
+        b"unexpected rollback occupant"
+    );
+    assert!(
+        !new_dest.exists(),
+        "replacement file should be rolled back after DB failure"
+    );
+    let backups = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-old-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1, "old backup should be preserved");
+    assert_eq!(
+        std::fs::read(backups[0].path()).expect("read preserved backup"),
+        b"old distinct content"
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4d")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, existing.id);
+}
+
+#[tokio::test]
+async fn housekeeping_reconciles_same_path_guard_before_db_swap() {
+    let ctx = TestContext::new().await;
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let catalog_actor = app_permission_actor("catalog", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor =
+        app_permission_actor("housekeeping", [AppPermission::ManageSystemSettings]);
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Recovery Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+
+    let title = Title {
+        id: "title-recovery".to_string(),
+        name: "Recovery Movie".to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library.id.clone(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_dir.path().to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+
+    let final_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&final_path, b"old content").expect("write old final");
+    let old_file = seed_media_file(&ctx, &title.id, &final_path, 11, 300).await;
+
+    let backup_path = media_dir
+        .path()
+        .join(".scryer-upgrade-old-recovery-Movie.mkv");
+    std::fs::rename(&final_path, &backup_path).expect("move old to backup");
+    std::fs::write(&final_path, b"new uncommitted content").expect("write replacement final");
+    let staged_replacement_path = media_dir
+        .path()
+        .join(".scryer-upgrade-replacement-recovery-Movie.mkv");
+    let replacement_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: staged_replacement_path.to_string_lossy().to_string(),
+            size_bytes: 23,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(650),
+            ..Default::default()
+        })
+        .await
+        .expect("insert replacement");
+
+    let guard_dir = media_dir.path().join(".scryer-upgrade-guards");
+    std::fs::create_dir_all(&guard_dir).expect("create guard dir");
+    let guard_path = guard_dir.join(".scryer-upgrade-old-recovery-Movie.mkv.guard.json");
+    let now = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+    std::fs::write(
+        &guard_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "scryer.same-path-upgrade-guard.v1",
+            "phase": "replacement_moved",
+            "title_id": title.id.clone(),
+            "old_file_id": old_file.id.clone(),
+            "old_size_bytes": 11,
+            "replacement_file_id": replacement_id.clone(),
+            "final_path": final_path.to_string_lossy(),
+            "backup_path": backup_path.to_string_lossy(),
+            "staged_replacement_path": staged_replacement_path.to_string_lossy(),
+            "replacement_path": final_path.to_string_lossy(),
+            "media_root": media_dir.path().to_string_lossy(),
+            "created_at": now.clone(),
+            "updated_at": now,
+        }))
+        .unwrap(),
+    )
+    .expect("write guard");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    assert_eq!(
+        std::fs::read(&final_path).expect("restored final"),
+        b"old content"
+    );
+    assert!(!backup_path.exists(), "backup should be restored");
+    assert!(!guard_path.exists(), "guard should be removed");
+    assert!(
+        ctx.media_files
+            .get_media_file_by_id(&replacement_id)
+            .await
+            .expect("load replacement")
+            .is_none(),
+        "uncommitted replacement row should be removed"
+    );
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-recovery")
+        .await
+        .expect("list files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, old_file.id);
+}
+
+#[tokio::test]
+async fn housekeeping_old_moved_recovery_removes_staged_replacement_file() {
+    let ctx = TestContext::new().await;
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let catalog_actor =
+        app_permission_actor("catalog-old-moved", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-old-moved",
+        [AppPermission::ManageSystemSettings],
+    );
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Old Moved Recovery Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+
+    let title = Title {
+        id: "title-old-moved-recovery".to_string(),
+        name: "Old Moved Recovery Movie".to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library.id.clone(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_dir.path().to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+
+    let final_path = media_dir.path().join("OldMoved.mkv");
+    std::fs::write(&final_path, b"old content").expect("write old final");
+    let old_file = seed_media_file(&ctx, &title.id, &final_path, 11, 300).await;
+
+    let backup_path = media_dir
+        .path()
+        .join(".scryer-upgrade-old-old-moved-OldMoved.mkv");
+    std::fs::rename(&final_path, &backup_path).expect("move old to backup");
+    assert!(
+        !final_path.exists(),
+        "final path should be absent in old_moved"
+    );
+
+    let staged_replacement_path = media_dir
+        .path()
+        .join(".scryer-upgrade-replacement-old-moved-OldMoved.mkv");
+    std::fs::write(&staged_replacement_path, b"staged replacement content")
+        .expect("write staged replacement");
+    let replacement_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: staged_replacement_path.to_string_lossy().to_string(),
+            size_bytes: 26,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(650),
+            ..Default::default()
+        })
+        .await
+        .expect("insert replacement");
+
+    let guard_dir = media_dir.path().join(".scryer-upgrade-guards");
+    std::fs::create_dir_all(&guard_dir).expect("create guard dir");
+    let guard_path = guard_dir.join(".scryer-upgrade-old-old-moved-OldMoved.mkv.guard.json");
+    let now = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+    std::fs::write(
+        &guard_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "scryer.same-path-upgrade-guard.v1",
+            "phase": "old_moved",
+            "title_id": title.id.clone(),
+            "old_file_id": old_file.id.clone(),
+            "old_size_bytes": 11,
+            "replacement_file_id": replacement_id.clone(),
+            "final_path": final_path.to_string_lossy(),
+            "backup_path": backup_path.to_string_lossy(),
+            "staged_replacement_path": staged_replacement_path.to_string_lossy(),
+            "replacement_path": final_path.to_string_lossy(),
+            "media_root": media_dir.path().to_string_lossy(),
+            "created_at": now.clone(),
+            "updated_at": now,
+        }))
+        .unwrap(),
+    )
+    .expect("write guard");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    assert_eq!(
+        std::fs::read(&final_path).expect("restored final"),
+        b"old content"
+    );
+    assert!(!backup_path.exists(), "backup should be restored");
+    assert!(!guard_path.exists(), "guard should be removed");
+    assert!(
+        !staged_replacement_path.exists(),
+        "staged replacement should be cleaned up"
+    );
+    assert!(
+        ctx.media_files
+            .get_media_file_by_id(&replacement_id)
+            .await
+            .expect("load replacement")
+            .is_none(),
+        "uncommitted replacement row should be removed"
+    );
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-old-moved-recovery")
+        .await
+        .expect("list files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, old_file.id);
+}
+
+#[tokio::test]
+async fn housekeeping_skips_recent_same_path_guard() {
+    let ctx = TestContext::new().await;
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let catalog_actor = app_permission_actor("catalog", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor =
+        app_permission_actor("housekeeping-recent", [AppPermission::ManageSystemSettings]);
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Recent Guard Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+
+    let title = Title {
+        id: "title-recent-recovery".to_string(),
+        name: "Recent Recovery Movie".to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library.id.clone(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_dir.path().to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+
+    let final_path = media_dir.path().join("Recent.mkv");
+    std::fs::write(&final_path, b"old content").expect("write old final");
+    let old_file = seed_media_file(&ctx, &title.id, &final_path, 11, 300).await;
+
+    let backup_path = media_dir
+        .path()
+        .join(".scryer-upgrade-old-recent-Recent.mkv");
+    std::fs::rename(&final_path, &backup_path).expect("move old to backup");
+    std::fs::write(&final_path, b"new uncommitted content").expect("write replacement final");
+    let staged_replacement_path = media_dir
+        .path()
+        .join(".scryer-upgrade-replacement-recent-Recent.mkv");
+    let replacement_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: staged_replacement_path.to_string_lossy().to_string(),
+            size_bytes: 23,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(650),
+            ..Default::default()
+        })
+        .await
+        .expect("insert replacement");
+
+    let guard_dir = media_dir.path().join(".scryer-upgrade-guards");
+    std::fs::create_dir_all(&guard_dir).expect("create guard dir");
+    let guard_path = guard_dir.join(".scryer-upgrade-old-recent-Recent.mkv.guard.json");
+    let now = chrono::Utc::now().to_rfc3339();
+    std::fs::write(
+        &guard_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "scryer.same-path-upgrade-guard.v1",
+            "phase": "replacement_moved",
+            "title_id": title.id.clone(),
+            "old_file_id": old_file.id.clone(),
+            "old_size_bytes": 11,
+            "replacement_file_id": replacement_id.clone(),
+            "final_path": final_path.to_string_lossy(),
+            "backup_path": backup_path.to_string_lossy(),
+            "staged_replacement_path": staged_replacement_path.to_string_lossy(),
+            "replacement_path": final_path.to_string_lossy(),
+            "media_root": media_dir.path().to_string_lossy(),
+            "created_at": now.clone(),
+            "updated_at": now,
+        }))
+        .unwrap(),
+    )
+    .expect("write guard");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    assert_eq!(
+        std::fs::read(&final_path).expect("read final"),
+        b"new uncommitted content"
+    );
+    assert!(backup_path.exists(), "recent backup should be left alone");
+    assert!(guard_path.exists(), "recent guard should be left in place");
+    assert!(
+        ctx.media_files
+            .get_media_file_by_id(&replacement_id)
+            .await
+            .expect("load replacement")
+            .is_some(),
+        "recent replacement row should be left alone"
+    );
+}
+
+#[tokio::test]
+async fn housekeeping_disposes_db_swapped_guard_with_encoded_media_root() {
+    let ctx = TestContext::new().await;
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let catalog_actor =
+        app_permission_actor("catalog-encoded", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-encoded",
+        [AppPermission::ManageSystemSettings],
+    );
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Encoded Guard Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+
+    let title = Title {
+        id: "title-encoded-recovery".to_string(),
+        name: "Encoded Recovery Movie".to_string(),
+        facet: MediaFacet::Movie,
+        library_id: library.id.clone(),
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![],
+        created_by: None,
+        created_at: chrono::Utc::now(),
+        year: Some(2024),
+        overview: None,
+        poster_url: None,
+        poster_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: None,
+        slug: None,
+        imdb_id: None,
+        runtime_minutes: None,
+        genres: vec![],
+        content_status: None,
+        language: None,
+        first_aired: None,
+        network: None,
+        studio: None,
+        country: None,
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: None,
+        metadata_fetched_at: None,
+        min_availability: None,
+        digital_release_date: None,
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_dir.path().to_string_lossy().as_ref(),
+        ),
+        folder_path: None,
+    };
+    ctx.titles.create(title.clone()).await.expect("seed title");
+
+    let final_path = media_dir.path().join("Encoded.mkv");
+    std::fs::write(&final_path, b"new committed content").expect("write final replacement");
+    let backup_path = media_dir
+        .path()
+        .join(".scryer-upgrade-old-encoded-Encoded.mkv");
+    std::fs::write(&backup_path, b"old encoded root content").expect("write backup");
+    let staged_replacement_path = media_dir
+        .path()
+        .join(".scryer-upgrade-replacement-encoded-Encoded.mkv");
+    let replacement_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: final_path.to_string_lossy().to_string(),
+            size_bytes: 21,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(650),
+            ..Default::default()
+        })
+        .await
+        .expect("insert replacement");
+
+    let encoded_media_root = force_encoded_stored_path(media_dir.path());
+    let guard_dir = media_dir.path().join(".scryer-upgrade-guards");
+    std::fs::create_dir_all(&guard_dir).expect("create guard dir");
+    let guard_path = guard_dir.join(".scryer-upgrade-old-encoded-Encoded.mkv.guard.json");
+    let now = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+    std::fs::write(
+        &guard_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "scryer.same-path-upgrade-guard.v1",
+            "phase": "db_swapped",
+            "title_id": title.id.clone(),
+            "old_file_id": "old-file-encoded-root",
+            "old_size_bytes": 24,
+            "replacement_file_id": replacement_id.clone(),
+            "final_path": final_path.to_string_lossy(),
+            "backup_path": backup_path.to_string_lossy(),
+            "staged_replacement_path": staged_replacement_path.to_string_lossy(),
+            "replacement_path": final_path.to_string_lossy(),
+            "media_root": encoded_media_root.clone(),
+            "created_at": now.clone(),
+            "updated_at": now,
+        }))
+        .unwrap(),
+    )
+    .expect("write guard");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    assert!(!guard_path.exists(), "db-swapped guard should be removed");
+    assert!(!backup_path.exists(), "old backup should be recycled");
+    assert_eq!(
+        std::fs::read(&final_path).expect("read final replacement"),
+        b"new committed content"
+    );
+    let recycle_dir = media_dir.path().join(".scryer-recycle");
+    let recycle_entries = std::fs::read_dir(&recycle_dir)
+        .expect("read real recycle dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recycle_entries.len(),
+        1,
+        "backup should be recycled under the decoded media root"
+    );
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json"))
+        .expect("read recycle manifest");
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(
+        manifest.media_root.as_deref(),
+        Some(encoded_media_root.as_str())
+    );
+    assert!(
+        !PathBuf::from(&encoded_media_root)
+            .join(".scryer-recycle")
+            .exists(),
+        "encoded media root must not be treated as a literal filesystem path"
+    );
+}
+
+#[tokio::test]
+async fn housekeeping_decodes_stored_paths_before_orphan_cleanup() {
+    let ctx = TestContext::new().await;
+    let title = seed_title(&ctx, "title-stored-path-housekeeping").await;
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-stored-path",
+        [AppPermission::ManageSystemSettings],
+    );
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let file_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&file_path, b"encoded path content").expect("write encoded-path file");
+    let stored_file_path = force_encoded_stored_path(&file_path);
+    assert!(
+        stored_file_path.starts_with("scryer-path-v1:"),
+        "test path should be encoded to exercise stored-path decoding"
+    );
+
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: stored_file_path.clone(),
+            size_bytes: 20,
+            quality_label: Some("720p".to_string()),
+            acquisition_score: Some(300),
+            ..Default::default()
+        })
+        .await
+        .expect("insert stored-path media file");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    let row = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup media file");
+    assert!(row.is_some(), "existing encoded-path row should survive");
+}
+
+#[tokio::test]
+async fn housekeeping_skips_orphan_cleanup_when_root_is_empty() {
+    let ctx = TestContext::new().await;
+    let catalog_actor =
+        app_permission_actor("catalog-empty-root", [AppPermission::ManageCatalogSettings]);
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-empty-root",
+        [AppPermission::ManageSystemSettings],
+    );
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Empty Root Housekeeping Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+    let title = seed_title_for_library(
+        &ctx,
+        "title-empty-root-housekeeping",
+        "Empty Root Movie",
+        &library.id,
+        media_dir.path(),
+    )
+    .await;
+
+    let missing_path = media_dir.path().join("Missing.mkv");
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: missing_path.to_string_lossy().to_string(),
+            size_bytes: 42,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(400),
+            ..Default::default()
+        })
+        .await
+        .expect("insert missing media file");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    let row = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup media file");
+    assert!(
+        row.is_some(),
+        "empty root should be treated as unavailable and keep catalog rows"
+    );
+}
+
+#[tokio::test]
+async fn housekeeping_removes_missing_rows_when_root_is_non_empty() {
+    let ctx = TestContext::new().await;
+    let catalog_actor = app_permission_actor(
+        "catalog-non-empty-root",
+        [AppPermission::ManageCatalogSettings],
+    );
+    let housekeeping_actor = app_permission_actor(
+        "housekeeping-non-empty-root",
+        [AppPermission::ManageSystemSettings],
+    );
+    let media_dir = tempfile::tempdir().expect("media dir");
+    std::fs::write(media_dir.path().join(".mounted"), b"mounted").expect("write mount marker");
+    let library = ctx
+        .app
+        .create_library(
+            &catalog_actor,
+            MediaFacet::Movie,
+            "Non Empty Root Housekeeping Library".to_string(),
+            vec![LibraryRootDraft {
+                path: media_dir.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create library");
+    let title = seed_title_for_library(
+        &ctx,
+        "title-non-empty-root-housekeeping",
+        "Non Empty Root Movie",
+        &library.id,
+        media_dir.path(),
+    )
+    .await;
+
+    let missing_path = media_dir.path().join("Missing.mkv");
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: missing_path.to_string_lossy().to_string(),
+            size_bytes: 42,
+            quality_label: Some("1080p".to_string()),
+            acquisition_score: Some(400),
+            ..Default::default()
+        })
+        .await
+        .expect("insert missing media file");
+
+    ctx.app
+        .run_housekeeping(&housekeeping_actor)
+        .await
+        .expect("housekeeping");
+
+    let row = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("lookup media file");
+    assert!(
+        row.is_none(),
+        "available non-empty root should allow DB-only orphan cleanup"
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_upgrade_validation_failure_preserves_old_file() {
     let ctx = TestContext::new().await;
     let app = app_with_real_fs(&ctx);
@@ -1009,6 +2273,7 @@ async fn disabled_recycle_bin_upgrade_validation_failure_preserves_old_file() {
         retention_days: 7,
         cleanup_enabled: true,
         validation_error: None,
+        source_roots: vec![media_dir.path().to_path_buf()],
     };
 
     let result = execute_upgrade_for_test(

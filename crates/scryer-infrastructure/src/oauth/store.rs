@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord,
-    OAuthRefreshGrantRecord, OAuthRefreshRotation, OAuthRefreshRotationOutcome,
-    OAuthRefreshTokenRecord, OAuthRepository,
+    AppError, AppResult, OAuthAuthorizationCodeRecord, OAuthAuthorizationSource,
+    OAuthConnectedAppRecord, OAuthRefreshGrantRecord, OAuthRefreshRotation,
+    OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository,
 };
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
@@ -28,8 +28,8 @@ impl OAuthRepository for OAuthStore {
             self.datastore.read_exec(),
             "INSERT INTO oauth_authorization_codes
                 (id, code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
-                 code_challenge_method, created_at, expires_at, consumed_at)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                 code_challenge_method, authorization_source, created_at, expires_at, consumed_at)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
             &[
                 SqlArg::Text(record.id.clone()),
                 SqlArg::Text(record.code_hash.clone()),
@@ -39,6 +39,7 @@ impl OAuthRepository for OAuthStore {
                 SqlArg::Text(record.scope.clone()),
                 SqlArg::Text(record.code_challenge.clone()),
                 SqlArg::Text(record.code_challenge_method.clone()),
+                SqlArg::Text(record.authorization_source.as_str().to_string()),
                 SqlArg::Timestamp(record.created_at),
                 SqlArg::Timestamp(record.expires_at),
                 SqlArg::OptTimestamp(record.consumed_at),
@@ -284,6 +285,56 @@ impl OAuthRepository for OAuthStore {
         .await
     }
 
+    async fn revoke_authless_refresh_grants(
+        &self,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64> {
+        let reason = reason.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "revoke_authless_oauth_refresh_grants",
+            move |tx| {
+                let reason = reason.clone();
+                Box::pin(async move {
+                    let grant_rows = tx
+                        .execute(
+                            "UPDATE oauth_refresh_grants
+                            SET revoked_at = COALESCE(revoked_at, {}),
+                                revoked_reason = COALESCE(revoked_reason, {}),
+                                updated_at = {}
+                          WHERE authorization_source = {}
+                            AND revoked_at IS NULL",
+                            &[
+                                SqlArg::Timestamp(revoked_at),
+                                SqlArg::Text(reason),
+                                SqlArg::Timestamp(revoked_at),
+                                SqlArg::Text(
+                                    OAuthAuthorizationSource::Authless.as_str().to_string(),
+                                ),
+                            ],
+                        )
+                        .await?;
+                    tx.execute(
+                        "UPDATE oauth_refresh_tokens
+                        SET revoked_at = COALESCE(revoked_at, {})
+                      WHERE grant_id IN (
+                            SELECT id FROM oauth_refresh_grants WHERE authorization_source = {}
+                        )
+                        AND revoked_at IS NULL",
+                        &[
+                            SqlArg::Timestamp(revoked_at),
+                            SqlArg::Text(OAuthAuthorizationSource::Authless.as_str().to_string()),
+                        ],
+                    )
+                    .await?;
+                    Ok(grant_rows)
+                })
+            },
+        )
+        .await
+    }
+
     async fn touch_refresh_grant_last_used(
         &self,
         grant_id: &str,
@@ -331,7 +382,7 @@ async fn load_authorization_code(
     let row = SqlRuntime::fetch_optional(
         exec,
         "SELECT id, code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
-                code_challenge_method, created_at, expires_at, consumed_at
+                code_challenge_method, authorization_source, created_at, expires_at, consumed_at
            FROM oauth_authorization_codes
           WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
@@ -349,7 +400,7 @@ async fn load_refresh_token_with_grant(
         "SELECT t.id AS token_id, t.grant_id, t.family_id AS token_family_id, t.token_hash,
                 t.created_at AS token_created_at, t.consumed_at, t.revoked_at AS token_revoked_at,
                 g.id AS grant_row_id, g.family_id AS grant_family_id, g.user_id, g.client_id,
-                g.scope,
+                g.scope, g.authorization_source,
                 g.auth_session_version, g.created_at AS grant_created_at,
                 g.updated_at AS grant_updated_at, g.last_used_at,
                 g.revoked_at AS grant_revoked_at, g.revoked_reason
@@ -371,8 +422,8 @@ async fn insert_refresh_grant_tx(
     tx.execute(
         "INSERT INTO oauth_refresh_grants
             (id, family_id, user_id, client_id, scope, auth_session_version,
-             created_at, updated_at, last_used_at, revoked_at, revoked_reason)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+             authorization_source, created_at, updated_at, last_used_at, revoked_at, revoked_reason)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(grant.id.clone()),
             SqlArg::Text(grant.family_id.clone()),
@@ -380,6 +431,7 @@ async fn insert_refresh_grant_tx(
             SqlArg::Text(grant.client_id.clone()),
             SqlArg::Text(grant.scope.clone()),
             SqlArg::Text(grant.auth_session_version.clone()),
+            SqlArg::Text(grant.authorization_source.as_str().to_string()),
             SqlArg::Timestamp(grant.created_at),
             SqlArg::Timestamp(grant.updated_at),
             SqlArg::OptTimestamp(grant.last_used_at),
@@ -420,7 +472,7 @@ async fn load_refresh_grant_by_id_tx(
     let row = SqlRuntime::fetch_optional(
         SqlExec::Tx(tx),
         "SELECT id, family_id, user_id, client_id, scope, auth_session_version, created_at,
-                updated_at, last_used_at, revoked_at, revoked_reason
+                authorization_source, updated_at, last_used_at, revoked_at, revoked_reason
            FROM oauth_refresh_grants
           WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
@@ -439,6 +491,7 @@ fn row_to_authorization_code(row: &SqlRow) -> AppResult<OAuthAuthorizationCodeRe
         scope: row.text("scope")?,
         code_challenge: row.text("code_challenge")?,
         code_challenge_method: row.text("code_challenge_method")?,
+        authorization_source: OAuthAuthorizationSource::parse(&row.text("authorization_source")?),
         created_at: row.timestamp("created_at")?,
         expires_at: row.timestamp("expires_at")?,
         consumed_at: row.opt_timestamp("consumed_at")?,
@@ -453,6 +506,7 @@ fn row_to_refresh_grant(row: &SqlRow) -> AppResult<OAuthRefreshGrantRecord> {
         client_id: row.text("client_id")?,
         scope: row.text("scope")?,
         auth_session_version: row.text("auth_session_version")?,
+        authorization_source: OAuthAuthorizationSource::parse(&row.text("authorization_source")?),
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
         last_used_at: row.opt_timestamp("last_used_at")?,
@@ -480,6 +534,7 @@ fn row_to_refresh_token_with_grant(
         client_id: row.text("client_id")?,
         scope: row.text("scope")?,
         auth_session_version: row.text("auth_session_version")?,
+        authorization_source: OAuthAuthorizationSource::parse(&row.text("authorization_source")?),
         created_at: row.timestamp("grant_created_at")?,
         updated_at: row.timestamp("grant_updated_at")?,
         last_used_at: row.opt_timestamp("last_used_at")?,

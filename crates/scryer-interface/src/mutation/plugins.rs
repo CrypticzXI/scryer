@@ -1,4 +1,4 @@
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_domain::AppPermission;
 
 use crate::context::{app_from_ctx, require_config_app_permission, to_gql_error};
@@ -13,19 +13,6 @@ pub(crate) struct PluginMutations;
 
 #[Object]
 impl PluginMutations {
-    async fn refresh_plugin_registry(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<Vec<RegistryPluginPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let plugins = app
-            .refresh_plugin_catalog(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(plugins.into_iter().map(from_registry_plugin).collect())
-    }
-
     async fn refresh_plugin_catalog(
         &self,
         ctx: &Context<'_>,
@@ -39,29 +26,16 @@ impl PluginMutations {
         Ok(plugins.into_iter().map(from_registry_plugin).collect())
     }
 
-    async fn install_plugin(
-        &self,
-        ctx: &Context<'_>,
-        input: InstallPluginInput,
-    ) -> GqlResult<PluginInstallationPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let installation = app
-            .install_plugin(&actor, &input.plugin_id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_plugin_installation(installation))
-    }
-
     async fn begin_install_plugin(
         &self,
         ctx: &Context<'_>,
-        input: InstallPluginInput,
+        plugin_id: ID,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let plugin_id = String::from(plugin_id);
         let snapshot = app
-            .begin_install_plugin(&actor, &input.plugin_id)
+            .begin_install_plugin(&actor, &plugin_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_plugin_install_progress(snapshot))
@@ -70,14 +44,18 @@ impl PluginMutations {
     async fn uninstall_plugin(
         &self,
         ctx: &Context<'_>,
-        input: UninstallPluginInput,
-    ) -> GqlResult<bool> {
+        plugin_id: ID,
+    ) -> GqlResult<UninstallPluginPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.uninstall_plugin(&actor, &input.plugin_id)
+        let plugin_id = String::from(plugin_id);
+        app.uninstall_plugin(&actor, &plugin_id)
             .await
             .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(UninstallPluginPayload {
+            plugin_id: ID::from(plugin_id),
+            uninstalled: true,
+        })
     }
 
     async fn toggle_plugin(
@@ -88,21 +66,7 @@ impl PluginMutations {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let installation = app
-            .toggle_plugin(&actor, &input.plugin_id, input.enabled)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_plugin_installation(installation))
-    }
-
-    async fn upgrade_plugin(
-        &self,
-        ctx: &Context<'_>,
-        input: UpgradePluginInput,
-    ) -> GqlResult<PluginInstallationPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        let installation = app
-            .upgrade_plugin(&actor, &input.plugin_id)
+            .toggle_plugin(&actor, input.plugin_id.as_ref(), input.enabled)
             .await
             .map_err(to_gql_error)?;
         Ok(from_plugin_installation(installation))
@@ -111,12 +75,13 @@ impl PluginMutations {
     async fn begin_upgrade_plugin(
         &self,
         ctx: &Context<'_>,
-        input: UpgradePluginInput,
+        plugin_id: ID,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let plugin_id = String::from(plugin_id);
         let snapshot = app
-            .begin_upgrade_plugin(&actor, &input.plugin_id)
+            .begin_upgrade_plugin(&actor, &plugin_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_plugin_install_progress(snapshot))

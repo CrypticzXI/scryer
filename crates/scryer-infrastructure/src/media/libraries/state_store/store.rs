@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::{
-    AppResult, BlocklistRepository, DownloadSourceKind, HousekeepingRepository,
-    LibraryProbeRepository, LibraryProbeSignature, NewBlocklistEntry, PendingRelease,
-    PendingReleaseRepository, PendingReleaseStatus, ReleaseDecision, SubtitleDownloadRepository,
-    WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
+    AppResult, BlocklistRepository, DownloadSourceKind, HousekeepingMediaFileRootRow,
+    HousekeepingRepository, LibraryProbeRepository, LibraryProbeSignature, NewBlocklistEntry,
+    PendingRelease, PendingReleaseRepository, PendingReleaseStatus, ReleaseDecision,
+    SubtitleDownloadRepository, WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1375,6 +1376,48 @@ impl HousekeepingRepository for HousekeepingStore {
         rows.iter()
             .map(|row| Ok((row.text("id")?, row.text("file_path")?)))
             .collect()
+    }
+
+    async fn list_media_files_with_roots(&self) -> AppResult<Vec<HousekeepingMediaFileRootRow>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT media_files.id AS media_file_id,
+                    media_files.title_id AS title_id,
+                    media_files.file_path AS file_path,
+                    titles.library_id AS library_id,
+                    library_roots.path AS root_path
+               FROM media_files
+          LEFT JOIN titles ON titles.id = media_files.title_id
+          LEFT JOIN library_roots ON library_roots.library_id = titles.library_id
+           ORDER BY media_files.id ASC, library_roots.is_default DESC, library_roots.path ASC",
+            &[],
+        )
+        .await?;
+
+        let mut rows_by_file = BTreeMap::<String, HousekeepingMediaFileRootRow>::new();
+        for row in rows {
+            let media_file_id = row.text("media_file_id")?;
+            let entry =
+                rows_by_file
+                    .entry(media_file_id.clone())
+                    .or_insert(HousekeepingMediaFileRootRow {
+                        media_file_id,
+                        title_id: row.text("title_id")?,
+                        file_path: row.text("file_path")?,
+                        library_id: row.opt_text("library_id")?.unwrap_or_default(),
+                        root_paths: Vec::new(),
+                    });
+            if let Some(root_path) = row.opt_text("root_path")?
+                && !entry
+                    .root_paths
+                    .iter()
+                    .any(|existing| existing == &root_path)
+            {
+                entry.root_paths.push(root_path);
+            }
+        }
+
+        Ok(rows_by_file.into_values().collect())
     }
 
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {

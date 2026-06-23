@@ -527,6 +527,20 @@ impl MultiIndexerSearchClient {
         }
     }
 
+    async fn clear_indexer_last_error(
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
+        indexer_id: &str,
+        indexer_name: &str,
+    ) {
+        if let Err(error) = indexer_configs.clear_last_error(indexer_id).await {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to clear indexer last_error_at"
+            );
+        }
+    }
+
     fn is_rss_sync_request(
         query: &str,
         ids_present: bool,
@@ -1153,6 +1167,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         info!(indexer = indexer_name.as_str(), count = response.results.len(), "RSS feed cached");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, true);
                                         backoff_tracker.record_success(&indexer_id).await;
+                                        Self::clear_indexer_last_error(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                        )
+                                        .await;
                                         metrics::counter!("scryer_indexer_queries_total", "indexer" => indexer_name.clone(), "status" => "success", "mode" => "rss_cached").increment(1);
                                         metrics::histogram!("scryer_indexer_query_duration_seconds", "indexer" => indexer_name.clone(), "mode" => "rss_cached").record(start.elapsed().as_secs_f64());
                                         response.results
@@ -1449,6 +1469,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                     batch_health
                         .apply(&backoff_tracker, &indexer_id, &indexer_name)
                         .await;
+                    if batch_had_success {
+                        Self::clear_indexer_last_error(
+                            &indexer_configs,
+                            &indexer_id,
+                            &indexer_name,
+                        )
+                        .await;
+                    }
 
                     if mode == SearchMode::Interactive
                         && collected_results.is_empty()
@@ -2040,6 +2068,7 @@ mod tests {
     struct RecordingTouchIndexerConfigRepository {
         configs: Vec<IndexerConfig>,
         touched_ids: StdArc<StdMutex<Vec<String>>>,
+        cleared_ids: StdArc<StdMutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -2060,6 +2089,14 @@ mod tests {
             self.touched_ids
                 .lock()
                 .expect("touched ids mutex")
+                .push(id.to_string());
+            Ok(())
+        }
+
+        async fn clear_last_error(&self, id: &str) -> AppResult<()> {
+            self.cleared_ids
+                .lock()
+                .expect("cleared ids mutex")
                 .push(id.to_string());
             Ok(())
         }
@@ -2481,6 +2518,7 @@ mod tests {
     #[tokio::test]
     async fn indexer_failure_records_last_error_for_config_id() {
         let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: StdArc::new(StdMutex::new(Vec::new())),
             responder: StdArc::new(|_| Err(AppError::Repository("upstream status 503".into()))),
@@ -2489,6 +2527,7 @@ mod tests {
             Arc::new(RecordingTouchIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
                 touched_ids: touched_ids.clone(),
+                cleared_ids: cleared_ids.clone(),
             }),
             Arc::new(MockIndexerStatsTracker),
             Arc::new(ScriptedIndexerPluginProvider {
@@ -2526,6 +2565,134 @@ mod tests {
         assert!(response.results.is_empty());
         assert_eq!(
             *touched_ids.lock().expect("touched ids mutex"),
+            vec!["idx-1".to_string()]
+        );
+        assert!(cleared_ids.lock().expect("cleared ids mutex").is_empty());
+    }
+
+    #[tokio::test]
+    async fn indexer_success_clears_last_error_for_config_id() {
+        let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: StdArc::new(StdMutex::new(Vec::new())),
+            responder: StdArc::new(|_| {
+                Ok(IndexerSearchResponse {
+                    results: vec![search_result("Recovered.Show.S01E01")],
+                    api_current: None,
+                    api_max: None,
+                    grab_current: None,
+                    grab_max: None,
+                })
+            }),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(RecordingTouchIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+                touched_ids: touched_ids.clone(),
+                cleared_ids: cleared_ids.clone(),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: true,
+                    search: false,
+                    imdb_search: false,
+                    tvdb_search: false,
+                    anidb_search: false,
+                    supported_ids: HashMap::new(),
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let response = multi
+            .search(
+                String::new(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("RSS success should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        assert!(touched_ids.lock().expect("touched ids mutex").is_empty());
+        assert_eq!(
+            *cleared_ids.lock().expect("cleared ids mutex"),
+            vec!["idx-1".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn indexer_failure_then_fallback_success_records_and_clears_last_error() {
+        let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let attempts = StdArc::new(AtomicUsize::new(0));
+        let attempts_for_responder = attempts.clone();
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(move |call| {
+                let attempt = attempts_for_responder.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    assert!(call.ids.contains_key("tvdb_id"));
+                    return Err(AppError::Validation("id tier failed".into()));
+                }
+
+                assert!(call.ids.is_empty());
+                response_with_titles(&["Signal.Run.S01E12.720p.WEB-DL"])
+            }),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(RecordingTouchIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+                touched_ids: touched_ids.clone(),
+                cleared_ids: cleared_ids.clone(),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: series_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Signal Run S01E12".into(),
+                HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
+                Some("series".into()),
+                Some("series".into()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                Some(1),
+                Some(12),
+                None,
+                vec![],
+            )
+            .await
+            .expect("fallback success should succeed");
+
+        let recorded_calls = calls.lock().expect("calls").clone();
+        assert_eq!(recorded_calls.len(), 2);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            *touched_ids.lock().expect("touched ids mutex"),
+            vec!["idx-1".to_string()]
+        );
+        assert_eq!(
+            *cleared_ids.lock().expect("cleared ids mutex"),
             vec!["idx-1".to_string()]
         );
     }

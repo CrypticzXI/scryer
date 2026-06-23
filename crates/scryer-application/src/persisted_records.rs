@@ -188,6 +188,7 @@ mod tests {
         Title {
             id: "title-1".to_string(),
             library_id: "library-1".to_string(),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             name: "Example".to_string(),
             facet: MediaFacet::Movie,
             monitored: true,

@@ -27,7 +27,6 @@ import type {
   CatalogQualityProfileOption,
   MetadataCatalogAddOptions,
   MetadataCatalogMonitorType,
-  RootFolderOption,
 } from "@/lib/hooks/use-global-search";
 import type { LibraryRecord } from "@/lib/types/titles";
 
@@ -39,7 +38,6 @@ type AddToCatalogDialogProps = {
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
   catalogConfigLoading: boolean;
   defaultQualityProfileId: string;
-  rootFolders: RootFolderOption[];
   manageableLibraries: LibraryRecord[];
   onAdd: (
     result: MetadataTvdbSearchItem,
@@ -93,7 +91,6 @@ export function AddToCatalogDialog({
   catalogQualityProfileOptions,
   catalogConfigLoading,
   defaultQualityProfileId,
-  rootFolders,
   manageableLibraries,
   onAdd,
 }: AddToCatalogDialogProps) {
@@ -126,15 +123,11 @@ export function AddToCatalogDialog({
     libraries.find((library) => library.isDefault) ||
     libraries[0] ||
     null;
-  const selectedRootFolders =
-    selectedLibrary?.roots.map((root) => ({
-      path: root.path,
-      isDefault: root.isDefault,
-    })) ?? rootFolders;
-  const effectiveRootFolder =
-    draft.rootFolder ||
-    selectedRootFolders.find((rf) => rf.isDefault)?.path ||
-    selectedRootFolders[0]?.path ||
+  const selectedRootFolders = selectedLibrary?.roots ?? [];
+  const effectiveRootFolderId =
+    draft.rootFolderId ||
+    selectedRootFolders.find((rf) => rf.isDefault)?.id ||
+    selectedRootFolders[0]?.id ||
     "";
   const libraryRequired = libraries.length > 0;
   const qualityProfileSelectionDisabled =
@@ -152,7 +145,7 @@ export function AddToCatalogDialog({
         ...draft,
         libraryId,
         qualityProfileId: qpId,
-        rootFolder: effectiveRootFolder || undefined,
+        rootFolderId: effectiveRootFolderId || undefined,
       });
       if (titleId) {
         onOpenChange(false);
@@ -168,7 +161,7 @@ export function AddToCatalogDialog({
     onAdd,
     onOpenChange,
     result,
-    effectiveRootFolder,
+    effectiveRootFolderId,
     selectedLibrary,
   ]);
 
@@ -237,7 +230,7 @@ export function AddToCatalogDialog({
               </span>
               <Select
                 value={selectedLibrary?.id || ""}
-                onValueChange={(v) => update({ libraryId: v, rootFolder: undefined })}
+                onValueChange={(v) => update({ libraryId: v, rootFolderId: undefined })}
                 disabled={isSubmitting || libraries.length === 1}
               >
                 <SelectTrigger id="add-to-catalog-library" className="h-9 w-full">
@@ -295,8 +288,8 @@ export function AddToCatalogDialog({
                 {t("search.addConfigRootFolder")}
               </span>
               <Select
-                value={effectiveRootFolder}
-                onValueChange={(v) => update({ rootFolder: v })}
+                value={effectiveRootFolderId}
+                onValueChange={(v) => update({ rootFolderId: v })}
                 disabled={isSubmitting}
               >
                 <SelectTrigger id="add-to-catalog-root-folder" className="h-9 w-full">
@@ -304,7 +297,7 @@ export function AddToCatalogDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {selectedRootFolders.map((rf) => (
-                    <SelectItem key={rf.path} value={rf.path}>
+                    <SelectItem key={rf.id} value={rf.id}>
                       {rf.path}
                     </SelectItem>
                   ))}

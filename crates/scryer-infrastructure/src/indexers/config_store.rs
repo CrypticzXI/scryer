@@ -229,6 +229,25 @@ impl IndexerConfigRepository for IndexerConfigStore {
         .await
     }
 
+    async fn clear_last_error(&self, id: &str) -> AppResult<()> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "clear_indexer_last_error", move |tx| {
+            let id = id.clone();
+            Box::pin(async move {
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE indexers
+                     SET last_error_at = NULL, last_health_status = NULL
+                     WHERE id = {}",
+                    &[SqlArg::Text(id)],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig> {
         let encryption_key = self.encryption_key()?;
         let mut assignments = vec!["updated_at = {}".to_string()];
@@ -554,6 +573,75 @@ mod tests {
             .expect("query should succeed")
             .expect("config should exist");
         assert!(config.last_error_at.is_some());
+        assert_eq!(config.updated_at, updated_at);
+    }
+
+    #[tokio::test]
+    async fn clear_last_error_clears_error_fields_without_changing_updated_at() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        create_test_indexers_table(&pool).await;
+
+        let created_at = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .expect("created timestamp should parse")
+            .with_timezone(&Utc);
+        let updated_at = chrono::DateTime::parse_from_rfc3339("2026-01-03T03:04:05Z")
+            .expect("updated timestamp should parse")
+            .with_timezone(&Utc);
+        let error_at = chrono::DateTime::parse_from_rfc3339("2026-01-04T03:04:05Z")
+            .expect("error timestamp should parse")
+            .with_timezone(&Utc);
+        sqlx::query(
+            "INSERT INTO indexers (
+                id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
+                rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
+                enable_auto_search, last_health_status, last_error_at, config_json, created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("idx-recovered")
+        .bind("Recovered Indexer")
+        .bind("newznab")
+        .bind("")
+        .bind(None::<String>)
+        .bind(None::<i64>)
+        .bind(None::<i64>)
+        .bind(None::<String>)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(Some("Last search failed"))
+        .bind(Some(error_at.to_rfc3339()))
+        .bind(None::<String>)
+        .bind(created_at.to_rfc3339())
+        .bind(updated_at.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("indexer row should insert");
+
+        let store = IndexerConfigStore::new(
+            StoreDatastore::Sqlite {
+                pool,
+                writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+            },
+            Arc::new(RwLock::new(None)),
+        );
+
+        store
+            .clear_last_error("idx-recovered")
+            .await
+            .expect("clear should succeed");
+
+        let config = store
+            .get_by_id("idx-recovered")
+            .await
+            .expect("query should succeed")
+            .expect("config should exist");
+        assert!(config.last_error_at.is_none());
+        assert!(config.last_health_status.is_none());
         assert_eq!(config.updated_at, updated_at);
     }
 

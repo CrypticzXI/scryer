@@ -43,23 +43,7 @@ use crate::{AppError, AppResult};
 use scryer_domain::PluginSupportTier;
 
 #[cfg(test)]
-#[allow(dead_code)]
-const CENTRAL_CATALOG_SCHEMA_VERSION: &str = "scryer.plugin.catalog.v2";
-#[cfg(test)]
-#[allow(dead_code)]
 const CHILD_CATALOG_SCHEMA_VERSION: &str = "scryer.plugin.child_catalog.v2";
-#[cfg(test)]
-#[allow(dead_code)]
-const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "scryer.plugin.v1";
-#[cfg(test)]
-#[allow(dead_code)]
-const PLUGIN_ARTIFACT_NAME: &str = "plugin.wasm.zst";
-#[cfg(test)]
-#[allow(dead_code)]
-const PLUGIN_MANIFEST_NAME: &str = "plugin.manifest.json";
-#[cfg(test)]
-#[allow(dead_code)]
-const ZSTD_COMPRESSION_LABEL: &str = "zstd";
 #[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 #[cfg(feature = "runtime-plugin-trust")]
@@ -90,38 +74,10 @@ static SIGSTORE_TRUST_MATERIAL: OnceLock<Mutex<Option<Arc<SigstoreTrustMaterial>
 static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CentralCatalog {
-    pub schema_version: String,
-    pub plugins: Vec<CentralCatalogEntry>,
-    #[serde(default)]
-    pub rule_packs: Vec<RulePackCatalogEntry>,
-}
-
-#[cfg(test)]
+// Deserialized by test catalog fixtures; serde construction is invisible to dead-code analysis.
 #[allow(dead_code)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CentralCatalogEntry {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub plugin_type: String,
-    pub provider_type: String,
-    pub publisher: String,
-    pub support_tier: PluginSupportTier,
-    pub docs_url: String,
-    pub source_repo: String,
-    pub child_catalog_url: String,
-    pub required_signer: RequiredSigner,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RulePackCatalogEntry {
     pub id: String,
     pub name: String,
@@ -272,7 +228,6 @@ pub struct CatalogV3DistributionArtifact {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildCatalog {
@@ -290,31 +245,12 @@ pub struct ChildCatalog {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildCatalogRelease {
     pub version: String,
     pub sdk_constraint: String,
     pub artifact_manifest_url: String,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PluginReleaseManifest {
-    pub schema_version: String,
-    pub id: String,
-    pub plugin_type: String,
-    pub provider_type: String,
-    pub version: String,
-    pub publisher: String,
-    pub artifact: String,
-    pub compression: String,
-    pub wasm_digest: String,
-    pub artifact_digest: String,
-    pub signature: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,12 +260,10 @@ pub struct GitHubRepo {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct CatalogOutageStatus {
     pub github_available: bool,
     pub blocked_actions: Vec<String>,
-    pub message: Option<String>,
 }
 
 #[cfg(test)]
@@ -386,19 +320,9 @@ impl GitHubRepo {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub fn release_asset_prefix(&self) -> String {
         format!(
             "https://github.com/{}/{}/releases/download/",
-            self.owner, self.name
-        )
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn child_catalog_url(&self) -> String {
-        format!(
-            "https://github.com/{}/{}/releases/latest/download/catalog-v2.min.json.zst",
             self.owner, self.name
         )
     }
@@ -433,38 +357,14 @@ impl GitHubRepo {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
-pub fn parse_and_validate_central_catalog(raw: &[u8]) -> AppResult<CentralCatalog> {
-    let catalog: CentralCatalog = serde_json::from_slice(raw)
-        .map_err(|e| AppError::Validation(format!("invalid central plugin catalog JSON: {e}")))?;
-    validate_central_catalog(&catalog)?;
-    Ok(catalog)
-}
-
-#[cfg(test)]
 pub fn parse_and_validate_child_catalog(
     raw: &[u8],
-    central: Option<&CentralCatalogEntry>,
     manual_repo: Option<&GitHubRepo>,
 ) -> AppResult<ChildCatalog> {
     let catalog: ChildCatalog = serde_json::from_slice(raw)
         .map_err(|e| AppError::Validation(format!("invalid child plugin catalog JSON: {e}")))?;
-    validate_child_catalog(&catalog, central, manual_repo)?;
+    validate_child_catalog(&catalog, manual_repo)?;
     Ok(catalog)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn parse_and_validate_release_manifest(
-    raw: &[u8],
-    child: &ChildCatalog,
-    release: &ChildCatalogRelease,
-    expected_repo: &GitHubRepo,
-) -> AppResult<PluginReleaseManifest> {
-    let manifest: PluginReleaseManifest = serde_json::from_slice(raw)
-        .map_err(|e| AppError::Validation(format!("invalid plugin release manifest JSON: {e}")))?;
-    validate_release_manifest(&manifest, child, release, expected_repo)?;
-    Ok(manifest)
 }
 
 pub fn parse_and_validate_catalog_v3(raw: &[u8]) -> AppResult<CatalogV3> {
@@ -683,13 +583,6 @@ pub fn verify_split_digest(
     }
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn verify_digest(label: &str, expected: &str, bytes: &[u8]) -> AppResult<()> {
-    let (algorithm, digest) = parse_digest_string(expected)?;
-    verify_split_digest(label, &algorithm, &digest, bytes)
-}
-
 pub fn verify_digest_set(label: &str, expected_digests: &[String], bytes: &[u8]) -> AppResult<()> {
     for digest in expected_digests {
         let Ok((algorithm, digest_hex)) = parse_digest_string(digest) else {
@@ -718,14 +611,12 @@ pub fn redirect_bundle_url_for(url: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStatus> {
     let summary: GitHubStatusSummary = serde_json::from_slice(raw).ok()?;
     if summary.status.indicator == "none" {
         return Some(CatalogOutageStatus {
             github_available: true,
             blocked_actions: Vec::new(),
-            message: None,
         });
     }
 
@@ -737,7 +628,6 @@ pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStat
         return Some(CatalogOutageStatus {
             github_available: true,
             blocked_actions: Vec::new(),
-            message: None,
         });
     }
 
@@ -750,94 +640,12 @@ pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStat
             "upgrade".to_string(),
             "manual_repo_inspection".to_string(),
         ],
-        message: Some(
-            "GitHub is reporting an outage that affects plugin distribution.".to_string(),
-        ),
     })
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
-    if catalog.schema_version != CENTRAL_CATALOG_SCHEMA_VERSION {
-        return Err(AppError::Validation(format!(
-            "unsupported central plugin catalog schema '{}'",
-            catalog.schema_version
-        )));
-    }
-
-    let mut plugin_ids = HashSet::new();
-    for entry in &catalog.plugins {
-        require_non_empty("plugin id", &entry.id)?;
-        require_non_empty("plugin name", &entry.name)?;
-        require_non_empty("plugin type", &entry.plugin_type)?;
-        require_non_empty("provider type", &entry.provider_type)?;
-        require_non_empty("publisher", &entry.publisher)?;
-        require_non_empty("docs_url", &entry.docs_url)?;
-        require_non_empty("source_repo", &entry.source_repo)?;
-        require_non_empty("child_catalog_url", &entry.child_catalog_url)?;
-        if !plugin_ids.insert(entry.id.clone()) {
-            return Err(AppError::Validation(format!(
-                "duplicate plugin id '{}' in central catalog",
-                entry.id
-            )));
-        }
-        if entry.support_tier == PluginSupportTier::Unverified {
-            return Err(AppError::Validation(format!(
-                "central catalog entry '{}' cannot declare unverified support",
-                entry.id
-            )));
-        }
-        let source_repo = GitHubRepo::parse(&entry.source_repo)?;
-        if entry.required_signer.github_repository != source_repo.slug() {
-            return Err(AppError::Validation(format!(
-                "central catalog entry '{}' signer repo '{}' does not match source repo '{}'",
-                entry.id,
-                entry.required_signer.github_repository,
-                source_repo.slug()
-            )));
-        }
-        require_release_asset_url("child catalog", &entry.child_catalog_url, &source_repo)?;
-    }
-
-    let catalog_repo = GitHubRepo::parse("https://github.com/scryer-media/scryer-plugins")?;
-    let mut rule_pack_ids = HashSet::new();
-    for entry in &catalog.rule_packs {
-        require_non_empty("rule pack id", &entry.id)?;
-        require_non_empty("rule pack name", &entry.name)?;
-        require_non_empty("rule pack author", &entry.author)?;
-        require_non_empty("rule pack version", &entry.version)?;
-        require_non_empty("rule pack url", &entry.url)?;
-        if !rule_pack_ids.insert(entry.id.clone()) {
-            return Err(AppError::Validation(format!(
-                "duplicate rule pack id '{}' in central catalog",
-                entry.id
-            )));
-        }
-        semver::Version::parse(entry.version.trim()).map_err(|error| {
-            AppError::Validation(format!(
-                "rule pack '{}' has invalid version '{}': {error}",
-                entry.id, entry.version
-            ))
-        })?;
-        if let Some(min_scryer_version) = entry.min_scryer_version.as_deref() {
-            semver::Version::parse(min_scryer_version.trim()).map_err(|error| {
-                AppError::Validation(format!(
-                    "rule pack '{}' has invalid min_scryer_version '{}': {error}",
-                    entry.id, min_scryer_version
-                ))
-            })?;
-        }
-        require_release_asset_url("rule pack", &entry.url, &catalog_repo)?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
 fn validate_child_catalog(
     catalog: &ChildCatalog,
-    central: Option<&CentralCatalogEntry>,
     manual_repo: Option<&GitHubRepo>,
 ) -> AppResult<()> {
     if catalog.schema_version != CHILD_CATALOG_SCHEMA_VERSION {
@@ -855,30 +663,6 @@ fn validate_child_catalog(
     require_non_empty("docs_url", &catalog.docs_url)?;
     require_non_empty("source_repo", &catalog.source_repo)?;
     let source_repo = GitHubRepo::parse(&catalog.source_repo)?;
-
-    if let Some(central) = central {
-        require_identity_match("id", &central.id, &catalog.id)?;
-        require_identity_match("plugin_type", &central.plugin_type, &catalog.plugin_type)?;
-        require_identity_match(
-            "provider_type",
-            &central.provider_type,
-            &catalog.provider_type,
-        )?;
-        require_identity_match("publisher", &central.publisher, &catalog.publisher)?;
-        if central.support_tier != catalog.support_tier {
-            return Err(AppError::Validation(format!(
-                "child catalog '{}' support tier does not match central catalog",
-                catalog.id
-            )));
-        }
-        let central_repo = GitHubRepo::parse(&central.source_repo)?;
-        if source_repo != central_repo {
-            return Err(AppError::Validation(format!(
-                "child catalog '{}' source repo does not match central catalog",
-                catalog.id
-            )));
-        }
-    }
 
     if let Some(manual_repo) = manual_repo
         && &source_repo != manual_repo
@@ -912,58 +696,6 @@ fn validate_child_catalog(
         )?;
     }
 
-    Ok(())
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn validate_release_manifest(
-    manifest: &PluginReleaseManifest,
-    child: &ChildCatalog,
-    release: &ChildCatalogRelease,
-    expected_repo: &GitHubRepo,
-) -> AppResult<()> {
-    if manifest.schema_version != RELEASE_MANIFEST_SCHEMA_VERSION {
-        return Err(AppError::Validation(format!(
-            "unsupported plugin release manifest schema '{}'",
-            manifest.schema_version
-        )));
-    }
-
-    require_identity_match("id", &child.id, &manifest.id)?;
-    require_identity_match("plugin_type", &child.plugin_type, &manifest.plugin_type)?;
-    require_identity_match(
-        "provider_type",
-        &child.provider_type,
-        &manifest.provider_type,
-    )?;
-    require_identity_match("publisher", &child.publisher, &manifest.publisher)?;
-    require_identity_match("version", &release.version, &manifest.version)?;
-    if manifest.artifact != PLUGIN_ARTIFACT_NAME {
-        return Err(AppError::Validation(format!(
-            "plugin manifest '{}' uses unsupported artifact '{}'",
-            manifest.id, manifest.artifact
-        )));
-    }
-    if manifest.compression != ZSTD_COMPRESSION_LABEL {
-        return Err(AppError::Validation(format!(
-            "plugin manifest '{}' uses unsupported compression '{}'",
-            manifest.id, manifest.compression
-        )));
-    }
-    require_digest("wasm_digest", &manifest.wasm_digest)?;
-    require_digest("artifact_digest", &manifest.artifact_digest)?;
-    if manifest.signature != format!("{PLUGIN_ARTIFACT_NAME}.bundle") {
-        return Err(AppError::Validation(format!(
-            "plugin manifest '{}' signature must be '{}.bundle'",
-            manifest.id, PLUGIN_ARTIFACT_NAME
-        )));
-    }
-    require_release_asset_url(
-        "plugin manifest",
-        &release.artifact_manifest_url,
-        expected_repo,
-    )?;
     Ok(())
 }
 
@@ -1686,17 +1418,6 @@ fn require_non_empty(label: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn require_identity_match(label: &str, expected: &str, actual: &str) -> AppResult<()> {
-    if expected != actual {
-        return Err(AppError::Validation(format!(
-            "{label} mismatch: expected '{expected}', got '{actual}'"
-        )));
-    }
-    Ok(())
-}
-
 fn parse_version(version: &str) -> AppResult<Version> {
     Version::parse(version.trim_start_matches('v')).map_err(|e| {
         AppError::Validation(format!("invalid plugin release version '{version}': {e}"))
@@ -1725,7 +1446,6 @@ fn normalize_hex_digest(input: &str) -> AppResult<String> {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 fn require_release_asset_url(label: &str, url: &str, repo: &GitHubRepo) -> AppResult<()> {
     if !url.starts_with(&repo.release_asset_prefix()) {
         return Err(AppError::Validation(format!(
@@ -1734,27 +1454,6 @@ fn require_release_asset_url(label: &str, url: &str, repo: &GitHubRepo) -> AppRe
         )));
     }
     Ok(())
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn plugin_manifest_asset_url(manifest_url: &str, asset_name: &str) -> AppResult<String> {
-    let parsed = Url::parse(manifest_url)
-        .map_err(|e| AppError::Validation(format!("invalid plugin manifest URL: {e}")))?;
-    let mut segments = parsed
-        .path_segments()
-        .ok_or_else(|| AppError::Validation("invalid plugin manifest URL path".to_string()))?
-        .collect::<Vec<_>>();
-    if segments.last().copied() != Some(PLUGIN_MANIFEST_NAME) {
-        return Err(AppError::Validation(format!(
-            "plugin manifest URL must end with {PLUGIN_MANIFEST_NAME}"
-        )));
-    }
-    segments.pop();
-    segments.push(asset_name);
-    let mut url = parsed.clone();
-    url.set_path(&segments.join("/"));
-    Ok(url.to_string())
 }
 
 #[cfg(test)]
@@ -1843,7 +1542,7 @@ mod tests {
                 }
             ]
         }"#;
-        let err = parse_and_validate_child_catalog(raw, None, None).unwrap_err();
+        let err = parse_and_validate_child_catalog(raw, None).unwrap_err();
         assert!(err.to_string().contains("duplicate release version"));
     }
 

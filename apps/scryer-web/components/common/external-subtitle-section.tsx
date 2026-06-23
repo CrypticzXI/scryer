@@ -73,7 +73,7 @@ export function ExternalSubtitleSection({
   const deletePreviewVariables = React.useMemo(
     () =>
       pendingAction
-        ? { input: { externalSubtitleId: pendingAction.subtitle.id } }
+        ? { externalSubtitleId: pendingAction.subtitle.id }
         : null,
     [pendingAction],
   );

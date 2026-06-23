@@ -77,14 +77,14 @@ export function AssignTrackedDownloadTitleDialog({
     setLoading(true);
     setError(null);
     client
-      .query(titlesQuery, {})
+      .query(titlesQuery, { limit: 300 })
       .toPromise()
       .then(({ data, error: queryError }) => {
         if (cancelled) {
           return;
         }
         if (queryError) throw queryError;
-        setResults((data?.titles ?? []) as TitleSearchResult[]);
+        setResults((data?.titles?.items ?? []) as TitleSearchResult[]);
       })
       .catch((err: unknown) => {
         if (cancelled) {

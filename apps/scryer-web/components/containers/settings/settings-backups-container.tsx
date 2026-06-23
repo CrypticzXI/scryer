@@ -1,9 +1,20 @@
 import * as React from "react";
-import { Download, Eye, EyeOff, Loader2, LockKeyhole, Plus, Trash2 } from "lucide-react";
+import {
+  Download,
+  Eye,
+  EyeOff,
+  FolderOpen,
+  Loader2,
+  LockKeyhole,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import { useBeforeUnload, useBlocker } from "react-router-dom";
 import { useClient } from "urql";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { InfoHelp } from "@/components/common/info-help";
+import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,8 +46,9 @@ import {
   deleteBackupMutation,
   prepareBackupDownloadMutation,
   updateAutoBackupSettingsMutation,
+  updateBackupSettingsMutation,
 } from "@/lib/graphql/mutations";
-import { autoBackupSettingsQuery, backupsQuery } from "@/lib/graphql/queries";
+import { autoBackupSettingsQuery, backupSettingsQuery, backupsQuery } from "@/lib/graphql/queries";
 import { scryerFetch } from "@/lib/graphql/urql-client";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
@@ -45,7 +57,7 @@ import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
-import type { AutoBackupSettings } from "@/lib/types/settings";
+import type { AutoBackupSettings, BackupSettings } from "@/lib/types/settings";
 
 type BackupRowCount = {
   table: string;
@@ -56,7 +68,7 @@ type BackupTrigger = "manual" | "auto";
 
 type BackupInfoRecord = {
   filename: string;
-  sizeBytes: string;
+  sizeBytes: number;
   createdAt: string;
   formatVersion: string;
   sourceEngine: string;
@@ -77,7 +89,10 @@ type CreateBackupMutationResult = {
 };
 
 type DeleteBackupMutationResult = {
-  deleteBackup?: boolean;
+  deleteBackup?: {
+    filename: string;
+    deleted: boolean;
+  };
 };
 
 type PrepareBackupDownloadMutationResult = {
@@ -92,8 +107,16 @@ type AutoBackupSettingsQueryResult = {
   autoBackupSettings?: AutoBackupSettings;
 };
 
+type BackupSettingsQueryResult = {
+  backupSettings?: BackupSettings;
+};
+
 type UpdateAutoBackupSettingsMutationResult = {
   updateAutoBackupSettings?: AutoBackupSettings;
+};
+
+type UpdateBackupSettingsMutationResult = {
+  updateBackupSettings?: BackupSettings;
 };
 
 const DEFAULT_AUTO_BACKUP_SETTINGS: AutoBackupSettings = {
@@ -103,9 +126,14 @@ const DEFAULT_AUTO_BACKUP_SETTINGS: AutoBackupSettings = {
   autoBackupDisabledMissingKeyNotice: false,
   nextRunAt: null,
 };
+const DEFAULT_BACKUP_SETTINGS: BackupSettings = {
+  customBackupPath: null,
+  defaultBackupPath: "",
+  effectiveBackupPath: "",
+};
 const AUTO_BACKUP_KEY_MIN_LENGTH = 8;
-const UNSAVED_AUTO_BACKUP_CHANGES_MESSAGE =
-  "You have unsaved automatic backup changes. Leave without saving?";
+const UNSAVED_BACKUP_CHANGES_MESSAGE =
+  "You have unsaved backup settings changes. Leave without saving?";
 
 type SaveFilePickerWindow = Window & {
   showSaveFilePicker?: (options: {
@@ -198,6 +226,11 @@ function upsertBackup(backups: BackupInfoRecord[], nextBackup: BackupInfoRecord)
   ]);
 }
 
+function normalizeBackupPathDraft(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function autoBackupSettingsEqual(
   left: AutoBackupSettings,
   right: AutoBackupSettings,
@@ -212,10 +245,10 @@ function autoBackupSettingsEqual(
   );
 }
 
-function formatBytes(sizeBytes: string): string {
-  const value = Number(sizeBytes);
+function formatBytes(sizeBytes: number): string {
+  const value = sizeBytes;
   if (!Number.isFinite(value) || value < 0) {
-    return sizeBytes;
+    return String(sizeBytes);
   }
 
   if (value < 1024) {
@@ -286,6 +319,12 @@ export function SettingsBackupsContainer() {
     React.useState<AutoBackupSettings>(DEFAULT_AUTO_BACKUP_SETTINGS);
   const [autoBackupLoading, setAutoBackupLoading] = React.useState(true);
   const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+  const [savedBackupSettings, setSavedBackupSettings] =
+    React.useState<BackupSettings>(DEFAULT_BACKUP_SETTINGS);
+  const [backupPathDraft, setBackupPathDraft] = React.useState("");
+  const [backupSettingsLoading, setBackupSettingsLoading] = React.useState(true);
+  const [backupSettingsSaving, setBackupSettingsSaving] = React.useState(false);
+  const [folderBrowserOpen, setFolderBrowserOpen] = React.useState(false);
   const [autoBackupExpanded, setAutoBackupExpanded] = React.useState(false);
   const [autoBackupKey, setAutoBackupKey] = React.useState("");
   const [clearAutoBackupKey, setClearAutoBackupKey] = React.useState(false);
@@ -317,13 +356,17 @@ export function SettingsBackupsContainer() {
       ? t("settings.autoBackupsKeyTooShort", { count: AUTO_BACKUP_KEY_MIN_LENGTH })
       : null;
   const canSaveAutoBackupSettings = !autoBackupSaving && !autoBackupKeyValidationMessage;
+  const normalizedBackupPathDraft = normalizeBackupPathDraft(backupPathDraft);
+  const savedCustomBackupPath = savedBackupSettings.customBackupPath ?? null;
+  const backupPathDirty = normalizedBackupPathDraft !== savedCustomBackupPath;
+  const canSaveBackupSettings = backupPathDirty && !backupSettingsSaving;
   const canCreateBackup =
     !creatingRequest &&
     !hasCreatingManualBackup &&
     !passwordRequired &&
     !confirmPasswordRequired &&
     !passwordMismatch;
-  const pageLoading = loading || autoBackupLoading;
+  const pageLoading = loading || autoBackupLoading || backupSettingsLoading;
   const autoBackupNextRunLabel =
     autoBackupSettings.enabled && autoBackupSettings.nextRunAt
       ? formatDateTime(autoBackupSettings.nextRunAt)
@@ -339,7 +382,8 @@ export function SettingsBackupsContainer() {
     !autoBackupSettingsEqual(autoBackupSettings, savedAutoBackupSettings) ||
     autoBackupKey.length > 0 ||
     clearAutoBackupKey;
-  const shouldBlockNavigation = autoBackupDirty && !autoBackupSaving;
+  const shouldBlockNavigation =
+    (autoBackupDirty || backupPathDirty) && !autoBackupSaving && !backupSettingsSaving;
   const autoBackupNavigationBlocker = useBlocker(shouldBlockNavigation);
 
   useBeforeUnload(
@@ -390,6 +434,28 @@ export function SettingsBackupsContainer() {
     }
   }, [client, setGlobalStatus, t]);
 
+  const fetchBackupSettings = React.useCallback(async () => {
+    try {
+      const { data, error } = await client
+        .query<BackupSettingsQueryResult>(
+          backupSettingsQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      const nextSettings = data?.backupSettings ?? DEFAULT_BACKUP_SETTINGS;
+      setSavedBackupSettings(nextSettings);
+      setBackupPathDraft(nextSettings.customBackupPath ?? "");
+    } catch (error) {
+      setGlobalStatus(mutationErrorMessage(error, t("status.failedToLoad")));
+    } finally {
+      setBackupSettingsLoading(false);
+    }
+  }, [client, setGlobalStatus, t]);
+
   React.useEffect(() => {
     void fetchBackups();
   }, [fetchBackups]);
@@ -397,6 +463,10 @@ export function SettingsBackupsContainer() {
   React.useEffect(() => {
     void fetchAutoBackupSettings();
   }, [fetchAutoBackupSettings]);
+
+  React.useEffect(() => {
+    void fetchBackupSettings();
+  }, [fetchBackupSettings]);
 
   React.useEffect(() => {
     if (autoBackupSettings.enabled) {
@@ -413,8 +483,12 @@ export function SettingsBackupsContainer() {
         if (keys.includes("backup")) {
           void fetchBackups();
         }
+        if (keys.includes("backup.path")) {
+          void fetchBackupSettings();
+          void fetchBackups();
+        }
       },
-      [fetchBackups],
+      [fetchBackupSettings, fetchBackups],
     ),
   );
 
@@ -435,7 +509,7 @@ export function SettingsBackupsContainer() {
       return;
     }
 
-    if (window.confirm(UNSAVED_AUTO_BACKUP_CHANGES_MESSAGE)) {
+    if (window.confirm(UNSAVED_BACKUP_CHANGES_MESSAGE)) {
       autoBackupNavigationBlocker.proceed();
       return;
     }
@@ -453,7 +527,7 @@ export function SettingsBackupsContainer() {
       const nextPassword = password;
       const { data, error } = await client
         .mutation<CreateBackupMutationResult>(createBackupMutation, {
-          password: nextPassword,
+          input: { password: nextPassword },
         })
         .toPromise();
       if (error || !data?.createBackup) {
@@ -481,10 +555,10 @@ export function SettingsBackupsContainer() {
     try {
       const { data, error } = await client
         .mutation<DeleteBackupMutationResult>(deleteBackupMutation, {
-          filename: pendingDelete.filename,
+          input: { filename: pendingDelete.filename },
         })
         .toPromise();
-      if (error || data?.deleteBackup !== true) {
+      if (error || data?.deleteBackup?.deleted !== true) {
         throw error ?? new Error(t("status.failedToDelete"));
       }
 
@@ -505,7 +579,7 @@ export function SettingsBackupsContainer() {
     try {
       const { data, error } = await client
         .mutation<PrepareBackupDownloadMutationResult>(prepareBackupDownloadMutation, {
-          filename: backup.filename,
+          input: { filename: backup.filename },
         })
         .toPromise();
       const downloadUrl = data?.prepareBackupDownload?.downloadUrl;
@@ -579,6 +653,34 @@ export function SettingsBackupsContainer() {
     setGlobalStatus,
     t,
   ]);
+
+  const handleSaveBackupSettings = React.useCallback(async () => {
+    setBackupSettingsSaving(true);
+    try {
+      const customBackupPath = normalizeBackupPathDraft(backupPathDraft);
+      const { data, error } = await client
+        .mutation<UpdateBackupSettingsMutationResult>(updateBackupSettingsMutation, {
+          input: { customBackupPath },
+        })
+        .toPromise();
+      if (error || !data?.updateBackupSettings) {
+        throw error ?? new Error(t("status.failedToUpdate"));
+      }
+
+      setSavedBackupSettings(data.updateBackupSettings);
+      setBackupPathDraft(data.updateBackupSettings.customBackupPath ?? "");
+      await fetchBackups();
+      setGlobalStatus(t("settings.backupLocationSaved"));
+    } catch (error) {
+      setGlobalStatus(mutationErrorMessage(error, t("status.failedToUpdate")));
+    } finally {
+      setBackupSettingsSaving(false);
+    }
+  }, [backupPathDraft, client, fetchBackups, setGlobalStatus, t]);
+
+  const handleResetBackupPath = React.useCallback(() => {
+    setBackupPathDraft("");
+  }, []);
 
   if (pageLoading) {
     return (
@@ -760,6 +862,76 @@ export function SettingsBackupsContainer() {
           ) : null}
         </Card>
 
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("settings.backupLocationTitle")}</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.backupLocationDescription")}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.75fr)]">
+              <div className="space-y-2">
+                <Label htmlFor="backup-location-path">
+                  {t("settings.backupLocationCustomPath")}
+                </Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="backup-location-path"
+                    value={backupPathDraft}
+                    placeholder={savedBackupSettings.defaultBackupPath}
+                    disabled={backupSettingsSaving}
+                    onChange={(event) => setBackupPathDraft(event.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={backupSettingsSaving}
+                    onClick={() => setFolderBrowserOpen(true)}
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    {t("settings.backupLocationBrowse")}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-4">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
+                  {t("settings.backupLocationEffectivePath")}
+                </p>
+                <p className="break-all font-mono text-sm text-foreground">
+                  {savedBackupSettings.effectiveBackupPath || savedBackupSettings.defaultBackupPath}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              {t("settings.backupLocationHelp")}
+            </p>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Button
+                type="button"
+                onClick={() => void handleSaveBackupSettings()}
+                disabled={!canSaveBackupSettings}
+              >
+                {backupSettingsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {t("label.save")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleResetBackupPath}
+                disabled={backupSettingsSaving || backupPathDraft.trim().length === 0}
+              >
+                <RotateCcw className="h-4 w-4" />
+                {t("settings.backupLocationReset")}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-1">
             <p className="text-muted-foreground">{t("settings.backupsSection")}</p>
@@ -902,6 +1074,22 @@ export function SettingsBackupsContainer() {
           </Table>
         )}
       </div>
+
+      <FolderBrowserDialog
+        open={folderBrowserOpen}
+        onOpenChange={setFolderBrowserOpen}
+        initialPath={
+          backupPathDraft.trim() ||
+          savedBackupSettings.effectiveBackupPath ||
+          savedBackupSettings.defaultBackupPath ||
+          "/"
+        }
+        title={t("settings.backupLocationPickerTitle")}
+        onSelect={(path) => {
+          setBackupPathDraft(path);
+          setFolderBrowserOpen(false);
+        }}
+      />
 
       <Dialog
         open={createDialogOpen}

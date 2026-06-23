@@ -7,7 +7,7 @@ use crate::events::retention::{
     user_facing_domain_event_types,
 };
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
@@ -28,14 +28,35 @@ struct RecycleRootLibrary {
 }
 
 fn recycle_path_is_under_root(path: &str, root: &str) -> bool {
-    crate::catalog_workflow::library_path_is_under_root(path, root)
+    let path = crate::stored_paths::stored_path_to_path_buf(path);
+    let root = crate::stored_paths::stored_path_to_path_buf(root);
+    crate::recycle_bin::path_is_under_configured_root(&path, &root)
+}
+
+fn recycle_library_root_paths(
+    library: &RecycleEntryLibrary,
+    roots: &[RecycleRootLibrary],
+) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .filter(|root| root.library.id == library.id)
+        .map(|root| crate::stored_paths::stored_path_to_path_buf(&root.media_root))
+        .collect()
+}
+
+fn recycle_restore_destination_is_under_library_roots(
+    path: &Path,
+    library_roots: &[PathBuf],
+) -> bool {
+    crate::recycle_bin::restore_destination_is_under_configured_roots(path, library_roots)
 }
 
 fn recycled_item_from_entry(
     entry: crate::recycle_bin::RecycleEntry,
     library: &RecycleEntryLibrary,
 ) -> RecycledItem {
-    let file_name = Path::new(&entry.manifest.original_path)
+    let original_path = entry.manifest.original_path_buf();
+    let file_name = original_path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -112,10 +133,7 @@ impl AppUseCase {
         }
 
         if let Some(root) = roots.iter().find(|root| {
-            recycle_path_is_under_root(
-                &entry.manifest.original_path,
-                root.normalized_media_root.as_str(),
-            )
+            recycle_path_is_under_root(&entry.manifest.original_path, root.media_root.as_str())
         }) {
             return Ok(Some(root.library.clone()));
         }
@@ -197,8 +215,7 @@ impl AppUseCase {
                 .purge_recycle_entry_after_validation(
                     media_root,
                     config,
-                    &entry.entry_dir,
-                    &entry.manifest,
+                    &entry,
                     DomainEventActor::system(),
                 )
                 .await?
@@ -209,31 +226,31 @@ impl AppUseCase {
         Ok(purged)
     }
 
-    async fn purge_recycle_entry_after_validation(
+    pub(crate) async fn purge_recycle_entry_after_validation(
         &self,
         media_root: &str,
         config: &crate::recycle_bin::RecycleBinConfig,
-        entry_dir: &std::path::Path,
-        manifest: &crate::recycle_bin::RecycleManifest,
+        entry: &crate::recycle_bin::CommittedRecycleEntry,
         actor: impl Into<DomainEventActor>,
     ) -> AppResult<bool> {
         let actor = actor.into();
         if let Err(reason) = self
-            .validate_recycle_entry_before_permanent_delete(manifest)
+            .validate_recycle_entry_before_permanent_delete(&entry.manifest)
             .await
         {
             warn!(
                 media_root = %media_root,
-                path = %entry_dir.display(),
+                path = %entry.entry_dir.display(),
                 reason = %reason,
                 "quarantining recycle entry that failed purge validation"
             );
             if let Err(error) =
-                crate::recycle_bin::quarantine_entry(entry_dir, manifest, &reason).await
+                crate::recycle_bin::quarantine_entry(&entry.entry_dir, &entry.manifest, &reason)
+                    .await
             {
                 warn!(
                     media_root = %media_root,
-                    path = %entry_dir.display(),
+                    path = %entry.entry_dir.display(),
                     error = %error,
                     "failed to quarantine unsafe recycle entry"
                 );
@@ -241,9 +258,9 @@ impl AppUseCase {
             return Ok(false);
         }
 
-        let purged = crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await?;
+        let purged = crate::recycle_bin::purge_committed_entry(config, entry).await?;
         if purged {
-            self.record_recycle_entry_purged_event(actor, manifest)
+            self.record_recycle_entry_purged_event(actor, &entry.manifest)
                 .await;
         }
         Ok(purged)
@@ -314,7 +331,9 @@ impl AppUseCase {
         if media_root.trim().is_empty() {
             return Err("missing media root".to_string());
         }
-        if !std::path::Path::new(&manifest.original_path).starts_with(media_root) {
+        let media_root_path = crate::stored_paths::stored_path_to_path_buf(media_root);
+        let original_path = crate::stored_paths::stored_path_to_path_buf(&manifest.original_path);
+        if !crate::recycle_bin::path_is_under_configured_root(&original_path, &media_root_path) {
             return Err(format!(
                 "original path is outside manifest media root: original={} root={}",
                 manifest.original_path, media_root
@@ -344,7 +363,9 @@ impl AppUseCase {
                 replacement_path, replacement.file_path
             ));
         }
-        if !std::path::Path::new(&replacement.file_path).exists() {
+        let replacement_path_buf =
+            crate::stored_paths::stored_path_to_path_buf(&replacement.file_path);
+        if !replacement_path_buf.exists() {
             return Err(format!(
                 "replacement media file does not exist on disk: {}",
                 replacement.file_path
@@ -356,7 +377,10 @@ impl AppUseCase {
                 title_id, replacement.title_id
             ));
         }
-        if !std::path::Path::new(&replacement.file_path).starts_with(media_root) {
+        if !crate::recycle_bin::path_is_under_configured_root(
+            &replacement_path_buf,
+            &media_root_path,
+        ) {
             return Err(format!(
                 "replacement path is outside manifest media root: replacement={} root={}",
                 replacement.file_path, media_root
@@ -399,32 +423,105 @@ impl AppUseCase {
 
     pub(crate) async fn run_scheduled_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
+        let orphaned_media_files = {
+            let _same_path_upgrade_guard = self
+                .runtime
+                .imports
+                .same_path_upgrade_guard_lock
+                .lock()
+                .await;
+            match crate::import::upgrade::reconcile_same_path_upgrade_guards_locked(self).await {
+                Ok(reconciled) if reconciled > 0 => {
+                    info!(reconciled, "reconciled same-path upgrade guards")
+                }
+                Ok(_) => {}
+                Err(error) => warn!(
+                    error = %error,
+                    "failed to reconcile same-path upgrade guards"
+                ),
+            }
+
+            let protected_upgrade_file_ids =
+                match crate::import::upgrade::same_path_upgrade_guard_media_file_ids_locked(self)
+                    .await
+                {
+                    Ok(ids) => ids,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "failed to collect same-path upgrade guard protected media files"
+                        );
+                        HashSet::new()
+                    }
+                };
+
+            // 1. Orphaned media files (file_path no longer exists on disk).
+            // Root availability is checked before probing the file path so a
+            // disconnected media root cannot make every row look orphaned.
+            let all_files = self
+                .services
+                .workflow
+                .housekeeping
+                .list_media_files_with_roots()
+                .await?;
+            let mut orphaned_media_files = 0u32;
+            for media_file in all_files {
+                if protected_upgrade_file_ids.contains(&media_file.media_file_id) {
+                    continue;
+                }
+
+                let file_path = crate::stored_paths::stored_path_to_path_buf(&media_file.file_path);
+                let roots = media_file
+                    .root_paths
+                    .iter()
+                    .map(|root| crate::stored_paths::stored_path_to_path_buf(root))
+                    .collect::<Vec<_>>();
+                if let Err(error) =
+                    crate::fs_safety::resolve_available_root_for_path(&file_path, &roots)
+                {
+                    warn!(
+                        error = %error,
+                        file_id = %media_file.media_file_id,
+                        path = %file_path.display(),
+                        "skipping orphan media-file cleanup because media root is unavailable"
+                    );
+                    continue;
+                }
+
+                match std::fs::symlink_metadata(&file_path) {
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            file_id = %media_file.media_file_id,
+                            path = %file_path.display(),
+                            "skipping orphan media-file cleanup because file status could not be read"
+                        );
+                        continue;
+                    }
+                }
+
+                if let Err(error) = self
+                    .delete_media_file_record_with_dependents(&media_file.media_file_id)
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        file_id = %media_file.media_file_id,
+                        "skipping orphan media-file cleanup because row cleanup failed"
+                    );
+                    continue;
+                }
+                orphaned_media_files = orphaned_media_files.saturating_add(1);
+            }
+            orphaned_media_files
+        };
+
         let general_settings = self.general_settings().await?;
         let history_retention_days = general_settings.history_retention_days as i64;
         let user_facing_domain_event_types = user_facing_domain_event_types();
         let operational_domain_event_types = operational_domain_event_types();
-
-        // 1. Orphaned media files (file_path no longer exists on disk)
-        let all_files = self
-            .services
-            .workflow
-            .housekeeping
-            .list_all_media_file_paths()
-            .await?;
-        let orphan_ids: Vec<String> = all_files
-            .into_iter()
-            .filter(|(_, path)| !std::path::Path::new(path).exists())
-            .map(|(id, _)| id)
-            .collect();
-        let orphaned_media_files = if !orphan_ids.is_empty() {
-            self.services
-                .workflow
-                .housekeeping
-                .delete_media_files_by_ids(&orphan_ids)
-                .await?
-        } else {
-            0
-        };
 
         let stale_release_decisions = self
             .services
@@ -591,9 +688,17 @@ impl AppUseCase {
         let roots = self.recycle_root_libraries().await?;
 
         let mut all_entries = Vec::new();
+        let mut list_tasks = tokio::task::JoinSet::new();
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            match crate::recycle_bin::list_entries(&config, &media_root).await {
-                Ok(entries) => {
+            list_tasks.spawn(async move {
+                let entries = crate::recycle_bin::list_entries(&config, &media_root).await;
+                (media_root, entries)
+            });
+        }
+
+        while let Some(result) = list_tasks.join_next().await {
+            match result {
+                Ok((_media_root, Ok(entries))) => {
                     for entry in entries {
                         let Some(library) =
                             self.resolve_recycle_entry_library(&entry, &roots).await?
@@ -605,8 +710,11 @@ impl AppUseCase {
                         }
                     }
                 }
-                Err(e) => {
+                Ok((media_root, Err(e))) => {
                     info!(error = %e, media_root = %media_root, "failed to list recycle entries")
+                }
+                Err(error) => {
+                    info!(error = %error, "recycle entry list task failed")
                 }
             }
         }
@@ -644,8 +752,18 @@ impl AppUseCase {
                     scryer_domain::LibraryPermission::ManageTitles,
                 )
                 .await?;
+                let original_path = manifest.original_path_buf();
+                let library_roots = recycle_library_root_paths(&library, &roots);
+                if !recycle_restore_destination_is_under_library_roots(
+                    &original_path,
+                    &library_roots,
+                ) {
+                    return Err(AppError::Validation(format!(
+                        "refusing to restore recycle entry {} because original path is outside the resolved library roots: {}",
+                        entry_id, manifest.original_path
+                    )));
+                }
 
-                let original_path = std::path::Path::new(&manifest.original_path);
                 let file_name = original_path
                     .file_name()
                     .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
@@ -658,8 +776,77 @@ impl AppUseCase {
                     )));
                 }
 
-                crate::recycle_bin::restore_from_recycle(&recycled_file, original_path).await?;
-                let _ = tokio::fs::remove_dir_all(&entry_dir).await;
+                // User-facing restore must never overwrite a live file at the
+                // original path; restore_from_recycle diverts to a `-restored`
+                // sibling on conflict and returns where it actually landed.
+                let restored_to = crate::recycle_bin::restore_from_recycle_with_roots(
+                    &recycled_file,
+                    &original_path,
+                    false,
+                    &library_roots,
+                )
+                .await?;
+                if let Err(error) =
+                    crate::fs_safety::remove_dir_all_safely_if_exists(&entry_dir).await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        entry_dir = %entry_dir.display(),
+                        restored_to = %restored_to.display(),
+                        "failed to remove recycle entry directory after restore"
+                    );
+                }
+                if let Some(title_id) = manifest.title_id.as_deref() {
+                    let restored_library_file = crate::LibraryFile {
+                        path: restored_to.to_string_lossy().to_string(),
+                        display_name: original_path
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        nfo_path: None,
+                        size_bytes: tokio::fs::metadata(&restored_to)
+                            .await
+                            .ok()
+                            .and_then(|metadata| i64::try_from(metadata.len()).ok()),
+                        source_signature_scheme: None,
+                        source_signature_value: None,
+                    };
+                    match self.services.catalog.titles.get_by_id(title_id).await {
+                        Ok(Some(title)) => {
+                            if let Err(error) = self
+                                .scan_title_library_with_discovered_files(
+                                    actor,
+                                    title,
+                                    vec![restored_library_file],
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    title_id,
+                                    restored_to = %restored_to.display(),
+                                    "failed to scan title after restoring recycled file"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                title_id,
+                                restored_to = %restored_to.display(),
+                                "skipping restored file scan because the title no longer exists"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                title_id,
+                                restored_to = %restored_to.display(),
+                                "failed to load title before restored file scan"
+                            );
+                        }
+                    }
+                }
                 return Ok(true);
             }
         }
@@ -676,12 +863,12 @@ impl AppUseCase {
         let roots = self.recycle_root_libraries().await?;
 
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            if let Some((entry_dir, manifest)) =
-                crate::recycle_bin::find_entry(&config, entry_id).await?
+            if let Some(committed_entry) =
+                crate::recycle_bin::find_committed_entry(&config, entry_id).await?
             {
                 let entry = crate::recycle_bin::RecycleEntry {
                     entry_id: entry_id.to_string(),
-                    manifest: manifest.clone(),
+                    manifest: committed_entry.manifest.clone(),
                     media_root: media_root.clone(),
                 };
                 let library = self
@@ -701,8 +888,7 @@ impl AppUseCase {
                     .purge_recycle_entry_after_validation(
                         &media_root,
                         &config,
-                        &entry_dir,
-                        &manifest,
+                        &committed_entry,
                         actor,
                     )
                     .await;
@@ -756,8 +942,7 @@ impl AppUseCase {
                             .purge_recycle_entry_after_validation(
                                 &media_root,
                                 &config,
-                                &entry.entry_dir,
-                                &entry.manifest,
+                                &entry,
                                 actor,
                             )
                             .await
@@ -778,5 +963,58 @@ impl AppUseCase {
             }
         }
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_library() -> RecycleEntryLibrary {
+        RecycleEntryLibrary {
+            id: "library-1".to_string(),
+            name: "Library".to_string(),
+        }
+    }
+
+    #[test]
+    fn recycle_library_root_paths_use_raw_media_root_for_filesystem_policy() {
+        let library = test_library();
+        let roots = vec![RecycleRootLibrary {
+            media_root: r"/tmp/media\raw".to_string(),
+            normalized_media_root: "/tmp/media/raw".to_string(),
+            library: library.clone(),
+        }];
+
+        let policy_roots = recycle_library_root_paths(&library, &roots);
+        assert_eq!(policy_roots, vec![PathBuf::from(r"/tmp/media\raw")]);
+
+        #[cfg(not(windows))]
+        assert!(
+            !recycle_restore_destination_is_under_library_roots(
+                Path::new("/tmp/media/raw/Movie.mkv"),
+                &policy_roots
+            ),
+            "non-Windows restore validation must fail closed for ambiguous raw roots"
+        );
+    }
+
+    #[test]
+    fn recycle_restore_destination_accepts_normal_raw_root() {
+        let library = test_library();
+        let roots = vec![RecycleRootLibrary {
+            media_root: "/tmp/media".to_string(),
+            normalized_media_root: "/tmp/media".to_string(),
+            library: library.clone(),
+        }];
+
+        let policy_roots = recycle_library_root_paths(&library, &roots);
+        assert!(
+            recycle_restore_destination_is_under_library_roots(
+                Path::new("/tmp/media/Movie.mkv"),
+                &policy_roots
+            ),
+            "normal raw roots should still allow file destinations under the root"
+        );
     }
 }

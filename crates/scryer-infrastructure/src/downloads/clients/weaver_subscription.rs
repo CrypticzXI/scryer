@@ -2,24 +2,25 @@
 //!
 //! Connects to Weaver's GraphQL WebSocket endpoint using the `graphql-ws`
 //! protocol and receives real-time job snapshots. These are mapped to
-//! scryer's `DownloadQueueItem` and broadcast through the same channel
-//! that the HTTP-based download queue poller uses for NZBGet/SABnzbd.
+//! scryer's `DownloadQueueItem` and fed into scryer's tracked-download
+//! runtime.
 //!
 //! If the WebSocket connection fails repeatedly, the bridge automatically
 //! falls back to GraphQL HTTP polling so the UI stays up-to-date. When the
 //! WebSocket reconnects the poller is stopped and real-time push resumes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use futures_util::{SinkExt, StreamExt};
 use scryer_application::{
-    AppResult, AppUseCase, DownloadClient, DownloadClientRemotePathMapping,
+    AppResult, DownloadClient, DownloadClientRemotePathMapping,
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
-    publish_download_queue_snapshot_events,
+    tracked_downloads::{
+        TrackedDownloadSnapshotIngestHandle, TrackedDownloadSnapshotScope,
+        TrackedDownloadSnapshotUpdate,
+    },
 };
-use scryer_domain::{
-    CompletedDownload, DownloadClientConfig, DownloadQueueItem, DownloadQueueState,
-};
+use scryer_domain::{CompletedDownload, DownloadClientConfig, DownloadQueueItem};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::{ClientRequestBuilder, Message};
 use tokio_util::sync::CancellationToken;
@@ -173,31 +174,22 @@ impl WeaverSubscriptionBridgeClient {
 
 /// Start a WebSocket subscription bridge to Weaver.
 ///
-/// This replaces the HTTP polling loop (`start_download_queue_poller`) when
-/// Weaver is the active download client. It connects to Weaver's `jobUpdates`
-/// subscription and:
+/// This replaces generic HTTP queue polling when Weaver is the active download
+/// client. It connects to Weaver's queue subscriptions and:
 ///
 /// 1. Maps incoming job snapshots to `Vec<DownloadQueueItem>`
-/// 2. Projects queue changes onto the domain event bus
-/// 3. Triggers auto-import for newly completed downloads
+/// 2. Looks up exact completed-download rows when Weaver reports completion
+/// 3. Feeds observations into Scryer's tracked-download runtime
 ///
 /// Reconnects automatically on disconnect with exponential backoff.
 /// After [`POLL_FALLBACK_THRESHOLD`] consecutive failures the bridge starts
 /// a GraphQL HTTP polling loop so that download-queue data keeps flowing to
 /// the UI. When the WebSocket reconnects the poller is stopped automatically.
 pub async fn start_weaver_subscription_bridge(
-    app: AppUseCase,
     token: CancellationToken,
     bridge_client: WeaverSubscriptionBridgeClient,
+    ingest: TrackedDownloadSnapshotIngestHandle,
 ) {
-    let actor = match app.find_or_create_default_user().await {
-        Ok(actor) => actor,
-        Err(error) => {
-            warn!(error = %error, "weaver subscription bridge failed to resolve actor");
-            return;
-        }
-    };
-
     let mut backoff_secs: u64 = 5;
     let max_backoff: u64 = 60;
     let mut consecutive_failures: u32 = 0;
@@ -217,7 +209,7 @@ pub async fn start_weaver_subscription_bridge(
             "connecting to weaver WebSocket"
         );
 
-        match run_subscription(&app, &actor, &bridge_client, &token, &mut last_cursor).await {
+        match run_subscription(&bridge_client, &ingest, &token, &mut last_cursor).await {
             SubscriptionOutcome::Shutdown => {
                 stop_fallback_poller(&mut poll_cancel);
                 info!("weaver subscription bridge stopped cleanly");
@@ -238,9 +230,8 @@ pub async fn start_weaver_subscription_bridge(
                     let poll_token = token.child_token();
                     poll_cancel = Some(poll_token.clone());
                     tokio::spawn(run_fallback_poller(
-                        app.clone(),
-                        actor.clone(),
                         bridge_client.clone(),
+                        ingest.clone(),
                         poll_token,
                     ));
                 }
@@ -283,15 +274,12 @@ fn stop_fallback_poller(poll_cancel: &mut Option<CancellationToken>) {
 /// Polls Weaver directly every [`POLL_FALLBACK_INTERVAL_SECS`] seconds and
 /// broadcasts results through the same channel the subscription uses.
 async fn run_fallback_poller(
-    app: AppUseCase,
-    actor: scryer_domain::User,
     bridge_client: WeaverSubscriptionBridgeClient,
+    ingest: TrackedDownloadSnapshotIngestHandle,
     token: CancellationToken,
 ) {
     let mut interval =
         tokio::time::interval(std::time::Duration::from_secs(POLL_FALLBACK_INTERVAL_SECS));
-    let mut previous_items = HashMap::new();
-    let mut imported_job_ids = HashSet::new();
 
     loop {
         tokio::select! {
@@ -301,15 +289,8 @@ async fn run_fallback_poller(
             }
             _ = interval.tick() => {
                 match collect_weaver_fallback_items(&bridge_client).await {
-                    Ok(mut items) => {
-                        process_download_queue_items(
-                            &mut items,
-                            &app,
-                            &actor,
-                            &mut imported_job_ids,
-                            &mut previous_items,
-                            &bridge_client,
-                        ).await;
+                    Ok(items) => {
+                        publish_authoritative_weaver_snapshot(&bridge_client, &ingest, items).await;
                     }
                     Err(error) => {
                         warn!(error = %error, "weaver fallback poll failed");
@@ -350,15 +331,12 @@ enum SubscriptionOutcome {
 }
 
 struct WsMessageState<'a> {
-    imported_job_ids: &'a mut HashSet<String>,
-    previous_items: &'a mut HashMap<String, DownloadQueueItem>,
     last_cursor: &'a mut Option<String>,
 }
 
 async fn run_subscription(
-    app: &AppUseCase,
-    actor: &scryer_domain::User,
     bridge_client: &WeaverSubscriptionBridgeClient,
+    ingest: &TrackedDownloadSnapshotIngestHandle,
     token: &CancellationToken,
     last_cursor: &mut Option<String>,
 ) -> SubscriptionOutcome {
@@ -482,9 +460,6 @@ async fn run_subscription(
 
     // ── From here on the subscription is live; any failure is a Disconnected. ──
 
-    let mut imported_job_ids: HashSet<String> = HashSet::new();
-    let mut previous_items = HashMap::new();
-
     loop {
         let msg = tokio::select! {
             _ = token.cancelled() => return SubscriptionOutcome::Shutdown,
@@ -500,16 +475,13 @@ async fn run_subscription(
         match msg {
             Message::Text(text) => {
                 let mut message_state = WsMessageState {
-                    imported_job_ids: &mut imported_job_ids,
-                    previous_items: &mut previous_items,
                     last_cursor: &mut *last_cursor,
                 };
                 if let Err(e) = handle_ws_message(
                     text.as_ref(),
-                    app,
-                    actor,
                     &mut write,
                     bridge_client,
+                    ingest,
                     &mut message_state,
                 )
                 .await
@@ -530,10 +502,9 @@ async fn run_subscription(
 
 async fn handle_ws_message<S>(
     text: &str,
-    app: &AppUseCase,
-    actor: &scryer_domain::User,
     write: &mut futures_util::stream::SplitSink<S, Message>,
     bridge_client: &WeaverSubscriptionBridgeClient,
+    ingest: &TrackedDownloadSnapshotIngestHandle,
     state: &mut WsMessageState<'_>,
 ) -> Result<(), String>
 where
@@ -554,15 +525,8 @@ where
                     "snapshot" => {
                         let parsed: QueueSnapshotsPayload = serde_json::from_value(payload)
                             .map_err(|e| format!("invalid queueSnapshots payload: {e}"))?;
-                        process_job_snapshot(
-                            &parsed.queue_snapshots.items,
-                            app,
-                            actor,
-                            &mut *state.imported_job_ids,
-                            &mut *state.previous_items,
-                            bridge_client,
-                        )
-                        .await;
+                        let items = map_weaver_items(bridge_client, &parsed.queue_snapshots.items);
+                        publish_authoritative_weaver_snapshot(bridge_client, ingest, items).await;
                     }
                     "events" => {
                         let parsed: QueueEventsPayload = serde_json::from_value(payload)
@@ -571,15 +535,7 @@ where
                         if parsed.queue_events.kind == "ITEM_COMPLETED"
                             && let Some(item) = parsed.queue_events.item.as_ref()
                         {
-                            let items = vec![bridge_client.map_queue_item(item)];
-                            maybe_import_completed_items(
-                                &items,
-                                app,
-                                actor,
-                                &mut *state.imported_job_ids,
-                                bridge_client,
-                            )
-                            .await;
+                            publish_weaver_completed_delta(bridge_client, ingest, item).await;
                         }
                     }
                     _ => {
@@ -609,141 +565,65 @@ where
     Ok(())
 }
 
-fn emit_queue_metrics(items: &[scryer_domain::DownloadQueueItem]) {
-    let mut counts = [0u64; 9];
-    for item in items {
-        match item.state {
-            DownloadQueueState::Queued => counts[0] += 1,
-            DownloadQueueState::Downloading => counts[1] += 1,
-            DownloadQueueState::Paused => counts[2] += 1,
-            DownloadQueueState::Completed => counts[3] += 1,
-            DownloadQueueState::ImportPending => counts[4] += 1,
-            DownloadQueueState::Failed => counts[5] += 1,
-            DownloadQueueState::Verifying => counts[6] += 1,
-            DownloadQueueState::Repairing => counts[7] += 1,
-            DownloadQueueState::Extracting => counts[8] += 1,
-        }
-    }
-    let labels = [
-        "queued",
-        "downloading",
-        "paused",
-        "completed",
-        "import_pending",
-        "failed",
-        "verifying",
-        "repairing",
-        "extracting",
-    ];
-    for (label, &count) in labels.iter().zip(&counts) {
-        metrics::gauge!("scryer_download_queue_items", "state" => *label).set(count as f64);
-    }
-}
-
-async fn process_job_snapshot(
+fn map_weaver_items(
+    bridge_client: &WeaverSubscriptionBridgeClient,
     jobs: &[WeaverQueueItem],
-    app: &AppUseCase,
-    actor: &scryer_domain::User,
-    imported_job_ids: &mut HashSet<String>,
-    previous_items: &mut HashMap<String, scryer_domain::DownloadQueueItem>,
-    bridge_client: &WeaverSubscriptionBridgeClient,
-) {
-    let mut items: Vec<scryer_domain::DownloadQueueItem> = jobs
-        .iter()
+) -> Vec<DownloadQueueItem> {
+    jobs.iter()
         .map(|job| bridge_client.map_queue_item(job))
-        .collect();
-
-    process_download_queue_items(
-        &mut items,
-        app,
-        actor,
-        imported_job_ids,
-        previous_items,
-        bridge_client,
-    )
-    .await;
+        .collect()
 }
 
-async fn process_download_queue_items(
-    items: &mut [scryer_domain::DownloadQueueItem],
-    app: &AppUseCase,
-    actor: &scryer_domain::User,
-    imported_job_ids: &mut HashSet<String>,
-    previous_items: &mut HashMap<String, scryer_domain::DownloadQueueItem>,
+async fn publish_authoritative_weaver_snapshot(
     bridge_client: &WeaverSubscriptionBridgeClient,
+    ingest: &TrackedDownloadSnapshotIngestHandle,
+    items: Vec<DownloadQueueItem>,
 ) {
-    scryer_application::enrich_download_queue_items_from_submissions(app, items).await;
-
-    emit_queue_metrics(items);
-
-    publish_download_queue_snapshot_events(app, Some(actor.id.clone()), previous_items, items)
-        .await;
-
-    maybe_import_completed_items(items, app, actor, imported_job_ids, bridge_client).await;
+    let completed_downloads = load_completed_downloads_for_import(bridge_client, &items).await;
+    let update = TrackedDownloadSnapshotUpdate {
+        scope: TrackedDownloadSnapshotScope::AuthoritativeForClient {
+            client_id: Some(bridge_client.client_id.clone()),
+            client_type: bridge_client.client_type.clone(),
+        },
+        items,
+        completed_downloads,
+        actor_id: None,
+    };
+    if let Err(error) = ingest.publish(update).await {
+        warn!(error = %error, "weaver: failed to publish authoritative snapshot");
+    }
 }
 
-async fn maybe_import_completed_items(
-    items: &[scryer_domain::DownloadQueueItem],
-    app: &AppUseCase,
-    actor: &scryer_domain::User,
-    imported_job_ids: &mut HashSet<String>,
+async fn publish_weaver_completed_delta(
     bridge_client: &WeaverSubscriptionBridgeClient,
+    ingest: &TrackedDownloadSnapshotIngestHandle,
+    item: &WeaverQueueItem,
 ) {
-    // Trigger import for newly completed downloads.
-    let newly_completed: Vec<&scryer_domain::DownloadQueueItem> = items
-        .iter()
-        .filter(|item| item.state == DownloadQueueState::Completed)
-        .filter(|item| !imported_job_ids.contains(&item.download_client_item_id))
-        .collect();
-
-    if !newly_completed.is_empty() {
-        tracing::info!(
-            count = newly_completed.len(),
-            items = %newly_completed.iter().map(|i| format!(
-                "{}(id={}, origin={})", i.title_name, i.download_client_item_id, i.is_scryer_origin
-            )).collect::<Vec<_>>().join(", "),
-            "weaver: newly completed downloads detected via WS subscription"
-        );
-
-        let completed_downloads =
-            load_completed_downloads_for_import(bridge_client, &newly_completed).await;
-        let processed = scryer_application::try_import_provided_completed_downloads(
-            app,
-            actor,
-            items,
-            completed_downloads,
-        )
-        .await;
-
-        tracing::debug!(
-            processed_count = processed.len(),
-            deferred_count = newly_completed.len()
-                - newly_completed
-                    .iter()
-                    .filter(|i| processed.contains(&i.download_client_item_id))
-                    .count(),
-            "weaver: import attempt complete — deferred items will be retried on next snapshot"
-        );
-
-        // Only suppress future retries for IDs that were actually processed
-        // (imported, already-imported, or permanently non-importable).
-        // Items skipped due to transient conditions (no matching
-        // CompletedDownload yet, empty dest_dir) will be retried on the
-        // next snapshot.
-        for id in processed {
-            imported_job_ids.insert(id);
-        }
+    let item = bridge_client.map_queue_item(item);
+    let completed_downloads =
+        load_completed_downloads_for_import(bridge_client, std::slice::from_ref(&item)).await;
+    let update = TrackedDownloadSnapshotUpdate {
+        scope: TrackedDownloadSnapshotScope::Delta,
+        items: vec![item],
+        completed_downloads,
+        actor_id: None,
+    };
+    if let Err(error) = ingest.publish(update).await {
+        warn!(error = %error, "weaver: failed to publish completed delta");
     }
 }
 
 async fn load_completed_downloads_for_import(
     bridge_client: &WeaverSubscriptionBridgeClient,
-    completed_items: &[&scryer_domain::DownloadQueueItem],
+    completed_items: &[DownloadQueueItem],
 ) -> Vec<CompletedDownload> {
     let mut seen = HashSet::new();
     let mut downloads = Vec::new();
 
     for item in completed_items {
+        if item.state != scryer_domain::DownloadQueueState::Completed {
+            continue;
+        }
         let source_ref = item.download_client_item_id.trim();
         if source_ref.is_empty() || !seen.insert(source_ref.to_string()) {
             continue;
@@ -775,4 +655,179 @@ async fn load_completed_downloads_for_import(
     }
 
     downloads
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use scryer_domain::{DownloadClientConfig, DownloadClientStatus, DownloadQueueState};
+    use serde_json::json;
+    use wiremock::matchers::{body_string_contains, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::super::weaver::{WeaverQueueItem, WeaverQueueState};
+    use super::*;
+
+    fn test_config() -> DownloadClientConfig {
+        test_config_with_host("weaver.local", "9090")
+    }
+
+    fn test_config_with_host(host: &str, port: &str) -> DownloadClientConfig {
+        DownloadClientConfig {
+            id: "weaver-client".to_string(),
+            name: "Weaver".to_string(),
+            client_type: "weaver".to_string(),
+            config_json: format!(r#"{{"api_key":"wvr_test","host":"{host}","port":"{port}"}}"#),
+            client_priority: 1,
+            is_enabled: true,
+            status: DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn test_config_for_server(server: &MockServer) -> DownloadClientConfig {
+        let uri = server.uri();
+        let endpoint = uri
+            .strip_prefix("http://")
+            .expect("wiremock server should use http");
+        let (host, port) = endpoint
+            .rsplit_once(':')
+            .expect("wiremock server uri should include a port");
+        test_config_with_host(host, port)
+    }
+
+    fn queue_item(id: u64, state: WeaverQueueState) -> WeaverQueueItem {
+        WeaverQueueItem {
+            id,
+            name: format!("Weaver Job {id}"),
+            state,
+            error: None,
+            progress_percent: 0.0,
+            total_bytes: 100,
+            category: Some("movie".to_string()),
+            attributes: Vec::new(),
+            client_request_id: None,
+            output_dir: None,
+            created_at: Utc::now(),
+            completed_at: None,
+            attention: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn authoritative_snapshot_publishes_ingest_update() {
+        let bridge = WeaverSubscriptionBridgeClient::from_config(&test_config())
+            .expect("bridge client should parse");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
+
+        publish_authoritative_weaver_snapshot(
+            &bridge,
+            &ingest,
+            vec![bridge.map_queue_item(&queue_item(42, WeaverQueueState::Queued))],
+        )
+        .await;
+
+        let update = rx.recv().await.expect("snapshot update should be sent");
+        assert!(matches!(
+            update.scope,
+            TrackedDownloadSnapshotScope::AuthoritativeForClient {
+                ref client_id,
+                ref client_type,
+            } if client_id.as_deref() == Some("weaver-client") && client_type == "weaver"
+        ));
+        assert_eq!(update.items.len(), 1);
+        assert_eq!(update.items[0].client_id, "weaver-client");
+        assert_eq!(update.items[0].client_type, "weaver");
+        assert_eq!(update.items[0].state, DownloadQueueState::Queued);
+        assert!(update.completed_downloads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completed_delta_publishes_empty_completed_rows_when_history_is_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("historyItem(id"))
+            .and(body_string_contains("\"id\":42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItem": null
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let bridge = WeaverSubscriptionBridgeClient::from_config(&test_config_for_server(&server))
+            .expect("bridge client should parse");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
+
+        publish_weaver_completed_delta(
+            &bridge,
+            &ingest,
+            &queue_item(42, WeaverQueueState::Completed),
+        )
+        .await;
+
+        let update = rx.recv().await.expect("delta update should be sent");
+        assert!(matches!(update.scope, TrackedDownloadSnapshotScope::Delta));
+        assert_eq!(update.items.len(), 1);
+        assert_eq!(update.items[0].state, DownloadQueueState::Completed);
+        assert!(update.completed_downloads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completed_delta_publishes_stamped_completed_row_when_history_is_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("historyItem(id"))
+            .and(body_string_contains("\"id\":42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItem": {
+                        "id": 42,
+                        "name": "Weaver Job 42",
+                        "state": "COMPLETE",
+                        "error": null,
+                        "progressPercent": 100.0,
+                        "totalBytes": 123_u64,
+                        "category": "movie",
+                        "attributes": [],
+                        "clientRequestId": null,
+                        "outputDir": "/downloads/Weaver Job 42",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "completedAt": "2024-01-01T00:10:00Z",
+                        "attention": null
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let bridge = WeaverSubscriptionBridgeClient::from_config(&test_config_for_server(&server))
+            .expect("bridge client should parse");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
+
+        publish_weaver_completed_delta(
+            &bridge,
+            &ingest,
+            &queue_item(42, WeaverQueueState::Completed),
+        )
+        .await;
+
+        let update = rx.recv().await.expect("delta update should be sent");
+        assert!(matches!(update.scope, TrackedDownloadSnapshotScope::Delta));
+        assert_eq!(update.completed_downloads.len(), 1);
+        assert_eq!(update.completed_downloads[0].download_client_item_id, "42");
+        assert_eq!(update.completed_downloads[0].client_id, "weaver-client");
+        assert_eq!(update.completed_downloads[0].client_type, "weaver");
+    }
 }

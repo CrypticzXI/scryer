@@ -1,14 +1,15 @@
-use async_graphql::{Context, Error, MaybeUndefined, Object, Result as GqlResult};
+use async_graphql::{Context, ID, MaybeUndefined, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
+    AppError, DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
 };
 use scryer_domain::{AppPermission, NewDownloadClientConfig, NewIndexerConfig};
 
 use crate::context::{actor_from_ctx, app_from_ctx, require_config_app_permission, to_gql_error};
 use crate::mappers::{
-    from_download_client_config, from_indexer_config_sync_result, from_indexer_config_with_fields,
-    from_rss_sync_report, from_subtitle_provider_config,
+    from_download_client_config_with_fields, from_indexer_config_sync_result,
+    from_indexer_config_with_fields, from_rss_sync_report, from_subtitle_provider_config,
+    provider_config_values_to_json,
 };
 use crate::types::*;
 
@@ -17,15 +18,13 @@ fn should_seed_download_client_routing(client_type: &str) -> bool {
 }
 
 fn optional_datetime_input(
-    value: MaybeUndefined<String>,
-    field_name: &str,
+    value: MaybeUndefined<DateTime<Utc>>,
+    _field_name: &str,
 ) -> GqlResult<Option<Option<DateTime<Utc>>>> {
     match value {
         MaybeUndefined::Undefined => Ok(None),
         MaybeUndefined::Null => Ok(Some(None)),
-        MaybeUndefined::Value(value) => DateTime::parse_from_rfc3339(&value)
-            .map(|value| Some(Some(value.with_timezone(&Utc))))
-            .map_err(|error| Error::new(format!("invalid {field_name}: {error}"))),
+        MaybeUndefined::Value(value) => Ok(Some(Some(value))),
     }
 }
 
@@ -34,6 +33,63 @@ async fn enrich_download_client_config_json(
     config_json: String,
 ) -> GqlResult<String> {
     Ok(config_json)
+}
+
+fn download_client_config_fields(
+    app: &scryer_application::AppUseCase,
+    client_type: &str,
+) -> Vec<scryer_domain::ConfigFieldDef> {
+    app.available_download_client_provider_types()
+        .into_iter()
+        .find_map(|(provider_type, _, fields, _)| {
+            provider_type
+                .eq_ignore_ascii_case(client_type)
+                .then_some(fields)
+        })
+        .unwrap_or_default()
+}
+
+fn provider_config_key_looks_secret(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized.contains("password")
+        || normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized == "api_key"
+        || normalized == "apikey"
+        || normalized.contains("api_key")
+}
+
+fn merge_omitted_provider_secrets(
+    incoming_json: String,
+    existing_json: &str,
+    config_fields: &[scryer_domain::ConfigFieldDef],
+) -> scryer_application::AppResult<String> {
+    let mut incoming = serde_json::from_str::<serde_json::Value>(&incoming_json)
+        .map_err(|error| scryer_application::AppError::Validation(error.to_string()))?;
+    let existing = serde_json::from_str::<serde_json::Value>(existing_json)
+        .map_err(|error| scryer_application::AppError::Validation(error.to_string()))?;
+    let Some(incoming_object) = incoming.as_object_mut() else {
+        return Ok(incoming_json);
+    };
+    let Some(existing_object) = existing.as_object() else {
+        return Ok(incoming_json);
+    };
+    let configured_secret_keys = config_fields
+        .iter()
+        .filter(|field| field.field_type == scryer_domain::ConfigFieldType::Password)
+        .map(|field| field.key.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    for (key, value) in existing_object {
+        let is_secret =
+            configured_secret_keys.contains(key.as_str()) || provider_config_key_looks_secret(key);
+        if is_secret && !incoming_object.contains_key(key) {
+            incoming_object.insert(key.clone(), value.clone());
+        }
+    }
+
+    serde_json::to_string(&incoming)
+        .map_err(|error| scryer_application::AppError::Validation(error.to_string()))
 }
 
 #[derive(Default)]
@@ -48,6 +104,11 @@ impl ConfigMutations {
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let config_json = input
+            .config
+            .map(provider_config_values_to_json)
+            .transpose()
+            .map_err(to_gql_error)?;
         let config = app
             .create_indexer_config(
                 &actor,
@@ -59,7 +120,7 @@ impl ConfigMutations {
                     is_enabled: input.is_enabled.unwrap_or(true),
                     enable_interactive_search: input.enable_interactive_search.unwrap_or(true),
                     enable_auto_search: input.enable_auto_search.unwrap_or(true),
-                    config_json: input.config_json,
+                    config_json,
                 },
             )
             .await
@@ -78,11 +139,16 @@ impl ConfigMutations {
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let config_json = input
+            .config
+            .map(provider_config_values_to_json)
+            .transpose()
+            .map_err(to_gql_error)?;
         let config = app
             .update_indexer_config(
                 &actor,
                 IndexerConfigUpdate {
-                    id: input.id,
+                    id: input.id.to_string(),
                     name: input.name,
                     provider_type: input.provider_type,
                     derived_base_url: None,
@@ -95,7 +161,7 @@ impl ConfigMutations {
                     managed_child_key: None,
                     managed_metadata_json: None,
                     caps_snapshot_json: None,
-                    config_json: input.config_json,
+                    config_json,
                 },
             )
             .await
@@ -109,14 +175,18 @@ impl ConfigMutations {
     async fn delete_indexer_config(
         &self,
         ctx: &Context<'_>,
-        input: DeleteIndexerConfigInput,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<DeleteIndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.delete_indexer_config(&actor, &input.id)
+        let id = id.to_string();
+        app.delete_indexer_config(&actor, &id)
             .await
-            .map_err(to_gql_error)
-            .map(|_| true)
+            .map_err(to_gql_error)?;
+        Ok(DeleteIndexerConfigPayload {
+            id: ID::from(id),
+            deleted: true,
+        })
     }
 
     async fn create_download_client_config(
@@ -126,8 +196,9 @@ impl ConfigMutations {
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let config_json = provider_config_values_to_json(input.config).map_err(to_gql_error)?;
         let config_json =
-            enrich_download_client_config_json(&input.client_type, input.config_json).await?;
+            enrich_download_client_config_json(&input.client_type, config_json).await?;
         let config = app
             .create_download_client_config(
                 &actor,
@@ -148,7 +219,11 @@ impl ConfigMutations {
                 .map_err(to_gql_error)?;
         }
 
-        Ok(from_download_client_config(config))
+        let config_fields = download_client_config_fields(&app, &config.client_type);
+        Ok(from_download_client_config_with_fields(
+            config,
+            &config_fields,
+        ))
     }
 
     async fn update_download_client_config(
@@ -159,17 +234,30 @@ impl ConfigMutations {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let existing = app
-            .get_download_client_config(&actor, &input.id)
+            .get_download_client_config(&actor, input.id.as_ref())
             .await
             .map_err(to_gql_error)?
-            .ok_or_else(|| Error::new(format!("download client not found: {}", input.id)))?;
+            .ok_or_else(|| {
+                to_gql_error(AppError::NotFound(format!(
+                    "download client {}",
+                    input.id.as_ref()
+                )))
+            })?;
         let effective_client_type = input
             .client_type
             .as_deref()
             .unwrap_or(existing.client_type.as_str())
             .to_string();
-        let effective_config_json = match input.config_json {
-            Some(config_json) => {
+        let effective_config_json = match input.config {
+            Some(config) => {
+                let config_json = provider_config_values_to_json(config).map_err(to_gql_error)?;
+                let config_fields = download_client_config_fields(&app, &effective_client_type);
+                let config_json = merge_omitted_provider_secrets(
+                    config_json,
+                    &existing.config_json,
+                    &config_fields,
+                )
+                .map_err(to_gql_error)?;
                 Some(enrich_download_client_config_json(&effective_client_type, config_json).await?)
             }
             None if input
@@ -191,7 +279,7 @@ impl ConfigMutations {
             .update_download_client_config(
                 &actor,
                 DownloadClientConfigUpdate {
-                    id: input.id,
+                    id: input.id.to_string(),
                     name: input.name,
                     client_type: input.client_type,
                     config_json: effective_config_json,
@@ -207,49 +295,66 @@ impl ConfigMutations {
                 .map_err(to_gql_error)?;
         }
 
-        Ok(from_download_client_config(config))
+        let config_fields = download_client_config_fields(&app, &config.client_type);
+        Ok(from_download_client_config_with_fields(
+            config,
+            &config_fields,
+        ))
     }
 
     async fn delete_download_client_config(
         &self,
         ctx: &Context<'_>,
-        input: DeleteDownloadClientConfigInput,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<DeleteDownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.delete_download_client_config(&actor, &input.id)
+        let id = id.to_string();
+        app.delete_download_client_config(&actor, &id)
             .await
-            .map_err(to_gql_error)
-            .map(|_| true)
+            .map_err(to_gql_error)?;
+        Ok(DeleteDownloadClientConfigPayload {
+            id: ID::from(id),
+            deleted: true,
+        })
     }
 
     async fn reorder_download_client_configs(
         &self,
         ctx: &Context<'_>,
         input: ReorderDownloadClientConfigsInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<ReorderDownloadClientConfigsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.reorder_download_clients(&actor, input.ids)
+        let ids = input.ids;
+        let id_strings = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        app.reorder_download_clients(&actor, id_strings)
             .await
-            .map_err(to_gql_error)
-            .map(|_| true)
+            .map_err(to_gql_error)?;
+        Ok(ReorderDownloadClientConfigsPayload {
+            ids,
+            reordered: true,
+        })
     }
 
     async fn test_download_client_connection(
         &self,
         ctx: &Context<'_>,
         input: TestDownloadClientConnectionInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
 
         let client_type = input.client_type.trim().to_lowercase();
-        let config_json = input.config_json.trim().to_string();
+        let config_json = provider_config_values_to_json(input.config).map_err(to_gql_error)?;
         app.test_download_client_connection(&actor, &client_type, &config_json)
             .await
             .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(ProviderValidationPayload {
+            status: "ok".to_string(),
+            message: None,
+            retry_after_seconds: None,
+        })
     }
 
     async fn create_subtitle_provider_config(
@@ -259,12 +364,13 @@ impl ConfigMutations {
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let config_json = provider_config_values_to_json(input.config).map_err(to_gql_error)?;
         let config = app
             .create_subtitle_provider_config(
                 &actor,
                 input.name,
                 input.provider_type,
-                input.config_json,
+                config_json,
                 input.enabled_facets.map(|facets| {
                     facets
                         .into_iter()
@@ -287,14 +393,19 @@ impl ConfigMutations {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let disabled_until = optional_datetime_input(input.disabled_until, "disabled_until")?;
+        let config_json = input
+            .config
+            .map(provider_config_values_to_json)
+            .transpose()
+            .map_err(to_gql_error)?;
         let config = app
             .update_subtitle_provider_config(
                 &actor,
                 SubtitleProviderConfigUpdate {
-                    id: input.id,
+                    id: input.id.to_string(),
                     name: input.name,
                     provider_type: input.provider_type,
-                    config_json: input.config_json,
+                    config_json,
                     enabled_facets: input.enabled_facets.map(|facets| {
                         facets
                             .into_iter()
@@ -317,33 +428,37 @@ impl ConfigMutations {
     async fn delete_subtitle_provider_config(
         &self,
         ctx: &Context<'_>,
-        input: DeleteSubtitleProviderConfigInput,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<DeleteSubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
-        app.delete_subtitle_provider_config(&actor, &input.id)
+        let id = id.to_string();
+        app.delete_subtitle_provider_config(&actor, &id)
             .await
-            .map_err(to_gql_error)
-            .map(|_| true)
+            .map_err(to_gql_error)?;
+        Ok(DeleteSubtitleProviderConfigPayload {
+            id: ID::from(id),
+            deleted: true,
+        })
     }
 
     async fn test_subtitle_provider_connection(
         &self,
         ctx: &Context<'_>,
         input: TestSubtitleProviderConnectionInput,
-    ) -> GqlResult<SubtitleProviderValidationPayload> {
+    ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let result = app
             .test_subtitle_provider_connection(
                 &actor,
-                input.id.as_deref(),
+                input.id.as_ref().map(|id| id.as_ref()),
                 input.provider_type,
-                input.config_json,
+                provider_config_values_to_json(input.config).map_err(to_gql_error)?,
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(SubtitleProviderValidationPayload {
+        Ok(ProviderValidationPayload {
             status: result.status,
             message: result.message,
             retry_after_seconds: result.retry_after_seconds,
@@ -354,28 +469,38 @@ impl ConfigMutations {
         &self,
         ctx: &Context<'_>,
         input: TestIndexerConnectionInput,
-    ) -> GqlResult<bool> {
+    ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let config_json = input
+            .config
+            .map(provider_config_values_to_json)
+            .transpose()
+            .map_err(to_gql_error)?;
 
         app.test_indexer_connection(
             &actor,
             &input.provider_type,
-            input.config_json.as_deref(),
-            input.indexer_id.as_deref(),
+            config_json.as_deref(),
+            input.indexer_id.as_ref().map(|id| id.as_ref()),
         )
         .await
         .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(ProviderValidationPayload {
+            status: "ok".to_string(),
+            message: None,
+            retry_after_seconds: None,
+        })
     }
 
     async fn sync_indexer_config(
         &self,
         ctx: &Context<'_>,
-        id: String,
+        id: ID,
     ) -> GqlResult<IndexerConfigSyncPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let id = id.to_string();
         let result = app
             .sync_indexer_config(&actor, &id)
             .await

@@ -1,4 +1,5 @@
-use async_graphql::SimpleObject;
+use async_graphql::{Enum, ID, InputObject, SimpleObject};
+use chrono::{DateTime, Utc};
 
 pub use crate::conversions::{FromApplication, IntoApplication};
 pub use scryer_interface_media_types::*;
@@ -6,8 +7,8 @@ pub use scryer_interface_media_types::*;
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct TitlePayload {
-    pub id: String,
-    pub library_id: String,
+    pub id: ID,
+    pub library_id: ID,
     pub library_name: Option<String>,
     pub library_slug: Option<String>,
     pub name: String,
@@ -16,7 +17,7 @@ pub struct TitlePayload {
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalIdPayload>,
     pub created_by: Option<String>,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
@@ -30,17 +31,17 @@ pub struct TitlePayload {
     pub genres: Vec<String>,
     pub content_status: Option<String>,
     pub language: Option<String>,
-    pub first_aired: Option<String>,
+    pub first_aired: Option<Date>,
     pub network: Option<String>,
     pub studio: Option<String>,
     pub country: Option<String>,
     pub aliases: Vec<String>,
     pub metadata_language: Option<String>,
-    pub metadata_fetched_at: Option<String>,
+    pub metadata_fetched_at: Option<DateTime<Utc>>,
     pub min_availability: Option<String>,
-    pub digital_release_date: Option<String>,
-    pub quality_profile_id: Option<String>,
-    pub root_folder_path: Option<String>,
+    pub digital_release_date: Option<Date>,
+    pub quality_profile_id: Option<ID>,
+    pub root_folder_id: ID,
     pub monitor_type: Option<MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,
@@ -52,42 +53,83 @@ pub struct TitlePayload {
     /// Lowest live media-file quality tier for the title, populated in list queries.
     pub current_quality_tier: Option<String>,
     /// Aggregated media-file size in bytes for the title, populated in list queries.
-    pub size_bytes: Option<i64>,
+    pub size_bytes: Option<Long>,
     /// Owned-vs-total episode progress, excluding specials, populated in list queries.
     pub episodes_owned: Option<i64>,
     /// Monitored episode count, excluding specials, populated in list queries.
     pub episodes_monitored: Option<i64>,
     /// Total episode count, excluding specials, populated in list queries.
     pub episodes_total: Option<i64>,
+    #[graphql(skip)]
+    pub preloaded_collections: Option<Vec<CollectionPayload>>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum TitleCatalogSortKeyValue {
+    Title,
+    Monitored,
+    Quality,
+    Episodes,
+    Status,
+    Size,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum TitleCatalogContentStatusValue {
+    Continuing,
+    Ended,
+}
+
+#[derive(InputObject, Clone)]
+pub struct TitleCatalogSortInput {
+    pub key: TitleCatalogSortKeyValue,
+    pub direction: Option<SortDirectionValue>,
+}
+
+#[derive(InputObject, Clone, Default)]
+pub struct TitleCatalogFilterInput {
+    pub monitored: Option<bool>,
+    pub content_statuses: Option<Vec<TitleCatalogContentStatusValue>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogPayload {
+    pub items: Vec<TitlePayload>,
+    pub limit: i32,
+    pub offset: i32,
+    pub has_more: bool,
+    pub total_count: i32,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct CollectionPayload {
-    pub id: String,
-    pub title_id: String,
+    pub id: ID,
+    pub title_id: ID,
     pub collection_type: String,
     pub collection_index: String,
     pub label: Option<String>,
     pub ordered_path: Option<String>,
     pub narrative_order: Option<String>,
-    pub file_size_bytes: Option<i64>,
+    pub file_size_bytes: Option<Long>,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
     pub monitored: bool,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct SetCollectionMonitoredPayload {
-    pub id: String,
+    pub id: ID,
     pub monitored: bool,
     pub episodes: Vec<EpisodePayload>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct MovieEntityPayload {
-    pub id: String,
+    pub id: ID,
     pub title: String,
     pub sort_title: Option<String>,
     pub slug: Option<String>,
@@ -100,26 +142,26 @@ pub struct MovieEntityPayload {
     pub content_status: Option<String>,
     pub genres: Vec<String>,
     pub studio: Option<String>,
-    pub digital_release_date: Option<String>,
+    pub digital_release_date: Option<Date>,
     pub imdb_id: Option<String>,
     pub tvdb_id: Option<String>,
     pub tmdb_id: Option<String>,
     pub mal_id: Option<String>,
     pub anidb_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct SeriesMovieLinkPayload {
-    pub id: String,
-    pub series_title_id: String,
+    pub id: ID,
+    pub series_title_id: ID,
     pub movie: MovieEntityPayload,
     pub placement: Option<String>,
     pub narrative_order: Option<String>,
     pub after_season: Option<i32>,
     pub before_season: Option<i32>,
-    pub linked_episode_id: Option<String>,
+    pub linked_episode_id: Option<ID>,
     pub association_confidence: Option<String>,
     pub continuity_status: Option<String>,
     pub movie_form: Option<String>,
@@ -127,23 +169,23 @@ pub struct SeriesMovieLinkPayload {
     pub signal_summary: Option<String>,
     pub source: Option<String>,
     pub monitored: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct EpisodePayload {
-    pub id: String,
-    pub title_id: String,
-    pub collection_id: Option<String>,
+    pub id: ID,
+    pub title_id: ID,
+    pub collection_id: Option<ID>,
     pub episode_type: String,
     pub episode_number: Option<String>,
     pub season_number: Option<String>,
     pub episode_label: Option<String>,
     pub title: Option<String>,
     pub overview: Option<String>,
-    pub air_date: Option<String>,
+    pub air_date: Option<Date>,
     pub duration_seconds: Option<i64>,
     pub has_multi_audio: bool,
     pub has_subtitle: bool,
@@ -153,22 +195,22 @@ pub struct EpisodePayload {
     pub tvdb_id: Option<String>,
     pub image_url: Option<String>,
     pub monitored: bool,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct TitleMediaFilePayload {
-    pub id: String,
-    pub title_id: String,
-    pub episode_id: Option<String>,
-    pub series_movie_link_ids: Vec<String>,
+    pub id: ID,
+    pub title_id: ID,
+    pub episode_id: Option<ID>,
+    pub series_movie_link_ids: Vec<ID>,
     pub file_path: String,
-    pub size_bytes: String,
+    pub size_bytes: Long,
     pub role: String,
     pub quality_label: Option<String>,
     pub scan_status: String,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     // Media analysis (populated after media scan; null until scan_status = "scanned")
     pub video_codec: Option<String>,
     pub video_width: Option<i32>,
@@ -203,7 +245,7 @@ pub struct TitleMediaFilePayload {
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,
     pub grabbed_release_title: Option<String>,
-    pub grabbed_at: Option<String>,
+    pub grabbed_at: Option<DateTime<Utc>>,
     pub edition: Option<String>,
     pub original_file_path: Option<String>,
     pub release_hash: Option<String>,
@@ -212,7 +254,7 @@ pub struct TitleMediaFilePayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct LibraryPayload {
-    pub id: String,
+    pub id: ID,
     pub facet: MediaFacetValue,
     pub name: String,
     pub slug: String,
@@ -223,27 +265,27 @@ pub struct LibraryPayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct DownloadQueueItemPayload {
-    pub id: String,
-    pub title_id: Option<String>,
-    pub episode_id: Option<String>,
+    pub id: ID,
+    pub title_id: Option<ID>,
+    pub episode_id: Option<ID>,
     pub title_name: String,
     pub facet: Option<MediaFacetValue>,
     pub is_scryer_origin: bool,
-    pub client_id: String,
+    pub client_id: ID,
     pub client_name: String,
     pub client_type: String,
     pub state: DownloadQueueStateValue,
     pub display_state: DownloadDisplayStateValue,
     pub progress_percent: i32,
     pub import_transfer_phase: Option<String>,
-    pub import_transfer_bytes: Option<String>,
-    pub import_transfer_total_bytes: Option<String>,
-    pub import_transfer_started_at: Option<String>,
-    pub import_transfer_updated_at: Option<String>,
-    pub size_bytes: Option<String>,
+    pub import_transfer_bytes: Option<Long>,
+    pub import_transfer_total_bytes: Option<Long>,
+    pub import_transfer_started_at: Option<DateTime<Utc>>,
+    pub import_transfer_updated_at: Option<DateTime<Utc>>,
+    pub size_bytes: Option<Long>,
     pub remaining_seconds: Option<i32>,
-    pub queued_at: Option<String>,
-    pub last_updated_at: Option<String>,
+    pub queued_at: Option<DateTime<Utc>>,
+    pub last_updated_at: Option<DateTime<Utc>>,
     pub attention_required: bool,
     pub attention_reason: Option<String>,
     pub download_client_item_id: String,
@@ -251,7 +293,7 @@ pub struct DownloadQueueItemPayload {
     pub import_status: Option<ImportStatusValue>,
     pub import_error_code: Option<ImportErrorCodeValue>,
     pub import_error_message: Option<String>,
-    pub imported_at: Option<String>,
+    pub imported_at: Option<DateTime<Utc>>,
     pub delete_status: Option<DownloadQueueDeleteStatusValue>,
     pub delete_error_message: Option<String>,
     pub tracked_state: Option<TrackedDownloadStateValue>,
@@ -281,7 +323,7 @@ pub struct AddTitleResult {
     pub metadata_hydration_state: AddTitleHydrationStateValue,
     pub reused_existing_title: bool,
     pub reused_queued_download: bool,
-    pub download_job_id: Option<String>,
+    pub download_job_id: Option<ID>,
     pub queued_download: Option<QueueDownloadPayload>,
 }
 
@@ -311,10 +353,10 @@ pub struct ResolvePendingImportPayload {
 pub struct DownloadQueueActionPayload {
     pub kind: DownloadQueueActionKindValue,
     pub download_client_item_id: String,
-    pub client_id: Option<String>,
+    pub client_id: Option<ID>,
     pub client_type: Option<String>,
-    pub import_id: Option<String>,
-    pub command_id: Option<String>,
+    pub import_id: Option<ID>,
+    pub command_id: Option<ID>,
     pub removed: bool,
     pub queue_item: Option<DownloadQueueItemPayload>,
 }
@@ -329,31 +371,31 @@ pub struct ManualImportPreviewPayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct WantedItemPayload {
-    pub id: String,
-    pub title_id: String,
+    pub id: ID,
+    pub title_id: ID,
     pub title_name: Option<String>,
     pub title_slug: Option<String>,
     pub title_facet: Option<String>,
-    pub library_id: Option<String>,
+    pub library_id: Option<ID>,
     pub library_name: Option<String>,
     pub library_slug: Option<String>,
-    pub episode_id: Option<String>,
-    pub collection_id: Option<String>,
+    pub episode_id: Option<ID>,
+    pub collection_id: Option<ID>,
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub media_type: WantedMediaTypeValue,
     pub search_phase: WantedSearchPhaseValue,
-    pub next_search_at: Option<String>,
-    pub last_search_at: Option<String>,
+    pub next_search_at: Option<DateTime<Utc>>,
+    pub last_search_at: Option<DateTime<Utc>>,
     pub search_count: i64,
-    pub baseline_date: Option<String>,
+    pub baseline_date: Option<Date>,
     pub status: WantedStatusValue,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
     pub mismatch_recovery_eligible: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -363,46 +405,79 @@ pub struct WantedItemsListPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct WantedItemsPagePayload {
+    pub items: Vec<WantedItemPayload>,
+    pub limit: i32,
+    pub offset: i32,
+    pub has_more: bool,
+    pub total_count: i32,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct TitleAcquisitionDiagnosticsPayload {
     pub recent_decisions: Vec<ReleaseDecisionPayload>,
     pub decision_counts: Vec<DecisionCodeCountPayload>,
     pub wanted_status_counts: Vec<WantedStatusCountPayload>,
     pub pending_release_counts: Vec<PendingReleaseStatusCountPayload>,
     pub mismatch_recovery_eligible_count: i64,
-    pub latest_decision_at: Option<String>,
-    pub latest_wanted_search_at: Option<String>,
+    pub latest_decision_at: Option<DateTime<Utc>>,
+    pub latest_wanted_search_at: Option<DateTime<Utc>>,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct ReleaseDecisionPayload {
-    pub id: String,
-    pub wanted_item_id: String,
-    pub title_id: String,
+    pub id: ID,
+    pub wanted_item_id: ID,
+    pub title_id: ID,
     pub release_title: String,
     pub release_url: Option<String>,
-    pub release_size_bytes: Option<i64>,
+    pub release_size_bytes: Option<Long>,
     pub decision_code: String,
     pub candidate_score: i32,
     pub current_score: Option<i32>,
     pub score_delta: Option<i32>,
     pub explanation_json: Option<String>,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ReleaseDecisionsPagePayload {
+    pub items: Vec<ReleaseDecisionPayload>,
+    pub limit: i32,
+    pub offset: i32,
+    pub has_more: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct PendingReleasePayload {
-    pub id: String,
-    pub wanted_item_id: String,
-    pub title_id: String,
+    pub id: ID,
+    pub wanted_item_id: ID,
+    pub title_id: ID,
     pub release_title: String,
     pub release_url: Option<String>,
-    pub release_size_bytes: Option<String>,
+    pub release_size_bytes: Option<Long>,
     pub release_score: i32,
     pub scoring_log_json: Option<String>,
     pub indexer_source: Option<String>,
-    pub added_at: String,
-    pub delay_until: String,
+    pub added_at: DateTime<Utc>,
+    pub delay_until: DateTime<Utc>,
     pub status: PendingReleaseStatusValue,
+}
+
+#[derive(InputObject, Clone)]
+pub struct PendingReleaseFilterInput {
+    pub title_id: Option<ID>,
+    pub wanted_item_id: Option<ID>,
+    pub statuses: Option<Vec<PendingReleaseStatusValue>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PendingReleasesPayload {
+    pub items: Vec<PendingReleasePayload>,
+    pub limit: i32,
+    pub offset: i32,
+    pub has_more: bool,
+    pub total_count: i32,
 }

@@ -69,7 +69,7 @@ export type MetadataCatalogAddOptions = {
   minAvailability?: string;
   monitorSpecials?: boolean;
   interSeasonMovies?: boolean;
-  rootFolder?: string;
+  rootFolderId?: string;
 };
 
 export type MetadataCatalogRequestOptions = {
@@ -682,20 +682,22 @@ export function useGlobalSearch({
 
       try {
         if (title.facet === "movie") {
-          const tvdbIdNum = parseInt(tvdbId, 10);
-          if (isNaN(tvdbIdNum)) return title;
           const { data, error } = await client.query(metadataMovieQuery, {
-            tvdbId: tvdbIdNum,
-            language: uiLanguage,
+            input: {
+              tvdbId,
+              language: uiLanguage,
+            },
           }).toPromise();
           if (error || !data?.metadataMovie?.posterUrl) return title;
           return { ...title, posterUrl: data.metadataMovie.posterUrl };
         }
 
         const { data, error } = await client.query(metadataSeriesQuery, {
-          id: tvdbId,
-          includeEpisodes: false,
-          language: uiLanguage,
+          input: {
+            tvdbId,
+            includeEpisodes: false,
+            language: uiLanguage,
+          },
         }).toPromise();
         if (error || !data?.metadataSeries?.posterUrl) return title;
         return { ...title, posterUrl: data.metadataSeries.posterUrl };
@@ -830,11 +832,12 @@ export function useGlobalSearch({
       const catalogPromise = client.query(catalogSearchTitlesQuery, {
         query: trimmed,
         facet: null,
+        limit: AUTOCOMPLETE_LIMIT,
       }, { fetch: abortableFetch }).toPromise()
         .then(async ({ data, error }) => {
           if (error) throw error;
           if (requestId !== autocompleteRequestId.current) return;
-          const catalogEntries = (data?.titles ?? []) as TitleRecord[];
+          const catalogEntries = (data?.titles?.items ?? []) as TitleRecord[];
           const enriched = await Promise.all(
             catalogEntries.map((title: TitleRecord) => resolveCatalogPosterUrl(title)),
           );
@@ -1109,7 +1112,7 @@ export function useGlobalSearch({
             tags: [],
             options: {
               qualityProfileId: qualityProfileId || undefined,
-              rootFolderPath: options.rootFolder || undefined,
+              rootFolderId: options.rootFolderId || undefined,
               monitorType: options.monitorType,
               ...(facet === "movie"
                 ? {}

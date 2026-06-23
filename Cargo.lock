@@ -5702,6 +5702,7 @@ dependencies = [
 name = "scryer-domain"
 version = "0.16.2"
 dependencies = [
+ "blake3",
  "chrono",
  "serde",
  "strum 0.28.0",
@@ -5797,6 +5798,7 @@ name = "scryer-interface-media"
 version = "0.16.2"
 dependencies = [
  "async-graphql",
+ "chrono",
  "scryer-application",
  "scryer-domain",
  "scryer-interface-core",
@@ -5812,6 +5814,7 @@ name = "scryer-interface-media-types"
 version = "0.16.2"
 dependencies = [
  "async-graphql",
+ "chrono",
  "scryer-domain",
  "serde_json",
 ]

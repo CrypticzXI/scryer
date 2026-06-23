@@ -134,9 +134,7 @@ pub(crate) fn normalize_indexer_config_json(
 
     for field in fields {
         let should_restore_persisted = match field.field_type {
-            scryer_domain::ConfigFieldType::Password => {
-                config_value_is_empty(object.get(&field.key))
-            }
+            scryer_domain::ConfigFieldType::Password => !object.contains_key(&field.key),
             _ => !object.contains_key(&field.key),
         };
 
@@ -258,8 +256,18 @@ impl AppUseCase {
         actor: &User,
         provider_filter: Option<String>,
     ) -> AppResult<Vec<IndexerConfig>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
+        let settings_permissions = scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageSystemSettings,
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]);
+        if !self
+            .has_any_app_permission(actor, settings_permissions)
+            .await?
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ));
+        }
         self.services
             .integrations
             .indexer_configs
@@ -619,6 +627,13 @@ impl AppUseCase {
                 config_json: normalized_config_json,
             })
             .await?;
+        if should_validate_connection {
+            self.services
+                .integrations
+                .indexer_configs
+                .clear_last_error(&updated.id)
+                .await?;
+        }
         if should_sync_managed_children {
             if updated.is_enabled {
                 self.queue_managed_indexer_sync(&updated.id);

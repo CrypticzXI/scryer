@@ -105,6 +105,7 @@ struct JobExecutionOutcome {
     summary_json: Option<String>,
     library_scan_progress: Option<LibraryScanSession>,
     status_override: Option<JobRunStatus>,
+    auto_backup_outcome: Option<crate::security::backup::AutoBackupRunOutcome>,
 }
 
 impl JobExecutionOutcome {
@@ -114,6 +115,7 @@ impl JobExecutionOutcome {
             summary_json,
             library_scan_progress: None,
             status_override: None,
+            auto_backup_outcome: None,
         }
     }
 
@@ -123,7 +125,16 @@ impl JobExecutionOutcome {
             summary_json,
             library_scan_progress: None,
             status_override: Some(JobRunStatus::Warning),
+            auto_backup_outcome: None,
         }
+    }
+
+    fn with_auto_backup_outcome(
+        mut self,
+        outcome: crate::security::backup::AutoBackupRunOutcome,
+    ) -> Self {
+        self.auto_backup_outcome = Some(outcome);
+        self
     }
 
     fn from_library_scan(summary: &LibraryScanSummary) -> Self {
@@ -423,6 +434,40 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn run_scheduled_auto_backup_job_now(
+        &self,
+        trigger_source: JobTriggerSource,
+    ) -> AppResult<crate::security::backup::AutoBackupRunOutcome> {
+        let job_key = JobKey::AutoBackup;
+        self.ensure_job_can_start(job_key).await?;
+        let run = self
+            .create_job_run_record(job_key, trigger_source, None, None)
+            .await?;
+        let run_payload = JobRun::from_record(&run, None);
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(run_payload)
+            .await;
+        let _ = self
+            .append_domain_event(new_job_run_domain_event(
+                None,
+                run.id.clone(),
+                DomainEventPayload::JobRunStarted(JobRunStartedEventData {
+                    run_id: run.id.clone(),
+                    job_key: run.job_key.as_str().to_string(),
+                    operation_type: run.operation_type.clone(),
+                    trigger_source: run.trigger_source.as_str().to_string(),
+                }),
+            ))
+            .await;
+        self.run_job_run_with_auto_backup_outcome(run, None, DomainEventActor::system())
+            .await?
+            .ok_or_else(|| {
+                AppError::Repository("auto backup job did not return an outcome".to_string())
+            })
+    }
+
     async fn run_scheduled_background_library_refresh_jobs_now(
         &self,
         job_key: JobKey,
@@ -603,8 +648,20 @@ impl AppUseCase {
         actor: Option<User>,
         event_actor: DomainEventActor,
     ) -> AppResult<()> {
+        self.run_job_run_with_auto_backup_outcome(run, actor, event_actor)
+            .await
+            .map(|_| ())
+    }
+
+    async fn run_job_run_with_auto_backup_outcome(
+        &self,
+        run: JobRunRecord,
+        actor: Option<User>,
+        event_actor: DomainEventActor,
+    ) -> AppResult<Option<crate::security::backup::AutoBackupRunOutcome>> {
         match self.execute_job_body(&run, actor).await {
             Ok(outcome) => {
+                let auto_backup_outcome = outcome.auto_backup_outcome.clone();
                 self.finish_job_run(
                     run,
                     event_actor,
@@ -613,7 +670,8 @@ impl AppUseCase {
                     outcome.library_scan_progress,
                     outcome.status_override,
                 )
-                .await
+                .await?;
+                Ok(auto_backup_outcome)
             }
             Err(error) => {
                 self.fail_job_run(run, event_actor, error.to_string())
@@ -786,27 +844,35 @@ impl AppUseCase {
                     .ok(),
                 ))
             }
-            JobKey::AutoBackup => match self.run_auto_backup_job().await? {
-                crate::security::backup::AutoBackupRunOutcome::Created { info, pruned_count } => {
-                    let summary_text = Some(format!(
-                        "Created {} (encrypted) and pruned {} older automatic backup{}",
-                        info.filename,
+            JobKey::AutoBackup => {
+                let outcome = self.run_auto_backup_job().await?;
+                match outcome.clone() {
+                    crate::security::backup::AutoBackupRunOutcome::Created {
+                        info,
                         pruned_count,
-                        if pruned_count == 1 { "" } else { "s" },
-                    ));
-                    let summary_json = serde_json::json!({
-                        "filename": info.filename,
-                        "encrypted": info.encrypted,
-                        "prunedCount": pruned_count,
-                        "trigger": info.trigger.as_str(),
-                    })
-                    .to_string();
-                    Ok(JobExecutionOutcome::new(summary_text, Some(summary_json)))
+                    } => {
+                        let summary_text = Some(format!(
+                            "Created {} (encrypted) and pruned {} older automatic backup{}",
+                            info.filename,
+                            pruned_count,
+                            if pruned_count == 1 { "" } else { "s" },
+                        ));
+                        let summary_json = serde_json::json!({
+                            "filename": info.filename,
+                            "encrypted": info.encrypted,
+                            "prunedCount": pruned_count,
+                            "trigger": info.trigger.as_str(),
+                        })
+                        .to_string();
+                        Ok(JobExecutionOutcome::new(summary_text, Some(summary_json))
+                            .with_auto_backup_outcome(outcome))
+                    }
+                    crate::security::backup::AutoBackupRunOutcome::Skipped { reason } => {
+                        Ok(JobExecutionOutcome::warning(Some(reason), None)
+                            .with_auto_backup_outcome(outcome))
+                    }
                 }
-                crate::security::backup::AutoBackupRunOutcome::Skipped { reason } => {
-                    Ok(JobExecutionOutcome::warning(Some(reason), None))
-                }
-            },
+            }
             JobKey::WantedSync => {
                 self.sync_wanted_state().await?;
                 Ok(JobExecutionOutcome::new(

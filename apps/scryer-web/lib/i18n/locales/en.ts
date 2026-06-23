@@ -168,6 +168,9 @@ const en: LocaleDictionary = {
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.externalAuthLoginEnabled": "Login enabled",
+  "settings.mediaServerLoginRequiresFormLogin":
+    "Enable form login before enabling media-server login.",
+  "settings.openSecuritySettings": "Open security settings",
   "settings.externalAuthLinkingEnabled": "Linking enabled",
   "settings.addConnection": "Add",
   "settings.removeConnection": "Remove connection",
@@ -1593,10 +1596,11 @@ const en: LocaleDictionary = {
   "settings.pp.descriptionLabel": "Description",
   "settings.pp.descriptionPlaceholder": "What does this script do?",
   "settings.pp.scriptType": "Script Type",
-  "settings.pp.inline": "Inline",
+  "settings.pp.inline": "Inline shell",
   "settings.pp.filePath": "File Path",
-  "settings.pp.inlineHelp": "Enter a shell command to execute.",
-  "settings.pp.filePathHelp": "Path to an executable script on the server.",
+  "settings.pp.inlineHelp": "Enter a shell command to run through the server shell.",
+  "settings.pp.filePathHelp":
+    "Absolute path to an executable script on the server. Arguments, redirection, and shell expansion are not applied.",
   "settings.pp.blocking": "Blocking",
   "settings.pp.fireAndForget": "Fire & Forget",
   "settings.pp.blockingHelp":
@@ -1627,6 +1631,10 @@ const en: LocaleDictionary = {
     "Discard current post-processing script edits?",
   "settings.pp.confirmDiscardDescription":
     "Your current post-processing script edits will be lost.",
+  "settings.pp.inlineShellConfirmTitle": "Allow inline shell script?",
+  "settings.pp.inlineShellConfirmDescription":
+    "Inline post-processing scripts run through the server shell after imports. Only save scripts you have reviewed and trust.",
+  "settings.pp.inlineShellConfirm": "Allow inline shell",
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",
@@ -2764,6 +2772,17 @@ const en: LocaleDictionary = {
   "settings.autoBackupsShowKey": "Show automatic backup key",
   "settings.autoBackupsHideKey": "Hide automatic backup key",
   "settings.autoBackupsSaved": "Automatic backup settings saved.",
+  "settings.backupLocationTitle": "Backup location",
+  "settings.backupLocationDescription":
+    "Choose where Scryer stores backup bundles on the server.",
+  "settings.backupLocationCustomPath": "Custom backup path",
+  "settings.backupLocationBrowse": "Browse",
+  "settings.backupLocationEffectivePath": "Active path",
+  "settings.backupLocationHelp":
+    "Use a server or container path. Changing it switches the active backup folder; existing backups are not moved and are hidden until you switch back.",
+  "settings.backupLocationReset": "Use default",
+  "settings.backupLocationPickerTitle": "Select backup folder",
+  "settings.backupLocationSaved": "Backup location saved.",
   "settings.backupsSection":
     "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared, even if an automatic backup is already running.",
   "settings.backupsEmpty": "No backups created yet.",

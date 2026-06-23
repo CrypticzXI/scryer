@@ -1014,6 +1014,7 @@ mod tests {
                 monitored: true,
                 tags: Vec::new(),
                 external_ids: Vec::new(),
+                root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
                 created_by: None,
                 created_at: Utc::now(),
                 year: None,

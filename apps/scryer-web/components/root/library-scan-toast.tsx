@@ -342,9 +342,7 @@ export function LibraryScanToast({
     try {
       const result = await client
         .mutation(cancelLibraryScanMutation, {
-          input: {
-            sessionId: session.sessionId,
-          },
+          sessionId: session.sessionId,
         })
         .toPromise();
       if (result.error) {

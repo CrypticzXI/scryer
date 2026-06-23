@@ -3,7 +3,6 @@ import * as React from "react";
 import { FolderOpen, Loader2, Pause, Play, RotateCcw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -40,6 +39,7 @@ import {
 } from "@/components/views/overview-localization";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { WantedSearchPhase, WantedStatus } from "@/lib/types";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
@@ -194,6 +194,7 @@ function TitleSettingsPanel({
   title,
   qualityProfiles,
   defaultRootFolder,
+  rootFolders,
   onUpdateTitleOptions,
   onTitleChanged,
   onOpenFixMatch,
@@ -201,6 +202,7 @@ function TitleSettingsPanel({
   title: TitleDetail;
   qualityProfiles: { id: string; name: string }[];
   defaultRootFolder: string;
+  rootFolders: LibraryRootRecord[];
   onUpdateTitleOptions: (options: TitleOptionUpdates) => Promise<void>;
   onTitleChanged?: () => Promise<void> | void;
   onOpenFixMatch?: () => void;
@@ -209,18 +211,29 @@ function TitleSettingsPanel({
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const currentProfileId = title.qualityProfileId?.trim() || INHERIT_VALUE;
-  const currentRootFolder = title.rootFolderPath?.trim() || "";
+  const currentRootFolderId = title.rootFolderId?.trim() || "";
+  const sortedRootFolders = React.useMemo(
+    () =>
+      [...rootFolders].sort((left, right) => {
+        if (left.isDefault !== right.isDefault) {
+          return left.isDefault ? -1 : 1;
+        }
+        return left.path.localeCompare(right.path);
+      }),
+    [rootFolders],
+  );
+  const rootFolderById = React.useMemo(
+    () => new Map(rootFolders.map((root) => [root.id, root])),
+    [rootFolders],
+  );
+  const rootFolderSelectValue = rootFolderById.has(currentRootFolderId)
+    ? currentRootFolderId
+    : sortedRootFolders[0]?.id ?? "";
   const requiredAudioLanguages =
     title.effectiveRequiredAudioLanguages ?? [];
   const hasAudioOverride = title.inheritsRequiredAudioLanguages === false;
-  const [rootFolderDraft, setRootFolderDraft] = React.useState(currentRootFolder || defaultRootFolder);
   const [saving, setSaving] = React.useState(false);
   const [audioSaving, setAudioSaving] = React.useState(false);
-
-  // Sync draft when title changes externally
-  React.useEffect(() => {
-    setRootFolderDraft(currentRootFolder || defaultRootFolder);
-  }, [currentRootFolder, defaultRootFolder]);
 
   const handleProfileChange = async (value: string) => {
     setSaving(true);
@@ -233,25 +246,22 @@ function TitleSettingsPanel({
     }
   };
 
-  const handleRootFolderSave = async () => {
-    const trimmed = rootFolderDraft.trim();
-    if (!trimmed || trimmed === defaultRootFolder) {
-      // Reset to default — remove tag
-      setSaving(true);
-      try {
-        await onUpdateTitleOptions({ rootFolderPath: "" });
-      } finally {
-        setSaving(false);
-      }
+  const handleRootFolderChange = async (value: string) => {
+    if (!value.trim()) {
       return;
     }
     setSaving(true);
     try {
-      await onUpdateTitleOptions({ rootFolderPath: trimmed });
+      await onUpdateTitleOptions({
+        rootFolderId: value,
+      });
     } finally {
       setSaving(false);
     }
   };
+
+  const folderLabel = (path: string) =>
+    path.split("/").filter(Boolean).pop() ?? path;
 
   const handleRequiredAudioChange = async (languages: string[]) => {
     setAudioSaving(true);
@@ -323,29 +333,26 @@ function TitleSettingsPanel({
           <label className="mb-1 block text-xs font-medium text-muted-foreground">
             {t("title.rootFolder")}
           </label>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              id="movie-overview-settings-root-folder"
-              className="h-9 font-mono text-sm"
-              value={rootFolderDraft}
-              onChange={(e) => setRootFolderDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handleRootFolderSave();
-              }}
-              disabled={saving}
-            />
-            {rootFolderDraft.trim() !== (currentRootFolder || defaultRootFolder) && (
-              <Button
-                id="movie-overview-settings-root-folder-save"
-                size="sm"
-                className="h-9 sm:self-auto"
-                onClick={() => void handleRootFolderSave()}
-                disabled={saving}
-              >
-                {t("settings.saveButton")}
-              </Button>
-            )}
-          </div>
+          <Select
+            value={rootFolderSelectValue}
+            onValueChange={(value) => void handleRootFolderChange(value)}
+            disabled={saving || sortedRootFolders.length === 0}
+          >
+            <SelectTrigger id="movie-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {sortedRootFolders.map((root) => (
+                <SelectItem key={root.id} value={root.id}>
+                  {root.isDefault
+                    ? t("title.defaultRootFolder", {
+                        path: folderLabel(root.path || defaultRootFolder),
+                      })
+                    : folderLabel(root.path)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="min-w-0">
@@ -430,6 +437,7 @@ type Props = {
   onBackToList?: () => void;
   qualityProfiles: { id: string; name: string }[];
   defaultRootFolder: string;
+  rootFolders: LibraryRootRecord[];
   onUpdateTitleOptions: (options: TitleOptionUpdates) => Promise<void>;
   onSetTitleMonitored: (monitored: boolean) => Promise<void>;
   monitoredUpdating: boolean;
@@ -482,6 +490,7 @@ export function MovieOverviewView({
   onBackToList,
   qualityProfiles,
   defaultRootFolder,
+  rootFolders,
   onUpdateTitleOptions,
   onSetTitleMonitored,
   monitoredUpdating,
@@ -835,6 +844,7 @@ export function MovieOverviewView({
                 title={title}
                 qualityProfiles={qualityProfiles}
                 defaultRootFolder={defaultRootFolder}
+                rootFolders={rootFolders}
                 onUpdateTitleOptions={onUpdateTitleOptions}
                 onTitleChanged={onTitleChanged}
                 onOpenFixMatch={onOpenFixMatch}

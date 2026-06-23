@@ -30,7 +30,9 @@ export function useProviderCatalogSubscription(
     onChangedRef.current = onChanged;
   });
 
-  useDeferredWsSubscription<{ data?: { providerCatalogChanged?: string[] } }>({
+  useDeferredWsSubscription<{
+    data?: { providerCatalogChanged?: ProviderCatalogFamily[] };
+  }>({
     enabled,
     requestKey: "providerCatalogChanged",
     request: { query: providerCatalogChangedSubscription },

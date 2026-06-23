@@ -461,6 +461,75 @@ file = "postgres/migrations/0135_download_submission_actor_snapshot.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 136
+description = "title root folder id"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0136_title_root_folder_id_pre.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0136_title_root_folder_id_pre.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_root_folder_ids"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0136_title_root_folder_id_post.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0136_title_root_folder_id_post.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 137
+description = "oauth authorization source"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0137_oauth_authorization_source.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0137_oauth_authorization_source.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 138
+description = "clear SMG incident metadata fetch markers"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0138_clear_smg_incident_metadata_fetches.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0138_clear_smg_incident_metadata_fetches.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

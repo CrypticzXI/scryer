@@ -813,10 +813,9 @@ async fn import_movie_download(
                 .await;
             let new_score = post_download_score.score;
             if new_score > old_score {
-                let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
-                let recycle_config = app
-                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
-                    .await;
+                let old_file_recycle_context =
+                    crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file)
+                        .await?;
 
                 match crate::upgrade::execute_upgrade(
                     app,
@@ -831,8 +830,9 @@ async fn import_movie_download(
                     old_score,
                     post_download_score.scoring_log.clone(),
                     &[],
-                    media_root_opt.as_deref(),
-                    &recycle_config,
+                    Some(&media_root),
+                    Some(old_file_recycle_context.media_root.as_str()),
+                    &old_file_recycle_context.recycle_config,
                     import_mode,
                 )
                 .await
@@ -1424,10 +1424,9 @@ async fn import_series_movie_download(
                 .await;
             let new_score = post_download_score.score;
             if new_score > old_score {
-                let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
-                let recycle_config = app
-                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
-                    .await;
+                let old_file_recycle_context =
+                    crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file)
+                        .await?;
 
                 match crate::upgrade::execute_upgrade(
                     app,
@@ -1442,8 +1441,9 @@ async fn import_series_movie_download(
                     old_score,
                     post_download_score.scoring_log.clone(),
                     &[],
-                    media_root_opt.as_deref(),
-                    &recycle_config,
+                    Some(&media_root),
+                    Some(old_file_recycle_context.media_root.as_str()),
+                    &old_file_recycle_context.recycle_config,
                     import_mode,
                 )
                 .await

@@ -1,11 +1,12 @@
 mod mutation;
 
-use async_graphql::{Context, Object, Result as GqlResult};
+use async_graphql::{Context, ID, Object, Result as GqlResult};
+use chrono::{DateTime, Utc};
 use scryer_interface_core::{
     AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
-    from_download_client_config, from_download_client_routing_entry,
+    from_download_client_config_with_fields, from_download_client_routing_entry,
     from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
     from_library_paths_settings, from_media_server_connection, from_media_server_user_group,
     from_media_settings, from_quality_profile_settings, from_service_settings,
@@ -17,6 +18,16 @@ pub use mutation::SettingsMutations;
 
 #[derive(Default)]
 pub struct SettingsQueries;
+
+fn parse_required_datetime(value: &str, field: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|error| panic!("invalid {field} timestamp: {error}"))
+}
+
+fn parse_optional_datetime(value: Option<String>, field: &str) -> Option<DateTime<Utc>> {
+    value.map(|value| parse_required_datetime(&value, field))
+}
 
 fn from_subtitle_settings(
     settings: scryer_application::SubtitleSettings,
@@ -57,11 +68,11 @@ fn from_oauth_connected_app(
     app: scryer_application::OAuthConnectedAppSummary,
 ) -> OAuthConnectedAppPayload {
     OAuthConnectedAppPayload {
-        grant_id: app.grant_id,
+        grant_id: app.grant_id.into(),
         client_id: app.client_id,
         client_name: app.client_name,
-        authorized_at: app.authorized_at.to_rfc3339(),
-        last_used_at: app.last_used_at.map(|value| value.to_rfc3339()),
+        authorized_at: app.authorized_at,
+        last_used_at: app.last_used_at,
     }
 }
 
@@ -71,8 +82,8 @@ mod tests {
 
     #[test]
     fn external_auth_runtime_settings_maps_clean_connections() {
-        let payload =
-            from_external_auth_runtime_settings(scryer_application::ExternalAuthRuntimeSettings {
+        let payload = from_external_auth_runtime_settings(
+            scryer_application::ExternalAuthRuntimeSettings {
                 login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
                 linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
                 connections: vec![
@@ -91,7 +102,9 @@ mod tests {
                         linking_enabled: true,
                     },
                 ],
-            });
+            },
+            true,
+        );
 
         assert!(matches!(
             payload.login_providers.as_slice(),
@@ -110,6 +123,33 @@ mod tests {
         assert_eq!(payload.connections[0].display_name, "Main Jellyfin");
         assert!(payload.connections[0].login_enabled);
         assert!(!payload.connections[0].linking_enabled);
+    }
+
+    #[test]
+    fn external_auth_runtime_settings_hides_login_when_form_login_disabled() {
+        let payload = from_external_auth_runtime_settings(
+            scryer_application::ExternalAuthRuntimeSettings {
+                login_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                linking_providers: vec![scryer_domain::ExternalAccountProvider::Plex],
+                connections: vec![scryer_application::ExternalAuthRuntimeConnection {
+                    id: "jellyfin-main".to_string(),
+                    provider: scryer_domain::ExternalAccountProvider::Jellyfin,
+                    display_name: "Main Jellyfin".to_string(),
+                    login_enabled: true,
+                    linking_enabled: true,
+                }],
+            },
+            false,
+        );
+
+        assert!(payload.login_providers.is_empty());
+        assert!(matches!(
+            payload.linking_providers.as_slice(),
+            [ExternalAccountProviderValue::Plex]
+        ));
+        assert_eq!(payload.connections.len(), 1);
+        assert!(!payload.connections[0].login_enabled);
+        assert!(payload.connections[0].linking_enabled);
     }
 }
 
@@ -152,7 +192,15 @@ fn from_auto_backup_settings(
         daily_time_local: settings.daily_time_local,
         auto_backup_key_present: settings.auto_backup_key_present,
         auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
-        next_run_at: settings.next_run_at,
+        next_run_at: parse_optional_datetime(settings.next_run_at, "auto backup next_run_at"),
+    }
+}
+
+fn from_backup_settings(settings: scryer_application::BackupSettings) -> BackupSettingsPayload {
+    BackupSettingsPayload {
+        custom_backup_path: settings.custom_backup_path,
+        default_backup_path: settings.default_backup_path,
+        effective_backup_path: settings.effective_backup_path,
     }
 }
 
@@ -175,13 +223,18 @@ fn from_security_settings(
 
 fn from_external_auth_runtime_settings(
     settings: scryer_application::ExternalAuthRuntimeSettings,
+    effective_form_login_enabled: bool,
 ) -> ExternalAuthRuntimeSettingsPayload {
     ExternalAuthRuntimeSettingsPayload {
-        login_providers: settings
-            .login_providers
-            .into_iter()
-            .map(ExternalAccountProviderValue::from_domain)
-            .collect(),
+        login_providers: if effective_form_login_enabled {
+            settings
+                .login_providers
+                .into_iter()
+                .map(ExternalAccountProviderValue::from_domain)
+                .collect()
+        } else {
+            Vec::new()
+        },
         linking_providers: settings
             .linking_providers
             .into_iter()
@@ -191,10 +244,10 @@ fn from_external_auth_runtime_settings(
             .connections
             .into_iter()
             .map(|connection| ExternalAuthRuntimeConnectionPayload {
-                id: connection.id,
+                id: connection.id.into(),
                 provider: ExternalAccountProviderValue::from_domain(connection.provider),
                 display_name: connection.display_name,
-                login_enabled: connection.login_enabled,
+                login_enabled: effective_form_login_enabled && connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
             })
             .collect(),
@@ -221,25 +274,25 @@ fn from_auth_runtime_state(
 
 fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
     PasskeySummaryPayload {
-        id: summary.id,
+        id: summary.id.into(),
         friendly_name: summary.friendly_name,
-        created_at: summary.created_at,
-        last_used_at: summary.last_used_at,
+        created_at: parse_required_datetime(&summary.created_at, "passkey created_at"),
+        last_used_at: parse_optional_datetime(summary.last_used_at, "passkey last_used_at"),
     }
 }
 
 fn from_totp_status(status: scryer_application::TotpStatus) -> TotpStatusPayload {
     TotpStatusPayload {
         enabled: status.enabled,
-        created_at: status.created_at,
-        last_used_at: status.last_used_at,
+        created_at: parse_optional_datetime(status.created_at, "TOTP created_at"),
+        last_used_at: parse_optional_datetime(status.last_used_at, "TOTP last_used_at"),
         recovery_codes_remaining: status.recovery_codes_remaining,
     }
 }
 
 fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfilePayload {
     DelayProfilePayload {
-        id: profile.id,
+        id: profile.id.into(),
         name: profile.name,
         usenet_delay_minutes: profile.usenet_delay_minutes as i32,
         torrent_delay_minutes: profile.torrent_delay_minutes as i32,
@@ -321,6 +374,16 @@ impl SettingsQueries {
         Ok(from_auto_backup_settings(settings))
     }
 
+    async fn backup_settings(&self, ctx: &Context<'_>) -> GqlResult<BackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_backup_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_backup_settings(settings))
+    }
+
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -338,9 +401,14 @@ impl SettingsQueries {
         ctx: &Context<'_>,
     ) -> GqlResult<ExternalAuthRuntimeSettingsPayload> {
         let app = app_from_ctx(ctx)?;
+        let effective_form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
         app.get_external_auth_runtime_settings()
             .await
-            .map(from_external_auth_runtime_settings)
+            .map(|settings| {
+                from_external_auth_runtime_settings(settings, effective_form_login_enabled)
+            })
             .map_err(to_gql_error)
     }
 
@@ -368,11 +436,11 @@ impl SettingsQueries {
     async fn media_server_connection(
         &self,
         ctx: &Context<'_>,
-        id: String,
+        id: ID,
     ) -> GqlResult<Option<MediaServerConnectionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.get_media_server_connection(&actor, &id)
+        app.get_media_server_connection(&actor, id.as_ref())
             .await
             .map(|connection| connection.map(from_media_server_connection))
             .map_err(to_gql_error)
@@ -381,12 +449,12 @@ impl SettingsQueries {
     async fn jellyfin_server_users(
         &self,
         ctx: &Context<'_>,
-        connection_id: String,
+        connection_id: ID,
         search: Option<String>,
     ) -> GqlResult<Vec<JellyfinServerUserPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.list_jellyfin_server_users(&actor, &connection_id, search.as_deref())
+        app.list_jellyfin_server_users(&actor, connection_id.as_ref(), search.as_deref())
             .await
             .map(|users| users.into_iter().map(from_jellyfin_server_user).collect())
             .map_err(to_gql_error)
@@ -557,8 +625,9 @@ impl SettingsQueries {
             payloads.push(from_indexer_config_with_fields(config, &config_fields));
         }
         for payload in &mut payloads {
-            if let Some(s) = stats.iter().find(|s| s.indexer_id == payload.id) {
-                payload.last_query_at = s.last_query_at.clone();
+            if let Some(s) = stats.iter().find(|s| s.indexer_id == payload.id.as_ref()) {
+                payload.last_query_at =
+                    parse_optional_datetime(s.last_query_at.clone(), "indexer stats last_query_at");
             }
         }
         Ok(payloads)
@@ -595,9 +664,20 @@ impl SettingsQueries {
             .list_download_client_configs(&actor, client_type)
             .await
             .map_err(to_gql_error)?;
+        let field_map = app
+            .available_download_client_provider_types()
+            .into_iter()
+            .map(|(provider_type, _, fields, _)| (provider_type, fields))
+            .collect::<std::collections::HashMap<_, _>>();
         Ok(configs
             .into_iter()
-            .map(from_download_client_config)
+            .map(|config| {
+                let fields = field_map
+                    .get(config.client_type.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                from_download_client_config_with_fields(config, fields)
+            })
             .collect())
     }
 

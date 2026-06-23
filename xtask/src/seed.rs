@@ -278,7 +278,7 @@ fn seed_indexers(
                 "isEnabled": first_present(entry, &["enabled", "isEnabled"]),
                 "enableInteractiveSearch": present_or_null(entry, "enableInteractiveSearch"),
                 "enableAutoSearch": present_or_null(entry, "enableAutoSearch"),
-                "configJson": indexer_config_json_value(entry),
+                "config": indexer_config_value_input(entry)?,
             }),
         );
     }
@@ -322,7 +322,7 @@ fn seed_download_clients(
             json!({
                 "name": name,
                 "clientType": required_string(entry, "clientType")?,
-                "configJson": config_json_value_with_default(entry, "{}"),
+                "config": config_value_input(entry)?,
                 "isEnabled": first_present(entry, &["enabled", "isEnabled"]),
             }),
         );
@@ -677,7 +677,11 @@ fn config_json_value(entry: &Value) -> Value {
     }
 }
 
-fn indexer_config_json_value(entry: &Value) -> Value {
+fn config_value_input(entry: &Value) -> Result<Value> {
+    provider_config_value_input(config_json_value(entry))
+}
+
+fn indexer_config_value_input(entry: &Value) -> Result<Value> {
     if let Value::Null = config_json_value(entry) {
         let mut legacy_config = Map::new();
 
@@ -688,22 +692,88 @@ fn indexer_config_json_value(entry: &Value) -> Value {
             legacy_config.insert("api_key".to_string(), api_key.clone());
         }
 
-        if legacy_config.is_empty() {
-            Value::Null
-        } else {
-            Value::String(Value::Object(legacy_config).to_string())
-        }
+        provider_config_value_input(Value::Object(legacy_config))
     } else {
-        config_json_value(entry)
+        provider_config_value_input(config_json_value(entry))
     }
 }
 
-fn config_json_value_with_default(entry: &Value, default: &str) -> Value {
-    if let Value::Null = config_json_value(entry) {
-        Value::String(default.to_string())
-    } else {
-        config_json_value(entry)
+fn provider_config_value_input(config: Value) -> Result<Value> {
+    let object = match config {
+        Value::Null => Map::new(),
+        Value::Object(object) => object,
+        Value::String(raw) => serde_json::from_str::<Value>(&raw)
+            .with_context(|| "failed to parse seed configJson as JSON")?
+            .as_object()
+            .cloned()
+            .with_context(|| "seed configJson must be a JSON object")?,
+        _ => bail!("seed config must be a JSON object"),
+    };
+
+    let mut values = Vec::with_capacity(object.len());
+    for (key, value) in object {
+        if key.trim().is_empty() {
+            bail!("seed config value key is required");
+        }
+        values.push(provider_config_scalar_input(&key, value)?);
     }
+
+    Ok(Value::Array(values))
+}
+
+fn provider_config_scalar_input(key: &str, value: Value) -> Result<Value> {
+    let mut input = Map::new();
+    input.insert("key".to_string(), Value::String(key.to_string()));
+
+    match value {
+        Value::Null => {
+            input.insert("clearSecret".to_string(), Value::Bool(true));
+        }
+        Value::Bool(raw) => {
+            input.insert("boolValue".to_string(), Value::Bool(raw));
+        }
+        Value::Number(raw) => {
+            if let Some(raw) = raw.as_i64() {
+                input.insert("intValue".to_string(), Value::Number(raw.into()));
+            } else if let Some(raw) = raw.as_f64() {
+                input.insert(
+                    "floatValue".to_string(),
+                    Value::Number(
+                        serde_json::Number::from_f64(raw).with_context(|| {
+                            format!("config value '{key}' has an invalid float")
+                        })?,
+                    ),
+                );
+            } else {
+                bail!("config value '{key}' has an unsupported number");
+            }
+        }
+        Value::String(raw) => {
+            let field_name = if provider_config_key_is_secret(key) {
+                "secretValue"
+            } else {
+                "stringValue"
+            };
+            input.insert(field_name.to_string(), Value::String(raw));
+        }
+        Value::Array(_) | Value::Object(_) => {
+            bail!("config value '{key}' must be a scalar for ProviderConfigValueInput");
+        }
+    }
+
+    Ok(Value::Object(input))
+}
+
+fn provider_config_key_is_secret(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    normalized.contains("apikey")
+        || normalized.contains("password")
+        || normalized.contains("token")
+        || normalized.contains("secret")
 }
 
 fn slugify(value: &str) -> String {
@@ -723,11 +793,11 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::indexer_config_json_value;
-    use serde_json::{Value, json};
+    use super::indexer_config_value_input;
+    use serde_json::json;
 
     #[test]
-    fn indexer_config_json_value_prefers_explicit_config() {
+    fn indexer_config_value_input_prefers_explicit_config() {
         let entry = json!({
             "config": {
                 "base_url": "http://override:8080",
@@ -737,36 +807,36 @@ mod tests {
             "apiKey": "legacy-key"
         });
 
-        let got = indexer_config_json_value(&entry);
-        let parsed: Value = serde_json::from_str(got.as_str().expect("config json string"))
-            .expect("valid config json");
+        let got = indexer_config_value_input(&entry).expect("config input");
+        let values = got.as_array().expect("config input array");
 
-        assert_eq!(
-            parsed,
-            json!({
-                "base_url": "http://override:8080",
-                "api_key": "override-key"
-            })
-        );
+        assert!(values.contains(&json!({
+            "key": "base_url",
+            "stringValue": "http://override:8080"
+        })));
+        assert!(values.contains(&json!({
+            "key": "api_key",
+            "secretValue": "override-key"
+        })));
     }
 
     #[test]
-    fn indexer_config_json_value_builds_legacy_newznab_shape() {
+    fn indexer_config_value_input_builds_legacy_newznab_shape() {
         let entry = json!({
             "baseUrl": "http://legacy:8080",
             "apiKey": "legacy-key"
         });
 
-        let got = indexer_config_json_value(&entry);
-        let parsed: Value = serde_json::from_str(got.as_str().expect("config json string"))
-            .expect("valid config json");
+        let got = indexer_config_value_input(&entry).expect("config input");
+        let values = got.as_array().expect("config input array");
 
-        assert_eq!(
-            parsed,
-            json!({
-                "base_url": "http://legacy:8080",
-                "api_key": "legacy-key"
-            })
-        );
+        assert!(values.contains(&json!({
+            "key": "base_url",
+            "stringValue": "http://legacy:8080"
+        })));
+        assert!(values.contains(&json!({
+            "key": "api_key",
+            "secretValue": "legacy-key"
+        })));
     }
 }

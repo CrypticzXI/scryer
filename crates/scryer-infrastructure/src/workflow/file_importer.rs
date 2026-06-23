@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, FileImporter, ImportFileTransferProgress, ImportFileTransferProgressSender,
+    AppError, AppResult, FileImporter, ImportFileTransferProgress,
+    ImportFileTransferProgressSender, fs_integrity::import_content_proof,
 };
 use scryer_domain::{
     ImportContentProof, ImportFileIdentity, ImportFileResult, ImportMode, ImportSourceCleanupGuard,
@@ -8,14 +9,13 @@ use scryer_domain::{
     ImportTransferPhase,
 };
 use std::fmt;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, symlink};
 
-const IMPORT_CONTENT_PROOF_SAMPLE_BYTES: usize = 1024 * 1024;
 const TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO: i32 = 9;
 const IMPORT_COPY_MAX_ATTEMPTS: usize = 3;
 const IMPORT_COPY_BUFFER_BYTES: usize = 8 * 1024 * 1024;
@@ -137,68 +137,6 @@ fn cleanup_guard_after_placement(
             Err(error)
         }
     }
-}
-
-fn import_content_proof(path: &Path) -> AppResult<ImportContentProof> {
-    let mut file = std::fs::File::open(path).map_err(|e| {
-        AppError::Repository(format!(
-            "failed to open import content proof path: {}: {}",
-            path.display(),
-            e
-        ))
-    })?;
-    let size_bytes = file
-        .metadata()
-        .map_err(|e| {
-            AppError::Repository(format!(
-                "failed to stat import content proof path: {}: {}",
-                path.display(),
-                e
-            ))
-        })?
-        .len();
-
-    let first_len = size_bytes.min(IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64) as usize;
-    let mut sample = Vec::with_capacity(first_len.saturating_mul(2));
-    read_import_content_sample(&mut file, path, 0, first_len, &mut sample)?;
-
-    let remaining_after_first = size_bytes.saturating_sub(first_len as u64);
-    let last_len = remaining_after_first.min(IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64) as usize;
-    if last_len > 0 {
-        let last_offset = size_bytes - last_len as u64;
-        read_import_content_sample(&mut file, path, last_offset, last_len, &mut sample)?;
-    }
-
-    Ok(ImportContentProof {
-        size_bytes,
-        sample_bytes: sample.len() as u64,
-        sample_blake3: blake3::hash(&sample).to_hex().to_string(),
-    })
-}
-
-fn read_import_content_sample(
-    file: &mut std::fs::File,
-    path: &Path,
-    offset: u64,
-    len: usize,
-    sample: &mut Vec<u8>,
-) -> AppResult<()> {
-    file.seek(SeekFrom::Start(offset)).map_err(|e| {
-        AppError::Repository(format!(
-            "failed to seek import content proof path: {}: {}",
-            path.display(),
-            e
-        ))
-    })?;
-    let start = sample.len();
-    sample.resize(start + len, 0);
-    file.read_exact(&mut sample[start..]).map_err(|e| {
-        AppError::Repository(format!(
-            "failed to read import content proof path: {}: {}",
-            path.display(),
-            e
-        ))
-    })
 }
 
 fn source_identity_from_fingerprint(
@@ -1751,8 +1689,9 @@ mod tests {
         let source_dir = tempfile::tempdir().expect("source tempdir");
         let dest_dir = tempfile::tempdir().expect("dest tempdir");
         let source = source_dir.path().join("source.mkv");
-        let mut bytes = vec![b'a'; IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1024];
-        bytes[IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1023] = b'z';
+        let mut bytes =
+            vec![b'a'; scryer_application::fs_integrity::IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1024];
+        bytes[scryer_application::fs_integrity::IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1023] = b'z';
         std::fs::write(&source, &bytes).expect("write source");
         let dest = dest_dir.path().join("Imported.Movie.mkv");
 
@@ -1770,7 +1709,8 @@ mod tests {
         .expect("place file");
 
         let mut changed_bytes = bytes;
-        changed_bytes[IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1023] = b'y';
+        changed_bytes[scryer_application::fs_integrity::IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 1023] =
+            b'y';
         std::fs::write(&dest, &changed_bytes).expect("change dest tail");
         let error = remove_import_source_after_verified_import_blocking(
             result.source_cleanup.expect("cleanup guard"),

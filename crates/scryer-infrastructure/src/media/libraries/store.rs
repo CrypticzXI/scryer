@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{AppError, AppResult, LibraryRepository, LibraryRootDraft};
 use scryer_domain::{
-    AppPermissionMask, Id, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet,
-    default_library_id_for_facet,
+    AppPermissionMask, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet,
+    default_library_id_for_facet, normalize_library_root_path, root_folder_id_for_path,
 };
+use std::collections::HashSet;
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
@@ -266,12 +267,68 @@ async fn update_library_tx(
         return Err(AppError::NotFound(format!("library {library_id}")));
     }
 
+    reject_referenced_root_removals_tx(tx, library_id, &roots).await?;
     tx.execute(
         "DELETE FROM library_roots WHERE library_id = {}",
         &[SqlArg::Text(library_id.to_string())],
     )
     .await?;
     insert_library_roots_tx(tx, library_id, roots).await
+}
+
+async fn reject_referenced_root_removals_tx(
+    tx: &mut SqlTx<'_>,
+    library_id: &str,
+    roots: &[LibraryRootDraft],
+) -> AppResult<()> {
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Tx(tx),
+        "SELECT id FROM library_roots WHERE library_id = {}",
+        &[SqlArg::Text(library_id.to_string())],
+    )
+    .await?;
+    let existing_ids = rows
+        .into_iter()
+        .map(|row| row.text("id"))
+        .collect::<AppResult<HashSet<_>>>()?;
+    let desired_ids = roots
+        .iter()
+        .map(|root| root_folder_id_for_path(&root.path))
+        .collect::<HashSet<_>>();
+    let mut removed_root_ids = existing_ids
+        .difference(&desired_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    removed_root_ids.sort();
+
+    for root_id in removed_root_ids {
+        let referenced_count = SqlRuntime::fetch_optional(
+            SqlExec::Tx(tx),
+            "SELECT COUNT(*) AS referenced_count
+               FROM titles
+              WHERE root_folder_id = {}
+                AND COALESCE(
+                        library_id,
+                        CASE facet
+                            WHEN 'movie' THEN 'movie_default_library'
+                            WHEN 'series' THEN 'series_default_library'
+                            WHEN 'anime' THEN 'anime_default_library'
+                            ELSE 'movie_default_library'
+                        END
+                    ) = {}",
+            &[SqlArg::Text(root_id), SqlArg::Text(library_id.to_string())],
+        )
+        .await?
+        .map(|row| row.i64("referenced_count"))
+        .transpose()?
+        .unwrap_or(0);
+        if referenced_count > 0 {
+            return Err(AppError::Validation(
+                "library root cannot be removed while titles reference it".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn insert_library_roots_tx(
@@ -285,15 +342,16 @@ async fn insert_library_roots_tx(
         if path.is_empty() {
             continue;
         }
+        let root_id = root_folder_id_for_path(path);
         tx.execute(
             "INSERT INTO library_roots
              (id, library_id, path, normalized_path, is_default, created_at, updated_at)
              VALUES ({}, {}, {}, {}, {}, {}, {})",
             &[
-                SqlArg::Text(Id::new().0),
+                SqlArg::Text(root_id),
                 SqlArg::Text(library_id.to_string()),
                 SqlArg::Text(path.to_string()),
-                SqlArg::Text(normalize_root_path(path)),
+                SqlArg::Text(normalize_library_root_path(path)),
                 SqlArg::Bool(root.is_default),
                 SqlArg::Timestamp(now),
                 SqlArg::Timestamp(now),
@@ -390,10 +448,6 @@ fn row_to_library_grant(row: &SqlRow) -> AppResult<LibraryGrant> {
             row.i64("permission_mask")?,
         )),
     })
-}
-
-fn normalize_root_path(path: &str) -> String {
-    path.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
 fn mask_to_db_value(mask: u64) -> i64 {

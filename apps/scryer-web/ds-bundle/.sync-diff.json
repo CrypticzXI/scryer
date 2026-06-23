@@ -1,0 +1,43 @@
+{
+  "styleChanged": true,
+  "anchorUsed": true,
+  "anchorReason": "ok",
+  "keyedBy": "sourceKeys",
+  "unchanged": [
+    "Button",
+    "Card",
+    "Checkbox",
+    "Collapsible",
+    "Command",
+    "Dialog",
+    "HoverCard",
+    "Input",
+    "Label",
+    "Popover",
+    "Progress",
+    "Select",
+    "Separator",
+    "Sheet",
+    "Sidebar",
+    "Skeleton",
+    "Table",
+    "Tabs",
+    "Textarea",
+    "TimePicker",
+    "Toaster",
+    "ToggleGroup",
+    "Tooltip"
+  ],
+  "changed": [],
+  "added": [],
+  "removed": [],
+  "renderChurned": [],
+  "upload": {
+    "any": true,
+    "components": [],
+    "deletePaths": [],
+    "bundle": true,
+    "styling": true,
+    "aux": false
+  }
+}

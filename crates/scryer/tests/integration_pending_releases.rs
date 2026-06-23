@@ -40,6 +40,7 @@ async fn seed_title_in_library(ctx: &TestContext, id: &str, library_id: &str) {
         monitored: true,
         tags: vec![],
         external_ids: vec![],
+        root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),

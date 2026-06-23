@@ -1,5 +1,5 @@
 use scryer_application::{AppError, AppResult};
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 
 /// Upsert quota snapshot for an indexer after a search response.
 pub(crate) async fn upsert_indexer_quota(
@@ -40,25 +40,4 @@ pub(crate) async fn upsert_indexer_quota(
     .await
     .map_err(|error| AppError::Repository(error.to_string()))?;
     Ok(())
-}
-
-/// Check if an indexer is at or near its API quota.
-/// Returns true if the indexer should be skipped.
-#[allow(dead_code)]
-pub(crate) async fn is_indexer_at_quota(pool: &SqlitePool, indexer_id: &str) -> AppResult<bool> {
-    let row =
-        sqlx::query("SELECT api_current, api_max FROM indexer_api_quotas WHERE indexer_id = ?")
-            .bind(indexer_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| AppError::Repository(error.to_string()))?;
-
-    let Some(row) = row else { return Ok(false) };
-    let current: Option<i64> = row.try_get("api_current").unwrap_or(None);
-    let max: Option<i64> = row.try_get("api_max").unwrap_or(None);
-
-    match (current, max) {
-        (Some(current), Some(max)) if max > 0 => Ok(current >= (max * 95 / 100)),
-        _ => Ok(false),
-    }
 }

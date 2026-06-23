@@ -391,8 +391,21 @@ async fn execute_resolved_episode_import(
                 });
             }
         };
-        let recycle_root = title_folder_path.parent().and_then(|path| path.to_str());
-        let recycle_config = app.recycle_bin_config_for_media_root(recycle_root).await;
+        let replacement_media_root = title_folder_path
+            .parent()
+            .and_then(|path| path.to_str())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "cannot safely upgrade {} because no configured media root could be resolved",
+                    title.name
+                ))
+            })?;
+        let old_file_recycle_context = crate::upgrade::resolve_old_file_recycle_context(
+            app,
+            title,
+            &upgrade_plan.primary_incumbent.media_file,
+        )
+        .await?;
 
         match crate::upgrade::execute_upgrade(
             app,
@@ -407,8 +420,9 @@ async fn execute_resolved_episode_import(
             upgrade_plan.previous_best_score,
             post_download_score.scoring_log.clone(),
             &target_episode_ids,
-            recycle_root,
-            &recycle_config,
+            Some(replacement_media_root),
+            Some(old_file_recycle_context.media_root.as_str()),
+            &old_file_recycle_context.recycle_config,
             import_mode,
         )
         .await
@@ -421,8 +435,6 @@ async fn execute_resolved_episode_import(
                         &upgrade_plan.additional_superseded,
                         &outcome.new_file_id,
                         &dest_path,
-                        recycle_root,
-                        &recycle_config,
                     )
                     .await;
                 } else if !upgrade_plan.additional_superseded.is_empty() {

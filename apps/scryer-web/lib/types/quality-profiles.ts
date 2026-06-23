@@ -3,7 +3,7 @@ export type ParsedQualityProfile = {
   name: string;
 };
 
-export type ScoringPersonaId = "Balanced" | "Audiophile" | "Efficient" | "Compatible";
+export type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
 
 export type QualityTargetId = "8k" | "4k" | "1080p";
 

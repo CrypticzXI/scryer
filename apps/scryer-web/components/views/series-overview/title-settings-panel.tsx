@@ -17,9 +17,9 @@ import { applyMediaRenameMutation, setTitleRequiredAudioMutation } from "@/lib/g
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleDetail } from "@/components/containers/series-overview-container";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 
 const INHERIT_VALUE = "__inherit__";
-const DEFAULT_MARKER = "__default__";
 
 type MediaRenamePlanItem = {
   collectionId: string | null;
@@ -52,7 +52,7 @@ export function TitleSettingsPanel({
   qualityProfiles: { id: string; name: string }[];
   defaultRootFolder: string;
   renameEnabled: boolean;
-  rootFolders: { path: string; isDefault: boolean }[];
+  rootFolders: LibraryRootRecord[];
   onUpdateTitleOptions: (options: TitleOptionUpdates) => Promise<void>;
   onOpenFixMatch?: () => void;
   onTitleChanged?: () => Promise<void> | void;
@@ -113,13 +113,29 @@ export function TitleSettingsPanel({
   };
 
   const currentProfileId = title.qualityProfileId?.trim() || INHERIT_VALUE;
-  const currentRootFolder = title.rootFolderPath?.trim() || "";
+  const currentRootFolderId = title.rootFolderId?.trim() || "";
   const currentSeasonFolder = title.useSeasonFolders === false ? "disabled" : "enabled";
   const currentFillerPolicy = title.fillerPolicy?.trim() || INHERIT_VALUE;
   const currentRecapPolicy = title.recapPolicy?.trim() || INHERIT_VALUE;
   const [saving, setSaving] = React.useState(false);
 
-  const rootFolderSelectValue = currentRootFolder || DEFAULT_MARKER;
+  const sortedRootFolders = React.useMemo(
+    () =>
+      [...rootFolders].sort((left, right) => {
+        if (left.isDefault !== right.isDefault) {
+          return left.isDefault ? -1 : 1;
+        }
+        return left.path.localeCompare(right.path);
+      }),
+    [rootFolders],
+  );
+  const rootFolderById = React.useMemo(
+    () => new Map(rootFolders.map((root) => [root.id, root])),
+    [rootFolders],
+  );
+  const rootFolderSelectValue = rootFolderById.has(currentRootFolderId)
+    ? currentRootFolderId
+    : sortedRootFolders[0]?.id ?? "";
 
   React.useEffect(() => {
     setRenamePlan(null);
@@ -137,10 +153,13 @@ export function TitleSettingsPanel({
   };
 
   const handleRootFolderChange = async (value: string) => {
+    if (!value.trim()) {
+      return;
+    }
     setSaving(true);
     try {
       await onUpdateTitleOptions({
-        rootFolderPath: value === DEFAULT_MARKER ? "" : value,
+        rootFolderId: value,
       });
     } finally {
       setSaving(false);
@@ -278,22 +297,21 @@ export function TitleSettingsPanel({
           <Select
             value={rootFolderSelectValue}
             onValueChange={(v) => void handleRootFolderChange(v)}
-            disabled={saving}
+            disabled={saving || sortedRootFolders.length === 0}
           >
             <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={DEFAULT_MARKER}>
-                {t("title.defaultRootFolder", { path: folderLabel(defaultRootFolder) })}
-              </SelectItem>
-              {rootFolders
-                .filter((rf) => !rf.isDefault)
-                .map((rf) => (
-                  <SelectItem key={rf.path} value={rf.path}>
-                    {folderLabel(rf.path)}
-                  </SelectItem>
-                ))}
+              {sortedRootFolders.map((rf) => (
+                <SelectItem key={rf.id} value={rf.id}>
+                  {rf.isDefault
+                    ? t("title.defaultRootFolder", {
+                        path: folderLabel(rf.path || defaultRootFolder),
+                      })
+                    : folderLabel(rf.path)}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

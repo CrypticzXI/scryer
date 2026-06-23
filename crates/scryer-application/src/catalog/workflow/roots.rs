@@ -7,23 +7,7 @@ pub(crate) struct LibraryRootFolder {
     pub normalized_path: String,
 }
 pub(crate) fn normalize_library_root_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    #[cfg(windows)]
-    {
-        trimmed
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
-    }
-
-    #[cfg(not(windows))]
-    {
-        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
-    }
+    scryer_domain::normalize_library_root_path(path)
 }
 pub(crate) fn library_path_is_under_root(path: &str, root: &str) -> bool {
     let normalized_path = normalize_library_root_path(path);
@@ -124,6 +108,95 @@ impl AppUseCase {
             path: default_path.to_string(),
             is_default: true,
         }])
+    }
+}
+impl AppUseCase {
+    pub(crate) async fn resolve_title_root_folder_id_for_library(
+        &self,
+        library_id: &str,
+        root_folder_id: Option<&str>,
+    ) -> AppResult<String> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        let root = match root_folder_id
+            .map(str::trim)
+            .filter(|root_folder_id| !root_folder_id.is_empty())
+        {
+            Some(root_folder_id) => library
+                .roots
+                .iter()
+                .find(|root| root.id == root_folder_id)
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "rootFolderId must reference a root on the title library".to_string(),
+                    )
+                })?,
+            None => library
+                .roots
+                .iter()
+                .find(|root| root.is_default)
+                .or_else(|| library.roots.first())
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "title library must have at least one root folder".to_string(),
+                    )
+                })?,
+        };
+        Ok(root.id.clone())
+    }
+
+    pub(crate) async fn title_root_folder_path_override(
+        &self,
+        title: &scryer_domain::Title,
+    ) -> AppResult<String> {
+        self.title_root_folder_path_for_parts(
+            &title.root_folder_id,
+            &title.library_id,
+            &title.facet,
+        )
+        .await
+    }
+
+    pub async fn title_root_folder_path_for_parts(
+        &self,
+        root_folder_id: &str,
+        library_id: &str,
+        facet: &MediaFacet,
+    ) -> AppResult<String> {
+        let root_folder_id = root_folder_id.trim();
+        if root_folder_id.is_empty() {
+            return Err(AppError::Repository(
+                "title root folder id cannot be empty".to_string(),
+            ));
+        }
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        if library.facet != *facet {
+            return Err(AppError::Repository(format!(
+                "title root folder library {library_id} does not match title facet {}",
+                facet.as_str()
+            )));
+        }
+        library
+            .roots
+            .into_iter()
+            .find(|root| root.id == root_folder_id)
+            .map(|root| root.path)
+            .ok_or_else(|| {
+                AppError::Repository(format!(
+                    "title root folder id {root_folder_id} is not configured on library {library_id}"
+                ))
+            })
     }
 }
 impl AppUseCase {

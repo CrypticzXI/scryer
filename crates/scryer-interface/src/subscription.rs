@@ -1,11 +1,11 @@
 use async_graphql::{
-    Context, Subscription,
+    Context, ID, Subscription,
     futures_util::{
         StreamExt,
         stream::{self, BoxStream, unfold},
     },
 };
-use scryer_domain::{AppPermission, DomainEvent, DownloadQueueItem};
+use scryer_domain::{AppPermission, DomainEvent, DomainEventPayload, DownloadQueueItem};
 use std::collections::{HashSet, VecDeque};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -19,7 +19,8 @@ use crate::mappers::{
 use crate::types::{
     ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
     DownloadQueueItemPayload, ExternalImportMonitorWarmupProgressPayload, IntoApplication,
-    JobRunPayload, LibraryScanProgressPayload, PluginInstallProgressPayload,
+    JobRunPayload, LibraryScanProgressPayload, Long, MediaRequestChangedPayload,
+    PluginInstallProgressPayload, ProviderCatalogFamilyValue,
 };
 
 pub struct SubscriptionRoot;
@@ -54,6 +55,62 @@ fn guard_subscription_stream<T: Send + 'static>(
             }
         },
     ))
+}
+
+fn media_request_changed_payload(event: DomainEvent) -> Option<MediaRequestChangedPayload> {
+    let sequence = event.sequence;
+    let event_id = event.event_id;
+    let occurred_at = event.occurred_at;
+    let event_type = event.payload.event_type();
+
+    match event.payload {
+        DomainEventPayload::MediaRequestSubmitted(data)
+        | DomainEventPayload::MediaRequestUpdated(data) => Some(MediaRequestChangedPayload {
+            sequence: crate::types::Long(sequence),
+            event_id: event_id.into(),
+            occurred_at,
+            event_type: crate::types::DomainEventTypeValue::from_domain(event_type),
+            request_id: data.request_id.into(),
+            library_id: data.library_id.into(),
+            facet: crate::types::MediaFacetValue::from_domain(data.facet),
+            title_name: data.title_name,
+            created_title_id: None,
+            requested_quality_profile_id: data.requested_quality_profile_id.map(Into::into),
+            requested_quality_profile_name: data.requested_quality_profile_name,
+            requested_monitor_type: data.requested_monitor_type,
+            approved_quality_profile_id: None,
+            approved_quality_profile_name: None,
+        }),
+        DomainEventPayload::MediaRequestApproved(data)
+        | DomainEventPayload::MediaRequestRejected(data)
+        | DomainEventPayload::MediaRequestCanceled(data) => Some(MediaRequestChangedPayload {
+            sequence: crate::types::Long(sequence),
+            event_id: event_id.into(),
+            occurred_at,
+            event_type: crate::types::DomainEventTypeValue::from_domain(event_type),
+            request_id: data.request_id.into(),
+            library_id: data.library_id.into(),
+            facet: crate::types::MediaFacetValue::from_domain(data.facet),
+            title_name: data.title_name,
+            created_title_id: data.created_title_id.map(Into::into),
+            requested_quality_profile_id: data.requested_quality_profile_id.map(Into::into),
+            requested_quality_profile_name: data.requested_quality_profile_name,
+            requested_monitor_type: data.requested_monitor_type,
+            approved_quality_profile_id: data.approved_quality_profile_id.map(Into::into),
+            approved_quality_profile_name: data.approved_quality_profile_name,
+        }),
+        _ => None,
+    }
+}
+
+fn provider_catalog_family(value: &str) -> Option<ProviderCatalogFamilyValue> {
+    match value {
+        "subtitle" => Some(ProviderCatalogFamilyValue::Subtitle),
+        "notification" => Some(ProviderCatalogFamilyValue::Notification),
+        "indexer" => Some(ProviderCatalogFamilyValue::Indexer),
+        "download_client" => Some(ProviderCatalogFamilyValue::DownloadClient),
+        _ => None,
+    }
 }
 
 fn library_scan_state_stream_from_domain_events(
@@ -245,7 +302,7 @@ impl SubscriptionRoot {
     async fn domain_event_feed(
         &self,
         ctx: &Context<'_>,
-        after_sequence: Option<i64>,
+        after_sequence: Option<Long>,
     ) -> BoxStream<'static, DomainEventEnvelopePayload> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
@@ -271,7 +328,7 @@ impl SubscriptionRoot {
             }
         };
 
-        let initial_after = after_sequence.unwrap_or(0);
+        let initial_after = after_sequence.map(|value| value.0).unwrap_or(0);
         let stream = unfold(
             (receiver, initial_after, VecDeque::<DomainEvent>::new()),
             move |(mut receiver, mut cursor, mut pending)| {
@@ -335,7 +392,7 @@ impl SubscriptionRoot {
         include_all_activity: Option<bool>,
         include_history_only: Option<bool>,
         include_import_activity: Option<bool>,
-        title_id: Option<String>,
+        title_id: Option<ID>,
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
         let app = match app_from_ctx(ctx) {
@@ -373,7 +430,7 @@ impl SubscriptionRoot {
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
                 include_import_activity.unwrap_or(false),
-                title_id,
+                title_id.map(String::from),
                 activity_filter.unwrap_or(DownloadActivityFilterValue::All),
             ),
         )
@@ -547,7 +604,10 @@ impl SubscriptionRoot {
         guard_subscription_stream(ctx, Box::pin(stream))
     }
 
-    async fn media_requests_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, bool> {
+    async fn media_requests_changed(
+        &self,
+        ctx: &Context<'_>,
+    ) -> BoxStream<'static, MediaRequestChangedPayload> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
             Err(e) => {
@@ -599,7 +659,10 @@ impl SubscriptionRoot {
                     loop {
                         if let Some(event) = pending.pop_front() {
                             cursor = Some(event.sequence);
-                            return Some((true, (receiver, cursor, pending)));
+                            if let Some(payload) = media_request_changed_payload(event) {
+                                return Some((payload, (receiver, cursor, pending)));
+                            }
+                            continue;
                         }
 
                         let after_sequence = match cursor {
@@ -717,7 +780,10 @@ impl SubscriptionRoot {
         guard_subscription_stream(ctx, Box::pin(stream))
     }
 
-    async fn provider_catalog_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
+    async fn provider_catalog_changed(
+        &self,
+        ctx: &Context<'_>,
+    ) -> BoxStream<'static, Vec<ProviderCatalogFamilyValue>> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
             Err(e) => {
@@ -748,7 +814,7 @@ impl SubscriptionRoot {
                     Ok(families) => {
                         let payload = families
                             .into_iter()
-                            .map(|family| family.as_str().to_string())
+                            .filter_map(|family| provider_catalog_family(family.as_str()))
                             .collect::<Vec<_>>();
                         return Some((payload, receiver));
                     }
@@ -772,8 +838,9 @@ impl SubscriptionRoot {
     async fn plugin_install_progress(
         &self,
         ctx: &Context<'_>,
-        plugin_id: String,
+        plugin_id: async_graphql::ID,
     ) -> BoxStream<'static, PluginInstallProgressPayload> {
+        let plugin_id = String::from(plugin_id);
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
             Err(e) => {
@@ -828,8 +895,9 @@ impl SubscriptionRoot {
     async fn external_import_monitor_warmup_progress(
         &self,
         ctx: &Context<'_>,
-        session_id: String,
+        session_id: async_graphql::ID,
     ) -> BoxStream<'static, ExternalImportMonitorWarmupProgressPayload> {
+        let session_id = String::from(session_id);
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,
             Err(e) => {

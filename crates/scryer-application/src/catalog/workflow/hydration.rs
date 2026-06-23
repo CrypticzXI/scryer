@@ -96,15 +96,19 @@ impl AppUseCase {
         if request.name.trim().is_empty() {
             return Err(AppError::Validation("title name is required".into()));
         }
+        let root_folder_id = self
+            .resolve_title_root_folder_id_for_library(&library_id, request.root_folder_id.as_deref())
+            .await?;
 
         let title = Title {
             id: Id::new().0,
-            library_id,
+            library_id: library_id.clone(),
             name: request.name.trim().to_string(),
             facet: request.facet,
             monitored: request.monitored,
             tags: normalize_tags(&request.tags),
             external_ids: sanitize_ids(request.external_ids),
+            root_folder_id,
             created_by: Some(actor.id.clone()),
             created_at: Utc::now(),
             year: request.year,

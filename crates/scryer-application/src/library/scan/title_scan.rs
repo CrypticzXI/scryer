@@ -666,10 +666,7 @@ async fn cleanup_missing_movie_title_records(
     for media_file in media_files {
         if movie_scope.file_is_outside_canonical_folder(&media_file.file_path) {
             if let Err(error) = app
-                .services
-                .library
-                .media_files
-                .delete_media_file(&media_file.id)
+                .delete_media_file_record_with_dependents(&media_file.id)
                 .await
             {
                 warn!(
@@ -690,10 +687,7 @@ async fn cleanup_missing_movie_title_records(
             continue;
         }
         if let Err(error) = app
-            .services
-            .library
-            .media_files
-            .delete_media_file(&media_file.id)
+            .delete_media_file_record_with_dependents(&media_file.id)
             .await
         {
             warn!(
@@ -1075,8 +1069,22 @@ impl AppUseCase {
         title: Title,
         discovered_files: Vec<LibraryFile>,
     ) -> AppResult<LibraryScanSummary> {
-        self.require_library_management_permission(actor, &title.library_id)
-            .await?;
+        if let Err(error) = self
+            .require_library_management_permission(actor, &title.library_id)
+            .await
+        {
+            match error {
+                AppError::Unauthorized(_) => {
+                    self.require_library_permission(
+                        actor,
+                        &title.library_id,
+                        scryer_domain::LibraryPermission::ManageTitles,
+                    )
+                    .await?;
+                }
+                error => return Err(error),
+            }
+        }
 
         let facet_plan = match title.facet {
             MediaFacet::Movie => {
@@ -1768,10 +1776,7 @@ impl AppUseCase {
                     }
                     let db_started = Instant::now();
                     let delete_result = self
-                        .services
-                        .library
-                        .media_files
-                        .delete_media_file(&record.id)
+                        .delete_media_file_record_with_dependents(&record.id)
                         .await;
                     db_elapsed = db_elapsed.saturating_add(db_started.elapsed());
                     if let Err(error) = delete_result {
@@ -1870,6 +1875,7 @@ mod tests {
             name: "13".into(),
             facet: MediaFacet::Series,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
             external_ids: vec![ExternalId {

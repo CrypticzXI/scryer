@@ -85,6 +85,11 @@ type PendingScriptEditorAction =
   | { type: "close" }
   | null;
 
+type PendingInlineShellAction =
+  | { type: "save" }
+  | { type: "toggle"; record: PPScript }
+  | null;
+
 export function SettingsPostProcessingContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -95,6 +100,8 @@ export function SettingsPostProcessingContainer() {
   const [pendingDeleteScript, setPendingDeleteScript] = useState<PPScript | null>(null);
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingScriptEditorAction>(null);
+  const [pendingInlineShellAction, setPendingInlineShellAction] =
+    useState<PendingInlineShellAction>(null);
   const [mutatingScriptId, setMutatingScriptId] = useState<string | null>(null);
   const [scriptDraft, setScriptDraft] = useState<PPScriptDraft>(() =>
     cloneScriptDraft(INITIAL_DRAFT),
@@ -114,6 +121,12 @@ export function SettingsPostProcessingContainer() {
 
   const isDraftDirty =
     JSON.stringify(scriptDraft) !== JSON.stringify(scriptDraftBaseline);
+
+  const scriptDraftRequiresInlineShellAcknowledgement =
+    scriptDraft.scriptType === "inline" &&
+    (!editingScriptId ||
+      scriptDraftBaseline.scriptType !== "inline" ||
+      scriptDraft.scriptContent !== scriptDraftBaseline.scriptContent);
 
   const openCreateEditor = useCallback(() => {
     const nextDraft = cloneScriptDraft(INITIAL_DRAFT);
@@ -199,8 +212,8 @@ export function SettingsPostProcessingContainer() {
     [client, setGlobalStatus, t],
   );
 
-  const submitScript = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const saveScript = useCallback(
+    async (inlineShellAcknowledged = false) => {
     const payload = {
       name: scriptDraft.name.trim(),
       description: scriptDraft.description.trim(),
@@ -211,6 +224,7 @@ export function SettingsPostProcessingContainer() {
       timeoutSecs: scriptDraft.timeoutSecs,
       priority: scriptDraft.priority,
       debug: scriptDraft.debug,
+      ...(inlineShellAcknowledged ? { inlineShellAcknowledged: true } : {}),
     };
 
     if (!payload.name || !payload.scriptContent.trim()) {
@@ -242,18 +256,44 @@ export function SettingsPostProcessingContainer() {
     } finally {
       setMutatingScriptId(null);
     }
+    },
+    [
+      client,
+      closeEditor,
+      editingScriptId,
+      refreshScripts,
+      scriptDraft,
+      setGlobalStatus,
+      t,
+    ],
+  );
+
+  const submitScript = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!scriptDraft.name.trim() || !scriptDraft.scriptContent.trim()) {
+      setGlobalStatus(t("settings.ruleValidationRequired"));
+      return;
+    }
+    if (scriptDraftRequiresInlineShellAcknowledgement) {
+      setPendingInlineShellAction({ type: "save" });
+      return;
+    }
+    void saveScript(false);
   };
 
   const deleteScript = (record: PPScript) => {
     setPendingDeleteScript(record);
   };
 
-  const toggleScript = useCallback(
-    async (record: PPScript) => {
+  const executeToggleScript = useCallback(
+    async (record: PPScript, inlineShellAcknowledged = false) => {
       setMutatingScriptId(record.id);
       try {
         const { error } = await client
-          .mutation(togglePostProcessingScriptMutation, { id: record.id })
+          .mutation(togglePostProcessingScriptMutation, {
+            id: record.id,
+            ...(inlineShellAcknowledged ? { inlineShellAcknowledged: true } : {}),
+          })
           .toPromise();
         if (error) throw error;
         setGlobalStatus(
@@ -269,6 +309,17 @@ export function SettingsPostProcessingContainer() {
       }
     },
     [client, refreshScripts, setGlobalStatus, t],
+  );
+
+  const toggleScript = useCallback(
+    async (record: PPScript) => {
+      if (record.scriptType === "inline" && !record.enabled) {
+        setPendingInlineShellAction({ type: "toggle", record });
+        return;
+      }
+      await executeToggleScript(record, false);
+    },
+    [executeToggleScript],
   );
 
   const confirmDeleteScript = async () => {
@@ -305,6 +356,17 @@ export function SettingsPostProcessingContainer() {
     setPendingEditorAction(null);
   }, [closeEditor, openCreateEditor, openEditEditor, pendingEditorAction]);
 
+  const confirmPendingInlineShellAction = useCallback(() => {
+    const action = pendingInlineShellAction;
+    if (!action) return;
+    setPendingInlineShellAction(null);
+    if (action.type === "save") {
+      void saveScript(true);
+    } else {
+      void executeToggleScript(action.record, true);
+    }
+  }, [executeToggleScript, pendingInlineShellAction, saveScript]);
+
   return (
     <>
       <SettingsPostProcessingSection
@@ -339,6 +401,19 @@ export function SettingsPostProcessingContainer() {
         isBusy={mutatingScriptId !== null}
         onConfirm={confirmDeleteScript}
         onCancel={() => setPendingDeleteScript(null)}
+      />
+      <ConfirmDialog
+        open={pendingInlineShellAction !== null}
+        title={t("settings.pp.inlineShellConfirmTitle")}
+        description={t("settings.pp.inlineShellConfirmDescription")}
+        confirmLabel={t("settings.pp.inlineShellConfirm")}
+        cancelLabel={t("label.cancel")}
+        contentId="settings-post-processing-inline-shell-confirm"
+        confirmButtonId="settings-post-processing-inline-shell-confirm-accept"
+        cancelButtonId="settings-post-processing-inline-shell-confirm-cancel"
+        isBusy={mutatingScriptId !== null}
+        onConfirm={confirmPendingInlineShellAction}
+        onCancel={() => setPendingInlineShellAction(null)}
       />
       <ConfirmDialog
         open={pendingEditorAction !== null}

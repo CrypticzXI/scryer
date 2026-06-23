@@ -114,6 +114,7 @@ impl AppUseCase {
             db_path: datastore_engine.clone(),
             datastore_engine,
             datastore_migration_key: db_migration_version.clone(),
+            runtime_path_style: RuntimePathStyle::current(),
             total_titles: titles.len(),
             monitored_titles,
             total_users: users.len(),

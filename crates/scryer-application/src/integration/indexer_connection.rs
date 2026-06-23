@@ -117,6 +117,14 @@ impl AppUseCase {
                 let result = client.validate_connection().await?;
                 validate_indexer_connection_result(result)?;
             }
+            if let Some(config) = persisted_config.as_ref() {
+                self.services
+                    .integrations
+                    .indexer_configs
+                    .clear_last_error(&config.id)
+                    .await?;
+                self.publish_indexers_changed();
+            }
             return Ok(());
         }
 
@@ -150,6 +158,15 @@ impl AppUseCase {
         let _ = self
             .refresh_caps_snapshot_json_best_effort(&temp_config, None)
             .await;
+
+        if let Some(config) = persisted_config.as_ref() {
+            self.services
+                .integrations
+                .indexer_configs
+                .clear_last_error(&config.id)
+                .await?;
+            self.publish_indexers_changed();
+        }
 
         Ok(())
     }
@@ -526,13 +543,19 @@ mod tests {
 
     struct RecordingIndexerConfigRepo {
         created: Arc<Mutex<Vec<IndexerConfig>>>,
+        cleared_ids: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingIndexerConfigRepo {
         fn new() -> Self {
             Self {
                 created: Arc::new(Mutex::new(Vec::new())),
+                cleared_ids: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        async fn cleared_ids(&self) -> Vec<String> {
+            self.cleared_ids.lock().await.clone()
         }
     }
 
@@ -611,6 +634,11 @@ mod tests {
         }
 
         async fn touch_last_error(&self, _provider_type: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear_last_error(&self, id: &str) -> AppResult<()> {
+            self.cleared_ids.lock().await.push(id.to_string());
             Ok(())
         }
     }
@@ -1396,6 +1424,80 @@ mod tests {
 
         assert_eq!(updated.name, "NZBGeek Mirror");
         assert!(client.calls.lock().unwrap().is_empty());
+        assert!(indexer_repo.cleared_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_indexer_config_clears_last_error_after_successful_validation() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info/".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: Some("Last search failed".to_string()),
+            last_error_at: Some(Utc::now()),
+            config_json: Some(
+                r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "nzbgeek",
+                vec![
+                    string_field(
+                        "base_url",
+                        "Base URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    ),
+                    password_field("api_key", "API Key"),
+                ],
+                searchable_capabilities(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.update_indexer_config(
+            &test_admin(),
+            crate::IndexerConfigUpdate {
+                id: "cfg-1".to_string(),
+                name: None,
+                provider_type: None,
+                derived_base_url: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                is_enabled: None,
+                enable_interactive_search: None,
+                enable_auto_search: None,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                config_json: Some(
+                    r#"{"base_url":"https://api.nzbgeek.info/","api_key":"new-good-key"}"#
+                        .to_string(),
+                ),
+            },
+        )
+        .await
+        .expect("validated update should succeed");
+
+        assert_eq!(indexer_repo.cleared_ids().await, vec!["cfg-1".to_string()]);
     }
 
     #[tokio::test]
@@ -1440,22 +1542,25 @@ mod tests {
             client,
         ));
         let app = test_app(
-            indexer_repo,
+            indexer_repo.clone(),
             Some(provider.clone()),
             Arc::new(NullSettingsRepository),
         );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
 
         app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"))
             .await
             .expect("persisted config should be reused");
 
-        let seen = provider.seen_configs.lock().unwrap();
+        let seen = provider.seen_configs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].base_url, "https://api.nzbgeek.info");
         assert_eq!(
             seen[0].config_json.as_deref(),
             Some(r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#)
         );
+        assert_eq!(indexer_repo.cleared_ids().await, vec!["cfg-1".to_string()]);
+        expect_indexers_changed(&mut receiver, "test_indexer_connection").await;
     }
 
     #[tokio::test]

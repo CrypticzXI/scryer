@@ -10,6 +10,7 @@ import {
   externalImportMonitorWarmupProgressSubscription,
   pluginInstallProgressSubscription,
   qualityProfilesInitQuery,
+  setupStatusQuery,
   setupWizardProviderTypesInitQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -36,13 +37,14 @@ import {
   DEFAULT_PORT_FOR_CLIENT_TYPE,
 } from "@/lib/constants/download-clients";
 import {
-  buildDownloadClientConfigJson,
+  buildDownloadClientConfigValues,
   buildDownloadClientTypeOptions,
   ensureDownloadClientTypeOption,
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
+import { providerConfigRecordToValues } from "@/lib/utils/provider-config";
 import {
-  resolveLocalPathStyle,
+  localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import {
@@ -111,10 +113,10 @@ function buildSetupIndexerConfigValues(
   return values;
 }
 
-function serializeSetupIndexerConfigJson(
+function serializeSetupIndexerConfigValues(
   fields: ConfigFieldDef[],
   values: Record<string, string>,
-): string | undefined {
+): ReturnType<typeof providerConfigRecordToValues> | undefined {
   const entries: Record<string, string> = {};
   const fieldKeySet = new Set(fields.map((field) => field.key));
 
@@ -141,7 +143,12 @@ function serializeSetupIndexerConfigJson(
     }
   }
 
-  return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
+  const secretInputKeys = setupIndexerConfigFields(fields)
+    .filter((field) => field.fieldType === "password")
+    .map((field) => field.key);
+  return Object.keys(entries).length > 0
+    ? providerConfigRecordToValues(entries, secretInputKeys)
+    : undefined;
 }
 
 function findMissingSetupIndexerField(
@@ -296,6 +303,9 @@ export function SetupWizardContainer({
         ? "restore"
         : "fresh";
   const currentStep = parseInt(searchParams.get("step") || "0", 10);
+  const [canRestoreSetup, setCanRestoreSetup] = useState(false);
+  const [restoreAvailabilityChecked, setRestoreAvailabilityChecked] =
+    useState(false);
 
   const goToStep = useCallback(
     (step: number, path?: "fresh" | "import" | "restore") => {
@@ -309,13 +319,57 @@ export function SetupWizardContainer({
     [wizardPath, setSearchParams],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    setCanRestoreSetup(false);
+    setRestoreAvailabilityChecked(false);
+
+    client
+      .query(setupStatusQuery, {}, { requestPolicy: "network-only" })
+      .toPromise()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setCanRestoreSetup(data?.setupStatus?.setupComplete === false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCanRestoreSetup(false);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRestoreAvailabilityChecked(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (wizardPath !== "restore" || !restoreAvailabilityChecked || canRestoreSetup) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams();
+    if (isReentry) {
+      nextSearchParams.set("reentry", "1");
+    }
+    setSearchParams(nextSearchParams, { replace: true });
+  }, [
+    canRestoreSetup,
+    isReentry,
+    restoreAvailabilityChecked,
+    setSearchParams,
+    wizardPath,
+  ]);
+
   // ── Step 1 (fresh) / Step 3 (import): Quality Preferences ─────────
   const [facetPrefs, setFacetPrefs] = useState<
     Record<ViewCategoryId, FacetQualityPrefs>
   >({
-    movie: { quality: "4k", persona: "Balanced" },
-    series: { quality: "4k", persona: "Balanced" },
-    anime: { quality: "1080p", persona: "Balanced" },
+    movie: { quality: "4k", persona: "balanced" },
+    series: { quality: "4k", persona: "balanced" },
+    anime: { quality: "1080p", persona: "balanced" },
   });
   const [personaSaving, setPersonaSaving] = useState(false);
 
@@ -333,9 +387,8 @@ export function SetupWizardContainer({
   const [dcTypeOptions, setDcTypeOptions] = useState<
     DownloadClientTypeOption[]
   >(() => buildDownloadClientTypeOptions([]));
-  const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>(() =>
-    resolveLocalPathStyle(null),
-  );
+  const [dcLocalPathStyle, setDcLocalPathStyle] =
+    useState<LocalPathStyle | undefined>(undefined);
   const [dcTesting, setDcTesting] = useState(false);
   const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(
     null,
@@ -581,7 +634,9 @@ export function SetupWizardContainer({
       )
         throw error;
 
-      setDcLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
+      setDcLocalPathStyle(
+        localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+      );
       setDcTypeOptions(
         buildDownloadClientTypeOptions(
           (data?.downloadClientProviderTypes as
@@ -751,7 +806,7 @@ export function SetupWizardContainer({
     [resetIndexerSavedState],
   );
 
-  const buildIndexerConfigJson = useCallback(() => {
+  const buildIndexerConfigValues = useCallback(() => {
     if (!idxProviderType) {
       setIdxError(t("form.providerTypePlaceholder"));
       return null;
@@ -766,7 +821,7 @@ export function SetupWizardContainer({
       return null;
     }
 
-    return serializeSetupIndexerConfigJson(
+    return serializeSetupIndexerConfigValues(
       selectedIdxProviderFields,
       idxConfigValues,
     );
@@ -890,10 +945,8 @@ export function SetupWizardContainer({
       });
       setPluginsError(null);
       try {
-        const { data, error } = await client
-          .mutation(beginInstallPluginMutation, {
-            input: { pluginId: plugin.id },
-          })
+	        const { data, error } = await client
+	          .mutation(beginInstallPluginMutation, { pluginId: plugin.id })
           .toPromise();
         if (error) throw error;
         const snapshot = data?.beginInstallPlugin;
@@ -928,10 +981,8 @@ export function SetupWizardContainer({
       });
       setPluginsError(null);
       try {
-        const { error } = await client
-          .mutation(uninstallPluginMutation, {
-            input: { pluginId: plugin.id },
-          })
+	        const { error } = await client
+	          .mutation(uninstallPluginMutation, { pluginId: plugin.id })
           .toPromise();
         if (error) throw error;
 
@@ -1116,12 +1167,12 @@ export function SetupWizardContainer({
         .mutation(testDownloadClientConnectionMutation, {
           input: {
             clientType: dcDraft.clientType,
-            configJson: buildDownloadClientConfigJson(dcDraft),
+            config: buildDownloadClientConfigValues(dcDraft),
           },
         })
         .toPromise();
       if (error) throw error;
-      if (data?.testDownloadClientConnection) {
+      if (data?.testDownloadClientConnection?.status === "ok") {
         setDcTestResult("success");
       } else {
         setDcTestResult("failed");
@@ -1143,7 +1194,7 @@ export function SetupWizardContainer({
           input: {
             name: dcDraft.name.trim(),
             clientType: dcDraft.clientType,
-            configJson: buildDownloadClientConfigJson(dcDraft),
+            config: buildDownloadClientConfigValues(dcDraft),
             isEnabled: true,
           },
         })
@@ -1166,12 +1217,12 @@ export function SetupWizardContainer({
         .mutation(testDownloadClientConnectionMutation, {
           input: {
             clientType: dcDraft.clientType,
-            configJson: buildDownloadClientConfigJson(dcDraft),
+            config: buildDownloadClientConfigValues(dcDraft),
           },
         })
         .toPromise();
       if (error) throw error;
-      if (data?.testDownloadClientConnection) {
+      if (data?.testDownloadClientConnection?.status === "ok") {
         setDcTestResult("success");
         setDcTesting(false);
         await saveDownloadClient();
@@ -1190,8 +1241,8 @@ export function SetupWizardContainer({
     setIdxTesting(true);
     setIdxTestResult(null);
     setIdxError(null);
-    const configJson = buildIndexerConfigJson();
-    if (configJson === null) {
+    const config = buildIndexerConfigValues();
+    if (config === null) {
       setIdxTesting(false);
       return;
     }
@@ -1200,12 +1251,12 @@ export function SetupWizardContainer({
         .mutation(testIndexerConnectionMutation, {
           input: {
             providerType: idxProviderType,
-            configJson,
+            config,
           },
         })
         .toPromise();
       if (error) throw error;
-      if (data?.testIndexerConnection) {
+      if (data?.testIndexerConnection?.status === "ok") {
         setIdxTestResult("success");
       } else {
         setIdxTestResult("failed");
@@ -1215,14 +1266,14 @@ export function SetupWizardContainer({
     } finally {
       setIdxTesting(false);
     }
-  }, [buildIndexerConfigJson, client, idxProviderType]);
+  }, [buildIndexerConfigValues, client, idxProviderType]);
 
   // ── Indexer save ────────────────────────────────────────────────────
   const saveIndexer = useCallback(async () => {
     setIdxSaving(true);
     setIdxError(null);
-    const configJson = buildIndexerConfigJson();
-    if (configJson === null) {
+    const config = buildIndexerConfigValues();
+    if (config === null) {
       setIdxSaving(false);
       return;
     }
@@ -1232,7 +1283,7 @@ export function SetupWizardContainer({
           input: {
             name: idxName.trim(),
             providerType: idxProviderType,
-            configJson,
+            config,
             isEnabled: true,
             enableInteractiveSearch: true,
             enableAutoSearch: true,
@@ -1246,14 +1297,14 @@ export function SetupWizardContainer({
     } finally {
       setIdxSaving(false);
     }
-  }, [buildIndexerConfigJson, client, idxName, idxProviderType]);
+  }, [buildIndexerConfigValues, client, idxName, idxProviderType]);
 
   const handleIdxTestAndSave = useCallback(async () => {
     setIdxTesting(true);
     setIdxTestResult(null);
     setIdxError(null);
-    const configJson = buildIndexerConfigJson();
-    if (configJson === null) {
+    const config = buildIndexerConfigValues();
+    if (config === null) {
       setIdxTesting(false);
       return;
     }
@@ -1262,12 +1313,12 @@ export function SetupWizardContainer({
         .mutation(testIndexerConnectionMutation, {
           input: {
             providerType: idxProviderType,
-            configJson,
+            config,
           },
         })
         .toPromise();
       if (error) throw error;
-      if (data?.testIndexerConnection) {
+      if (data?.testIndexerConnection?.status === "ok") {
         setIdxTestResult("success");
         setIdxTesting(false);
         await saveIndexer();
@@ -1279,7 +1330,7 @@ export function SetupWizardContainer({
       setIdxTestResult("failed");
       setIdxTesting(false);
     }
-  }, [buildIndexerConfigJson, client, idxProviderType, saveIndexer]);
+  }, [buildIndexerConfigValues, client, idxProviderType, saveIndexer]);
 
   // ── Import: Connect & Scan ──────────────────────────────────────────
   const handleImportConnect = useCallback(async () => {
@@ -1520,7 +1571,7 @@ export function SetupWizardContainer({
     ) {
       void client
         .mutation(cancelExternalImportMonitorWarmupMutation, {
-          input: { sessionId },
+          sessionId,
         })
         .toPromise();
     }
@@ -1761,7 +1812,7 @@ export function SetupWizardContainer({
     if (error) {
       throw error;
     }
-    if (!data?.finalizeExternalImport) {
+    if (!data?.finalizeExternalImport?.finalized) {
       throw new Error(t("setup.importFinalizeFailed"));
     }
   }, [
@@ -1788,7 +1839,7 @@ export function SetupWizardContainer({
         if (error) {
           throw error;
         }
-        if (!data?.completeSetup) {
+        if (!data?.completeSetup?.completed) {
           throw new Error(t("setup.connectError"));
         }
         navigateAfterSetup();
@@ -1852,7 +1903,7 @@ export function SetupWizardContainer({
       if (error) {
         throw error;
       }
-      if (!data?.completeSetup) {
+      if (!data?.completeSetup?.completed) {
         throw new Error(t("setup.importFinalizeFailed"));
       }
 
@@ -1861,8 +1912,10 @@ export function SetupWizardContainer({
           try {
             const result = await client
               .mutation(scanLibraryMutation, {
-                libraryId,
-                importWarmupSessionId: importWarmupProgress?.sessionId ?? null,
+                input: {
+                  libraryId,
+                  importWarmupSessionId: importWarmupProgress?.sessionId ?? null,
+                },
               })
               .toPromise();
             if (result.error) throw result.error;
@@ -2127,6 +2180,7 @@ export function SetupWizardContainer({
           onRestoreSetup={() => goToStep(1, "restore")}
           onSkip={finishSetup}
           skipping={finishing}
+          canRestoreSetup={canRestoreSetup}
         />
       )}
 
@@ -2244,7 +2298,7 @@ export function SetupWizardContainer({
       {/* IMPORT PATH                                                     */}
       {/* ════════════════════════════════════════════════════════════════ */}
 
-      {currentStep === 1 && wizardPath === "restore" && (
+      {currentStep === 1 && wizardPath === "restore" && canRestoreSetup && (
         <SetupRestoreView
           t={t}
           onBack={() => goToStep(0)}

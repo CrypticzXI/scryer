@@ -604,6 +604,52 @@ pub enum SortDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleCatalogSortKey {
+    Title,
+    Monitored,
+    Quality,
+    Episodes,
+    Status,
+    Size,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TitleCatalogSort {
+    pub key: TitleCatalogSortKey,
+    pub direction: SortDirection,
+}
+
+impl Default for TitleCatalogSort {
+    fn default() -> Self {
+        Self {
+            key: TitleCatalogSortKey::Title,
+            direction: SortDirection::Asc,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogFilter {
+    pub monitored: Option<bool>,
+    pub content_statuses: Vec<TitleCatalogContentStatus>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleCatalogContentStatus {
+    Continuing,
+    Ended,
+}
+
+#[derive(Clone, Debug)]
+pub struct TitleCatalogResult {
+    pub items: Vec<Title>,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub total_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DownloadHistorySort {
     pub key: DownloadHistorySortKey,
     pub direction: SortDirection,
@@ -1375,6 +1421,7 @@ pub struct AuthenticatedTokenClaims {
     pub session_scope: JwtSessionScope,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
+    pub oauth_authorization_source: OAuthAuthorizationSource,
     pub actor_capabilities: scryer_domain::ActorCapabilityMask,
 }
 
@@ -1388,12 +1435,41 @@ impl AuthenticatedTokenClaims {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthAuthorizationSource {
+    #[default]
+    Authenticated,
+    Authless,
+}
+
+impl OAuthAuthorizationSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Authenticated => "authenticated",
+            Self::Authless => "authless",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "authless" => Self::Authless,
+            _ => Self::Authenticated,
+        }
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, Self::Authenticated)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthAuthorizationCodeRecord {
     pub id: String,
     pub code_hash: String,
     pub client_id: String,
     pub user_id: String,
+    pub authorization_source: OAuthAuthorizationSource,
     pub redirect_uri: String,
     pub scope: String,
     pub code_challenge: String,
@@ -1408,6 +1484,7 @@ pub struct OAuthRefreshGrantRecord {
     pub id: String,
     pub family_id: String,
     pub user_id: String,
+    pub authorization_source: OAuthAuthorizationSource,
     pub client_id: String,
     pub scope: String,
     pub auth_session_version: String,
@@ -1472,6 +1549,12 @@ pub(crate) struct JwtClaims {
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]
     pub oauth_grant_id: Option<String>,
+    #[serde(
+        default,
+        rename = "oauthAuthorizationSource",
+        skip_serializing_if = "OAuthAuthorizationSource::is_authenticated"
+    )]
+    pub oauth_authorization_source: OAuthAuthorizationSource,
     #[serde(default, rename = "actorCapabilities")]
     pub actor_capabilities: Vec<String>,
 }
@@ -1564,12 +1647,46 @@ pub struct DiskSpaceInfo {
     pub used_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimePathStyle {
+    Unix,
+    Windows,
+}
+
+impl RuntimePathStyle {
+    pub fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_path_style_tests {
+    use super::RuntimePathStyle;
+
+    #[test]
+    #[cfg(unix)]
+    fn current_is_unix_on_unix() {
+        assert_eq!(RuntimePathStyle::current(), RuntimePathStyle::Unix);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn current_is_windows_on_windows() {
+        assert_eq!(RuntimePathStyle::current(), RuntimePathStyle::Windows);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SystemHealth {
     pub service_ready: bool,
     pub db_path: String,
     pub datastore_engine: String,
     pub datastore_migration_key: Option<String>,
+    pub runtime_path_style: RuntimePathStyle,
     pub total_titles: usize,
     pub monitored_titles: usize,
     pub total_users: usize,

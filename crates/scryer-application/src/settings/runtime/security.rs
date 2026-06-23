@@ -223,6 +223,11 @@ impl AppUseCase {
         )
         .await?;
 
+        if !current.form_login_enabled && input.form_login_enabled {
+            self.revoke_authless_oauth_refresh_grants("form_login_enabled")
+                .await?;
+        }
+
         self.emit_settings_saved(
             actor,
             "security_settings",

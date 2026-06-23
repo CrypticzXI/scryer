@@ -1,7 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { authRuntimeStateQuery } from "@/lib/graphql/queries";
+import { backendClient } from "@/lib/graphql/urql-client";
 import { getAuthToken } from "@/lib/hooks/use-auth";
 import { getRuntimeBackendUrl, getRuntimeBasePath } from "@/lib/runtime-config";
+import type { AuthRuntimeState } from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 const CLIENT_NAMES: Record<string, string> = {
@@ -25,25 +28,58 @@ export default function OAuthAuthorizePage() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const clientId = params.get("client_id") ?? "";
   const redirectUri = params.get("redirect_uri") ?? "";
   const clientName = CLIENT_NAMES[clientId] ?? clientId;
   const token = getAuthToken();
+  const authlessAuthorization = effectiveFormLoginEnabled === false;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data } = await backendClient
+          .query<{ authRuntimeState?: AuthRuntimeState | null }>(authRuntimeStateQuery, {})
+          .toPromise();
+        if (!cancelled) {
+          const runtimeState = data?.authRuntimeState ?? null;
+          setEffectiveFormLoginEnabled(
+            typeof runtimeState?.effectiveFormLoginEnabled === "boolean"
+              ? runtimeState.effectiveFormLoginEnabled
+              : null,
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setEffectiveFormLoginEnabled(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const decide = async (approved: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      if (!token) {
+      if (!authlessAuthorization && !token) {
         window.location.assign(loginUrl());
         return;
       }
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+      };
+      if (!authlessAuthorization && token) {
+        headers.authorization = `Bearer ${token}`;
+      }
       const response = await fetch(getRuntimeBackendUrl("/oauth/authorize/decision"), {
         method: "POST",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           approved,
           responseType: params.get("response_type") ?? "",
@@ -74,7 +110,7 @@ export default function OAuthAuthorizePage() {
     }
   };
 
-  if (!token) {
+  if (!authlessAuthorization && !token) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
         <div className="grid w-full max-w-lg gap-4 rounded-md border border-border bg-card p-6 shadow-sm">
@@ -103,7 +139,10 @@ export default function OAuthAuthorizePage() {
           <p className="break-all text-sm text-muted-foreground">{redirectUri}</p>
         </div>
         <div className="grid gap-2 text-sm">
-          <p>Can access Scryer as you, limited to your library permissions.</p>
+          <p>
+            Can access Scryer as {authlessAuthorization ? "Anonymous" : "you"}, limited to library
+            permissions.
+          </p>
           <p>Cannot manage users, settings, backups, security, or app configuration.</p>
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -113,7 +152,7 @@ export default function OAuthAuthorizePage() {
             disabled={busy}
             onClick={() => decide(true)}
           >
-            Authorize
+            {authlessAuthorization ? "Authorize as Anonymous" : "Authorize"}
           </Button>
           <Button
             id={selectorId("oauth-authorize-deny")}

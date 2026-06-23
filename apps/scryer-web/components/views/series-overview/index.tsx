@@ -49,6 +49,7 @@ import { OverviewBackLink } from "../overview-back-link";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import { localizedTitleStatus } from "../overview-localization";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import {
@@ -151,7 +152,7 @@ type Props = {
   qualityProfiles?: { id: string; name: string }[];
   defaultRootFolder?: string;
   renameEnabled?: boolean;
-  rootFolders?: { path: string; isDefault: boolean }[];
+  rootFolders?: LibraryRootRecord[];
   onUpdateTitleOptions?: (options: TitleOptionUpdates) => Promise<void>;
   completedDownloads?: DownloadQueueItem[];
   onOpenManualImport?: (item: DownloadQueueItem) => void;

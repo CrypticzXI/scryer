@@ -833,6 +833,7 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+    pub(crate) same_path_upgrade_guard_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -1027,6 +1028,7 @@ impl AppRuntimeState {
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
+                same_path_upgrade_guard_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),
@@ -2290,8 +2292,18 @@ impl AppUseCase {
     }
 
     pub async fn indexer_query_stats(&self, actor: &User) -> AppResult<Vec<IndexerQueryStats>> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
-            .await?;
+        let settings_permissions = scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageSystemSettings,
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]);
+        if !self
+            .has_any_app_permission(actor, settings_permissions)
+            .await?
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to perform this action".to_string(),
+            ));
+        }
         Ok(self.services.integrations.indexer_stats.all_stats())
     }
 
@@ -2650,27 +2662,6 @@ impl AppUseCase {
             .await?;
         }
         Ok(title)
-    }
-
-    pub async fn get_title_tags_for_update(
-        &self,
-        actor: &User,
-        title_id: &str,
-    ) -> AppResult<Vec<String>> {
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
-        self.require_library_permission(
-            actor,
-            &title.library_id,
-            scryer_domain::LibraryPermission::ManageTitles,
-        )
-        .await?;
-        Ok(title.tags)
     }
 
     pub async fn get_completed_download(

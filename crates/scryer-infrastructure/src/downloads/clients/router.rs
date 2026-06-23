@@ -2369,6 +2369,11 @@ mod tests {
     }
 
     fn test_title_for_facet(facet: MediaFacet) -> scryer_domain::Title {
+        let root_folder_id = scryer_domain::root_folder_id_for_path(match facet {
+            MediaFacet::Movie => "/data/movies",
+            MediaFacet::Series => "/data/series",
+            MediaFacet::Anime => "/data/anime",
+        });
         scryer_domain::Title {
             id: "title-1".to_string(),
             name: "Test Title".to_string(),
@@ -2377,6 +2382,7 @@ mod tests {
             monitored: true,
             tags: vec![],
             external_ids: vec![],
+            root_folder_id,
             created_by: None,
             created_at: Utc::now(),
             year: None,

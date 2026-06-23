@@ -1,13 +1,15 @@
 import type { ConfigFieldDef } from "./indexers";
 import type { MediaServerProvider } from "./settings";
 import type { TitleRecord } from "./titles";
+import type { ProviderConfigValue } from "@/lib/utils/provider-config";
 
 export type NotificationChannel = {
   id: string;
   name: string;
   channelType: string;
   mediaServerConnectionId: string | null;
-  configJson: string | null;
+  config: ProviderConfigValue[];
+  storedSecretKeys: string[];
   isEnabled: boolean;
   createdAt: string;
   updatedAt: string;

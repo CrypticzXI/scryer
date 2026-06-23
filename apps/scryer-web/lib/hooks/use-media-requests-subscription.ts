@@ -13,7 +13,16 @@ export function useMediaRequestsSubscription(
     onChangedRef.current = onChanged;
   });
 
-  useDeferredWsSubscription({
+  useDeferredWsSubscription<{
+    data?: {
+      mediaRequestsChanged?: {
+        eventId: string;
+        eventType: string;
+        requestId: string;
+        libraryId: string;
+      };
+    };
+  }>({
     enabled: !(options?.pause ?? false),
     requestKey: "mediaRequestsChanged",
     request: { query: mediaRequestsChangedSubscription },

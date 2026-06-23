@@ -26,6 +26,10 @@ import {
   testIndexerConnectionMutation,
   updateIndexerMutation,
 } from "@/lib/graphql/mutations";
+import {
+  providerConfigRecordToValues,
+  providerConfigValuesToRecord,
+} from "@/lib/utils/provider-config";
 
 type SettingsIndexersSectionProps = ComponentProps<
   typeof SettingsIndexersSection
@@ -41,11 +45,11 @@ const INDEXER_INITIAL_DRAFT = {
   configValues: {} as Record<string, string>,
 };
 
-function serializeConfigJson(
+function serializeConfigValues(
   fields: ConfigFieldDef[],
   configValues: Record<string, string>,
   storedSecretKeys: string[] = [],
-): string | undefined {
+): ReturnType<typeof providerConfigRecordToValues> | undefined {
   const entries: Record<string, string> = {};
   const storedSecretKeySet = new Set(storedSecretKeys);
 
@@ -55,10 +59,15 @@ function serializeConfigJson(
         entries[key] = value;
       }
     }
-    return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
+    return Object.keys(entries).length > 0
+      ? providerConfigRecordToValues(entries)
+      : undefined;
   }
 
   const fieldKeySet = new Set(fields.map((field) => field.key));
+  const secretInputKeys = fields
+    .filter((field) => field.fieldType === "password")
+    .map((field) => field.key);
   for (const [key, value] of Object.entries(configValues)) {
     if (!fieldKeySet.has(key) && value.trim() !== "") {
       entries[key] = value;
@@ -71,8 +80,7 @@ function serializeConfigJson(
     }
 
     const isStoredSecret =
-      (field.fieldType === "password" || field.fieldType === "secret") &&
-      storedSecretKeySet.has(field.key);
+      field.fieldType === "password" && storedSecretKeySet.has(field.key);
     let nextValue =
       configValues[field.key] ??
       field.defaultValue ??
@@ -96,16 +104,9 @@ function serializeConfigJson(
     }
   }
 
-  return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
-}
-
-function parseConfigJson(configJson: string | null): Record<string, string> {
-  if (!configJson) return {};
-  try {
-    return JSON.parse(configJson) as Record<string, string>;
-  } catch {
-    return {};
-  }
+  return Object.keys(entries).length > 0
+    ? providerConfigRecordToValues(entries, secretInputKeys)
+    : undefined;
 }
 
 function buildDraftConfigValues(
@@ -124,10 +125,7 @@ function buildDraftConfigValues(
       continue;
     }
 
-    if (
-      (field.fieldType === "password" || field.fieldType === "secret") &&
-      storedSecretKeySet.has(field.key)
-    ) {
+    if (field.fieldType === "password" && storedSecretKeySet.has(field.key)) {
       nextValues[field.key] = "";
       continue;
     }
@@ -158,7 +156,7 @@ function findMissingRequiredConfigField(
       (field.fieldType === "bool" ? "false" : "");
 
     if (
-      (field.fieldType === "password" || field.fieldType === "secret") &&
+      field.fieldType === "password" &&
       storedSecretKeySet.has(field.key) &&
       nextValue.trim() === ""
     ) {
@@ -384,7 +382,7 @@ export function SettingsIndexersContainer({
       isEnabled: indexerDraft.isEnabled,
       enableInteractiveSearch: indexerDraft.enableInteractiveSearch,
       enableAutoSearch: indexerDraft.enableAutoSearch,
-      configJson: serializeConfigJson(
+      config: serializeConfigValues(
         selectedProvider?.configFields ?? [],
         indexerDraft.configValues,
         indexerDraft.storedSecretKeys,
@@ -413,7 +411,7 @@ export function SettingsIndexersContainer({
               isEnabled: payload.isEnabled,
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
-              configJson: payload.configJson,
+              config: payload.config,
             },
           })
           .toPromise();
@@ -428,7 +426,7 @@ export function SettingsIndexersContainer({
               isEnabled: payload.isEnabled,
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
-              configJson: payload.configJson,
+              config: payload.config,
             },
           })
           .toPromise();
@@ -459,7 +457,7 @@ export function SettingsIndexersContainer({
         (providerType) =>
           providerType.providerType === indexer.providerType.trim().toLowerCase(),
       ) ?? null;
-    const parsedConfigValues = parseConfigJson(indexer.configJson);
+    const parsedConfigValues = providerConfigValuesToRecord(indexer.config);
     setEditingIndexerId(indexer.id);
     setIndexerDraft({
       name: indexer.name,
@@ -611,7 +609,7 @@ export function SettingsIndexersContainer({
     try {
       const { error } = await client
         .mutation(deleteIndexerMutation, {
-          input: { id: indexer.id },
+          id: indexer.id,
         })
         .toPromise();
       if (error) throw error;
@@ -644,7 +642,7 @@ export function SettingsIndexersContainer({
     );
     const payload = {
       providerType: normalizedProviderType,
-      configJson: serializeConfigJson(
+      config: serializeConfigValues(
         selectedProvider?.configFields ?? [],
         indexerDraft.configValues,
         indexerDraft.storedSecretKeys,
@@ -672,9 +670,13 @@ export function SettingsIndexersContainer({
             .mutation(testIndexerConnectionMutation, { input: payload })
             .toPromise();
           if (testError) throw testError;
-          if (!testData.testIndexerConnection) {
-            throw new Error(t("status.indexerConnectionTestFailed"));
+          const validation = testData?.testIndexerConnection;
+          if (validation?.status !== "ok") {
+            throw new Error(
+              validation?.message ?? t("status.indexerConnectionTestFailed"),
+            );
           }
+          await refreshIndexers();
         },
       });
     } catch {

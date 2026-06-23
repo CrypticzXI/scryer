@@ -405,7 +405,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn start_session(&self, facet: MediaFacet) -> AppResult<LibraryScanSession> {
         self.start_session_with_id_for_library(Id::new().0, facet, None, LibraryScanMode::Full)
             .await
@@ -482,23 +481,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn set_found_titles(
-        &self,
-        session_id: &str,
-        found_titles: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.found_titles = found_titles;
-            if matches!(session.status, LibraryScanStatus::Discovering) {
-                session.status = LibraryScanStatus::Running;
-            }
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn add_found_titles(
         &self,
         session_id: &str,
@@ -514,7 +496,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn set_title_match_total(
         &self,
         session_id: &str,
@@ -530,23 +511,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn add_title_match_total(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.title_match_progress.add_total(additional);
-            if matches!(session.status, LibraryScanStatus::Discovering) {
-                session.status = LibraryScanStatus::Running;
-            }
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn mark_title_match_total_known(
         &self,
         session_id: &str,
@@ -558,7 +522,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn add_metadata_total(
         &self,
         session_id: &str,
@@ -574,7 +537,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn mark_metadata_total_known(
         &self,
         session_id: &str,
@@ -586,48 +548,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn add_file_total(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.file_progress.add_total(additional);
-            if matches!(session.status, LibraryScanStatus::Discovering) {
-                session.status = LibraryScanStatus::Running;
-            }
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn mark_file_total_known(
-        &self,
-        session_id: &str,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.file_total_known = true;
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn increment_metadata_completed(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.metadata_progress.mark_completed(additional);
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn increment_title_match_completed(
         &self,
         session_id: &str,
@@ -640,46 +560,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn increment_metadata_failed(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.metadata_progress.mark_failed(additional);
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn increment_file_completed(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.file_progress.mark_completed(additional);
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) async fn increment_file_failed(
-        &self,
-        session_id: &str,
-        additional: usize,
-    ) -> Option<LibraryScanSession> {
-        self.update_session(session_id, move |session| {
-            session.file_progress.mark_failed(additional);
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn set_summary(
         &self,
         session_id: &str,
@@ -703,7 +583,6 @@ impl LibraryScanTracker {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) async fn apply_summary_delta(
         &self,
         session_id: &str,

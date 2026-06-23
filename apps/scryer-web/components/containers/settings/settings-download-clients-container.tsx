@@ -24,7 +24,7 @@ import {
 } from "@/lib/utils/connection-feedback";
 import {
   buildDownloadClientBaseUrl,
-  buildDownloadClientConfigJson,
+  buildDownloadClientConfigValues,
   buildDownloadClientDraftFromRecord,
   buildDownloadClientTypeOptions,
   ensureDownloadClientTypeOption,
@@ -32,7 +32,7 @@ import {
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
 import {
-  resolveLocalPathStyle,
+  localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import type {
@@ -83,9 +83,8 @@ export function SettingsDownloadClientsContainer({
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
-  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>(() =>
-    resolveLocalPathStyle(null),
-  );
+  const [localPathStyle, setLocalPathStyle] =
+    useState<LocalPathStyle | undefined>(undefined);
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingDownloadClientEditorAction>(null);
   const [draftBaseline, setDraftBaseline] = useState<DownloadClientDraft>(() =>
@@ -159,7 +158,9 @@ export function SettingsDownloadClientsContainer({
         const clients: DownloadClientRecord[] = data?.downloadClientConfigs || [];
         setSettingsDownloadClients(clients);
         setDownloadClientOrder(clients.map((clientRecord) => clientRecord.id));
-        setLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
+        setLocalPathStyle(
+          localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+        );
         setDownloadClientTypeOptions(
           buildDownloadClientTypeOptions(
             (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],
@@ -250,7 +251,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       port: downloadClientDraft.port.trim(),
-      configJson: buildDownloadClientConfigJson(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft),
       isEnabled: downloadClientDraft.isEnabled,
     };
 
@@ -280,14 +281,15 @@ export function SettingsDownloadClientsContainer({
               .mutation(testDownloadClientConnectionMutation, {
                 input: {
                   clientType: payload.clientType,
-                  configJson: payload.configJson,
+                  config: payload.config,
                 },
-              })
+            })
               .toPromise();
             if (testError) throw testError;
-            if (!testData.testDownloadClientConnection) {
+            const validation = testData?.testDownloadClientConnection;
+            if (validation?.status !== "ok") {
               throw new Error(
-                t("status.downloadClientConnectionTestFailed", {
+                validation?.message ?? t("status.downloadClientConnectionTestFailed", {
                   client: selectedDownloadClientLabel,
                 }),
               );
@@ -302,7 +304,7 @@ export function SettingsDownloadClientsContainer({
             id: editingDownloadClientId,
             name: payload.name,
             clientType: payload.clientType,
-            configJson: payload.configJson,
+            config: payload.config,
             isEnabled: payload.isEnabled,
           },
         }).toPromise();
@@ -315,7 +317,7 @@ export function SettingsDownloadClientsContainer({
             input: {
               name: payload.name,
               clientType: payload.clientType,
-              configJson: payload.configJson,
+              config: payload.config,
               isEnabled: payload.isEnabled,
             },
           },
@@ -347,7 +349,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       baseUrl: buildDownloadClientBaseUrl(downloadClientDraft),
-      configJson: buildDownloadClientConfigJson(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft),
     };
 
     if (!payload.name || !payload.host) {
@@ -380,14 +382,15 @@ export function SettingsDownloadClientsContainer({
             .mutation(testDownloadClientConnectionMutation, {
               input: {
                 clientType: payload.clientType,
-                configJson: payload.configJson,
+                config: payload.config,
               },
             })
             .toPromise();
           if (testError) throw testError;
-          if (!testData.testDownloadClientConnection) {
+          const validation = testData?.testDownloadClientConnection;
+          if (validation?.status !== "ok") {
             throw new Error(
-              t("status.downloadClientConnectionTestFailed", {
+              validation?.message ?? t("status.downloadClientConnectionTestFailed", {
                 client: selectedDownloadClientLabel,
               }),
             );
@@ -539,7 +542,7 @@ export function SettingsDownloadClientsContainer({
     setMutatingDownloadClientId(downloadClient.id);
     try {
       const { error } = await client.mutation(deleteDownloadClientMutation, {
-        input: { id: downloadClient.id },
+        id: downloadClient.id,
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(t("status.downloadClientDeleted", { name: downloadClient.name }));

@@ -15,7 +15,6 @@ use crate::library_filename_parser::{LibraryFilenameParseInput, parse_library_fi
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{NfoMetadata, NfoRootKind, detect_nfo_root_kind, parse_nfo, parse_plexmatch};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
-use crate::title_matching::TitleMatchProfile;
 use crate::{
     AppError, AppResult, ExternalIdProvider, LibraryFile, LibraryScanHint, LibraryScanHintFacet,
     LibraryScanHintSet, LibraryScanHintSource, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
@@ -64,31 +63,6 @@ impl MetadataIdentityHint {
                 | MetadataIdentitySource::ExternalImportSonarr
         )
     }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub(crate) struct MovieLibraryScanCandidate {
-    pub(crate) file: LibraryFile,
-    pub(crate) parsed_release: crate::ParsedReleaseMetadata,
-    pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
-    pub(crate) query: String,
-    pub(crate) year_hint: Option<u32>,
-    pub(crate) query_variants: Vec<String>,
-    pub(crate) selected_metadata: Option<MetadataSearchItem>,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub(crate) struct SeriesLibraryScanCandidate {
-    pub(crate) folder_path: PathBuf,
-    pub(crate) folder_name: Option<String>,
-    pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
-    pub(crate) query: String,
-    pub(crate) selected_metadata: Option<MetadataSearchItem>,
-    pub(crate) metadata_lookup_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -147,6 +121,21 @@ impl MetadataLookupBatchStats {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct MovieLibraryScanCandidate {
+    pub(crate) selected_metadata: Option<MetadataSearchItem>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SeriesLibraryScanCandidate {
+    pub(crate) nfo_meta: Option<crate::nfo::NfoMetadata>,
+    pub(crate) query: String,
+    pub(crate) selected_metadata: Option<MetadataSearchItem>,
+    pub(crate) metadata_lookup_error: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) file: LibraryFile,
@@ -158,10 +147,6 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) year_hint: Option<u32>,
     pub(crate) query_variants: Vec<String>,
     pub(crate) search_candidates: Vec<String>,
-    #[allow(dead_code)]
-    pub(crate) title_match_candidates: Vec<String>,
-    #[allow(dead_code)]
-    pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
 }
 
@@ -184,10 +169,7 @@ pub(crate) struct PreparedSeriesLibraryScanCandidate {
     pub(crate) query: String,
     pub(crate) year_hint: Option<u32>,
     pub(crate) search_candidates: Vec<String>,
-    #[allow(dead_code)]
     pub(crate) title_match_candidates: Vec<String>,
-    #[allow(dead_code)]
-    pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
 }
 
@@ -646,30 +628,18 @@ pub(crate) fn series_candidate_batch_search_keys(
         .collect()
 }
 
-pub(crate) fn build_title_match_candidates(
-    queries: &[String],
-    profile: TitleMatchProfile,
-) -> (Vec<String>, Vec<String>) {
+pub(crate) fn build_title_match_candidates(queries: &[String]) -> Vec<String> {
     let mut title_match_candidates = Vec::new();
     let mut title_match_seen = HashSet::new();
-    let mut reduced_title_candidates = Vec::new();
-    let mut reduced_title_seen = HashSet::new();
 
     for query in queries {
         let title_match_key = crate::title_matching::canonical_lookup_key(query);
         if !title_match_key.is_empty() && title_match_seen.insert(title_match_key.clone()) {
             title_match_candidates.push(title_match_key);
         }
-
-        let reduced_key = crate::title_matching::reduced_comparison_key(query, profile);
-        if crate::title_matching::has_usable_reduced_key(&reduced_key)
-            && reduced_title_seen.insert(reduced_key.clone())
-        {
-            reduced_title_candidates.push(reduced_key);
-        }
     }
 
-    (title_match_candidates, reduced_title_candidates)
+    title_match_candidates
 }
 
 fn expand_search_candidates(queries: &[String]) -> Vec<String> {
@@ -1616,8 +1586,6 @@ async fn build_prepared_movie_library_scan_candidate(
     };
 
     let mut search_candidates = Vec::new();
-    let mut title_match_candidates = Vec::new();
-    let mut reduced_title_candidates = Vec::new();
     let metadata_lookup_attempted = identity_hint
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
@@ -1641,8 +1609,6 @@ async fn build_prepared_movie_library_scan_candidate(
         {
             search_candidates.push(String::new());
         }
-        (title_match_candidates, reduced_title_candidates) =
-            build_title_match_candidates(&raw_queries, TitleMatchProfile::Movie);
     }
 
     Ok(PreparedMovieLibraryScanCandidate {
@@ -1655,8 +1621,6 @@ async fn build_prepared_movie_library_scan_candidate(
         year_hint,
         query_variants,
         search_candidates,
-        title_match_candidates,
-        reduced_title_candidates,
         metadata_lookup_attempted,
     })
 }
@@ -1680,7 +1644,6 @@ async fn prepare_series_library_scan_candidate(
             year_hint: None,
             search_candidates: Vec::new(),
             title_match_candidates: Vec::new(),
-            reduced_title_candidates: Vec::new(),
             metadata_lookup_attempted: false,
         });
     };
@@ -1755,31 +1718,25 @@ async fn prepare_series_library_scan_candidate(
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
         || !query.is_empty();
-    let (search_candidates, title_match_candidates, reduced_title_candidates) =
-        if metadata_lookup_attempted {
-            let raw_queries = if external_import_identity_only {
-                vec![String::new()]
-            } else {
-                vec![query.clone()]
-            };
-            let mut search_candidates = expand_search_candidates(&raw_queries);
-            if search_candidates.is_empty()
-                && identity_hint
-                    .as_ref()
-                    .is_some_and(MetadataIdentityHint::has_external_ids)
-            {
-                search_candidates.push(String::new());
-            }
-            let (title_match_candidates, reduced_title_candidates) =
-                build_title_match_candidates(&raw_queries, TitleMatchProfile::Series);
-            (
-                search_candidates,
-                title_match_candidates,
-                reduced_title_candidates,
-            )
+    let (search_candidates, title_match_candidates) = if metadata_lookup_attempted {
+        let raw_queries = if external_import_identity_only {
+            vec![String::new()]
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            vec![query.clone()]
         };
+        let mut search_candidates = expand_search_candidates(&raw_queries);
+        if search_candidates.is_empty()
+            && identity_hint
+                .as_ref()
+                .is_some_and(MetadataIdentityHint::has_external_ids)
+        {
+            search_candidates.push(String::new());
+        }
+        let title_match_candidates = build_title_match_candidates(&raw_queries);
+        (search_candidates, title_match_candidates)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(PreparedSeriesLibraryScanCandidate {
         folder_path: folder,
@@ -1791,7 +1748,6 @@ async fn prepare_series_library_scan_candidate(
         year_hint,
         search_candidates,
         title_match_candidates,
-        reduced_title_candidates,
         metadata_lookup_attempted,
     })
 }
@@ -1864,35 +1820,29 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         .as_ref()
         .is_some_and(MetadataIdentityHint::has_external_ids)
         || !query.trim().is_empty();
-    let (search_candidates, title_match_candidates, reduced_title_candidates) =
-        if metadata_lookup_attempted {
-            let raw_queries = if external_import_identity_only {
-                vec![String::new()]
-            } else {
-                raw_queries
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(query.clone()))
-                    .collect::<Vec<_>>()
-            };
-            let mut search_candidates = expand_search_candidates(&raw_queries);
-            if search_candidates.is_empty()
-                && identity_hint
-                    .as_ref()
-                    .is_some_and(MetadataIdentityHint::has_external_ids)
-            {
-                search_candidates.push(String::new());
-            }
-            let (title_match_candidates, reduced_title_candidates) =
-                build_title_match_candidates(&raw_queries, TitleMatchProfile::Series);
-            (
-                search_candidates,
-                title_match_candidates,
-                reduced_title_candidates,
-            )
+    let (search_candidates, title_match_candidates) = if metadata_lookup_attempted {
+        let raw_queries = if external_import_identity_only {
+            vec![String::new()]
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            raw_queries
+                .iter()
+                .cloned()
+                .chain(std::iter::once(query.clone()))
+                .collect::<Vec<_>>()
         };
+        let mut search_candidates = expand_search_candidates(&raw_queries);
+        if search_candidates.is_empty()
+            && identity_hint
+                .as_ref()
+                .is_some_and(MetadataIdentityHint::has_external_ids)
+        {
+            search_candidates.push(String::new());
+        }
+        let title_match_candidates = build_title_match_candidates(&raw_queries);
+        (search_candidates, title_match_candidates)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(PreparedSeriesLibraryScanCandidate {
         folder_path: stored_path_to_path_buf(&file.path),
@@ -1904,7 +1854,6 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         year_hint,
         search_candidates,
         title_match_candidates,
-        reduced_title_candidates,
         metadata_lookup_attempted,
     })
 }
@@ -1925,15 +1874,7 @@ pub(crate) async fn preload_movie_library_scan_candidates(
         let selected_metadata =
             select_movie_metadata_from_batch_results(&candidate, &batch_search_results)?;
 
-        results.push(MovieLibraryScanCandidate {
-            file: candidate.file,
-            parsed_release: candidate.parsed_release,
-            nfo_meta: candidate.nfo_meta,
-            query: candidate.query,
-            year_hint: candidate.year_hint,
-            query_variants: candidate.query_variants,
-            selected_metadata,
-        });
+        results.push(MovieLibraryScanCandidate { selected_metadata });
     }
 
     Ok((results, stats))
@@ -1967,8 +1908,6 @@ pub(crate) async fn preload_series_library_scan_candidates(
         };
 
         results.push(SeriesLibraryScanCandidate {
-            folder_path: candidate.folder_path,
-            folder_name: candidate.folder_name,
             nfo_meta: candidate.nfo_meta,
             query: candidate.query,
             selected_metadata,
@@ -1977,83 +1916,6 @@ pub(crate) async fn preload_series_library_scan_candidates(
     }
 
     Ok((results, stats))
-}
-
-#[cfg(test)]
-pub(crate) fn select_best_match(
-    results: &[MetadataSearchItem],
-    year: Option<u32>,
-    title_match_candidates: &[String],
-    reduced_title_candidates: &[String],
-    profile: TitleMatchProfile,
-) -> Option<MetadataSearchItem> {
-    if results.is_empty() {
-        return None;
-    }
-
-    let mut canonical_matches = Vec::new();
-    let mut reduced_matches = Vec::new();
-
-    for item in results {
-        let canonical_key = crate::title_matching::canonical_lookup_key(&item.name);
-        if !canonical_key.is_empty()
-            && title_match_candidates
-                .iter()
-                .any(|candidate| candidate == &canonical_key)
-        {
-            canonical_matches.push(item);
-            continue;
-        }
-
-        if year.is_some() && !reduced_title_candidates.is_empty() {
-            let reduced_key = crate::title_matching::reduced_comparison_key(&item.name, profile);
-            if crate::title_matching::has_usable_reduced_key(&reduced_key)
-                && reduced_title_candidates
-                    .iter()
-                    .any(|candidate| candidate == &reduced_key)
-            {
-                reduced_matches.push(item);
-            }
-        }
-    }
-
-    if let Some(year) = year.map(|value| value as i32)
-        && let Some(match_item) = canonical_matches
-            .iter()
-            .find(|item| item.year == Some(year))
-    {
-        return Some((*match_item).clone());
-    }
-
-    if year.is_none() {
-        if let Some(match_item) = canonical_matches.into_iter().next() {
-            return Some(match_item.clone());
-        }
-    } else if let Some(match_item) = canonical_matches.iter().find(|item| item.year.is_none()) {
-        return Some((*match_item).clone());
-    }
-
-    let match_year = year.map(|value| value as i32)?;
-    let same_year_matches = results
-        .iter()
-        .filter(|item| item.year == Some(match_year))
-        .collect::<Vec<_>>();
-
-    if same_year_matches.len() == 1 {
-        let candidate = same_year_matches[0];
-        let candidate_key = crate::title_matching::canonical_lookup_key(&candidate.name);
-        if title_match_candidates
-            .iter()
-            .any(|query_key| query_key.starts_with(&format!("{candidate_key} ")))
-        {
-            return Some(candidate.clone());
-        }
-    }
-
-    reduced_matches
-        .into_iter()
-        .find(|item| item.year == Some(match_year))
-        .cloned()
 }
 
 #[cfg(test)]
@@ -2361,8 +2223,6 @@ mod tests {
                 .iter()
                 .map(|value| (*value).to_string())
                 .collect(),
-            title_match_candidates: vec![],
-            reduced_title_candidates: vec![],
             metadata_lookup_attempted: !search_candidates.is_empty(),
         }
     }
@@ -3000,28 +2860,17 @@ mod tests {
     }
 
     #[test]
-    fn select_best_match_accepts_single_same_year_prefix_match() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "tvdb-3".to_string(),
-            name: "Circuit Breakers".to_string(),
-            year: Some(2018),
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["CIRCUIT BREAKERS CRASH THE GRID 2".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
+    fn build_title_match_candidates_deduplicates_canonical_queries() {
+        let raw_candidates = vec![
+            "Glass Harbor".to_string(),
+            "Glass.Harbor".to_string(),
+            "DUFF, The".to_string(),
+        ];
 
-        let selected = select_best_match(
-            &results,
-            Some(2018),
-            &candidates,
-            &reduced,
-            TitleMatchProfile::Movie,
-        )
-        .expect("single same-year prefix match");
-
-        assert_eq!(selected.tvdb_id, "tvdb-3");
+        assert_eq!(
+            build_title_match_candidates(&raw_candidates),
+            vec!["glass harbor".to_string(), "the duff".to_string()]
+        );
     }
 
     #[test]
@@ -4148,165 +3997,5 @@ mod tests {
             primary.as_deref(),
             Some(path_to_stored_string(movie_path).as_str())
         );
-    }
-
-    #[test]
-    fn select_best_match_prefers_exact_title_and_matching_year() {
-        let results = vec![
-            MetadataSearchItem {
-                tvdb_id: "wrong".into(),
-                name: "Glass Harbor Drift".into(),
-                year: Some(2020),
-                auto_match_safe: false,
-                auto_match_signals: vec![],
-            },
-            MetadataSearchItem {
-                tvdb_id: "right".into(),
-                name: "Glass Harbor".into(),
-                year: Some(2021),
-                auto_match_safe: false,
-                auto_match_signals: vec![],
-            },
-        ];
-        let raw_candidates = vec!["Glass Harbor".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
-
-        let selected = select_best_match(
-            &results,
-            Some(2021),
-            &candidates,
-            &reduced,
-            TitleMatchProfile::Movie,
-        )
-        .expect("exact title match");
-
-        assert_eq!(selected.tvdb_id, "right");
-        assert_eq!(selected.name, "Glass Harbor");
-    }
-
-    #[test]
-    fn select_best_match_rejects_canonical_wrong_year_results() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "wrong".into(),
-            name: "Nightfall".into(),
-            year: Some(2009),
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["Nightfall!!".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
-
-        assert!(
-            select_best_match(
-                &results,
-                Some(2022),
-                &candidates,
-                &reduced,
-                TitleMatchProfile::Series,
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn select_best_match_accepts_canonical_match_with_missing_year() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "right".into(),
-            name: "Nightfall".into(),
-            year: None,
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["Nightfall!!".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
-
-        let selected = select_best_match(
-            &results,
-            Some(2022),
-            &candidates,
-            &reduced,
-            TitleMatchProfile::Series,
-        )
-        .expect("missing-year canonical match should remain eligible");
-
-        assert_eq!(selected.tvdb_id, "right");
-    }
-
-    #[test]
-    fn select_best_match_rejects_non_exact_title_even_with_year_match() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "wrong".into(),
-            name: "Glass Harbor Drift".into(),
-            year: Some(2020),
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["Glass Harbor".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
-
-        assert!(
-            select_best_match(
-                &results,
-                Some(2020),
-                &candidates,
-                &reduced,
-                TitleMatchProfile::Movie,
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn select_best_match_accepts_trailing_article_equivalence() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "right".into(),
-            name: "The DUFF".into(),
-            year: Some(2015),
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["DUFF, The".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
-
-        let selected = select_best_match(
-            &results,
-            Some(2015),
-            &candidates,
-            &reduced,
-            TitleMatchProfile::Movie,
-        )
-        .expect("article-aware canonical match");
-
-        assert_eq!(selected.tvdb_id, "right");
-    }
-
-    #[test]
-    fn select_best_match_accepts_reduced_movie_boilerplate_with_year() {
-        let results = vec![MetadataSearchItem {
-            tvdb_id: "right".into(),
-            name: "Sasaki and Miyano: Graduation".into(),
-            year: Some(2023),
-            auto_match_safe: false,
-            auto_match_signals: vec![],
-        }];
-        let raw_candidates = vec!["Sasaki and Miyano Graduation Arc".to_string()];
-        let (candidates, reduced) =
-            build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
-
-        let selected = select_best_match(
-            &results,
-            Some(2023),
-            &candidates,
-            &reduced,
-            TitleMatchProfile::Movie,
-        )
-        .expect("reduced-tier match");
-
-        assert_eq!(selected.tvdb_id, "right");
     }
 }

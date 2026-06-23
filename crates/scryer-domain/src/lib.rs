@@ -82,6 +82,36 @@ pub struct LibraryRoot {
     pub updated_at: DateTime<Utc>,
 }
 
+pub fn normalize_library_root_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    #[cfg(windows)]
+    {
+        trimmed
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+
+    #[cfg(not(windows))]
+    {
+        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
+    }
+}
+
+pub fn root_folder_id_for_path(path: &str) -> String {
+    root_folder_id_for_normalized_path(&normalize_library_root_path(path))
+}
+
+pub fn root_folder_id_for_normalized_path(normalized_path: &str) -> String {
+    blake3::hash(normalized_path.as_bytes())
+        .to_hex()
+        .to_string()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Library {
     pub id: String,
@@ -612,6 +642,7 @@ pub struct Title {
     pub monitored: bool,
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalId>,
+    pub root_folder_id: String,
     pub created_by: Option<String>,
     pub created_at: DateTime<Utc>,
     // rich metadata (hydrated from metadata gateway)
@@ -1851,6 +1882,8 @@ pub struct NewTitle {
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalId>,
     #[serde(default)]
+    pub root_folder_id: Option<String>,
+    #[serde(default)]
     pub min_availability: Option<String>,
     #[serde(default)]
     pub poster_url: Option<String>,
@@ -1878,6 +1911,7 @@ impl NewTitle {
             monitored: true,
             tags: vec![],
             external_ids: vec![],
+            root_folder_id: None,
             min_availability: None,
             poster_url: None,
             year: None,

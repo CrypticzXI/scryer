@@ -12,7 +12,7 @@ use super::*;
 use crate::services::{AppAssembly, ReleaseCandidatePasswordTicket, RuntimeFeature};
 use crate::types::{
     AuthenticatedTokenClaims, BackupDownloadTicket, BackupDownloadTokenClaims,
-    JwtLibraryPermissionClaim, JwtSessionScope, LoginFailureTimingClass,
+    JwtLibraryPermissionClaim, JwtSessionScope, LoginFailureTimingClass, OAuthAuthorizationSource,
     ReleaseCandidateTokenClaims,
 };
 
@@ -590,13 +590,33 @@ impl AppUseCase {
         client_id: &str,
         grant_id: &str,
     ) -> AppResult<String> {
+        self.issue_oauth_access_token_with_source(
+            actor,
+            client_id,
+            grant_id,
+            OAuthAuthorizationSource::Authenticated,
+        )
+        .await
+    }
+
+    pub async fn issue_oauth_access_token_with_source(
+        &self,
+        actor: &User,
+        client_id: &str,
+        grant_id: &str,
+        authorization_source: OAuthAuthorizationSource,
+    ) -> AppResult<String> {
         self.issue_access_token_with_mfa_scope_and_oauth(
             actor,
             None,
             None,
             JwtSessionScope::Full,
             Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-            Some((client_id.to_string(), grant_id.to_string())),
+            Some((
+                client_id.to_string(),
+                grant_id.to_string(),
+                authorization_source,
+            )),
         )
         .await
     }
@@ -627,7 +647,7 @@ impl AppUseCase {
         mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
         auth_scope: JwtSessionScope,
         ttl_seconds: i64,
-        oauth: Option<(String, String)>,
+        oauth: Option<(String, String, OAuthAuthorizationSource)>,
     ) -> AppResult<String> {
         let actor = self.load_user_for_auth_payload(actor).await?;
         let signing_seed = actor
@@ -651,9 +671,11 @@ impl AppUseCase {
         } else {
             Self::canonical_actor_capability_claims(&actor)
         };
-        let (oauth_client_id, oauth_grant_id) = oauth
-            .map(|(client_id, grant_id)| (Some(client_id), Some(grant_id)))
-            .unwrap_or((None, None));
+        let (oauth_client_id, oauth_grant_id, oauth_authorization_source) = oauth
+            .map(|(client_id, grant_id, authorization_source)| {
+                (Some(client_id), Some(grant_id), authorization_source)
+            })
+            .unwrap_or((None, None, OAuthAuthorizationSource::Authenticated));
 
         let claims = JwtClaims {
             sub: actor.id.clone(),
@@ -668,6 +690,7 @@ impl AppUseCase {
             auth_scope,
             oauth_client_id,
             oauth_grant_id,
+            oauth_authorization_source,
             actor_capabilities,
         };
 
@@ -1134,6 +1157,7 @@ impl AppUseCase {
             session_scope: claims.auth_scope,
             oauth_client_id: claims.oauth_client_id,
             oauth_grant_id: claims.oauth_grant_id,
+            oauth_authorization_source: claims.oauth_authorization_source,
             actor_capabilities,
         };
         self.services

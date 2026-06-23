@@ -1,0 +1,9 @@
+{
+  "namespace": "ScryerWeb",
+  "source": "scryer-web@0.1.0",
+  "shape": "package",
+  "provider": null,
+  "componentCount": 23,
+  "skippedStoryIds": [],
+  "runtimeFontPrefixes": []
+}

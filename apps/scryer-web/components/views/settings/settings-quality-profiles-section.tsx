@@ -41,7 +41,7 @@ type ParsedQualityProfile = {
   name: string;
 };
 
-type ScoringPersonaId = "Balanced" | "Audiophile" | "Efficient" | "Compatible";
+type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
 
 type ScoringOverridesPayload = {
   allow_x265_non4k?: boolean | null;
@@ -1344,25 +1344,25 @@ export function SettingsQualityProfilesSection({
               <SelectContent>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Balanced")}
-                  value="Balanced"
+                  value="balanced"
                 >
                   {t("qualityProfile.personaBalanced")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Audiophile")}
-                  value="Audiophile"
+                  value="audiophile"
                 >
                   {t("qualityProfile.personaAudiophile")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Efficient")}
-                  value="Efficient"
+                  value="efficient"
                 >
                   {t("qualityProfile.personaEfficient")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Compatible")}
-                  value="Compatible"
+                  value="compatible"
                 >
                   {t("qualityProfile.personaCompatible")}
                 </SelectItem>
@@ -1462,7 +1462,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Balanced",
                           )}
-                          value="Balanced"
+                          value="balanced"
                         >
                           {t("qualityProfile.personaBalanced")}
                         </SelectItem>
@@ -1473,7 +1473,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Audiophile",
                           )}
-                          value="Audiophile"
+                          value="audiophile"
                         >
                           {t("qualityProfile.personaAudiophile")}
                         </SelectItem>
@@ -1484,7 +1484,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Efficient",
                           )}
-                          value="Efficient"
+                          value="efficient"
                         >
                           {t("qualityProfile.personaEfficient")}
                         </SelectItem>
@@ -1495,7 +1495,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Compatible",
                           )}
-                          value="Compatible"
+                          value="compatible"
                         >
                           {t("qualityProfile.personaCompatible")}
                         </SelectItem>

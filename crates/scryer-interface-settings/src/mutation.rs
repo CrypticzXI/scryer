@@ -1,12 +1,13 @@
 use std::time::Instant;
 
-use async_graphql::{Context, Error, Object, Result as GqlResult};
-use chrono::Utc;
+use async_graphql::{Context, Error, ID, Object, Result as GqlResult};
+use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, LoginFailureTimingClass,
+    AcquisitionSettings as AppAcquisitionSettings, AppError, LoginFailureTimingClass,
     MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
+    UpdateBackupSettings as AppUpdateBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
     UpdateRecycleBinSettings as AppUpdateRecycleBinSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
@@ -28,12 +29,28 @@ use scryer_interface_media::types::*;
 #[derive(Default)]
 pub struct SettingsMutations;
 
+const MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN: &str =
+    "Enable form login before enabling media-server login.";
+
 fn parse_import_mode_input(raw: Option<String>) -> GqlResult<Option<scryer_domain::ImportMode>> {
     raw.map(|value| {
-        scryer_domain::ImportMode::from_setting(&value)
-            .map_err(|message| Error::new(format!("invalid importMode: {message}")))
+        scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
+            to_gql_error(AppError::Validation(format!(
+                "invalid importMode: {message}"
+            )))
+        })
     })
     .transpose()
+}
+
+fn parse_required_datetime(value: &str, field: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|error| panic!("invalid {field} timestamp: {error}"))
+}
+
+fn parse_optional_datetime(value: Option<String>, field: &str) -> Option<DateTime<Utc>> {
+    value.map(|value| parse_required_datetime(&value, field))
 }
 
 fn from_subtitle_settings(
@@ -110,7 +127,15 @@ fn from_auto_backup_settings(
         daily_time_local: settings.daily_time_local,
         auto_backup_key_present: settings.auto_backup_key_present,
         auto_backup_disabled_missing_key_notice: settings.auto_backup_disabled_missing_key_notice,
-        next_run_at: settings.next_run_at,
+        next_run_at: parse_optional_datetime(settings.next_run_at, "auto backup next_run_at"),
+    }
+}
+
+fn from_backup_settings(settings: scryer_application::BackupSettings) -> BackupSettingsPayload {
+    BackupSettingsPayload {
+        custom_backup_path: settings.custom_backup_path,
+        default_backup_path: settings.default_backup_path,
+        effective_backup_path: settings.effective_backup_path,
     }
 }
 
@@ -149,7 +174,7 @@ fn media_server_library_grants(
         .unwrap_or_default()
         .into_iter()
         .map(|grant| scryer_domain::MediaServerDefaultLibraryGrant {
-            library_id: grant.library_id,
+            library_id: grant.library_id.to_string(),
             permissions: scryer_domain::LibraryPermissionMask::from_permissions(
                 grant
                     .permissions
@@ -176,6 +201,19 @@ fn media_server_path_mappings(
         .collect()
 }
 
+fn ensure_media_server_login_allowed(
+    requested_login_enabled: Option<bool>,
+    effective_form_login_enabled: bool,
+) -> Result<(), AppError> {
+    if requested_login_enabled.unwrap_or(false) && !effective_form_login_enabled {
+        Err(AppError::Validation(
+            MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN.to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerConnectionDraft {
     MediaServerConnectionDraft {
         provider: input.provider.into_domain(),
@@ -199,7 +237,7 @@ fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerCon
 
 fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerConnectionPatch {
     MediaServerConnectionPatch {
-        id: input.id,
+        id: input.id.to_string(),
         provider: input.provider.map(MediaServerProviderValue::into_domain),
         display_name: input.display_name,
         base_url: input.base_url,
@@ -229,7 +267,7 @@ fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerCon
 
 fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfilePayload {
     DelayProfilePayload {
-        id: profile.id,
+        id: profile.id.into(),
         name: profile.name,
         usenet_delay_minutes: profile.usenet_delay_minutes as i32,
         torrent_delay_minutes: profile.torrent_delay_minutes as i32,
@@ -253,25 +291,25 @@ fn from_webauthn_challenge_start(
     challenge: scryer_application::WebauthnChallengeStart,
 ) -> WebauthnChallengePayload {
     WebauthnChallengePayload {
-        challenge_id: challenge.challenge_id,
+        challenge_id: challenge.challenge_id.into(),
         options_json: challenge.options_json,
     }
 }
 
 fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
     PasskeySummaryPayload {
-        id: summary.id,
+        id: summary.id.into(),
         friendly_name: summary.friendly_name,
-        created_at: summary.created_at,
-        last_used_at: summary.last_used_at,
+        created_at: parse_required_datetime(&summary.created_at, "passkey created_at"),
+        last_used_at: parse_optional_datetime(summary.last_used_at, "passkey last_used_at"),
     }
 }
 
 fn from_totp_status(status: scryer_application::TotpStatus) -> TotpStatusPayload {
     TotpStatusPayload {
         enabled: status.enabled,
-        created_at: status.created_at,
-        last_used_at: status.last_used_at,
+        created_at: parse_optional_datetime(status.created_at, "TOTP created_at"),
+        last_used_at: parse_optional_datetime(status.last_used_at, "TOTP last_used_at"),
         recovery_codes_remaining: status.recovery_codes_remaining,
     }
 }
@@ -280,10 +318,10 @@ fn from_totp_enrollment_start(
     start: scryer_application::TotpEnrollmentStart,
 ) -> TotpEnrollmentStartPayload {
     TotpEnrollmentStartPayload {
-        challenge_id: start.challenge_id,
+        challenge_id: start.challenge_id.into(),
         otpauth_url: start.otpauth_url,
         secret_base32: start.secret_base32,
-        expires_at: start.expires_at,
+        expires_at: parse_required_datetime(&start.expires_at, "TOTP enrollment expires_at"),
     }
 }
 
@@ -314,12 +352,12 @@ async fn login_payload_from_user(
         .user_auth_factor_status(&user.id)
         .await
         .map_err(to_gql_error)?;
-    let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
+    let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
     Ok(LoginPayload {
         token,
         user: from_user_with_auth_factor_status(user, auth_factor_status),
         expires_at,
-        mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
+        mfa_verified_until,
         mfa_enrollment_required: false,
     })
 }
@@ -340,8 +378,7 @@ async fn login_mfa_enrollment_payload_from_user(
         .user_auth_factor_status(&user.id)
         .await
         .map_err(to_gql_error)?;
-    let expires_at =
-        (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
+    let expires_at = Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime());
     Ok(LoginPayload {
         token,
         user: from_user_with_auth_factor_status(user, auth_factor_status),
@@ -465,7 +502,7 @@ fn quality_profile_from_input(
     )?;
 
     let profile = normalize_quality_profile(QualityProfile {
-        id: input.id,
+        id: input.id.to_string(),
         name: input.name,
         criteria: QualityProfileCriteria {
             quality_tiers: criteria.quality_tiers,
@@ -496,15 +533,19 @@ fn quality_profile_from_input(
     });
 
     if profile.id.is_empty() {
-        return Err(Error::new("quality profile id is required"));
+        return Err(to_gql_error(AppError::Validation(
+            "quality profile id is required".to_string(),
+        )));
     }
     if profile.name.is_empty() {
-        return Err(Error::new("quality profile name is required"));
+        return Err(to_gql_error(AppError::Validation(
+            "quality profile name is required".to_string(),
+        )));
     }
     if profile.criteria.quality_tiers.is_empty() {
-        return Err(Error::new(
-            "quality profile must include at least one quality tier",
-        ));
+        return Err(to_gql_error(AppError::Validation(
+            "quality profile must include at least one quality tier".to_string(),
+        )));
     }
 
     Ok(profile)
@@ -519,7 +560,9 @@ fn parse_video_codec_values(
         .map(|value| {
             let trimmed = value.trim().to_string();
             scryer_application::VideoCodec::parse(trimmed.as_str()).ok_or_else(|| {
-                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+                to_gql_error(AppError::Validation(format!(
+                    "invalid value {trimmed:?} for {field}"
+                )))
             })
         })
         .collect()
@@ -534,7 +577,9 @@ fn parse_source_values(
         .map(|value| {
             let trimmed = value.trim().to_string();
             scryer_application::ReleaseSource::parse(trimmed.as_str()).ok_or_else(|| {
-                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+                to_gql_error(AppError::Validation(format!(
+                    "invalid value {trimmed:?} for {field}"
+                )))
             })
         })
         .collect()
@@ -549,7 +594,9 @@ fn parse_audio_codec_values(
         .map(|value| {
             let trimmed = value.trim().to_string();
             scryer_application::AudioCodec::parse(trimmed.as_str()).ok_or_else(|| {
-                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+                to_gql_error(AppError::Validation(format!(
+                    "invalid value {trimmed:?} for {field}"
+                )))
             })
         })
         .collect()
@@ -656,14 +703,19 @@ impl SettingsMutations {
         Ok(from_general_settings(settings))
     }
 
-    async fn clear_title_image_cache(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+    async fn clear_title_image_cache(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ClearTitleImageCachePayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
-        app.clear_title_image_cache(&actor)
+        let accepted = app
+            .clear_title_image_cache(&actor)
             .await
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(ClearTitleImageCachePayload { accepted })
     }
 
     async fn update_recycle_bin_settings(
@@ -715,6 +767,29 @@ impl SettingsMutations {
         Ok(from_auto_backup_settings(settings))
     }
 
+    async fn update_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateBackupSettingsInput,
+    ) -> GqlResult<BackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+
+        let settings = app
+            .update_backup_settings(
+                &actor,
+                AppUpdateBackupSettings {
+                    custom_backup_path: input.custom_backup_path,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_backup_settings(settings))
+    }
+
     async fn acknowledge_auto_backup_disabled_missing_key_notice(
         &self,
         ctx: &Context<'_>,
@@ -740,6 +815,7 @@ impl SettingsMutations {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageUsers).await?;
+        let previous_snapshot = auth_runtime.snapshot();
 
         let settings = app
             .update_security_settings(
@@ -759,6 +835,12 @@ impl SettingsMutations {
             settings.form_login_enabled,
             settings.skip_login_for_local_ips,
         );
+        if !previous_snapshot.effective_form_login_enabled && snapshot.effective_form_login_enabled
+        {
+            app.revoke_authless_oauth_refresh_grants("form_login_enabled")
+                .await
+                .map_err(to_gql_error)?;
+        }
 
         Ok(from_security_settings(settings, &snapshot))
     }
@@ -772,6 +854,13 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
+        ensure_media_server_login_allowed(
+            input.login_enabled,
+            auth_runtime_from_ctx(ctx)
+                .snapshot()
+                .effective_form_login_enabled,
+        )
+        .map_err(to_gql_error)?;
         app.create_media_server_connection(&actor, media_server_draft(input))
             .await
             .map(from_media_server_connection)
@@ -787,6 +876,13 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
+        ensure_media_server_login_allowed(
+            input.login_enabled,
+            auth_runtime_from_ctx(ctx)
+                .snapshot()
+                .effective_form_login_enabled,
+        )
+        .map_err(to_gql_error)?;
         app.update_media_server_connection(&actor, media_server_patch(input))
             .await
             .map(from_media_server_connection)
@@ -796,32 +892,40 @@ impl SettingsMutations {
     async fn delete_media_server_connection(
         &self,
         ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<bool> {
+        id: ID,
+    ) -> GqlResult<DeleteMediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
+        let id = id.to_string();
         app.delete_media_server_connection(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(DeleteMediaServerConnectionPayload {
+            id: ID::from(id),
+            deleted: true,
+        })
     }
 
     async fn test_media_server_connection(
         &self,
         ctx: &Context<'_>,
-        id: String,
-        plex_auth_token: Option<String>,
-    ) -> GqlResult<bool> {
+        input: TestMediaServerConnectionInput,
+    ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
-        app.test_media_server_connection(&actor, &id, plex_auth_token.as_deref())
+        let id = input.id.to_string();
+        app.test_media_server_connection(&actor, &id, input.plex_auth_token.as_deref())
             .await
             .map_err(to_gql_error)?;
-        Ok(true)
+        Ok(ProviderValidationPayload {
+            status: "ok".to_string(),
+            message: None,
+            retry_after_seconds: None,
+        })
     }
 
     async fn discover_plex_media_servers(
@@ -858,7 +962,7 @@ impl SettingsMutations {
             .upsert_delay_profile(
                 &actor,
                 scryer_application::DelayProfile {
-                    id: input.id,
+                    id: input.id.to_string(),
                     name: input.name,
                     usenet_delay_minutes: input.usenet_delay_minutes as i64,
                     torrent_delay_minutes: input.torrent_delay_minutes as i64,
@@ -884,17 +988,18 @@ impl SettingsMutations {
     async fn delete_delay_profile(
         &self,
         ctx: &Context<'_>,
-        input: DeleteDelayProfileInput,
+        id: ID,
     ) -> GqlResult<DelayProfileDeletionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageCatalogSettings)
                 .await?;
+        let id = id.to_string();
         let id = app
-            .delete_delay_profile(&actor, &input.id)
+            .delete_delay_profile(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DelayProfileDeletionPayload { id })
+        Ok(DelayProfileDeletionPayload { id: ID::from(id) })
     }
 
     async fn update_media_settings(
@@ -1009,7 +1114,7 @@ impl SettingsMutations {
             .profiles
             .into_iter()
             .map(|profile| {
-                let existing = existing_by_id.get(profile.id.as_str()).copied();
+                let existing = existing_by_id.get(profile.id.as_ref()).copied();
                 quality_profile_from_input(profile, existing)
             })
             .collect::<GqlResult<Vec<_>>>()?;
@@ -1018,7 +1123,7 @@ impl SettingsMutations {
             scryer_application::SaveQualityProfileSettings {
                 profiles,
                 replace_existing: input.replace_existing,
-                global_profile_id: input.global_profile_id,
+                global_profile_id: input.global_profile_id.map(String::from),
                 category_selections: input
                     .category_selections
                     .into_iter()
@@ -1026,7 +1131,7 @@ impl SettingsMutations {
                         |selection| scryer_application::UpdateQualityProfileSelection {
                             facet: selection.scope.into_media_facet(),
                             inherit_global: selection.inherit_global,
-                            profile_id: selection.profile_id,
+                            profile_id: selection.profile_id.map(String::from),
                         },
                     )
                     .collect(),
@@ -1069,7 +1174,7 @@ impl SettingsMutations {
                 .into_iter()
                 .map(
                     |entry| scryer_application::DownloadClientRoutingSettingsEntry {
-                        client_id: entry.client_id,
+                        client_id: entry.client_id.to_string(),
                         enabled: entry.enabled,
                         category: entry.category,
                         recent_queue_priority: entry.recent_queue_priority,
@@ -1107,7 +1212,7 @@ impl SettingsMutations {
                 .entries
                 .into_iter()
                 .map(|entry| scryer_application::IndexerRoutingSettingsEntry {
-                    indexer_id: entry.indexer_id,
+                    indexer_id: entry.indexer_id.to_string(),
                     enabled: entry.enabled,
                     categories: entry.categories,
                     priority: entry.priority,
@@ -1127,13 +1232,14 @@ impl SettingsMutations {
     async fn delete_quality_profile(
         &self,
         ctx: &Context<'_>,
-        input: DeleteQualityProfileInput,
+        id: ID,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageCatalogSettings)
                 .await?;
-        app.delete_quality_profile(&actor, &input.profile_id)
+        let id = id.to_string();
+        app.delete_quality_profile(&actor, &id)
             .await
             .map(from_quality_profile_settings)
             .map_err(to_gql_error)
@@ -1162,7 +1268,7 @@ impl SettingsMutations {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         app.webauthn_register_complete(
             &actor,
-            &input.challenge_id,
+            input.challenge_id.as_ref(),
             &input.response_json,
             input.friendly_name,
             auth_runtime.snapshot().effective_form_login_enabled,
@@ -1201,7 +1307,7 @@ impl SettingsMutations {
     ) -> GqlResult<TotpEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.totp_enrollment_complete(&actor, &input.challenge_id, &input.code)
+        app.totp_enrollment_complete(&actor, input.challenge_id.as_ref(), &input.code)
             .await
             .map(from_totp_enrollment_complete)
             .map_err(to_gql_error)
@@ -1215,7 +1321,7 @@ impl SettingsMutations {
         let app = app_from_ctx(ctx)?;
         let actor = mfa_enrollment_actor_from_ctx(ctx)?;
         let complete = app
-            .complete_login_mfa_enrollment(&actor, &input.challenge_id, &input.code)
+            .complete_login_mfa_enrollment(&actor, input.challenge_id.as_ref(), &input.code)
             .await
             .map_err(to_gql_error)?;
         let login =
@@ -1309,7 +1415,7 @@ impl SettingsMutations {
         let started_at = Instant::now();
         let user = match app
             .webauthn_authenticate_complete(
-                &input.challenge_id,
+                input.challenge_id.as_ref(),
                 &input.response_json,
                 form_login_enabled,
             )
@@ -1332,26 +1438,38 @@ impl SettingsMutations {
         login_payload_from_user(&app, user, None, None).await
     }
 
-    async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
+    async fn delete_my_passkey(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<DeleteMyPasskeyPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
+        let id_string = id.to_string();
         app.delete_my_passkey(
             &actor,
-            &id,
+            &id_string,
             auth_runtime.snapshot().effective_form_login_enabled,
         )
         .await
-        .map(|_| true)
-        .map_err(to_gql_error)
+        .map_err(to_gql_error)?;
+        Ok(DeleteMyPasskeyPayload { id, deleted: true })
     }
 
-    async fn revoke_my_oauth_app(&self, ctx: &Context<'_>, grant_id: String) -> GqlResult<bool> {
+    async fn revoke_my_oauth_app(
+        &self,
+        ctx: &Context<'_>,
+        grant_id: ID,
+    ) -> GqlResult<RevokeMyOauthAppPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.revoke_oauth_connected_app(&actor, &grant_id)
+        let grant_id_string = grant_id.to_string();
+        let revoked = app
+            .revoke_oauth_connected_app(&actor, &grant_id_string)
             .await
-            .map_err(to_gql_error)
+            .map_err(to_gql_error)?;
+        Ok(RevokeMyOauthAppPayload { grant_id, revoked })
     }
 
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
@@ -1393,11 +1511,34 @@ impl SettingsMutations {
     }
 
     /// Mark the setup wizard as complete.
-    async fn complete_setup(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+    async fn complete_setup(&self, ctx: &Context<'_>) -> GqlResult<CompleteSetupPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
-        app.complete_setup(&actor).await.map_err(to_gql_error)
+        let completed = app.complete_setup(&actor).await.map_err(to_gql_error)?;
+        Ok(CompleteSetupPayload { completed })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_server_login_requires_effective_form_login() {
+        let error = ensure_media_server_login_allowed(Some(true), false).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::Validation(message) if message == MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN
+        ));
+    }
+
+    #[test]
+    fn media_server_login_guard_allows_disabling_while_form_login_disabled() {
+        assert!(ensure_media_server_login_allowed(Some(false), false).is_ok());
+        assert!(ensure_media_server_login_allowed(None, false).is_ok());
+        assert!(ensure_media_server_login_allowed(Some(true), true).is_ok());
     }
 }

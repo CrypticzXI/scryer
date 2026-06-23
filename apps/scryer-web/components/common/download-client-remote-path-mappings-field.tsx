@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TranslateContext } from "@/lib/context/translate-context";
 import {
-  isAbsoluteLocalPathForStyle,
+  isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 
@@ -135,7 +135,7 @@ function normalizeRemotePathForDuplicateKey(path: string): string {
 
 function validateRows(
   rows: PathMappingRow[],
-  localPathStyle: LocalPathStyle,
+  localPathStyle: LocalPathStyle | undefined,
   t: Translate,
 ): { isValid: boolean; rowErrors: PathMappingRowErrors[] } {
   const rowErrors = rows.map<PathMappingRowErrors>(() => ({}));
@@ -162,7 +162,7 @@ function validateRows(
       rowErrors[index].localPath = t(
         "settings.downloadClientRemotePathMappingsLocalRequired",
       );
-    } else if (!isAbsoluteLocalPathForStyle(localPath, localPathStyle)) {
+    } else if (!isLocalPathFormatValidForStyle(localPath, localPathStyle)) {
       rowErrors[index].localPath = t(
         "settings.downloadClientRemotePathMappingsLocalAbsolute",
       );
@@ -194,7 +194,7 @@ export function DownloadClientRemotePathMappingsField({
   label,
   value,
   helpText,
-  localPathStyle = "unix",
+  localPathStyle,
   required = false,
   maxRows = DEFAULT_MAX_ROWS,
   translate,

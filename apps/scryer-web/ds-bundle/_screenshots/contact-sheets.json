@@ -1,0 +1,35 @@
+[
+  {
+    "sheet": 1,
+    "components": [
+      "Button",
+      "Card",
+      "Checkbox",
+      "Collapsible",
+      "Command",
+      "Dialog",
+      "HoverCard",
+      "Input",
+      "Label",
+      "Popover",
+      "Progress",
+      "Select",
+      "Separator",
+      "Sheet",
+      "Sidebar",
+      "Skeleton"
+    ]
+  },
+  {
+    "sheet": 2,
+    "components": [
+      "Table",
+      "Tabs",
+      "Textarea",
+      "TimePicker",
+      "Toaster",
+      "ToggleGroup",
+      "Tooltip"
+    ]
+  }
+]

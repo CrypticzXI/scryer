@@ -25,12 +25,6 @@ mod seed;
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
 const DEFAULT_SERVE_FRONTEND_PORT: u16 = 3000;
-const DEFAULT_SERVE_RUST_LOG: &str = concat!(
-    "info,",
-    "scryer_infrastructure::indexers::search_client=debug,",
-    "scryer_plugins::indexer_adapter=debug,",
-    "extism::plugin=debug",
-);
 
 #[cfg(unix)]
 struct SignalForwarder {
@@ -572,17 +566,29 @@ fn backend_health_looks_ok(port: u16) -> bool {
 }
 
 fn backend_graphql_looks_ready(port: u16) -> bool {
-    let Some((cookie, proof)) = authless_web_client_proof(port) else {
-        return false;
-    };
+    if backend_graphql_auth_runtime_state_looks_ready(port, None) {
+        return true;
+    }
+
+    authless_web_client_proof(port).is_some_and(|(cookie, proof)| {
+        backend_graphql_auth_runtime_state_looks_ready(port, Some((&cookie, &proof)))
+    })
+}
+
+fn backend_graphql_auth_runtime_state_looks_ready(
+    port: u16,
+    authless_headers: Option<(&str, &str)>,
+) -> bool {
     let body = r#"{"query":"query { authRuntimeState { effectiveFormLoginEnabled skipLoginForLocalIps } }"}"#;
+    let authless_headers = authless_headers
+        .map(|(cookie, proof)| format!("Cookie: {cookie}\r\nx-scryer-web-client: {proof}\r\n"))
+        .unwrap_or_default();
     let request = format!(
         "POST /graphql HTTP/1.1\r\n\
 Host: 127.0.0.1:{port}\r\n\
 Accept: application/json\r\n\
 Content-Type: application/json\r\n\
-Cookie: {cookie}\r\n\
-x-scryer-web-client: {proof}\r\n\
+{authless_headers}\
 Content-Length: {content_length}\r\n\
 Connection: close\r\n\r\n\
 {body}",
@@ -1036,8 +1042,6 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         .unwrap_or_else(|| "localhost".to_string());
     let webauthn_rp_origin = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ORIGIN")
         .unwrap_or_else(|| frontend_url.clone());
-    let rust_log = dotenv_or_process_env(&dotenv_envs, "RUST_LOG")
-        .unwrap_or_else(|| DEFAULT_SERVE_RUST_LOG.to_string());
     let backend_binary = ctx.path("target/debug/scryer");
     let backend_log = PathBuf::from(
         std::env::var("SCRYER_DEV_BACKEND_LOG")
@@ -1075,7 +1079,6 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Keychain: disabled for xtask serve");
     println!("   WebAuthn RP ID: {webauthn_rp_id}");
     println!("   WebAuthn RP origin: {webauthn_rp_origin}");
-    println!("   RUST_LOG: {rust_log}");
     match datastore.kind {
         ServeDatastoreKind::Sqlite => println!("   Datastore: SQLite ({})", datastore.location),
         ServeDatastoreKind::Postgres => {
@@ -1109,7 +1112,6 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         .env("SCRYER_WEB_UI_URL", &frontend_url)
         .env("SCRYER_WEBAUTHN_RP_ID", &webauthn_rp_id)
         .env("SCRYER_WEBAUTHN_RP_ORIGIN", &webauthn_rp_origin)
-        .env("RUST_LOG", &rust_log)
         .env("SCRYER_BIND", &args.bind)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));

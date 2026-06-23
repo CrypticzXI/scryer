@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import {
   CheckCircle2,
   Edit,
@@ -51,12 +52,18 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
+import { buildViewPath } from "@/lib/utils/routing";
 
 type SettingsMediaServersSectionProps = {
   connections: MediaServerConnection[];
   libraries: LibraryRecord[];
   draft: MediaServerConnectionDraft;
   setDraft: React.Dispatch<React.SetStateAction<MediaServerConnectionDraft>>;
+  localPathStyle: LocalPathStyle | undefined;
+  pathMappingsValid: boolean;
+  onPathMappingsValidityChange: (isValid: boolean) => void;
+  effectiveFormLoginEnabled: boolean;
   editingConnectionId: string | null;
   mutatingConnectionId: string | null;
   testingConnectionId: string | null;
@@ -112,7 +119,10 @@ function updateLibraryGrant(
     : filtered;
 }
 
-function capabilityBadges(connection: MediaServerConnection): Array<{ label: string; tone: string }> {
+function capabilityBadges(
+  connection: MediaServerConnection,
+  effectiveFormLoginEnabled: boolean,
+): Array<{ label: string; tone: string }> {
   const badges: Array<{ label: string; tone: string }> = [];
   if (connection.provider === "emby") {
     badges.push({
@@ -121,7 +131,7 @@ function capabilityBadges(connection: MediaServerConnection): Array<{ label: str
     });
     return badges;
   }
-  if (connection.loginEnabled) {
+  if (effectiveFormLoginEnabled && connection.loginEnabled) {
     badges.push({
       label: "Login",
       tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
@@ -181,6 +191,10 @@ export function SettingsMediaServersSection({
   libraries,
   draft,
   setDraft,
+  localPathStyle,
+  pathMappingsValid,
+  onPathMappingsValidityChange,
+  effectiveFormLoginEnabled,
   editingConnectionId,
   mutatingConnectionId,
   testingConnectionId,
@@ -204,6 +218,7 @@ export function SettingsMediaServersSection({
   const selectedProviderLabel = providerLabel(draft.provider);
   const editorMutationId = editingConnectionId ?? "new";
   const isSavingEditor = mutatingConnectionId === editorMutationId;
+  const formLoginSettingsPath = buildViewPath("settings", "security");
   const visibleConnections = connections.filter((connection) =>
     isVisibleMediaServerProvider(connection.provider),
   );
@@ -280,7 +295,7 @@ export function SettingsMediaServersSection({
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1.5">
-                      {capabilityBadges(connection).map((badge) => (
+                      {capabilityBadges(connection, effectiveFormLoginEnabled).map((badge) => (
                         <span
                           key={badge.label}
                           className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${badge.tone}`}
@@ -650,6 +665,8 @@ export function SettingsMediaServersSection({
                         value={draft.pathMappingsText}
                         helpText={t("settings.mediaServerPathMappingsHelp")}
                         direction="remote-to-local"
+                        localPathStyle={localPathStyle}
+                        onValidityChange={onPathMappingsValidityChange}
                         onChange={(_, value) =>
                           setDraft((previous) => ({
                             ...previous,
@@ -665,15 +682,21 @@ export function SettingsMediaServersSection({
                   <div className="space-y-3 rounded border border-border bg-background/40 p-3">
                     <div className="font-medium">{t("settings.mediaServerAuthCapabilities")}</div>
                     <div className="grid gap-3 md:grid-cols-3">
-                      <label className="flex items-center gap-3">
+                      <label
+                        className={cn(
+                          "flex items-center gap-3",
+                          !effectiveFormLoginEnabled && "text-muted-foreground",
+                        )}
+                      >
                         <Checkbox
                           id="settings-media-server-login-enabled"
                           className="size-8 rounded-md"
-                          checked={draft.loginEnabled}
+                          checked={effectiveFormLoginEnabled && draft.loginEnabled}
+                          disabled={!effectiveFormLoginEnabled}
                           onCheckedChange={(checked) =>
                             setDraft((previous) => ({
                               ...previous,
-                              loginEnabled: checked === true,
+                              loginEnabled: effectiveFormLoginEnabled && checked === true,
                             }))
                           }
                         />
@@ -708,6 +731,18 @@ export function SettingsMediaServersSection({
                         <span>{t("settings.mediaServerAutoAddEnabled")}</span>
                       </label>
                     </div>
+
+                    {!effectiveFormLoginEnabled ? (
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.mediaServerLoginRequiresFormLogin")}{" "}
+                        <Link
+                          to={formLoginSettingsPath}
+                          className="font-medium text-primary underline-offset-4 hover:underline"
+                        >
+                          {t("settings.openSecuritySettings")}
+                        </Link>
+                      </p>
+                    ) : null}
 
                     {draft.autoAddEnabled ? (
                       <div className="rounded border border-border bg-card/50 p-3">
@@ -757,7 +792,7 @@ export function SettingsMediaServersSection({
                   <Button
                     id="settings-media-server-save"
                     type="submit"
-                    disabled={isSavingEditor}
+                    disabled={isSavingEditor || !pathMappingsValid}
                   >
                     {isSavingEditor
                       ? t("label.saving")

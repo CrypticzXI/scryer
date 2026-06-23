@@ -8,8 +8,8 @@ use tokio::time::{Duration, timeout};
 
 use common::TestContext;
 use scryer_application::{
-    BackupService, JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository,
-    LibraryRootDraft, MediaFileRepository, TitleRepository, UserRepository,
+    JobKey, JobRunRepository, JobRunStatus, JobTriggerSource, LibraryRepository, LibraryRootDraft,
+    MediaFileRepository, TitleRepository, UserRepository,
 };
 use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
@@ -89,6 +89,13 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
 async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_run() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
 
     let title = TitleRepository::create(
         &ctx.titles,
@@ -103,6 +110,9 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
                 source: "tvdb".to_string(),
                 value: "345679".to_string(),
             }],
+            root_folder_id: scryer_domain::root_folder_id_for_path(
+                media_root.path().to_string_lossy().as_ref(),
+            ),
             created_by: None,
             created_at: Utc::now(),
             year: Some(2024),
@@ -134,7 +144,6 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     .await
     .expect("create pending title");
 
-    let media_root = tempfile::tempdir().expect("media root tempdir");
     let show_dir = media_root.path().join("Pending Series [WEB-DL]");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
@@ -145,13 +154,6 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     .expect("write tvshow.nfo");
     let file_path = season_dir.join("Pending.Series.S01E01.1080p.WEB-DL.mkv");
     std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
-
-    set_media_path(
-        &ctx,
-        "series.path",
-        media_root.path().to_string_lossy().as_ref(),
-    )
-    .await;
 
     ctx.app
         .run_scheduled_job_now(
@@ -489,7 +491,7 @@ async fn automatic_backup_job_skips_stale_enabled_config_without_key() {
         .await
         .expect("stale automatic backup config should skip without error");
 
-    let backup_dir = ctx.app.backup_dir();
+    let backup_dir = ctx.app.default_backup_dir();
     assert!(
         !backup_dir.exists()
             || std::fs::read_dir(backup_dir)

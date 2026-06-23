@@ -175,7 +175,7 @@ export function useQualityProfilesManager(
   );
   const [globalQualityProfileId, setGlobalQualityProfileId] = React.useState("default");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("Balanced");
+    React.useState<ScoringPersonaId>("balanced");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] = React.useState<
     Record<ViewCategoryId, string>
   >({ ...DEFAULT_CATEGORY_QUALITY_PROFILES });
@@ -330,7 +330,7 @@ export function useQualityProfilesManager(
       setSelectedQualityProfileId(nextDraftId);
       setQualityProfileDraft(nextDefaultDraft);
       setGlobalQualityProfileId(validGlobalProfile);
-      setGlobalScoringPersona(payload?.globalScoringPersona ?? "Balanced");
+      setGlobalScoringPersona(payload?.globalScoringPersona ?? "balanced");
 
       const nextOverrides = qualityProfileSettingsToCategoryOverrides(payload);
       setCategoryQualityProfileOverrides((previous) =>
@@ -366,7 +366,7 @@ export function useQualityProfilesManager(
       try {
         const { data, error } = await client.mutation(
           deleteQualityProfileMutation,
-          { input: { profileId: trimmed } },
+          { id: trimmed },
         ).toPromise();
         if (error) throw error;
 

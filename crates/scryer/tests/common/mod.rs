@@ -17,7 +17,8 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use scryer_application::{
     AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
     FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
-    PendingReleaseRepository, SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
+    OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
+    SubtitleDownloadRepository, WantedItemRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -28,9 +29,9 @@ use scryer_infrastructure::{
     DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
     LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
-    MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore,
-    ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore,
-    TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
+    MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, OAuthStore,
+    PendingReleaseStore, ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore,
+    TitleImageStore, TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
@@ -462,6 +463,12 @@ impl HousekeepingRepository for TestLibraryStateStore {
         self.housekeeping.list_all_media_file_paths().await
     }
 
+    async fn list_media_files_with_roots(
+        &self,
+    ) -> AppResult<Vec<scryer_application::HousekeepingMediaFileRootRow>> {
+        self.housekeeping.list_media_files_with_roots().await
+    }
+
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {
         self.housekeeping.delete_media_files_by_ids(ids).await
     }
@@ -699,6 +706,7 @@ impl TestContext {
         let rule_set_store = RuleSetStore::new(datastore.clone());
         let post_processing_script_store = PostProcessingScriptStore::new(datastore.clone());
         let plugin_store = PluginStore::new(datastore.clone());
+        let oauth_store = OAuthStore::new(datastore.clone());
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
@@ -741,6 +749,7 @@ impl TestContext {
         )))
         .with_webauthn_store(Arc::new(WebauthnStore::new(datastore.clone())))
         .with_totp_store(Arc::new(totp_store))
+        .with_oauth_store(Arc::new(oauth_store))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))
         .with_plugin_installation_store(Arc::new(plugin_store.clone()))
@@ -1099,16 +1108,35 @@ async fn test_graphql_handler(
     req: GraphQLRequest,
 ) -> Response {
     let snapshot = auth_runtime.snapshot();
-    let authenticated_actor = if let Some(token) = authorization_token_from_headers(&headers) {
-        app.authenticate_token_with_claims(token)
-            .await
-            .ok()
-            .map(|(user, claims)| (user, claims, true))
-    } else {
-        None
-    };
-    let actor = if authenticated_actor.is_some() {
-        authenticated_actor
+    let actor = if let Some(token) = authorization_token_from_headers(&headers) {
+        match app.authenticate_token_with_claims(token).await {
+            Ok((_user, claims))
+                if snapshot.effective_form_login_enabled
+                    && claims.oauth_authorization_source == OAuthAuthorizationSource::Authless =>
+            {
+                None
+            }
+            Ok((user, claims)) => Some((user, claims, true)),
+            Err(_) if !snapshot.effective_form_login_enabled => app
+                .find_or_create_default_user()
+                .await
+                .ok()
+                .map(|user| (user, AuthenticatedTokenClaims::default(), false)),
+            Err(_) if snapshot.skip_login_for_local_ips => {
+                app.find_or_create_default_user().await.ok().map(|user| {
+                    (
+                        user,
+                        AuthenticatedTokenClaims {
+                            mfa_verified_until: Some(i64::MAX),
+                            mfa_step_up_verified_until: Some(i64::MAX),
+                            ..AuthenticatedTokenClaims::default()
+                        },
+                        false,
+                    )
+                })
+            }
+            Err(_) => None,
+        }
     } else if snapshot.effective_form_login_enabled {
         if snapshot.skip_login_for_local_ips {
             app.find_or_create_default_user().await.ok().map(|user| {
@@ -1138,6 +1166,7 @@ async fn test_graphql_handler(
             verified_until: claims.mfa_verified_until,
             step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.session_scope,
+            oauth_authorization_source: claims.oauth_authorization_source,
         });
         let mut user = app
             .attach_user_authorization(user.clone())
@@ -1149,6 +1178,9 @@ async fn test_graphql_handler(
             scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT
         };
         if claims.is_oauth_access_token() {
+            if claims.oauth_authorization_source == OAuthAuthorizationSource::Authless {
+                user.username = "Anonymous".to_string();
+            }
             user.authorization.app = scryer_domain::AppPermissionMask::NONE;
             user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::NONE;
         }

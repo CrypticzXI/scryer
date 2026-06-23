@@ -167,7 +167,7 @@ export function useDelayProfilesManager() {
       setSaving(true);
       try {
         const result = await client
-          .mutation(deleteDelayProfileMutation, { input: { id: profileId } })
+          .mutation(deleteDelayProfileMutation, { id: profileId })
           .toPromise();
         if (result.error) {
           showStatus(t("settings.delayProfileSaveError"));

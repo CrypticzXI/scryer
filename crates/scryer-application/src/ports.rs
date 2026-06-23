@@ -4,10 +4,12 @@ use scryer_domain::{
     ImportTransferPhase, ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload,
 };
 use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
+const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
 
 #[derive(Clone, Debug)]
 pub struct TitleArtworkUrlUpdate {
@@ -23,6 +25,15 @@ pub struct TitleDeletePreviewInfo {
     pub title_name: String,
     pub facet: MediaFacet,
     pub folder_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HousekeepingMediaFileRootRow {
+    pub media_file_id: String,
+    pub title_id: String,
+    pub file_path: String,
+    pub library_id: String,
+    pub root_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +98,56 @@ pub trait TitleRepository: Send + Sync {
             .into_iter()
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "title catalog repository queries mirror the user-visible filter, sort, pagination, and projection surface"
+    )]
+    async fn list_for_libraries_catalog(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+        filter: TitleCatalogFilter,
+        sort: TitleCatalogSort,
+        limit: usize,
+        offset: usize,
+        include_external_ids: bool,
+    ) -> AppResult<TitleCatalogResult> {
+        if library_ids.is_empty() {
+            return Ok(TitleCatalogResult {
+                items: Vec::new(),
+                limit,
+                offset,
+                has_more: false,
+                total_count: 0,
+            });
+        }
+
+        let mut titles = if include_external_ids {
+            self.list_for_libraries(facet, library_ids, query).await?
+        } else {
+            self.list_for_libraries_without_external_ids(facet, library_ids, query)
+                .await?
+        };
+        titles.retain(|title| title_matches_catalog_filter(title, &filter));
+        sort_titles_for_catalog(&mut titles, sort);
+
+        let total_count = titles.len();
+        let items = titles
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let has_more = offset.saturating_add(items.len()) < total_count;
+
+        Ok(TitleCatalogResult {
+            items,
+            limit,
+            offset,
+            has_more,
+            total_count,
+        })
     }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
@@ -172,6 +233,7 @@ pub trait TitleRepository: Send + Sync {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
+        root_folder_id: Option<String>,
     ) -> AppResult<Title>;
     async fn update_title_hydrated_metadata(
         &self,
@@ -211,6 +273,110 @@ pub trait TitleRepository: Send + Sync {
         _updates: &[TitleArtworkUrlUpdate],
     ) -> AppResult<u64> {
         Ok(0)
+    }
+}
+
+fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
+    titles.sort_by(|left, right| {
+        let ordering = match sort.key {
+            TitleCatalogSortKey::Title => compare_titles_by_catalog_title(left, right),
+            TitleCatalogSortKey::Monitored => left
+                .monitored
+                .cmp(&right.monitored)
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Quality => title_catalog_quality_profile_id(left)
+                .cmp(&title_catalog_quality_profile_id(right))
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Status => title_catalog_status_sort_value(left)
+                .cmp(&title_catalog_status_sort_value(right))
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
+            TitleCatalogSortKey::Episodes | TitleCatalogSortKey::Size => {
+                compare_titles_by_catalog_title(left, right)
+            }
+        };
+        match sort.direction {
+            SortDirection::Asc => ordering,
+            SortDirection::Desc => ordering.reverse(),
+        }
+    });
+}
+
+fn compare_titles_by_catalog_title(left: &Title, right: &Title) -> Ordering {
+    title_catalog_sort_value(left)
+        .cmp(&title_catalog_sort_value(right))
+        .then_with(|| left.year.cmp(&right.year))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn title_catalog_sort_value(title: &Title) -> String {
+    title
+        .sort_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&title.name)
+        .trim()
+        .to_lowercase()
+}
+
+fn title_catalog_quality_profile_id(title: &Title) -> String {
+    title
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix(TITLE_QUALITY_PROFILE_TAG_PREFIX))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+fn title_catalog_status_sort_value(title: &Title) -> String {
+    title
+        .content_status
+        .as_deref()
+        .map(normalize_catalog_status)
+        .unwrap_or_default()
+}
+
+fn title_matches_catalog_filter(title: &Title, filter: &TitleCatalogFilter) -> bool {
+    if let Some(monitored) = filter.monitored
+        && title.monitored != monitored
+    {
+        return false;
+    }
+
+    if !filter.content_statuses.is_empty() {
+        let status = title
+            .content_status
+            .as_deref()
+            .map(normalize_catalog_status)
+            .unwrap_or_default();
+        if !filter
+            .content_statuses
+            .iter()
+            .any(|candidate| title_catalog_status_filter_matches(*candidate, &status))
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn title_catalog_status_filter_matches(
+    candidate: TitleCatalogContentStatus,
+    normalized_status: &str,
+) -> bool {
+    match candidate {
+        TitleCatalogContentStatus::Continuing => normalized_status == "continuing",
+        TitleCatalogContentStatus::Ended => normalized_status == "ended",
+    }
+}
+
+fn normalize_catalog_status(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "returning" => "continuing".to_string(),
+        "finished" => "ended".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -534,6 +700,11 @@ pub trait OAuthRepository: Send + Sync {
         revoked_at: chrono::DateTime<chrono::Utc>,
         reason: &str,
     ) -> AppResult<u64>;
+    async fn revoke_authless_refresh_grants(
+        &self,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> AppResult<u64>;
     async fn touch_refresh_grant_last_used(
         &self,
         grant_id: &str,
@@ -849,6 +1020,9 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
     async fn touch_last_error(&self, id: &str) -> AppResult<()>;
+    async fn clear_last_error(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
@@ -969,6 +1143,7 @@ pub trait HousekeepingRepository: Send + Sync {
     ) -> AppResult<u32>;
     async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
+    async fn list_media_files_with_roots(&self) -> AppResult<Vec<HousekeepingMediaFileRootRow>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
     async fn run_database_maintenance(&self) -> AppResult<()> {
         Ok(())

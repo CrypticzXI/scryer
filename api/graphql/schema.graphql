@@ -1,0 +1,4240 @@
+type AcquisitionSettingsPayload {
+	enabled: Boolean!
+	upgradeCooldownHours: Int!
+	sameTierMinDelta: Int!
+	crossTierMinDelta: Int!
+	forcedUpgradeDeltaBypass: Int!
+	pollIntervalSeconds: Int!
+	syncIntervalSeconds: Int!
+	batchSize: Int!
+}
+
+enum ActivityChannelValue {
+	web_ui
+	toast
+}
+
+type ActivityEventPayload {
+	id: ID!
+	kind: ActivityKindValue!
+	severity: ActivitySeverityValue!
+	channels: [ActivityChannelValue!]!
+	actorKind: String!
+	actorUserId: ID
+	actorDisplayName: String!
+	titleId: ID
+	facet: MediaFacetValue
+	message: String!
+	occurredAt: DateTime!
+}
+
+enum ActivityKindValue {
+	setting_saved
+	movie_fetched
+	title_added
+	title_updated
+	metadata_hydration_started
+	metadata_hydration_completed
+	metadata_hydration_failed
+	movie_downloaded
+	series_episode_imported
+	acquisition_search_completed
+	acquisition_candidate_accepted
+	acquisition_candidate_rejected
+	acquisition_download_failed
+	post_processing_completed
+	file_analyzed
+	file_upgraded
+	import_rejected
+	subtitle_downloaded
+	subtitle_search_failed
+	system_notice
+}
+
+enum ActivitySeverityValue {
+	info
+	success
+	warning
+	error
+}
+
+enum AddTitleHydrationStateValue {
+	pending
+	complete
+	not_required
+}
+
+input AddTitleInput {
+	name: String!
+	facet: MediaFacetValue!
+	libraryId: ID
+	monitored: Boolean!
+	tags: [String!]!
+	options: TitleOptionsInput
+	externalIds: [ExternalIdInput!]
+	sourceHint: String
+	sourceKind: DownloadSourceKindValue
+	sourceTitle: String
+	minAvailability: String
+	year: Int
+	overview: String
+	sortTitle: String
+	slug: String
+	runtimeMinutes: Int
+	language: String
+	contentStatus: String
+}
+
+type AddTitleResult {
+	title: TitlePayload!
+	metadataHydrationState: AddTitleHydrationStateValue!
+	reusedExistingTitle: Boolean!
+	reusedQueuedDownload: Boolean!
+	downloadJobId: ID
+	queuedDownload: QueueDownloadPayload
+}
+
+enum AppPermissionValue {
+	manageUsers
+	managePermissions
+	manageSystemSettings
+	manageCatalogSettings
+}
+
+input ApproveMediaRequestInput {
+	requestId: ID!
+	qualityProfileId: ID!
+	monitorType: MonitorTypeValue
+}
+
+type ApproveMediaRequestPayload {
+	accepted: Boolean!
+	titleId: ID!
+	wantedSearch: WantedSearchPayload
+	searchError: String
+}
+
+input AssignTrackedDownloadTitleInput {
+	clientId: ID
+	clientType: String!
+	downloadClientItemId: String!
+	titleId: ID!
+	scope: QueueDownloadScopeInput!
+}
+
+type AudioStreamDetailPayload {
+	codec: String
+	profile: String
+	channels: Int
+	language: String
+	bitrateKbps: Int
+}
+
+type AuthRuntimeStatePayload {
+	effectiveFormLoginEnabled: Boolean!
+	skipLoginForLocalIps: Boolean!
+	passkeyEnabled: Boolean!
+	envOverrideActive: Boolean!
+	mfaRequirePasswordLogin: Boolean!
+	mfaRequireConfigStepUp: Boolean!
+	totpRequireJellyfinLogin: Boolean!
+}
+
+type AutoBackupSettingsPayload {
+	enabled: Boolean!
+	dailyTimeLocal: String!
+	autoBackupKeyPresent: Boolean!
+	autoBackupDisabledMissingKeyNotice: Boolean!
+	nextRunAt: DateTime
+}
+
+type BackupDownloadUrlPayload {
+	downloadUrl: String!
+	downloadAuthorizationToken: String!
+	expiresAt: DateTime!
+}
+
+type BackupInfoPayload {
+	filename: String!
+	sizeBytes: Long!
+	createdAt: DateTime!
+	formatVersion: String!
+	sourceEngine: String!
+	sourceMigrationKey: String
+	encrypted: Boolean!
+	rowCounts: [BackupRowCountPayload!]!
+	trigger: String!
+	status: String!
+	errorMessage: String
+}
+
+type BackupRowCountPayload {
+	table: String!
+	rowCount: Long!
+}
+
+type BackupSettingsPayload {
+	customBackupPath: String
+	defaultBackupPath: String!
+	effectiveBackupPath: String!
+}
+
+input BindPendingImportInput {
+	pendingImportId: ID!
+	collectionId: ID
+	episodeIds: [ID!]!
+}
+
+input BlocklistExternalSubtitleInput {
+	externalSubtitleId: ID!
+	reason: String
+	previewFingerprint: String
+	typedConfirmation: String
+}
+
+type BlocklistExternalSubtitlePayload {
+	id: ID!
+	blocklisted: Boolean!
+}
+
+type CalendarEpisodePayload {
+	id: ID!
+	titleId: ID!
+	libraryId: ID!
+	libraryName: String
+	librarySlug: String
+	titleName: String!
+	titleSlug: String
+	titleFacet: String!
+	seasonNumber: String
+	episodeNumber: String
+	episodeTitle: String
+	airDate: Date
+	monitored: Boolean!
+}
+
+type CancelExternalImportMonitorWarmupPayload {
+	sessionId: ID!
+	canceled: Boolean!
+}
+
+type CancelLibraryScanPayload {
+	sessionId: ID!
+	accepted: Boolean!
+}
+
+type ClearTitleImageCachePayload {
+	accepted: Boolean!
+}
+
+type ClearTitleReleaseBlocklistEntryPayload {
+	id: ID!
+	cleared: Boolean!
+}
+
+type CollectionPayload {
+	id: ID!
+	titleId: ID!
+	collectionType: String!
+	collectionIndex: String!
+	label: String
+	orderedPath: String
+	narrativeOrder: String
+	fileSizeBytes: Long
+	firstEpisodeNumber: String
+	lastEpisodeNumber: String
+	monitored: Boolean!
+	createdAt: DateTime!
+	title: TitlePayload
+	episodes: [EpisodePayload!]!
+}
+
+type CompleteSetupPayload {
+	completed: Boolean!
+}
+
+enum ContentScopeValue {
+	movie
+	series
+	anime
+}
+
+input CreateBackupInput {
+	password: String!
+}
+
+input CreateDownloadClientConfigInput {
+	name: String!
+	clientType: String!
+	config: [ProviderConfigValueInput!]!
+	isEnabled: Boolean
+}
+
+input CreateExternalAccountInviteInput {
+	userId: ID!
+	connectionId: ID!
+	provider: ExternalAccountProviderValue!
+	providerUserIdentifier: String!
+	providerUserId: String
+}
+
+input CreateIndexerConfigInput {
+	name: String!
+	providerType: String!
+	rateLimitSeconds: Int
+	rateLimitBurst: Int
+	isEnabled: Boolean
+	enableInteractiveSearch: Boolean
+	enableAutoSearch: Boolean
+	config: [ProviderConfigValueInput!]
+}
+
+input CreateLibraryInput {
+	facet: MediaFacetValue!
+	name: String!
+	roots: [CreateLibraryRootInput!]!
+	settings: LibrarySettingsInput
+}
+
+input CreateLibraryRootInput {
+	path: String!
+	isDefault: Boolean!
+}
+
+input CreateMediaServerConnectionInput {
+	provider: MediaServerProviderValue!
+	displayName: String!
+	baseUrl: String!
+	enabled: Boolean
+	loginEnabled: Boolean
+	linkingEnabled: Boolean
+	autoAddEnabled: Boolean
+	defaultAppPermissions: [AppPermissionValue!]
+	defaultLibraryGrants: [MediaServerDefaultLibraryGrantInput!]
+	machineId: String
+	plexAuthToken: String
+	plexServerId: String
+	apiKey: String
+	adminUsername: String
+	adminPassword: String
+	pathMappings: [MediaServerPathMappingInput!]
+}
+
+input CreateNotificationChannelInput {
+	name: String!
+	channelType: String!
+	config: [ProviderConfigValueInput!]!
+	mediaServerConnectionId: ID
+	isEnabled: Boolean
+}
+
+input CreateNotificationSubscriptionInput {
+	channelId: ID
+	targetKind: String
+	targetId: ID
+	eventType: String!
+	scope: String!
+	scopeId: String
+	isEnabled: Boolean
+}
+
+input CreatePostProcessingScriptInput {
+	name: String!
+	description: String
+	scriptType: String!
+	scriptContent: String
+	inlineShellAcknowledged: Boolean
+	appliedFacets: [String!]
+	executionMode: String
+	timeoutSecs: Int
+	priority: Int
+	debug: Boolean
+}
+
+input CreateRuleSetInput {
+	name: String!
+	description: String
+	regoSource: String!
+	appliedFacets: [String!]
+	priority: Int
+}
+
+input CreateSubtitleProviderConfigInput {
+	name: String!
+	providerType: String!
+	config: [ProviderConfigValueInput!]!
+	enabledFacets: [MediaFacetValue!]
+	isEnabled: Boolean
+}
+
+input CreateUserInput {
+	username: String!
+	password: String!
+	appPermissions: [AppPermissionValue!]!
+	libraryPermissions: [LibraryPermissionGrantInput!]!
+}
+
+type CutoffUnmetItemPayload {
+	titleId: ID!
+	titleName: String!
+	titleSlug: String
+	titleFacet: MediaFacetValue!
+	libraryId: ID!
+	libraryName: String
+	librarySlug: String
+	episodeId: ID
+	seasonNumber: String
+	episodeNumber: String
+	currentTier: String!
+	targetTier: String!
+}
+
+scalar Date
+
+"""
+Implement the DateTime<Utc> scalar
+
+The input/output is a string in RFC3339 format.
+"""
+scalar DateTime
+
+type DecisionCodeCountPayload {
+	code: String!
+	count: Int!
+}
+
+type DelayProfileDeletionPayload {
+	id: ID!
+}
+
+input DelayProfileInput {
+	id: ID!
+	name: String!
+	usenetDelayMinutes: Int!
+	torrentDelayMinutes: Int!
+	preferredProtocol: DelayProfilePreferredProtocolValue!
+	minAgeMinutes: Int!
+	bypassScoreThreshold: Int
+	appliesToFacets: [MediaFacetValue!]!
+	tags: [String!]!
+	priority: Int!
+	enabled: Boolean!
+}
+
+type DelayProfilePayload {
+	id: ID!
+	name: String!
+	usenetDelayMinutes: Int!
+	torrentDelayMinutes: Int!
+	preferredProtocol: DelayProfilePreferredProtocolValue!
+	minAgeMinutes: Int!
+	bypassScoreThreshold: Int
+	appliesToFacets: [MediaFacetValue!]!
+	tags: [String!]!
+	priority: Int!
+	enabled: Boolean!
+}
+
+enum DelayProfilePreferredProtocolValue {
+	usenet
+	torrent
+}
+
+input DeleteBackupInput {
+	filename: String!
+}
+
+type DeleteBackupPayload {
+	filename: String!
+	deleted: Boolean!
+}
+
+type DeleteDownloadClientConfigPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+input DeleteDownloadInput {
+	clientId: ID
+	clientType: String!
+	downloadClientItemId: String!
+	isHistory: Boolean!
+}
+
+input DeleteExternalSubtitleInput {
+	externalSubtitleId: ID!
+	previewFingerprint: String
+	typedConfirmation: String
+}
+
+type DeleteExternalSubtitlePayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteIndexerConfigPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteLibraryPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+input DeleteMediaFileInput {
+	fileId: ID!
+	deleteFromDisk: Boolean
+	previewFingerprint: String
+	typedConfirmation: String
+}
+
+type DeleteMediaFilePayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteMediaServerConnectionPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteMyPasskeyPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteNotificationChannelPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteNotificationSubscriptionPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeletePostProcessingScriptPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeletePreviewPayload {
+	fingerprint: String!
+	totalFileCount: Int!
+	mediaCount: Int!
+	subtitleCount: Int!
+	imageCount: Int!
+	otherCount: Int!
+	directoryCount: Int!
+	requiresTypedConfirmation: Boolean!
+	typedConfirmationPrompt: String
+	targetLabel: String!
+	samplePaths: [String!]!
+}
+
+type DeleteRecycledItemPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteRuleSetPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteSubtitleProviderConfigPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+input DeleteTitleInput {
+	titleId: ID!
+	deleteFilesOnDisk: Boolean
+	previewFingerprint: String
+	typedConfirmation: String
+}
+
+type DeleteTitlePayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DeleteTitlePreviewResultPayload {
+	titleId: ID!
+	preview: DeletePreviewPayload
+	error: String
+}
+
+input DeleteTitlesInput {
+	items: [DeleteTitlesItemInput!]!
+	deleteFilesOnDisk: Boolean
+	typedConfirmation: String
+}
+
+input DeleteTitlesItemInput {
+	titleId: ID!
+	previewFingerprint: String
+}
+
+type DeleteTitlesPayload {
+	jobRun: JobRunPayload!
+	acceptedTitleIds: [ID!]!
+}
+
+input DeleteTitlesPreviewInput {
+	titleIds: [ID!]!
+}
+
+type DeleteTitlesPreviewPayload {
+	preview: DeletePreviewPayload!
+	items: [DeleteTitlePreviewResultPayload!]!
+	failedCount: Int!
+}
+
+type DeleteUserPayload {
+	id: ID!
+	deleted: Boolean!
+}
+
+type DirectoryEntryPayload {
+	name: String!
+	path: String!
+}
+
+type DismissPendingReleasePayload {
+	id: ID!
+	dismissed: Boolean!
+}
+
+type DomainEventEnvelopePayload {
+	sequence: Long!
+	eventId: ID!
+	occurredAt: DateTime!
+	actorKind: String!
+	actorUserId: ID
+	actorDisplayName: String!
+	titleId: ID
+	facet: MediaFacetValue
+	eventType: DomainEventTypeValue!
+	streamKind: String!
+	streamId: ID
+	payloadJson: JSON!
+}
+
+enum DomainEventTypeValue {
+	media_request_submitted
+	media_request_updated
+	media_request_approved
+	media_request_rejected
+	media_request_canceled
+	title_added
+	title_updated
+	title_rematched
+	title_deleted
+	configuration_changed
+	discovery_search_completed
+	metadata_hydration_updated
+	release_grabbed
+	download_failed
+	release_blocklisted
+	import_completed
+	import_rejected
+	media_file_imported
+	media_file_analyzed
+	media_file_renamed
+	media_file_deleted
+	media_file_upgraded
+	acquisition_search_completed
+	acquisition_candidate_rejected
+	import_requested
+	import_recovery_completed
+	download_queue_item_command_issued
+	post_processing_completed
+	subtitle_downloaded
+	subtitle_search_failed
+	library_scan_started
+	library_scan_title_discovered
+	library_scan_delta_recorded
+	library_scan_progressed
+	library_scan_completed
+	library_scan_canceled
+	library_scan_failed
+	job_run_started
+	job_run_completed
+	job_run_failed
+	job_next_run_updated
+	download_queue_item_upserted
+	download_queue_item_removed
+}
+
+enum DownloadActivityFilterValue {
+	all
+	downloading
+	queued
+	paused
+	post_processing
+}
+
+"""
+API key supplied by the user for a download client whose key was masked by
+Sonarr/Radarr and could not be retrieved automatically.
+"""
+input DownloadClientApiKeyOverrideInput {
+	dedupKey: String!
+	apiKey: String!
+}
+
+type DownloadClientConfigPayload {
+	id: ID!
+	name: String!
+	clientType: String!
+	baseUrl: String
+	config: [ProviderConfigValuePayload!]!
+	storedSecretKeys: [String!]!
+	isEnabled: Boolean!
+	status: String!
+	lastError: String
+	lastSeenAt: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type DownloadClientFilterOptionPayload {
+	clientId: ID!
+	clientName: String!
+	clientType: String!
+}
+
+"""
+Password supplied by the user for a download client whose password was
+masked by Sonarr/Radarr and could not be retrieved automatically.
+"""
+input DownloadClientPasswordOverrideInput {
+	dedupKey: String!
+	password: String!
+}
+
+input DownloadClientRoutingEntryInput {
+	clientId: ID!
+	enabled: Boolean!
+	category: String
+	recentQueuePriority: String
+	olderQueuePriority: String
+	removeCompleted: Boolean!
+	removeFailed: Boolean!
+}
+
+type DownloadClientRoutingEntryPayload {
+	clientId: ID!
+	enabled: Boolean!
+	category: String
+	recentQueuePriority: String
+	olderQueuePriority: String
+	removeCompleted: Boolean!
+	removeFailed: Boolean!
+}
+
+enum DownloadDisplayStateValue {
+	queued
+	downloading
+	paused
+	post_processing
+	completed
+	failed
+	importing
+	import_pending
+	import_blocked
+	import_failed
+	removing
+	remove_failed
+}
+
+enum DownloadHistoryFilterValue {
+	all
+	success
+	failed
+}
+
+type DownloadHistoryPagePayload {
+	items: [DownloadQueueItemPayload!]!
+	hasMore: Boolean!
+	totalCount: Int!
+	availableClients: [DownloadClientFilterOptionPayload!]!
+}
+
+enum DownloadHistorySortKeyValue {
+	title
+	client
+	status
+	progress
+	size
+}
+
+enum DownloadImportFilterValue {
+	all
+	importing
+	pending
+	blocked
+	failed
+}
+
+type DownloadImportPagePayload {
+	items: [DownloadQueueItemPayload!]!
+	hasMore: Boolean!
+	totalCount: Int!
+}
+
+enum DownloadQueueActionKindValue {
+	queued_manual_import
+	ignored_tracked_download
+	marked_tracked_download_failed
+	assigned_tracked_download_title
+	paused
+	resumed
+	delete_queued
+	deleted
+}
+
+type DownloadQueueActionPayload {
+	kind: DownloadQueueActionKindValue!
+	downloadClientItemId: String!
+	clientId: ID
+	clientType: String
+	importId: ID
+	commandId: ID
+	removed: Boolean!
+	queueItem: DownloadQueueItemPayload
+}
+
+enum DownloadQueueDeleteStatusValue {
+	queued
+	running
+	completed
+	failed
+}
+
+type DownloadQueueItemPayload {
+	id: ID!
+	titleId: ID
+	episodeId: ID
+	titleName: String!
+	facet: MediaFacetValue
+	isScryerOrigin: Boolean!
+	clientId: ID!
+	clientName: String!
+	clientType: String!
+	state: DownloadQueueStateValue!
+	displayState: DownloadDisplayStateValue!
+	progressPercent: Int!
+	importTransferPhase: String
+	importTransferBytes: Long
+	importTransferTotalBytes: Long
+	importTransferStartedAt: DateTime
+	importTransferUpdatedAt: DateTime
+	sizeBytes: Long
+	remainingSeconds: Int
+	queuedAt: DateTime
+	lastUpdatedAt: DateTime
+	attentionRequired: Boolean!
+	attentionReason: String
+	downloadClientItemId: String!
+	downloadId: String
+	importStatus: ImportStatusValue
+	importErrorCode: ImportErrorCodeValue
+	importErrorMessage: String
+	importedAt: DateTime
+	deleteStatus: DownloadQueueDeleteStatusValue
+	deleteErrorMessage: String
+	trackedState: TrackedDownloadStateValue
+	trackedStatus: TrackedDownloadStatusValue
+	trackedStatusMessages: [String!]!
+	trackedMatchType: TitleMatchTypeValue
+	queueScope: QueueDownloadScopePayload
+	title: TitlePayload
+}
+
+enum DownloadQueueStateValue {
+	queued
+	downloading
+	verifying
+	repairing
+	extracting
+	paused
+	completed
+	import_pending
+	failed
+}
+
+enum DownloadSourceKindValue {
+	nzbFile
+	nzbUrl
+	torrentFile
+	magnetUri
+}
+
+input DownloadSubtitleInput {
+	mediaFileId: ID!
+	provider: String
+	providerFileId: String!
+	language: String!
+	forced: Boolean
+	hearingImpaired: Boolean
+	score: Int
+	releaseInfo: String
+	uploader: String
+	aiTranslated: Boolean
+	machineTranslated: Boolean
+}
+
+type DownloadSubtitlePayload {
+	mediaFileId: ID!
+	providerFileId: String!
+	downloaded: Boolean!
+}
+
+type EmptyRecycleBinPayload {
+	purgedCount: Int!
+}
+
+type EpisodePayload {
+	id: ID!
+	titleId: ID!
+	collectionId: ID
+	episodeType: String!
+	episodeNumber: String
+	seasonNumber: String
+	episodeLabel: String
+	title: String
+	overview: String
+	airDate: Date
+	durationSeconds: Int
+	hasMultiAudio: Boolean!
+	hasSubtitle: Boolean!
+	isFiller: Boolean!
+	isRecap: Boolean!
+	absoluteNumber: String
+	tvdbId: String
+	imageUrl: String
+	monitored: Boolean!
+	createdAt: DateTime!
+	parentTitle: TitlePayload
+	collection: CollectionPayload
+	wantedItem: WantedItemPayload
+	mediaFiles: [TitleMediaFilePayload!]!
+}
+
+input ExecuteExternalImportInput {
+	sonarr: ExternalImportConnectionInput
+	radarr: ExternalImportConnectionInput
+	prowlarr: ExternalImportConnectionInput
+	selectedMoviesPaths: [String!]!
+	selectedSeriesPaths: [String!]!
+	selectedAnimePaths: [String!]!
+	selectedDownloadClientDedupKeys: [String!]!
+	selectedIndexerDedupKeys: [String!]!
+	"""
+	User-supplied API keys for download clients whose keys were masked by
+	Sonarr/Radarr.  Keyed by the client's `dedup_key`.
+	"""
+	downloadClientApiKeyOverrides: [DownloadClientApiKeyOverrideInput!]!
+	"""
+	User-supplied passwords for download clients whose passwords were
+	masked by Sonarr/Radarr.  Keyed by the client's `dedup_key`.
+	"""
+	downloadClientPasswordOverrides: [DownloadClientPasswordOverrideInput!]!
+	"""
+	User-supplied API keys for grouped indexer import candidates, keyed by
+	the import candidate's `dedup_key`.
+	"""
+	indexerApiKeyOverrides: [IndexerApiKeyOverrideInput!]!
+}
+
+enum ExternalAccountProviderValue {
+	plex
+	jellyfin
+}
+
+enum ExternalAccountStatusValue {
+	pending_claim
+	active
+	disabled
+}
+
+type ExternalAuthRuntimeConnectionPayload {
+	id: ID!
+	provider: ExternalAccountProviderValue!
+	displayName: String!
+	loginEnabled: Boolean!
+	linkingEnabled: Boolean!
+}
+
+type ExternalAuthRuntimeSettingsPayload {
+	loginProviders: [ExternalAccountProviderValue!]!
+	linkingProviders: [ExternalAccountProviderValue!]!
+	connections: [ExternalAuthRuntimeConnectionPayload!]!
+}
+
+input ExternalIdInput {
+	source: String!
+	value: String!
+}
+
+type ExternalIdPayload {
+	source: String!
+	value: String!
+}
+
+input ExternalImportConnectionInput {
+	baseUrl: String!
+	apiKey: String!
+}
+
+type ExternalImportDownloadClientPayload {
+	sources: [String!]!
+	name: String!
+	implementation: String!
+	scryerClientType: String
+	host: String
+	port: String
+	useSsl: Boolean!
+	urlBase: String
+	username: String
+	apiKeyPresent: Boolean!
+	dedupKey: String!
+	supported: Boolean!
+	requiresPasswordOverride: Boolean!
+}
+
+type ExternalImportIndexerPayload {
+	sources: [String!]!
+	name: String!
+	implementation: String!
+	scryerProviderType: String
+	baseUrl: String
+	apiKeyPresent: Boolean!
+	dedupKey: String!
+	supported: Boolean!
+	childCount: Int!
+	childNames: [String!]!
+	requiresApiKeyOverride: Boolean!
+	apiKeyHelpUrl: String
+}
+
+enum ExternalImportMonitorWarmupPhaseValue {
+	loading_movies
+	loading_series
+	loading_episodes
+	building_snapshot
+	ready
+}
+
+type ExternalImportMonitorWarmupProgressPayload {
+	sessionId: ID!
+	status: ExternalImportMonitorWarmupStatusValue!
+	phase: ExternalImportMonitorWarmupPhaseValue!
+	startedAt: DateTime!
+	updatedAt: DateTime!
+	overallTotalKnown: Boolean!
+	overallProgress: LibraryScanPhaseProgressPayload!
+	moviesTotalKnown: Boolean!
+	moviesProgress: LibraryScanPhaseProgressPayload!
+	seriesTotalKnown: Boolean!
+	seriesProgress: LibraryScanPhaseProgressPayload!
+	episodeFetchTotalKnown: Boolean!
+	episodeFetchExpectedTotal: Int
+	episodeFetchExpectedMonitoredTotal: Int
+	episodeFetchProgress: LibraryScanPhaseProgressPayload!
+	snapshotBuildTotalKnown: Boolean!
+	snapshotBuildProgress: LibraryScanPhaseProgressPayload!
+	matchedMovieCount: Int!
+	matchedSeriesCount: Int!
+	unmatchedMovieCount: Int!
+	unmatchedSeriesCount: Int!
+	ambiguousMovieCount: Int!
+	ambiguousSeriesCount: Int!
+	errorMessage: String
+}
+
+enum ExternalImportMonitorWarmupStatusValue {
+	queued
+	running
+	completed
+	canceled
+	failed
+}
+
+type ExternalImportPreviewPayload {
+	sonarrConnected: Boolean!
+	radarrConnected: Boolean!
+	prowlarrConnected: Boolean!
+	sonarrVersion: String
+	radarrVersion: String
+	prowlarrVersion: String
+	sonarrError: String
+	radarrError: String
+	prowlarrError: String
+	rootFolders: [ExternalImportRootFolderPayload!]!
+	downloadClients: [ExternalImportDownloadClientPayload!]!
+	indexers: [ExternalImportIndexerPayload!]!
+}
+
+type ExternalImportResultPayload {
+	mediaPathsSaved: Boolean!
+	downloadClientsCreated: Int!
+	indexersCreated: Int!
+	pluginsInstalled: [String!]!
+	errors: [String!]!
+}
+
+type ExternalImportRootFolderPayload {
+	source: String!
+	path: String!
+}
+
+type ExternalSubtitleBlocklistEntryPayload {
+	id: ID!
+	mediaFileId: ID!
+	provider: String!
+	providerFileId: String!
+	language: String!
+	reason: String
+	createdAt: DateTime!
+}
+
+type ExternalSubtitlePayload {
+	id: ID!
+	mediaFileId: ID!
+	titleId: ID!
+	episodeId: ID
+	sourceKind: String!
+	language: String!
+	provider: String
+	providerFileId: String
+	filePath: String!
+	score: Int
+	hearingImpaired: Boolean!
+	forced: Boolean!
+	aiTranslated: Boolean!
+	machineTranslated: Boolean!
+	uploader: String
+	releaseInfo: String
+	synced: Boolean!
+	downloadedAt: DateTime!
+}
+
+input FacetScoringPersonaSelectionInput {
+	scope: ContentScopeValue!
+	persona: ScoringPersonaValue
+	inheritGlobal: Boolean!
+}
+
+type FacetScoringPersonaSelectionPayload {
+	scope: ContentScopeValue!
+	overridePersona: ScoringPersonaValue
+	effectivePersona: ScoringPersonaValue!
+	inheritsGlobal: Boolean!
+}
+
+input FinalizeExternalImportInput {
+	sonarr: ExternalImportConnectionInput
+	radarr: ExternalImportConnectionInput
+	monitorWarmupSessionId: ID
+	selectedMoviesPaths: [String!]!
+	selectedSeriesPaths: [String!]!
+	selectedAnimePaths: [String!]!
+}
+
+type FinalizeExternalImportPayload {
+	finalized: Boolean!
+	monitorWarmupSessionId: ID!
+}
+
+input FixTitleMatchInput {
+	titleId: ID!
+	tvdbId: String!
+}
+
+type FixTitleMatchPayload {
+	title: TitlePayload!
+	hydrated: Boolean!
+	libraryScan: LibraryScanSummaryPayload
+	warnings: [String!]!
+}
+
+type ForceGrabPendingReleasePayload {
+	id: ID!
+	grabbed: Boolean!
+}
+
+type GeneralSettingsPayload {
+	keepHistoryForever: Boolean!
+	historyRetentionDays: Int!
+	pluginHttpCaBundlePem: String!
+	pluginHttpTrustedCertificates: [PluginHttpTrustedCertificatePayload!]!
+}
+
+type IgnorePendingImportPayload {
+	id: ID!
+	status: PendingImportStatusValue!
+}
+
+input IgnoreTrackedDownloadInput {
+	clientId: ID
+	clientType: String!
+	downloadClientItemId: String!
+}
+
+enum ImportDecisionValue {
+	imported
+	rejected
+	skipped
+	conflict
+	unmatched
+	failed
+}
+
+enum ImportErrorCodeValue {
+	file_not_found
+	episode_not_found
+	episode_lookup_failed
+	source_job_failed
+	policy_mismatch
+	io_failed
+	permission_denied
+	disk_full
+	unknown
+}
+
+type ImportRecordPayload {
+	id: ID!
+	sourceSystem: String!
+	sourceRef: String!
+	sourceTitle: String
+	facet: MediaFacetValue
+	importType: ImportTypeValue!
+	status: ImportStatusValue!
+	errorMessage: String
+	decision: ImportDecisionValue
+	skipReason: ImportSkipReasonValue
+	titleId: ID
+	sourcePath: String
+	destPath: String
+	startedAt: DateTime
+	finishedAt: DateTime
+	createdAt: DateTime!
+}
+
+type ImportResultPayload {
+	importId: ID!
+	decision: ImportDecisionValue!
+	skipReason: ImportSkipReasonValue
+	titleId: ID
+	sourcePath: String!
+	destPath: String
+	fileSizeBytes: Long
+	linkType: String
+	errorMessage: String
+}
+
+enum ImportSkipReasonValue {
+	already_imported
+	duplicate_file
+	post_download_rule_blocked
+	policy_mismatch
+	unresolved_identity
+	unparseable_episode
+	no_video_files
+	disk_full
+	permission_denied
+	password_required
+}
+
+enum ImportStatusValue {
+	pending
+	running
+	processing
+	completed
+	failed
+	skipped
+}
+
+enum ImportTypeValue {
+	movie_download
+	series_download
+	manual_import
+	rename_preview
+	rename_apply_title
+	rename_apply_facet
+	rename_apply_result
+	rename_io_failed
+	rename_move
+	rename_stale_plan
+}
+
+"""
+API key supplied by the user for a grouped Prowlarr import candidate whose
+key was masked or conflicted in Sonarr/Radarr, or for another indexer
+whose key could not be retrieved automatically.
+"""
+input IndexerApiKeyOverrideInput {
+	dedupKey: String!
+	apiKey: String!
+}
+
+type IndexerConfigPayload {
+	id: ID!
+	name: String!
+	providerType: String!
+	baseUrl: String!
+	hasApiKey: Boolean!
+	isManaged: Boolean!
+	managedParentConfigId: ID
+	supportsManagedChildrenSync: Boolean!
+	storedSecretKeys: [String!]!
+	rateLimitSeconds: Int
+	rateLimitBurst: Int
+	disabledUntil: DateTime
+	isEnabled: Boolean!
+	enableInteractiveSearch: Boolean!
+	enableAutoSearch: Boolean!
+	lastHealthStatus: String
+	lastErrorAt: DateTime
+	lastQueryAt: DateTime
+	config: [ProviderConfigValuePayload!]!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type IndexerConfigSyncPayload {
+	parentConfigId: ID!
+	createdIds: [ID!]!
+	updatedIds: [ID!]!
+	deletedIds: [ID!]!
+}
+
+type IndexerQueryStatsPayload {
+	indexerId: ID!
+	indexerName: String!
+	queriesLast24H: Int!
+	successfulLast24H: Int!
+	failedLast24H: Int!
+	lastQueryAt: DateTime
+	apiCurrent: Int
+	apiMax: Int
+	grabCurrent: Int
+	grabMax: Int
+}
+
+input IndexerRoutingEntryInput {
+	indexerId: ID!
+	enabled: Boolean!
+	categories: [String!]!
+	priority: Int!
+}
+
+type IndexerRoutingEntryPayload {
+	indexerId: ID!
+	enabled: Boolean!
+	categories: [String!]!
+	priority: Int!
+}
+
+type IndexerSearchResultPayload {
+	source: String!
+	title: String!
+	link: String
+	downloadUrl: String
+	sourceKind: DownloadSourceKindValue
+	sizeBytes: Long
+	publishedAt: DateTime
+	thumbsUp: Int
+	thumbsDown: Int
+	parsedRelease: ParsedReleasePayload
+	qualityProfileDecision: QualityProfileDecisionPayload
+	seeders: Int
+	peers: Int
+	infoHash: String
+	freeleech: Boolean
+	downloadVolumeFactor: Float
+	candidateToken: String
+	queueScope: QueueDownloadScopePayload
+	autoEligible: Boolean
+	autoDecisionCode: String
+	autoDecisionSummary: String
+}
+
+"""
+A scalar that can represent any JSON value.
+"""
+scalar JSON
+
+type JellyfinServerUserPayload {
+	id: String!
+	username: String!
+	displayName: String
+	avatarUrl: String
+}
+
+enum JobCategoryValue {
+	library
+	acquisition
+	maintenance
+	subtitles
+	system
+}
+
+type JobDefinitionPayload {
+	key: JobKeyValue!
+	displayName: String!
+	description: String!
+	category: JobCategoryValue!
+	section: JobSectionValue!
+	manualTriggerAllowed: Boolean!
+	usesLibraryScanProgress: Boolean!
+	schedule: JobScheduleInfoPayload!
+}
+
+enum JobKeyValue {
+	library_scan_movies
+	library_scan_series
+	library_scan_anime
+	background_library_refresh_movies
+	background_library_refresh_series
+	background_library_refresh_anime
+	rss_sync
+	subtitle_search
+	metadata_refresh
+	plugin_registry_refresh
+	housekeeping
+	health_checks
+	auto_backup
+	prowlarr_sync
+	wanted_sync
+	pending_release_processing
+	staged_nzb_prune
+	title_image_cache_refresh
+	title_deletion
+}
+
+type JobRunPayload {
+	id: ID!
+	jobKey: JobKeyValue!
+	displayName: String!
+	category: JobCategoryValue!
+	section: JobSectionValue!
+	status: JobRunStatusValue!
+	triggerSource: JobTriggerSourceValue!
+	startedAt: DateTime!
+	completedAt: DateTime
+	summaryJson: String
+	summaryText: String
+	errorText: String
+	progressJson: String
+	libraryScanProgress: LibraryScanProgressPayload
+}
+
+enum JobRunStatusValue {
+	queued
+	discovering
+	running
+	completed
+	warning
+	failed
+}
+
+type JobScheduleInfoPayload {
+	kind: JobScheduleKindValue!
+	description: String!
+	intervalSeconds: Int
+	initialDelaySeconds: Int
+	nextRunAt: DateTime
+}
+
+enum JobScheduleKindValue {
+	manual
+	interval
+	startup_and_interval
+	daily_at_time
+}
+
+enum JobSectionValue {
+	primary
+	maintenance
+}
+
+enum JobTriggerSourceValue {
+	manual
+	scheduled_startup
+	scheduled_interval
+	scheduled_daily
+	system_internal
+}
+
+type LibraryPathsPayload {
+	moviePath: String!
+	seriesPath: String!
+	animePath: String!
+}
+
+type LibraryPayload {
+	id: ID!
+	facet: MediaFacetValue!
+	name: String!
+	slug: String!
+	isDefault: Boolean!
+	roots: [LibraryRootPayload!]!
+	qualityProfileId: ID!
+	requestQualityProfileIds: [ID!]!
+	requestQualityProfileDefaultId: ID!
+	settings: LibrarySettingsPayload!
+}
+
+input LibraryPermissionGrantInput {
+	libraryId: ID!
+	permissions: [LibraryPermissionValue!]!
+}
+
+enum LibraryPermissionValue {
+	view
+	manageTitles
+	resolveImports
+	manageLibrary
+	request
+	autoApproveRequests
+}
+
+type LibraryRootPayload {
+	id: ID!
+	path: String!
+	isDefault: Boolean!
+}
+
+enum LibraryScanModeValue {
+	full
+	additive
+}
+
+type LibraryScanPhaseProgressPayload {
+	total: Int!
+	completed: Int!
+	failed: Int!
+}
+
+type LibraryScanProgressPayload {
+	sessionId: ID!
+	facet: MediaFacetValue!
+	libraryId: ID
+	mode: LibraryScanModeValue!
+	status: LibraryScanStatusValue!
+	startedAt: DateTime!
+	updatedAt: DateTime!
+	foundTitles: Int!
+	titleMatchTotalKnown: Boolean!
+	titleMatchProgress: LibraryScanPhaseProgressPayload!
+	hydrationTotalKnown: Boolean!
+	hydrationProgress: LibraryScanPhaseProgressPayload!
+	mediaAnalysisTotalKnown: Boolean!
+	mediaAnalysisProgress: LibraryScanPhaseProgressPayload!
+	metadataTotalKnown: Boolean!
+	fileTotalKnown: Boolean!
+	metadataProgress: LibraryScanPhaseProgressPayload!
+	fileProgress: LibraryScanPhaseProgressPayload!
+	summary: LibraryScanSummaryPayload
+}
+
+enum LibraryScanStatusValue {
+	discovering
+	running
+	completed
+	canceled
+	warning
+	failed
+}
+
+type LibraryScanSummaryPayload {
+	scanned: Int!
+	matched: Int!
+	imported: Int!
+	skipped: Int!
+	unmatched: Int!
+}
+
+input LibrarySettingsInput {
+	requiredAudioLanguages: [String!]
+	qualityProfileId: ID
+	requestQualityProfileIds: [ID!]
+	scoringPersona: ScoringPersonaValue
+	fillerPolicy: String
+	recapPolicy: String
+	monitorSpecials: Boolean
+	interSeasonMovies: Boolean
+	monitorFillerMovies: Boolean
+	nfoWriteOnImport: Boolean
+	plexmatchWriteOnImport: Boolean
+	importMode: String
+	indexerRouting: [IndexerRoutingEntryInput!]
+	downloadClientRouting: [DownloadClientRoutingEntryInput!]
+}
+
+type LibrarySettingsPayload {
+	requiredAudioLanguagesOverride: [String!]
+	requiredAudioLanguages: [String!]!
+	qualityProfileIdOverride: ID
+	qualityProfileId: ID!
+	requestQualityProfileIdsOverride: [ID!]
+	requestQualityProfileIds: [ID!]!
+	requestQualityProfileDefaultId: ID!
+	scoringPersonaOverride: ScoringPersonaValue
+	scoringPersona: ScoringPersonaValue!
+	fillerPolicyOverride: String
+	fillerPolicy: String
+	recapPolicyOverride: String
+	recapPolicy: String
+	monitorSpecialsOverride: Boolean
+	monitorSpecials: Boolean
+	interSeasonMoviesOverride: Boolean
+	interSeasonMovies: Boolean
+	monitorFillerMoviesOverride: Boolean
+	monitorFillerMovies: Boolean
+	nfoWriteOnImportOverride: Boolean
+	nfoWriteOnImport: Boolean!
+	plexmatchWriteOnImportOverride: Boolean
+	plexmatchWriteOnImport: Boolean
+	importModeOverride: String
+	importMode: String!
+	indexerRoutingOverride: [IndexerRoutingEntryPayload!]
+	downloadClientRoutingOverride: [DownloadClientRoutingEntryPayload!]
+}
+
+input LinkJellyfinAccountInput {
+	connectionId: ID!
+	username: String!
+	password: String!
+}
+
+input LinkPlexAccountInput {
+	connectionId: ID!
+	plexAuthToken: String!
+}
+
+type LinkedAccountPayload {
+	id: ID!
+	userId: ID!
+	provider: ExternalAccountProviderValue!
+	connectionId: ID!
+	externalUserId: String
+	username: String!
+	displayName: String
+	avatarUrl: String
+	status: ExternalAccountStatusValue!
+	verifiedAt: DateTime
+	lastLoginAt: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+input LoginInput {
+	username: String!
+	password: String!
+	totpCode: String
+}
+
+type LoginMfaEnrollmentCompletePayload {
+	status: TotpStatusPayload!
+	recoveryCodes: [String!]!
+	login: LoginPayload!
+}
+
+type LoginPayload {
+	token: String!
+	user: UserPayload!
+	expiresAt: DateTime!
+	mfaVerifiedUntil: DateTime
+	mfaEnrollmentRequired: Boolean!
+}
+
+input LoginWithJellyfinInput {
+	connectionId: ID!
+	username: String!
+	password: String!
+	totpCode: String
+	persistSession: Boolean
+}
+
+input LoginWithPlexInput {
+	connectionId: ID!
+	plexAuthToken: String!
+	persistSession: Boolean
+}
+
+scalar Long
+
+input ManualImportFileMappingInput {
+	filePath: String!
+	episodeId: ID
+	seriesMovieLinkId: ID
+	quality: String
+}
+
+type ManualImportFilePreviewPayload {
+	filePath: String!
+	fileName: String!
+	sizeBytes: Long!
+	quality: String
+	parsedSeason: Int
+	parsedEpisodes: [Int!]!
+	suggestedEpisodeId: ID
+	suggestedEpisodeLabel: String
+}
+
+type ManualImportPreviewPayload {
+	files: [ManualImportFilePreviewPayload!]!
+	availableEpisodes: [EpisodePayload!]!
+	availableSeriesMovies: [ManualImportSeriesMovieTargetPayload!]!
+}
+
+type ManualImportSeriesMovieTargetPayload {
+	seriesMovieLinkId: String!
+	movieTitle: String!
+	year: Int
+	runtimeMinutes: Int
+}
+
+type ManualPluginPreviewPayload {
+	githubRepoUrl: String!
+	plugin: RegistryPluginPayload!
+}
+
+input ManualPluginRepoInput {
+	githubRepoUrl: String!
+}
+
+input ManualPluginUploadInput {
+	fileName: String!
+	wasmBase64: String!
+	acknowledgeRisk: Boolean!
+}
+
+input MarkTrackedDownloadFailedInput {
+	clientId: ID
+	clientType: String!
+	downloadClientItemId: String!
+	skipReacquire: Boolean
+}
+
+enum MediaFacetValue {
+	movie
+	series
+	anime
+}
+
+input MediaRenameApplyInput {
+	facet: MediaFacetValue!
+	titleId: ID!
+	fingerprint: String!
+	idempotencyKey: String
+}
+
+type MediaRenameApplyItemPayload {
+	collectionId: ID
+	mediaFileId: ID
+	seriesMovieLinkIds: [ID!]!
+	currentPath: String!
+	proposedPath: String
+	finalPath: String
+	writeAction: String!
+	status: String!
+	reasonCode: String!
+	errorMessage: String
+}
+
+type MediaRenameApplyPayload {
+	planFingerprint: String!
+	total: Int!
+	applied: Int!
+	skipped: Int!
+	failed: Int!
+	items: [MediaRenameApplyItemPayload!]!
+}
+
+input MediaRenameBulkApplyInput {
+	facet: MediaFacetValue!
+	fingerprint: String!
+	idempotencyKey: String
+}
+
+type MediaRenamePlanItemPayload {
+	collectionId: ID
+	mediaFileId: ID
+	seriesMovieLinkIds: [ID!]!
+	currentPath: String!
+	proposedPath: String
+	normalizedFilename: String
+	collision: Boolean!
+	reasonCode: String!
+	writeAction: String!
+	sourceSizeBytes: Long
+	sourceMtimeUnixMs: String
+}
+
+type MediaRenamePlanPayload {
+	facet: MediaFacetValue!
+	titleId: ID
+	template: String!
+	collisionPolicy: String!
+	missingMetadataPolicy: String!
+	fingerprint: String!
+	total: Int!
+	renamable: Int!
+	noop: Int!
+	conflicts: Int!
+	errors: Int!
+	items: [MediaRenamePlanItemPayload!]!
+}
+
+input MediaRenamePreviewInput {
+	facet: MediaFacetValue!
+	titleId: ID
+	dryRun: Boolean
+}
+
+type MediaRequestActionPayload {
+	accepted: Boolean!
+}
+
+type MediaRequestChangedPayload {
+	sequence: Long!
+	eventId: ID!
+	occurredAt: DateTime!
+	eventType: DomainEventTypeValue!
+	requestId: ID!
+	libraryId: ID!
+	facet: MediaFacetValue!
+	titleName: String!
+	createdTitleId: ID
+	requestedQualityProfileId: ID
+	requestedQualityProfileName: String
+	requestedMonitorType: String
+	approvedQualityProfileId: ID
+	approvedQualityProfileName: String
+}
+
+type MediaRequestCountsPayload {
+	movie: Int!
+	series: Int!
+	anime: Int!
+}
+
+type MediaRequestPayload {
+	id: ID!
+	libraryId: ID!
+	facet: MediaFacetValue!
+	status: MediaRequestStatusValue!
+	identityFingerprint: String!
+	title: String!
+	sortTitle: String
+	slug: String
+	posterUrl: String
+	year: Int
+	overview: String
+	runtimeMinutes: Int
+	language: String
+	contentStatus: String
+	requestedQualityProfileId: ID
+	requestedQualityProfileName: String
+	requestedMonitorType: String
+	resolvedByUserId: ID
+	resolvedAt: DateTime
+	createdTitleId: ID
+	approvedQualityProfileId: ID
+	approvedQualityProfileName: String
+	externalIds: [ExternalIdPayload!]!
+	requesters: [MediaRequestRequesterPayload!]!
+	createdByUserId: ID!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type MediaRequestRequesterPayload {
+	userId: ID!
+	username: String!
+	avatarUrl: String
+	requestedAt: DateTime!
+}
+
+enum MediaRequestStatusValue {
+	pending
+	approved
+	rejected
+	canceled
+}
+
+type MediaServerConnectionPayload {
+	id: ID!
+	provider: MediaServerProviderValue!
+	displayName: String!
+	baseUrl: String!
+	enabled: Boolean!
+	loginEnabled: Boolean!
+	linkingEnabled: Boolean!
+	autoAddEnabled: Boolean!
+	defaultAppPermissions: [AppPermissionValue!]!
+	defaultLibraryGrants: [MediaServerDefaultLibraryGrantPayload!]!
+	machineIdPresent: Boolean!
+	apiKeyPresent: Boolean!
+	pathMappings: [MediaServerPathMappingPayload!]!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+input MediaServerDefaultLibraryGrantInput {
+	libraryId: ID!
+	permissions: [LibraryPermissionValue!]!
+}
+
+type MediaServerDefaultLibraryGrantPayload {
+	libraryId: ID!
+	permissions: [LibraryPermissionValue!]!
+}
+
+input MediaServerPathMappingInput {
+	sourcePath: String!
+	destinationPath: String!
+}
+
+type MediaServerPathMappingPayload {
+	sourcePath: String!
+	destinationPath: String!
+}
+
+enum MediaServerProviderValue {
+	jellyfin
+	plex
+	emby
+}
+
+type MediaServerUserGroupPayload {
+	connectionId: ID!
+	connectionName: String!
+	provider: ExternalAccountProviderValue!
+	status: MediaServerUserGroupStatusValue!
+	errorMessage: String
+	users: [MediaServerUserPayload!]!
+}
+
+enum MediaServerUserGroupStatusValue {
+	ready
+	missing_credentials
+	error
+}
+
+type MediaServerUserPayload {
+	id: String!
+	username: String!
+	displayName: String
+	avatarUrl: String
+}
+
+type MediaSettingsPayload {
+	scope: ContentScopeValue!
+	libraryPath: String!
+	rootFolders: [RootFolderPayload!]!
+	requiredAudioLanguages: [String!]!
+	folderTemplate: String!
+	renameEnabled: Boolean!
+	renameTemplate: String!
+	renameCollisionPolicy: String!
+	renameMissingMetadataPolicy: String!
+	fillerPolicy: String
+	recapPolicy: String
+	monitorSpecials: Boolean
+	interSeasonMovies: Boolean
+	monitorFillerMovies: Boolean
+	nfoWriteOnImport: Boolean!
+	plexmatchWriteOnImport: Boolean
+	importMode: String!
+}
+
+type MetadataEpisodePayload {
+	tvdbId: String!
+	episodeNumber: Int!
+	seasonNumber: Int!
+	name: String!
+	aired: Date!
+	runtimeMinutes: Int!
+	isFiller: Boolean!
+	imageUrl: String!
+}
+
+input MetadataMovieInput {
+	tvdbId: String!
+	language: String
+}
+
+type MetadataMoviePayload {
+	tvdbId: String!
+	name: String!
+	slug: String!
+	year: Int
+	status: String!
+	overview: String!
+	posterUrl: String!
+	language: String!
+	runtimeMinutes: Int!
+	sortTitle: String!
+	imdbId: String!
+	genres: [String!]!
+	studio: String!
+	tmdbReleaseDate: Date
+}
+
+type MetadataSearchItemPayload {
+	tvdbId: String!
+	name: String!
+	imdbId: String
+	slug: String
+	type: String
+	year: Int
+	status: String
+	overview: String
+	popularity: Float
+	posterUrl: String
+	language: String
+	runtimeMinutes: Int
+	sortTitle: String
+}
+
+type MetadataSearchMultiPayload {
+	movies: [MetadataSearchItemPayload!]!
+	series: [MetadataSearchItemPayload!]!
+	anime: [MetadataSearchItemPayload!]!
+}
+
+type MetadataSeasonPayload {
+	tvdbId: String!
+	number: Int!
+	label: String!
+	episodeType: String!
+}
+
+input MetadataSeriesInput {
+	tvdbId: String!
+	includeEpisodes: Boolean
+	language: String
+}
+
+type MetadataSeriesPayload {
+	tvdbId: String!
+	name: String!
+	sortName: String!
+	slug: String!
+	year: Int
+	status: String!
+	firstAired: Date!
+	overview: String!
+	network: String!
+	runtimeMinutes: Int!
+	posterUrl: String!
+	country: String!
+	genres: [String!]!
+	aliases: [String!]!
+	seasons: [MetadataSeasonPayload!]!
+	episodes: [MetadataEpisodePayload!]!
+}
+
+enum MonitorTypeValue {
+	monitored
+	unmonitored
+	futureEpisodes
+	missingAndFutureEpisodes
+	allEpisodes
+	none
+}
+
+type MovieEntityPayload {
+	id: ID!
+	title: String!
+	sortTitle: String
+	slug: String
+	year: Int
+	overview: String
+	posterUrl: String
+	backgroundUrl: String
+	language: String
+	runtimeMinutes: Int
+	contentStatus: String
+	genres: [String!]!
+	studio: String
+	digitalReleaseDate: Date
+	imdbId: String
+	tvdbId: String
+	tmdbId: String
+	malId: String
+	anidbId: String
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type MutationRoot {
+	addTitle(input: AddTitleInput!): AddTitleResult!
+	addTitleAndQueueDownload(input: AddTitleInput!): AddTitleResult!
+	updateTitle(input: UpdateTitleInput!): TitlePayload!
+	setPrimaryMovieFile(input: SetPrimaryMovieFileInput!): TitlePayload!
+	fixTitleMatch(input: FixTitleMatchInput!): FixTitleMatchPayload!
+	deleteTitle(input: DeleteTitleInput!): DeleteTitlePayload!
+	deleteTitles(input: DeleteTitlesInput!): DeleteTitlesPayload!
+	clearTitleReleaseBlocklistEntry(id: ID!): ClearTitleReleaseBlocklistEntryPayload!
+	setTitleMonitored(input: SetTitleMonitoredInput!): TitlePayload!
+	setCollectionMonitored(input: SetCollectionMonitoredInput!): SetCollectionMonitoredPayload!
+	setEpisodeMonitored(input: SetEpisodeMonitoredInput!): EpisodePayload!
+	setSeriesMovieMonitored(input: SetSeriesMovieMonitoredInput!): SeriesMovieLinkPayload!
+	queueExistingTitleDownload(input: QueueDownloadInput!): QueueDownloadPayload!
+	queueBestRelease(input: QueueBestReleaseInput!): QueueDownloadPayload!
+	queueManualImport(input: QueueManualImportInput!): DownloadQueueActionPayload!
+	queuePathManualImport(input: QueuePathManualImportInput!): DownloadQueueActionPayload!
+	"""
+	Retry a previously failed import, optionally with an archive password.
+	"""
+	retryImport(input: RetryImportInput!): ImportResultPayload!
+	ignoreTrackedDownload(input: IgnoreTrackedDownloadInput!): DownloadQueueActionPayload!
+	markTrackedDownloadFailed(input: MarkTrackedDownloadFailedInput!): DownloadQueueActionPayload!
+	assignTrackedDownloadTitle(input: AssignTrackedDownloadTitleInput!): DownloadQueueActionPayload!
+	pauseDownload(input: PauseDownloadInput!): DownloadQueueActionPayload!
+	resumeDownload(input: ResumeDownloadInput!): DownloadQueueActionPayload!
+	deleteDownload(input: DeleteDownloadInput!): DownloadQueueActionPayload!
+	triggerJob(jobKey: JobKeyValue!): JobRunPayload!
+	createIndexerConfig(input: CreateIndexerConfigInput!): IndexerConfigPayload!
+	updateIndexerConfig(input: UpdateIndexerConfigInput!): IndexerConfigPayload!
+	deleteIndexerConfig(id: ID!): DeleteIndexerConfigPayload!
+	createDownloadClientConfig(input: CreateDownloadClientConfigInput!): DownloadClientConfigPayload!
+	updateDownloadClientConfig(input: UpdateDownloadClientConfigInput!): DownloadClientConfigPayload!
+	deleteDownloadClientConfig(id: ID!): DeleteDownloadClientConfigPayload!
+	reorderDownloadClientConfigs(input: ReorderDownloadClientConfigsInput!): ReorderDownloadClientConfigsPayload!
+	testDownloadClientConnection(input: TestDownloadClientConnectionInput!): ProviderValidationPayload!
+	createSubtitleProviderConfig(input: CreateSubtitleProviderConfigInput!): SubtitleProviderConfigPayload!
+	updateSubtitleProviderConfig(input: UpdateSubtitleProviderConfigInput!): SubtitleProviderConfigPayload!
+	deleteSubtitleProviderConfig(id: ID!): DeleteSubtitleProviderConfigPayload!
+	testSubtitleProviderConnection(input: TestSubtitleProviderConnectionInput!): ProviderValidationPayload!
+	testIndexerConnection(input: TestIndexerConnectionInput!): ProviderValidationPayload!
+	syncIndexerConfig(id: ID!): IndexerConfigSyncPayload!
+	triggerRssSync: RssSyncReportPayload!
+	updateSubtitleSettings(input: UpdateSubtitleSettingsInput!): SubtitleSettingsPayload!
+	updateAcquisitionSettings(input: UpdateAcquisitionSettingsInput!): AcquisitionSettingsPayload!
+	updateGeneralSettings(input: UpdateGeneralSettingsInput!): GeneralSettingsPayload!
+	clearTitleImageCache: ClearTitleImageCachePayload!
+	updateRecycleBinSettings(input: UpdateRecycleBinSettingsInput!): RecycleBinSettingsPayload!
+	updateAutoBackupSettings(input: UpdateAutoBackupSettingsInput!): AutoBackupSettingsPayload!
+	updateBackupSettings(input: UpdateBackupSettingsInput!): BackupSettingsPayload!
+	acknowledgeAutoBackupDisabledMissingKeyNotice: AutoBackupSettingsPayload!
+	updateSecuritySettings(input: UpdateSecuritySettingsInput!): SecuritySettingsPayload!
+	createMediaServerConnection(input: CreateMediaServerConnectionInput!): MediaServerConnectionPayload!
+	updateMediaServerConnection(input: UpdateMediaServerConnectionInput!): MediaServerConnectionPayload!
+	deleteMediaServerConnection(id: ID!): DeleteMediaServerConnectionPayload!
+	testMediaServerConnection(input: TestMediaServerConnectionInput!): ProviderValidationPayload!
+	discoverPlexMediaServers(plexAuthToken: String!): [PlexServerDiscoveryPayload!]!
+	upsertDelayProfile(input: DelayProfileInput!): DelayProfilePayload!
+	deleteDelayProfile(id: ID!): DelayProfileDeletionPayload!
+	updateMediaSettings(input: UpdateMediaSettingsInput!): MediaSettingsPayload!
+	updateLibraryPaths(input: UpdateLibraryPathsInput!): LibraryPathsPayload!
+	updateServiceSettings(input: UpdateServiceSettingsInput!): ServiceSettingsPayload!
+	saveQualityProfileSettings(input: SaveQualityProfileSettingsInput!): QualityProfileSettingsPayload!
+	updateDownloadClientRouting(input: UpdateDownloadClientRoutingInput!): [DownloadClientRoutingEntryPayload!]!
+	updateIndexerRouting(input: UpdateIndexerRoutingInput!): [IndexerRoutingEntryPayload!]!
+	deleteQualityProfile(id: ID!): QualityProfileSettingsPayload!
+	webauthnRegisterStart: WebauthnChallengePayload!
+	webauthnRegisterComplete(input: WebauthnRegisterCompleteInput!): PasskeySummaryPayload!
+	totpEnrollmentStart: TotpEnrollmentStartPayload!
+	totpEnrollmentComplete(input: TotpEnrollmentCompleteInput!): TotpEnrollmentCompletePayload!
+	completeLoginMfaEnrollment(input: TotpEnrollmentCompleteInput!): LoginMfaEnrollmentCompletePayload!
+	mfaVerifyStepUp(input: TotpVerifyInput!): LoginPayload!
+	totpDisable(input: TotpVerifyInput!): TotpStatusPayload!
+	totpRegenerateRecoveryCodes(input: TotpVerifyInput!): TotpEnrollmentCompletePayload!
+	webauthnAuthenticateStart(username: String): WebauthnChallengePayload!
+	webauthnAuthenticateComplete(input: WebauthnCompleteInput!): LoginPayload!
+	deleteMyPasskey(id: ID!): DeleteMyPasskeyPayload!
+	revokeMyOauthApp(grantId: ID!): RevokeMyOauthAppPayload!
+	login(input: LoginInput!): LoginPayload!
+	"""
+	Mark the setup wizard as complete.
+	"""
+	completeSetup: CompleteSetupPayload!
+	createUser(input: CreateUserInput!): UserPayload!
+	setUserPassword(input: SetUserPasswordInput!): UserPayload!
+	setUserAppPermissions(input: SetUserAppPermissionsInput!): UserPayload!
+	setUserLibraryPermissions(input: SetUserLibraryPermissionsInput!): UserPayload!
+	deleteUser(id: ID!): DeleteUserPayload!
+	resetUserMfa(id: ID!): UserPayload!
+	createExternalAccountInvite(input: CreateExternalAccountInviteInput!): LinkedAccountPayload!
+	linkPlexAccount(input: LinkPlexAccountInput!): LinkedAccountPayload!
+	linkJellyfinAccount(input: LinkJellyfinAccountInput!): LinkedAccountPayload!
+	unlinkExternalAccount(linkedAccountId: ID!): UnlinkExternalAccountPayload!
+	loginWithPlex(input: LoginWithPlexInput!): LoginPayload!
+	loginWithJellyfin(input: LoginWithJellyfinInput!): LoginPayload!
+	createLibrary(input: CreateLibraryInput!): LibraryPayload!
+	updateLibrary(input: UpdateLibraryInput!): LibraryPayload!
+	deleteLibrary(id: ID!): DeleteLibraryPayload!
+	scanLibrary(input: ScanLibraryInput!): LibraryScanProgressPayload!
+	scanTitleLibrary(titleId: ID!): LibraryScanSummaryPayload!
+	cancelLibraryScan(sessionId: ID!): CancelLibraryScanPayload!
+	resolvePendingImport(input: ResolvePendingImportInput!): ResolvePendingImportPayload!
+	bindPendingImport(input: BindPendingImportInput!): ResolvePendingImportPayload!
+	ignorePendingImport(pendingImportId: ID!): IgnorePendingImportPayload!
+	applyMediaRename(input: MediaRenameApplyInput!): MediaRenameApplyPayload!
+	deleteMediaFile(input: DeleteMediaFileInput!): DeleteMediaFilePayload!
+	applyMediaRenameBulk(input: MediaRenameBulkApplyInput!): MediaRenameApplyPayload!
+	rehydrateAllMetadata(input: RehydrateAllMetadataInput!): RehydrateAllMetadataPayload!
+	submitMediaRequest(input: SubmitMediaRequestInput!): SubmitMediaRequestPayload!
+	approveMediaRequest(input: ApproveMediaRequestInput!): ApproveMediaRequestPayload!
+	dismissMediaRequest(requestId: ID!): MediaRequestActionPayload!
+	updateMyMediaRequest(input: UpdateMediaRequestInput!): MediaRequestPayload!
+	cancelMyMediaRequest(requestId: ID!): MediaRequestActionPayload!
+	triggerTitleWantedSearch(input: TriggerTitleWantedSearchInput!): WantedSearchPayload!
+	triggerTitleMismatchRecoverySearch(titleId: ID!): TriggerTitleMismatchRecoverySearchPayload!
+	triggerSeasonWantedSearch(input: TriggerSeasonWantedSearchInput!): WantedSearchPayload!
+	triggerWantedSearch(input: TriggerWantedSearchInput!): WantedSearchPayload!
+	pauseWantedItem(id: ID!): PauseWantedItemPayload!
+	resumeWantedItem(id: ID!): ResumeWantedItemPayload!
+	resetWantedItem(id: ID!): ResetWantedItemPayload!
+	forceGrabPendingRelease(id: ID!): ForceGrabPendingReleasePayload!
+	dismissPendingRelease(id: ID!): DismissPendingReleasePayload!
+	createRuleSet(input: CreateRuleSetInput!): RuleSetPayload!
+	updateRuleSet(input: UpdateRuleSetInput!): RuleSetPayload!
+	deleteRuleSet(id: ID!): DeleteRuleSetPayload!
+	toggleRuleSet(input: ToggleRuleSetInput!): RuleSetPayload!
+	setTitleRequiredAudio(input: SetTitleRequiredAudioInput!): SetTitleRequiredAudioPayload!
+	validateRuleSet(input: ValidateRuleSetInput!): RuleValidationResultPayload!
+	refreshPluginCatalog: [RegistryPluginPayload!]!
+	beginInstallPlugin(pluginId: ID!): PluginInstallProgressPayload!
+	uninstallPlugin(pluginId: ID!): UninstallPluginPayload!
+	togglePlugin(input: TogglePluginInput!): PluginInstallationPayload!
+	beginUpgradePlugin(pluginId: ID!): PluginInstallProgressPayload!
+	inspectManualPluginRepo(input: ManualPluginRepoInput!): ManualPluginPreviewPayload!
+	installManualPlugin(input: ManualPluginRepoInput!): PluginInstallationPayload!
+	installUploadedPlugin(input: ManualPluginUploadInput!): PluginInstallationPayload!
+	createNotificationChannel(input: CreateNotificationChannelInput!): NotificationChannelPayload!
+	updateNotificationChannel(input: UpdateNotificationChannelInput!): NotificationChannelPayload!
+	deleteNotificationChannel(id: ID!): DeleteNotificationChannelPayload!
+	testNotificationChannel(id: ID!): NotificationChannelTestPayload!
+	createNotificationSubscription(input: CreateNotificationSubscriptionInput!): NotificationSubscriptionPayload!
+	updateNotificationSubscription(input: UpdateNotificationSubscriptionInput!): NotificationSubscriptionPayload!
+	deleteNotificationSubscription(id: ID!): DeleteNotificationSubscriptionPayload!
+	createBackup(input: CreateBackupInput!): BackupInfoPayload!
+	prepareBackupDownload(input: PrepareBackupDownloadInput!): BackupDownloadUrlPayload!
+	deleteBackup(input: DeleteBackupInput!): DeleteBackupPayload!
+	inspectRestoreBundle(bundleUpload: Upload!, password: String): RestoreInspectPayload!
+	applyRestoreBundle(uploadId: ID!, password: String): RestoreApplyPayload!
+	"""
+	Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
+	"""
+	previewExternalImport(input: PreviewExternalImportInput!): ExternalImportPreviewPayload!
+	startExternalImportMonitorWarmup(input: StartExternalImportMonitorWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
+	cancelExternalImportMonitorWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
+	finalizeExternalImport(input: FinalizeExternalImportInput!): FinalizeExternalImportPayload!
+	"""
+	Re-connect to Sonarr/Radarr, fetch configs, and create selected items in Scryer.
+	"""
+	executeExternalImport(input: ExecuteExternalImportInput!): ExternalImportResultPayload!
+	createPostProcessingScript(input: CreatePostProcessingScriptInput!): PostProcessingScriptPayload!
+	updatePostProcessingScript(input: UpdatePostProcessingScriptInput!): PostProcessingScriptPayload!
+	deletePostProcessingScript(id: ID!): DeletePostProcessingScriptPayload!
+	togglePostProcessingScript(id: ID!, inlineShellAcknowledged: Boolean): PostProcessingScriptPayload!
+	"""
+	Search for subtitles for a media file in a given language.
+	"""
+	searchSubtitles(input: SearchSubtitlesInput!): [SubtitleSearchResult!]!
+	"""
+	Download a specific subtitle and save to disk next to the video.
+	"""
+	downloadSubtitle(input: DownloadSubtitleInput!): DownloadSubtitlePayload!
+	"""
+	Delete an external subtitle file and its tracked record.
+	"""
+	deleteExternalSubtitle(input: DeleteExternalSubtitleInput!): DeleteExternalSubtitlePayload!
+	"""
+	Blocklist a downloaded provider-backed subtitle: delete the file and DB record, then add to the blocklist.
+	"""
+	blocklistExternalSubtitle(input: BlocklistExternalSubtitleInput!): BlocklistExternalSubtitlePayload!
+	"""
+	Restore a recycled item back to its original path on disk.
+	"""
+	restoreRecycledItem(id: ID!): RestoreRecycledItemPayload!
+	"""
+	Permanently delete a single recycled item.
+	"""
+	deleteRecycledItem(id: ID!): DeleteRecycledItemPayload!
+	"""
+	Empty recycle bins for the selected libraries. Returns the number of items purged.
+	"""
+	emptyRecycleBin(libraryIds: [ID!]): EmptyRecycleBinPayload!
+}
+
+type NavigationBadgeCountsPayload {
+	pendingImportCounts: PendingImportCountsPayload!
+	pendingMediaRequestCounts: MediaRequestCountsPayload!
+	activityImportCount: Int!
+	pluginUpdateCount: Int!
+}
+
+type NotificationChannelPayload {
+	id: ID!
+	name: String!
+	channelType: String!
+	config: [ProviderConfigValuePayload!]!
+	storedSecretKeys: [String!]!
+	mediaServerConnectionId: ID
+	isEnabled: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type NotificationChannelTestPayload {
+	id: ID!
+	status: String!
+	message: String
+	retryAfterSeconds: Int
+}
+
+type NotificationSubscriptionPayload {
+	id: ID!
+	channelId: ID
+	targetKind: String!
+	targetId: ID!
+	eventType: String!
+	scope: String!
+	scopeId: String
+	isEnabled: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type NotificationTargetPayload {
+	id: ID!
+	targetKind: String!
+	name: String!
+	providerType: String!
+	mediaServerProvider: MediaServerProviderValue
+	mediaServerConnectionId: ID
+	isEnabled: Boolean!
+}
+
+type OauthConnectedAppPayload {
+	grantId: ID!
+	clientId: String!
+	clientName: String!
+	authorizedAt: DateTime!
+	lastUsedAt: DateTime
+}
+
+type ParsedEpisodePayload {
+	season: Int
+	episodeNumbers: [Int!]!
+	absoluteEpisode: Int
+	raw: String
+}
+
+type ParsedReleasePayload {
+	rawTitle: String!
+	normalizedTitle: String!
+	releaseGroup: String
+	languagesAudio: [String!]!
+	languagesSubtitles: [String!]!
+	year: Int
+	quality: String
+	source: String
+	videoCodec: String
+	videoEncoding: String
+	audio: String
+	audioChannels: String
+	isDualAudio: Boolean!
+	isAtmos: Boolean!
+	isDolbyVision: Boolean!
+	detectedHdr: Boolean!
+	fps: Float
+	isProperUpload: Boolean!
+	isRemux: Boolean!
+	isBdDisk: Boolean!
+	isAiEnhanced: Boolean!
+	parserVersion: String!
+	parseConfidence: Float!
+	missingFields: [String!]!
+	parseHints: [String!]!
+	episode: ParsedEpisodePayload
+}
+
+type PasskeySummaryPayload {
+	id: ID!
+	friendlyName: String
+	createdAt: DateTime!
+	lastUsedAt: DateTime
+}
+
+input PauseDownloadInput {
+	clientId: ID
+	downloadClientItemId: String!
+}
+
+type PauseWantedItemPayload {
+	id: ID!
+	paused: Boolean!
+}
+
+type PendingImportBindingFilePreviewPayload {
+	filePath: String!
+	fileName: String!
+	sizeBytes: Long!
+	parsedSeason: Int
+	parsedEpisodes: [Int!]!
+	parsedAbsoluteNumbers: [Int!]!
+	suggestedEpisodeIds: [ID!]!
+}
+
+type PendingImportBindingPreviewPayload {
+	title: TitlePayload!
+	file: PendingImportBindingFilePreviewPayload!
+	availableEpisodes: [EpisodePayload!]!
+}
+
+type PendingImportConnectionPayload {
+	total: Int!
+	items: [PendingImportItemPayload!]!
+}
+
+type PendingImportCountsPayload {
+	movie: Int!
+	series: Int!
+	anime: Int!
+}
+
+type PendingImportItemPayload {
+	id: ID!
+	libraryId: ID!
+	librarySlug: String
+	facet: MediaFacetValue!
+	status: PendingImportStatusValue!
+	titleId: ID
+	titleName: String
+	titleSlug: String
+	displayName: String!
+	path: String!
+	folderPath: String
+	query: String!
+	yearHint: Int
+	reason: String!
+	searchAttempts: [PendingImportSearchAttemptPayload!]!
+}
+
+type PendingImportSearchAttemptPayload {
+	query: String!
+	resultCount: Int!
+	topResults: [String!]!
+	summary: String!
+}
+
+enum PendingImportStatusValue {
+	pending
+	ignored
+}
+
+input PendingReleaseFilterInput {
+	titleId: ID
+	wantedItemId: ID
+	statuses: [PendingReleaseStatusValue!]
+}
+
+type PendingReleasePayload {
+	id: ID!
+	wantedItemId: ID!
+	titleId: ID!
+	releaseTitle: String!
+	releaseUrl: String
+	releaseSizeBytes: Long
+	releaseScore: Int!
+	scoringLogJson: String
+	indexerSource: String
+	addedAt: DateTime!
+	delayUntil: DateTime!
+	status: PendingReleaseStatusValue!
+	title: TitlePayload
+	wantedItem: WantedItemPayload
+}
+
+type PendingReleaseStatusCountPayload {
+	status: PendingReleaseStatusValue!
+	count: Int!
+}
+
+enum PendingReleaseStatusValue {
+	waiting
+	standby
+	processing
+	grabbed
+	superseded
+	expired
+	dismissed
+}
+
+type PendingReleasesPayload {
+	items: [PendingReleasePayload!]!
+	limit: Int!
+	offset: Int!
+	hasMore: Boolean!
+	totalCount: Int!
+}
+
+type PlexServerDiscoveryPayload {
+	id: String!
+	name: String!
+}
+
+type PluginCatalogStatusPayload {
+	refreshState: String!
+	githubAvailable: Boolean!
+	lastCheckedAt: DateTime
+	outageMessage: String
+	blockedActions: [String!]!
+	restoreWarnings: [String!]!
+	lastError: String
+}
+
+type PluginConfigFieldOptionPayload {
+	value: String!
+	label: String!
+}
+
+type PluginConfigFieldPayload {
+	key: String!
+	label: String!
+	fieldType: PluginConfigFieldTypeValue!
+	required: Boolean!
+	defaultValue: String
+	valueSource: PluginConfigValueSourceValue!
+	role: PluginConfigFieldRoleValue
+	hostBinding: String
+	options: [PluginConfigFieldOptionPayload!]!
+	helpText: String
+}
+
+enum PluginConfigFieldRoleValue {
+	connection_url
+}
+
+enum PluginConfigFieldTypeValue {
+	string
+	password
+	multiline
+	bool
+	select
+	number
+}
+
+enum PluginConfigValueSourceValue {
+	user
+	host_binding
+}
+
+type PluginHttpTrustedCertificatePayload {
+	fingerprintSha256: String!
+	pem: String!
+}
+
+enum PluginInstallOperationKindValue {
+	install
+	upgrade
+}
+
+type PluginInstallProgressPayload {
+	pluginId: ID!
+	operationKind: PluginInstallOperationKindValue!
+	state: PluginInstallStateValue!
+	label: String!
+	stepIndex: Int!
+	stepCount: Int!
+	message: String
+	error: String
+}
+
+enum PluginInstallStateValue {
+	downloading
+	verifying
+	installing
+	succeeded
+	failed
+}
+
+type PluginInstallationPayload {
+	id: ID!
+	pluginId: ID!
+	name: String!
+	description: String!
+	version: String!
+	sdkVersion: String!
+	sdkConstraint: String!
+	pluginType: String!
+	providerType: String!
+	isEnabled: Boolean!
+	isBuiltin: Boolean!
+	sourceKind: String!
+	sourceUrl: String
+	publisher: String
+	supportTier: String!
+	docsUrl: String
+	sourceRepo: String
+	manifestUrl: String
+	wasmDigest: String
+	artifactDigest: String
+	installedAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type PostProcessingScriptPayload {
+	id: ID!
+	name: String!
+	description: String!
+	scriptType: String!
+	scriptContent: String!
+	appliedFacets: [String!]!
+	executionMode: String!
+	timeoutSecs: Int!
+	priority: Int!
+	enabled: Boolean!
+	debug: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type PostProcessingScriptRunPayload {
+	id: ID!
+	scriptId: ID!
+	scriptName: String!
+	titleId: ID
+	titleName: String
+	facet: MediaFacetValue
+	filePath: String
+	status: String!
+	exitCode: Int
+	stdoutTail: String
+	stderrTail: String
+	durationMs: Int
+	envPayloadJson: String
+	startedAt: DateTime!
+	completedAt: DateTime
+}
+
+input PrepareBackupDownloadInput {
+	filename: String!
+}
+
+input PreviewExternalImportInput {
+	sonarr: ExternalImportConnectionInput
+	radarr: ExternalImportConnectionInput
+	prowlarr: ExternalImportConnectionInput
+}
+
+input PreviewManualImportInput {
+	clientId: ID
+	downloadClientItemId: String!
+	titleId: ID!
+}
+
+input PreviewManualImportPathInput {
+	path: String!
+	titleId: ID!
+}
+
+enum ProviderCatalogFamilyValue {
+	subtitle
+	notification
+	indexer
+	download_client
+}
+
+input ProviderConfigValueInput {
+	key: String!
+	stringValue: String
+	boolValue: Boolean
+	intValue: Int
+	floatValue: Float
+	secretValue: String
+	clearSecret: Boolean
+}
+
+type ProviderConfigValuePayload {
+	key: String!
+	label: String
+	fieldType: PluginConfigFieldTypeValue
+	required: Boolean!
+	defaultValue: String
+	valueSource: PluginConfigValueSourceValue
+	role: PluginConfigFieldRoleValue
+	hostBinding: String
+	options: [PluginConfigFieldOptionPayload!]!
+	helpText: String
+	stringValue: String
+	boolValue: Boolean
+	intValue: Int
+	floatValue: Float
+	secretStored: Boolean!
+}
+
+type ProviderTypePayload {
+	providerType: String!
+	name: String!
+	configFields: [PluginConfigFieldPayload!]!
+	defaultBaseUrl: String
+	availableHostBindings: [String!]!
+	recommendedFacets: [MediaFacetValue!]!
+	supportedEvents: [String!]!
+	supportsTest: Boolean!
+}
+
+type ProviderValidationPayload {
+	status: String!
+	message: String
+	retryAfterSeconds: Int
+}
+
+input QualityProfileCriteriaInput {
+	qualityTiers: [String!]!
+	archivalQuality: String
+	allowUnknownQuality: Boolean!
+	sourceAllowlist: [String!]!
+	sourceBlocklist: [String!]!
+	videoCodecAllowlist: [String!]!
+	videoCodecBlocklist: [String!]!
+	audioCodecAllowlist: [String!]!
+	audioCodecBlocklist: [String!]!
+	dolbyVisionAllowed: Boolean!
+	detectedHdrAllowed: Boolean!
+	preferRemux: Boolean!
+	allowBdDisk: Boolean!
+	allowUpgrades: Boolean!
+	scoringOverrides: ScoringOverridesInput!
+	cutoffTier: String
+	minScoreToGrab: Int
+}
+
+type QualityProfileCriteriaPayload {
+	qualityTiers: [String!]!
+	archivalQuality: String
+	allowUnknownQuality: Boolean!
+	sourceAllowlist: [String!]!
+	sourceBlocklist: [String!]!
+	videoCodecAllowlist: [String!]!
+	videoCodecBlocklist: [String!]!
+	audioCodecAllowlist: [String!]!
+	audioCodecBlocklist: [String!]!
+	dolbyVisionAllowed: Boolean!
+	detectedHdrAllowed: Boolean!
+	preferRemux: Boolean!
+	allowBdDisk: Boolean!
+	allowUpgrades: Boolean!
+	scoringOverrides: ScoringOverridesPayload!
+	cutoffTier: String
+	minScoreToGrab: Int
+}
+
+type QualityProfileDecisionPayload {
+	allowed: Boolean!
+	blockCodes: [String!]!
+	releaseScore: Int!
+	preferenceScore: Int!
+	scoringLog: [ScoringEntryPayload!]!
+}
+
+input QualityProfileInput {
+	id: ID!
+	name: String!
+	criteria: QualityProfileCriteriaInput!
+}
+
+type QualityProfilePayload {
+	id: ID!
+	name: String!
+	criteria: QualityProfileCriteriaPayload!
+}
+
+input QualityProfileSelectionInput {
+	scope: ContentScopeValue!
+	profileId: ID
+	inheritGlobal: Boolean!
+}
+
+type QualityProfileSelectionPayload {
+	scope: ContentScopeValue!
+	overrideProfileId: ID
+	effectiveProfileId: ID!
+	inheritsGlobal: Boolean!
+}
+
+type QualityProfileSettingsPayload {
+	profiles: [QualityProfilePayload!]!
+	globalProfileId: ID!
+	globalScoringPersona: ScoringPersonaValue!
+	categorySelections: [QualityProfileSelectionPayload!]!
+	categoryPersonaSelections: [FacetScoringPersonaSelectionPayload!]!
+}
+
+type QueryRoot {
+	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
+	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
+	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
+	myMediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
+	librarySettings(libraryId: ID!): LibrarySettingsPayload!
+	titlesByExternalIds(source: String!, values: [String!]!): [TitlePayload!]!
+	title(id: ID!): TitlePayload
+	titleBySlug(facet: MediaFacetValue!, libraryId: ID, librarySlug: String, slug: String!): TitlePayload
+	mediaRenamePreview(input: MediaRenamePreviewInput!): MediaRenamePlanPayload!
+	deleteTitlePreview(titleId: ID!): DeletePreviewPayload!
+	deleteTitlesPreview(input: DeleteTitlesPreviewInput!): DeleteTitlesPreviewPayload!
+	deleteMediaFilePreview(fileId: ID!): DeletePreviewPayload!
+	deleteExternalSubtitlePreview(externalSubtitleId: ID!): DeletePreviewPayload!
+	wantedItem(id: ID!): WantedItemPayload
+	searchReleases(input: SearchReleasesInput!): [IndexerSearchResultPayload!]!
+	titleHistory(filter: TitleHistoryFilterInput!): TitleHistoryPagePayload!
+	titleReleaseBlocklist(titleId: ID!, limit: Int): [TitleReleaseBlocklistEntryPayload!]!
+	activityEvents(limit: Int, offset: Int): [ActivityEventPayload!]!
+	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
+	activeLibraryScans: [LibraryScanProgressPayload!]!
+	libraryScanSession(sessionId: ID!): LibraryScanProgressPayload
+	externalImportMonitorWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	pendingImportCounts: PendingImportCountsPayload!
+	navigationBadgeCounts: NavigationBadgeCountsPayload!
+	pendingImports(facet: MediaFacetValue!, libraryIds: [ID!], status: PendingImportStatusValue!, limit: Int! = 50, offset: Int! = 0): PendingImportConnectionPayload!
+	pendingImportBindingPreview(pendingImportId: ID!): PendingImportBindingPreviewPayload!
+	jobs: [JobDefinitionPayload!]!
+	activeJobRuns: [JobRunPayload!]!
+	jobRuns(jobKey: JobKeyValue!, limit: Int): [JobRunPayload!]!
+	recentJobRuns(limit: Int): [JobRunPayload!]!
+	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+	downloadImport(limit: Int, offset: Int, filter: DownloadImportFilterValue): DownloadImportPagePayload!
+	downloadHistory(limit: Int, offset: Int, filters: [DownloadHistoryFilterValue!], clientIds: [ID!], scryerSubmittedOnly: Boolean, sortKey: DownloadHistorySortKeyValue, sortDirection: SortDirectionValue): DownloadHistoryPagePayload!
+	subtitleSettings: SubtitleSettingsPayload!
+	acquisitionSettings: AcquisitionSettingsPayload!
+	generalSettings: GeneralSettingsPayload!
+	recycleBinSettings: RecycleBinSettingsPayload!
+	autoBackupSettings: AutoBackupSettingsPayload!
+	backupSettings: BackupSettingsPayload!
+	securitySettings: SecuritySettingsPayload!
+	externalAuthRuntimeSettings: ExternalAuthRuntimeSettingsPayload!
+	mediaServerConnections(provider: MediaServerProviderValue): [MediaServerConnectionPayload!]!
+	mediaServerConnection(id: ID!): MediaServerConnectionPayload
+	jellyfinServerUsers(connectionId: ID!, search: String): [JellyfinServerUserPayload!]!
+	mediaServerUsers(search: String): [MediaServerUserGroupPayload!]!
+	authRuntimeState: AuthRuntimeStatePayload!
+	myPasskeys: [PasskeySummaryPayload!]!
+	myTotp: TotpStatusPayload!
+	myOauthApps: [OauthConnectedAppPayload!]!
+	delayProfiles: [DelayProfilePayload!]!
+	mediaSettings(scope: ContentScopeValue!): MediaSettingsPayload!
+	libraryPaths: LibraryPathsPayload!
+	serviceSettings: ServiceSettingsPayload!
+	qualityProfileSettings: QualityProfileSettingsPayload!
+	downloadClientRouting(scope: ContentScopeValue!): [DownloadClientRoutingEntryPayload!]!
+	indexerRouting(scope: ContentScopeValue!): [IndexerRoutingEntryPayload!]!
+	indexers(providerType: String): [IndexerConfigPayload!]!
+	rootFolders(facet: MediaFacetValue!): [RootFolderPayload!]!
+	downloadClientConfigs(clientType: String): [DownloadClientConfigPayload!]!
+	subtitleProviderConfigs(providerType: String): [SubtitleProviderConfigPayload!]!
+	users: [UserPayload!]!
+	systemHealth: SystemHealthPayload!
+	scryerVersion: String!
+	smgVersionCompatibilityNotice: SmgVersionCompatibilityNoticePayload
+	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
+	recycledItems(limit: Int! = 500, offset: Int! = 0, libraryIds: [ID!]): RecycledItemsPayload!
+	backups: [BackupInfoPayload!]!
+	pendingReleases(filter: PendingReleaseFilterInput, limit: Int! = 50, offset: Int! = 0): PendingReleasesPayload!
+	importHistory(limit: Int): [ImportRecordPayload!]!
+	previewManualImport(input: PreviewManualImportInput!): ManualImportPreviewPayload!
+	previewManualImportPath(input: PreviewManualImportPathInput!): ManualImportPreviewPayload!
+	me: UserPayload
+	wantedItems(statuses: [WantedStatusValue!], mediaTypes: [WantedMediaTypeValue!], titleId: ID, libraryIds: [ID!], titleSearch: String, latestDecisionCodes: [String!], limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
+	cutoffUnmetTitles(facet: MediaFacetValue, libraryIds: [ID!]): [CutoffUnmetItemPayload!]!
+	titleAcquisitionDiagnostics(titleId: ID!): TitleAcquisitionDiagnosticsPayload!
+	ruleSets: [RuleSetPayload!]!
+	postProcessingScripts: [PostProcessingScriptPayload!]!
+	postProcessingScriptRuns(scriptId: ID!, limit: Int): [PostProcessingScriptRunPayload!]!
+	plugins: [RegistryPluginPayload!]!
+	pluginCatalogStatus: PluginCatalogStatusPayload!
+	"""
+	List community rule packs from the plugin registry.
+	"""
+	rulePackRegistry: [RulePackRegistryEntryPayload!]!
+	"""
+	Fetch templates from a community rule pack by its registry ID.
+	"""
+	rulePackTemplates(packId: String!): [RulePackTemplatePayload!]!
+	"""
+	Returns all available indexer provider types from loaded plugins,
+	with their config field schemas for dynamic form rendering.
+	"""
+	indexerProviderTypes: [ProviderTypePayload!]!
+	downloadClientProviderTypes: [ProviderTypePayload!]!
+	subtitleProviderTypes: [ProviderTypePayload!]!
+	searchMetadata(query: String!, type: MediaFacetValue!, limit: Int! = 25, language: String! = "eng", year: Int): [MetadataSearchItemPayload!]!
+	searchMetadataMulti(query: String!, limit: Int! = 25, language: String! = "eng"): MetadataSearchMultiPayload!
+	metadataMovie(input: MetadataMovieInput!): MetadataMoviePayload!
+	metadataSeries(input: MetadataSeriesInput!): MetadataSeriesPayload!
+	calendarEpisodes(startDate: Date!, endDate: Date!, libraryIds: [ID!]): [CalendarEpisodePayload!]!
+	notificationChannels: [NotificationChannelPayload!]!
+	notificationTargets: [NotificationTargetPayload!]!
+	notificationSubscriptions: [NotificationSubscriptionPayload!]!
+	notificationProviderTypes: [ProviderTypePayload!]!
+	notificationEventTypes: [String!]!
+	setupStatus: SetupStatusPayload!
+	browsePath(path: String! = "/"): [DirectoryEntryPayload!]!
+	serviceLogs(limit: Int! = 250): ServiceLogsPayload!
+	"""
+	List external subtitles for a title.
+	"""
+	externalSubtitles(titleId: ID!): [ExternalSubtitlePayload!]!
+	"""
+	List external subtitle blocklist entries for a specific media file.
+	"""
+	externalSubtitleBlocklistEntries(mediaFileId: ID!): [ExternalSubtitleBlocklistEntryPayload!]!
+	linkedAccounts(userId: ID): [LinkedAccountPayload!]!
+	externalAccountInvites: [LinkedAccountPayload!]!
+}
+
+input QueueBestReleaseInput {
+	titleId: ID!
+	scope: QueueDownloadScopeInput!
+	replaceInProgress: Boolean
+}
+
+type QueueDownloadConflictPayload {
+	titleId: ID!
+	titleName: String!
+	downloadClientId: ID
+	downloadClientType: String!
+	downloadClientItemId: String!
+	sourceTitle: String
+	sourceKind: DownloadSourceKindValue
+	scope: QueueDownloadScopePayload!
+	state: DownloadQueueStateValue
+	replaceable: Boolean!
+}
+
+input QueueDownloadInput {
+	titleId: ID!
+	candidateToken: String!
+	scope: QueueDownloadScopeInput!
+	replaceInProgress: Boolean
+	purpose: QueueDownloadPurposeValue
+}
+
+type QueueDownloadPayload {
+	status: QueueDownloadResultStatusValue!
+	jobId: ID
+	titleId: ID!
+	titleName: String!
+	sourceTitle: String
+	sourceKind: DownloadSourceKindValue
+	conflict: QueueDownloadConflictPayload
+}
+
+enum QueueDownloadPurposeValue {
+	STANDARD
+	ADDITIONAL_FILE
+}
+
+enum QueueDownloadResultStatusValue {
+	queued
+	conflict
+}
+
+input QueueDownloadScopeInput @oneOf {
+	episode: ID
+	episodeSet: [ID!]
+	seriesMovie: ID
+	collection: ID
+	title: Boolean
+}
+
+type QueueDownloadScopePayload {
+	kind: String!
+	episodeId: ID
+	episodeIds: [ID!]!
+	seriesMovieLinkId: ID
+	collectionId: ID
+}
+
+input QueueManualImportInput {
+	titleId: ID
+	clientId: ID
+	clientType: String!
+	downloadClientItemId: String!
+	files: [ManualImportFileMappingInput!]
+}
+
+input QueuePathManualImportInput {
+	titleId: ID!
+	path: String!
+	files: [ManualImportFileMappingInput!]!
+}
+
+type RecycleBinSettingsPayload {
+	enabled: Boolean!
+}
+
+type RecycledItemPayload {
+	id: ID!
+	originalPath: String!
+	fileName: String!
+	sizeBytes: Long!
+	titleId: ID
+	reason: String!
+	recycledAt: DateTime!
+	mediaRoot: String!
+	libraryId: ID!
+	libraryName: String!
+}
+
+type RecycledItemsPayload {
+	items: [RecycledItemPayload!]!
+	totalCount: Int!
+}
+
+type RegistryPluginPayload {
+	id: ID!
+	name: String!
+	description: String!
+	version: String!
+	latestVersion: String
+	pluginType: String!
+	providerType: String!
+	author: String!
+	official: Boolean!
+	publisher: String
+	supportTier: String!
+	status: String
+	docsUrl: String
+	sourceRepo: String
+	builtin: Boolean!
+	sourceUrl: String
+	sourceKind: String
+	blockedReason: String
+	bytes: Long
+	isInstalled: Boolean!
+	isEnabled: Boolean!
+	installedVersion: String
+	updateAvailable: Boolean!
+	installInProgress: Boolean!
+	defaultBaseUrl: String
+}
+
+input RehydrateAllMetadataInput {
+	language: String!
+}
+
+type RehydrateAllMetadataPayload {
+	language: String!
+	titlesCleared: Int!
+	accepted: Boolean!
+}
+
+type ReleaseDecisionPayload {
+	id: ID!
+	wantedItemId: ID!
+	titleId: ID!
+	releaseTitle: String!
+	releaseUrl: String
+	releaseSizeBytes: Long
+	decisionCode: String!
+	candidateScore: Int!
+	currentScore: Int
+	scoreDelta: Int
+	explanationJson: String
+	createdAt: DateTime!
+	title: TitlePayload
+	wantedItem: WantedItemPayload
+}
+
+type ReleaseDecisionsPagePayload {
+	items: [ReleaseDecisionPayload!]!
+	limit: Int!
+	offset: Int!
+	hasMore: Boolean!
+}
+
+input ReorderDownloadClientConfigsInput {
+	ids: [ID!]!
+}
+
+type ReorderDownloadClientConfigsPayload {
+	ids: [ID!]!
+	reordered: Boolean!
+}
+
+type ResetWantedItemPayload {
+	id: ID!
+	reset: Boolean!
+}
+
+input ResolvePendingImportInput {
+	pendingImportId: ID!
+	tvdbId: String!
+}
+
+type ResolvePendingImportPayload {
+	title: TitlePayload!
+	created: Boolean!
+	libraryScan: LibraryScanSummaryPayload!
+}
+
+type RestoreApplyPayload {
+	summary: RestoreSummaryPayload!
+}
+
+type RestoreInspectPayload {
+	uploadId: ID!
+	summary: RestoreSummaryPayload!
+}
+
+type RestoreRecycledItemPayload {
+	id: ID!
+	restored: Boolean!
+}
+
+type RestoreSummaryPayload {
+	formatVersion: String!
+	createdAt: DateTime!
+	sourceScryerVersion: String!
+	sourceEngine: String!
+	sourceMigrationKey: String
+	encrypted: Boolean!
+	rowCounts: [BackupRowCountPayload!]!
+	totalRows: Long!
+}
+
+input ResumeDownloadInput {
+	clientId: ID
+	downloadClientItemId: String!
+}
+
+type ResumeWantedItemPayload {
+	id: ID!
+	resumed: Boolean!
+}
+
+input RetryImportInput {
+	importId: ID!
+	password: String
+}
+
+type RevokeMyOauthAppPayload {
+	grantId: ID!
+	revoked: Boolean!
+}
+
+input RootFolderInput {
+	path: String!
+	isDefault: Boolean!
+}
+
+type RootFolderPayload {
+	path: String!
+	isDefault: Boolean!
+}
+
+type RssSyncReportPayload {
+	releasesFetched: Int!
+	releasesMatched: Int!
+	releasesGrabbed: Int!
+	releasesHeld: Int!
+}
+
+type RulePackRegistryEntryPayload {
+	id: String!
+	name: String!
+	description: String!
+	author: String!
+	version: String!
+}
+
+type RulePackTemplatePayload {
+	id: String!
+	title: String!
+	description: String!
+	category: String!
+	regoSource: String!
+	appliedFacets: [String!]!
+}
+
+type RuleSetPayload {
+	id: ID!
+	name: String!
+	description: String!
+	regoSource: String!
+	enabled: Boolean!
+	priority: Int!
+	appliedFacets: [String!]!
+	isManaged: Boolean!
+	managedKey: String
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type RuleValidationResultPayload {
+	valid: Boolean!
+	errors: [String!]!
+}
+
+input SaveQualityProfileSettingsInput {
+	profiles: [QualityProfileInput!]!
+	globalProfileId: ID
+	globalScoringPersona: ScoringPersonaValue
+	categorySelections: [QualityProfileSelectionInput!]!
+	categoryPersonaSelections: [FacetScoringPersonaSelectionInput!]!
+	replaceExisting: Boolean!
+}
+
+input ScanLibraryInput {
+	libraryId: ID!
+	importWarmupSessionId: ID
+}
+
+type ScoringEntryPayload {
+	code: String!
+	delta: Int!
+	source: String!
+	ruleSetName: String
+}
+
+input ScoringOverridesInput {
+	allowX265Non4K: Boolean
+	blockDvWithoutFallback: Boolean
+	preferCompactEncodes: Boolean
+	preferLosslessAudio: Boolean
+	blockUpscaled: Boolean
+}
+
+type ScoringOverridesPayload {
+	allowX265Non4K: Boolean
+	blockDvWithoutFallback: Boolean
+	preferCompactEncodes: Boolean
+	preferLosslessAudio: Boolean
+	blockUpscaled: Boolean
+}
+
+enum ScoringPersonaValue {
+	balanced
+	audiophile
+	efficient
+	compatible
+}
+
+input SearchReleasesInput {
+	titleId: ID!
+	seriesMovieLinkId: ID
+	season: String
+	episode: String
+	limit: Int
+}
+
+input SearchSubtitlesInput {
+	mediaFileId: ID!
+	language: String!
+}
+
+type SecuritySettingsPayload {
+	formLoginEnabled: Boolean!
+	passwordMinLength: Int!
+	skipLoginForLocalIps: Boolean!
+	mfaRequireConfigStepUp: Boolean!
+	mfaRequirePasswordLogin: Boolean!
+	totpRequireJellyfinLogin: Boolean!
+	effectiveFormLoginEnabled: Boolean!
+	envOverrideActive: Boolean!
+	envOverrideDescription: String
+}
+
+type SeriesMovieLinkPayload {
+	id: ID!
+	seriesTitleId: ID!
+	movie: MovieEntityPayload!
+	placement: String
+	narrativeOrder: String
+	afterSeason: Int
+	beforeSeason: Int
+	linkedEpisodeId: ID
+	associationConfidence: String
+	continuityStatus: String
+	movieForm: String
+	confidence: String
+	signalSummary: String
+	source: String
+	monitored: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type ServiceLogsPayload {
+	generatedAt: DateTime!
+	lines: [String!]!
+	count: Int!
+}
+
+type ServiceSettingsPayload {
+	tlsCertPath: String!
+	tlsKeyPath: String!
+}
+
+input SetCollectionMonitoredInput {
+	collectionId: ID!
+	monitored: Boolean!
+}
+
+type SetCollectionMonitoredPayload {
+	id: ID!
+	monitored: Boolean!
+	episodes: [EpisodePayload!]!
+}
+
+input SetEpisodeMonitoredInput {
+	episodeId: ID!
+	monitored: Boolean!
+}
+
+input SetPrimaryMovieFileInput {
+	titleId: ID!
+	fileId: ID!
+}
+
+input SetSeriesMovieMonitoredInput {
+	seriesMovieLinkId: ID!
+	monitored: Boolean!
+}
+
+input SetTitleMonitoredInput {
+	titleId: ID!
+	monitored: Boolean!
+}
+
+input SetTitleRequiredAudioInput {
+	titleId: ID!
+	"""
+	The facet of the title: "movie", "series", or "anime"
+	"""
+	facet: MediaFacetValue!
+	"""
+	`null` removes the override and inherits from the facet.
+	`[]` stores an explicit "no required languages" override for the title.
+	"""
+	languages: [String!]
+}
+
+type SetTitleRequiredAudioPayload {
+	titleId: ID!
+	facet: MediaFacetValue!
+	languages: [String!]
+	updated: Boolean!
+}
+
+input SetUserAppPermissionsInput {
+	userId: ID!
+	permissions: [AppPermissionValue!]!
+}
+
+input SetUserLibraryPermissionsInput {
+	userId: ID!
+	grants: [LibraryPermissionGrantInput!]!
+}
+
+input SetUserPasswordInput {
+	userId: ID!
+	password: String!
+	currentPassword: String
+}
+
+type SetupStatusPayload {
+	setupComplete: Boolean!
+	hasDownloadClients: Boolean!
+	hasIndexers: Boolean!
+}
+
+type SmgScryerUpdateNoticePayload {
+	available: Boolean!
+	currentVersion: String!
+	latestVersion: String!
+	latestTag: String!
+	releaseUrl: String
+	publishedAt: DateTime
+	checkedAt: DateTime!
+}
+
+type SmgVersionCompatibilityNoticePayload {
+	status: String!
+	minimumVersion: String!
+	yourVersion: String!
+	message: String!
+	upgradeDeadline: String
+}
+
+enum SortDirectionValue {
+	asc
+	desc
+}
+
+input StartExternalImportMonitorWarmupInput {
+	sonarr: ExternalImportConnectionInput
+	radarr: ExternalImportConnectionInput
+}
+
+input SubmitMediaRequestInput {
+	libraryId: ID!
+	facet: MediaFacetValue!
+	title: String!
+	externalIds: [ExternalIdInput!]!
+	year: Int
+	overview: String
+	sortTitle: String
+	slug: String
+	runtimeMinutes: Int
+	language: String
+	contentStatus: String
+	requestedQualityProfileId: ID
+	requestedMonitorType: MonitorTypeValue
+}
+
+type SubmitMediaRequestPayload {
+	accepted: Boolean!
+}
+
+type SubscriptionRoot {
+	activityEvents: ActivityEventPayload!
+	domainEventFeed(afterSequence: Long): DomainEventEnvelopePayload!
+	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+	libraryScanState: LibraryScanProgressPayload!
+	jobRunEvents: JobRunPayload!
+	serviceLogLines: String!
+	importHistoryChanged: Boolean!
+	mediaRequestsChanged: MediaRequestChangedPayload!
+	indexersChanged: Boolean!
+	providerCatalogChanged: [ProviderCatalogFamilyValue!]!
+	pluginInstallProgress(pluginId: ID!): PluginInstallProgressPayload!
+	externalImportMonitorWarmupProgress(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	settingsChanged: [String!]!
+}
+
+input SubtitleLanguagePreferenceInput {
+	code: String!
+	hearingImpaired: Boolean
+	forced: Boolean
+}
+
+type SubtitleLanguagePreferencePayload {
+	code: String!
+	hearingImpaired: Boolean!
+	forced: Boolean!
+}
+
+type SubtitleProviderConfigPayload {
+	id: ID!
+	name: String!
+	providerType: String!
+	hasConfig: Boolean!
+	storedSecretKeys: [String!]!
+	enabledFacets: [MediaFacetValue!]!
+	isEnabled: Boolean!
+	lastHealthStatus: String
+	lastError: String
+	lastErrorAt: DateTime
+	disabledUntil: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type SubtitleSearchResult {
+	provider: String!
+	providerFileId: String!
+	language: String!
+	releaseInfo: String
+	score: Int!
+	hearingImpaired: Boolean!
+	forced: Boolean!
+	aiTranslated: Boolean!
+	machineTranslated: Boolean!
+	uploader: String
+	downloadCount: Int
+	hashMatched: Boolean!
+}
+
+type SubtitleSettingsPayload {
+	enabled: Boolean!
+	languages: [SubtitleLanguagePreferencePayload!]!
+	autoDownloadOnImport: Boolean!
+	minimumScoreSeries: Int!
+	minimumScoreMovie: Int!
+	searchIntervalHours: Int!
+	includeAiTranslated: Boolean!
+	includeMachineTranslated: Boolean!
+	syncEnabled: Boolean!
+	syncThresholdSeries: Int!
+	syncThresholdMovie: Int!
+	syncMaxOffsetSeconds: Int!
+}
+
+type SubtitleStreamDetailPayload {
+	codec: String
+	language: String
+	name: String
+	forced: Boolean!
+	default: Boolean!
+}
+
+type SystemHealthPayload {
+	serviceReady: Boolean!
+	dbPath: String!
+	datastoreEngine: String!
+	datastoreMigrationKey: String
+	totalTitles: Int!
+	monitoredTitles: Int!
+	totalUsers: Int!
+	titlesMovie: Int!
+	titlesSeries: Int!
+	titlesAnime: Int!
+	titlesOther: Int!
+	recentEvents: Int!
+	recentEventPreview: [String!]!
+	dbMigrationVersion: String
+	indexerStats: [IndexerQueryStatsPayload!]!
+}
+
+input TestDownloadClientConnectionInput {
+	clientType: String!
+	config: [ProviderConfigValueInput!]!
+}
+
+input TestIndexerConnectionInput {
+	providerType: String!
+	config: [ProviderConfigValueInput!]
+	indexerId: ID
+}
+
+input TestMediaServerConnectionInput {
+	id: ID!
+	plexAuthToken: String
+}
+
+input TestSubtitleProviderConnectionInput {
+	id: ID
+	providerType: String!
+	config: [ProviderConfigValueInput!]!
+}
+
+type TitleAcquisitionDiagnosticsPayload {
+	recentDecisions: [ReleaseDecisionPayload!]!
+	decisionCounts: [DecisionCodeCountPayload!]!
+	wantedStatusCounts: [WantedStatusCountPayload!]!
+	pendingReleaseCounts: [PendingReleaseStatusCountPayload!]!
+	mismatchRecoveryEligibleCount: Int!
+	latestDecisionAt: DateTime
+	latestWantedSearchAt: DateTime
+}
+
+enum TitleCatalogContentStatusValue {
+	continuing
+	ended
+}
+
+input TitleCatalogFilterInput {
+	monitored: Boolean
+	contentStatuses: [TitleCatalogContentStatusValue!]
+}
+
+type TitleCatalogPayload {
+	items: [TitlePayload!]!
+	limit: Int!
+	offset: Int!
+	hasMore: Boolean!
+	totalCount: Int!
+}
+
+input TitleCatalogSortInput {
+	key: TitleCatalogSortKeyValue!
+	direction: SortDirectionValue
+}
+
+enum TitleCatalogSortKeyValue {
+	title
+	monitored
+	quality
+	episodes
+	status
+	size
+}
+
+type TitleHistoryEventPayload {
+	id: ID!
+	titleId: ID!
+	titleName: String
+	facet: MediaFacetValue
+	episodeId: ID
+	episodeIds: [ID!]!
+	collectionId: ID
+	eventType: String!
+	actorKind: String
+	actorUserId: ID
+	actorDisplayName: String
+	sourceTitle: String
+	displayTitle: String
+	sourceSystem: String
+	sourceRef: String
+	sourceHint: String
+	quality: String
+	downloadId: String
+	clientId: ID
+	clientName: String
+	importId: ID
+	skipReason: String
+	retryRequiresPassword: Boolean!
+	failureReason: String
+	blocklistReason: String
+	sourcePath: String
+	destPath: String
+	dataJson: String
+	occurredAt: DateTime!
+	createdAt: DateTime!
+}
+
+enum TitleHistoryEventTypeValue {
+	requested
+	grabbed
+	download_failed
+	blocklisted
+	download_completed
+	imported
+	import_failed
+	import_skipped
+	file_upgraded
+	file_recycled
+	file_deleted
+	file_renamed
+	download_ignored
+	rematched
+}
+
+input TitleHistoryFilterInput {
+	eventTypes: [TitleHistoryEventTypeValue!]
+	titleIds: [ID!]
+	libraryIds: [ID!]
+	titleSearch: String
+	downloadId: String
+	episodeId: ID
+	groupByEvent: Boolean
+	limit: Int
+	offset: Int
+}
+
+type TitleHistoryPagePayload {
+	records: [TitleHistoryEventPayload!]!
+	totalCount: Int!
+}
+
+enum TitleMatchTypeValue {
+	submission
+	client_parameter
+	title_parse
+	id_only
+	unmatched
+}
+
+type TitleMediaFilePayload {
+	id: ID!
+	titleId: ID!
+	episodeId: ID
+	seriesMovieLinkIds: [ID!]!
+	filePath: String!
+	sizeBytes: Long!
+	role: String!
+	qualityLabel: String
+	scanStatus: String!
+	createdAt: DateTime!
+	videoCodec: String
+	videoWidth: Int
+	videoHeight: Int
+	videoBitrateKbps: Int
+	videoBitDepth: Int
+	videoHdrFormat: String
+	videoFrameRate: String
+	videoProfile: String
+	audioCodec: String
+	audioProfile: String
+	audioChannels: Int
+	audioBitrateKbps: Int
+	audioLanguages: [String!]!
+	audioStreams: [AudioStreamDetailPayload!]!
+	subtitleLanguages: [String!]!
+	subtitleCodecs: [String!]!
+	subtitleStreams: [SubtitleStreamDetailPayload!]!
+	hasMultiaudio: Boolean!
+	durationSeconds: Int
+	numChapters: Int
+	containerFormat: String
+	sceneName: String
+	releaseGroup: String
+	sourceType: String
+	resolution: String
+	videoCodecParsed: String
+	audioCodecParsed: String
+	audioChannelsParsed: String
+	acquisitionScore: Int
+	scoringLog: String
+	indexerSource: String
+	grabbedReleaseTitle: String
+	grabbedAt: DateTime
+	edition: String
+	originalFilePath: String
+	releaseHash: String
+	title: TitlePayload
+	episode: EpisodePayload
+}
+
+input TitleOptionsInput {
+	qualityProfileId: ID
+	rootFolderId: ID
+	monitorType: MonitorTypeValue
+	useSeasonFolders: Boolean
+	monitorSpecials: Boolean
+	interSeasonMovies: Boolean
+	fillerPolicy: String
+	recapPolicy: String
+}
+
+type TitlePayload {
+	id: ID!
+	libraryId: ID!
+	libraryName: String
+	librarySlug: String
+	name: String!
+	facet: MediaFacetValue!
+	monitored: Boolean!
+	tags: [String!]!
+	externalIds: [ExternalIdPayload!]!
+	createdBy: String
+	createdAt: DateTime!
+	year: Int
+	overview: String
+	posterUrl: String
+	posterSourceUrl: String
+	backgroundUrl: String
+	backgroundSourceUrl: String
+	sortTitle: String
+	slug: String
+	imdbId: String
+	runtimeMinutes: Int
+	genres: [String!]!
+	contentStatus: String
+	language: String
+	firstAired: Date
+	network: String
+	studio: String
+	country: String
+	aliases: [String!]!
+	metadataLanguage: String
+	metadataFetchedAt: DateTime
+	minAvailability: String
+	digitalReleaseDate: Date
+	qualityProfileId: ID
+	rootFolderId: ID
+	monitorType: MonitorTypeValue
+	useSeasonFolders: Boolean
+	monitorSpecials: Boolean
+	interSeasonMovies: Boolean
+	fillerPolicy: String
+	recapPolicy: String
+	"""
+	Legacy title quality label, populated in list queries.
+	"""
+	qualityTier: String
+	"""
+	Lowest live media-file quality tier for the title, populated in list queries.
+	"""
+	currentQualityTier: String
+	"""
+	Aggregated media-file size in bytes for the title, populated in list queries.
+	"""
+	sizeBytes: Long
+	"""
+	Owned-vs-total episode progress, excluding specials, populated in list queries.
+	"""
+	episodesOwned: Int
+	"""
+	Monitored episode count, excluding specials, populated in list queries.
+	"""
+	episodesMonitored: Int
+	"""
+	Total episode count, excluding specials, populated in list queries.
+	"""
+	episodesTotal: Int
+	rootFolderPath: String
+	requiredAudioLanguagesOverride: [String!]
+	effectiveRequiredAudioLanguages: [String!]!
+	inheritsRequiredAudioLanguages: Boolean!
+	collections: [CollectionPayload!]!
+	seriesMovieLinks: [SeriesMovieLinkPayload!]!
+	mediaFiles: [TitleMediaFilePayload!]!
+	wantedItems(status: WantedStatusValue, limit: Int! = 50, offset: Int! = 0): WantedItemsPagePayload!
+	releaseDecisions(limit: Int! = 50, offset: Int! = 0): ReleaseDecisionsPagePayload!
+	downloadQueueItems(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+}
+
+type TitleReleaseBlocklistEntryPayload {
+	id: ID!
+	sourceHint: String
+	sourceTitle: String
+	errorMessage: String
+	attemptedAt: DateTime!
+	episodeIds: [ID!]!
+}
+
+input TogglePluginInput {
+	pluginId: ID!
+	enabled: Boolean!
+}
+
+input ToggleRuleSetInput {
+	id: ID!
+	enabled: Boolean!
+}
+
+input TotpEnrollmentCompleteInput {
+	challengeId: ID!
+	code: String!
+}
+
+type TotpEnrollmentCompletePayload {
+	status: TotpStatusPayload!
+	recoveryCodes: [String!]!
+}
+
+type TotpEnrollmentStartPayload {
+	challengeId: ID!
+	otpauthUrl: String!
+	secretBase32: String!
+	expiresAt: DateTime!
+}
+
+type TotpStatusPayload {
+	enabled: Boolean!
+	createdAt: DateTime
+	lastUsedAt: DateTime
+	recoveryCodesRemaining: Int!
+}
+
+input TotpVerifyInput {
+	code: String!
+}
+
+enum TrackedDownloadStateValue {
+	downloading
+	import_pending
+	importing
+	imported
+	import_blocked
+	failed_pending
+	failed
+	ignored
+}
+
+enum TrackedDownloadStatusValue {
+	ok
+	warning
+	error
+}
+
+input TriggerSeasonWantedSearchInput {
+	titleId: ID!
+	seasonNumber: Int!
+}
+
+type TriggerTitleMismatchRecoverySearchPayload {
+	titleId: ID!
+	queuedCount: Int!
+}
+
+input TriggerTitleWantedSearchInput {
+	titleId: ID!
+	replaceInProgress: Boolean
+}
+
+input TriggerWantedSearchInput {
+	wantedItemId: ID!
+	replaceInProgress: Boolean
+}
+
+type UninstallPluginPayload {
+	pluginId: ID!
+	uninstalled: Boolean!
+}
+
+type UnlinkExternalAccountPayload {
+	linkedAccountId: ID!
+	unlinked: Boolean!
+}
+
+input UpdateAcquisitionSettingsInput {
+	enabled: Boolean!
+	upgradeCooldownHours: Int!
+	sameTierMinDelta: Int!
+	crossTierMinDelta: Int!
+	forcedUpgradeDeltaBypass: Int!
+	pollIntervalSeconds: Int!
+	syncIntervalSeconds: Int!
+	batchSize: Int!
+}
+
+input UpdateAutoBackupSettingsInput {
+	enabled: Boolean!
+	dailyTimeLocal: String!
+	setAutoBackupKey: String
+	clearAutoBackupKey: Boolean!
+}
+
+input UpdateBackupSettingsInput {
+	customBackupPath: String
+}
+
+input UpdateDownloadClientConfigInput {
+	id: ID!
+	name: String
+	clientType: String
+	config: [ProviderConfigValueInput!]
+	isEnabled: Boolean
+}
+
+input UpdateDownloadClientRoutingInput {
+	scope: ContentScopeValue!
+	entries: [DownloadClientRoutingEntryInput!]!
+}
+
+input UpdateGeneralSettingsInput {
+	keepHistoryForever: Boolean!
+	historyRetentionDays: Int!
+	pluginHttpCaBundlePem: String!
+}
+
+input UpdateIndexerConfigInput {
+	id: ID!
+	name: String
+	providerType: String
+	rateLimitSeconds: Int
+	rateLimitBurst: Int
+	isEnabled: Boolean
+	enableInteractiveSearch: Boolean
+	enableAutoSearch: Boolean
+	config: [ProviderConfigValueInput!]
+}
+
+input UpdateIndexerRoutingInput {
+	scope: ContentScopeValue!
+	entries: [IndexerRoutingEntryInput!]!
+}
+
+input UpdateLibraryInput {
+	libraryId: ID!
+	name: String
+	roots: [UpdateLibraryRootInput!]
+	settings: LibrarySettingsInput
+}
+
+input UpdateLibraryPathsInput {
+	moviePath: String!
+	seriesPath: String!
+	animePath: String
+}
+
+input UpdateLibraryRootInput {
+	id: ID
+	path: String!
+	isDefault: Boolean!
+}
+
+input UpdateMediaRequestInput {
+	requestId: ID!
+	requestedQualityProfileId: ID!
+	requestedMonitorType: MonitorTypeValue
+}
+
+input UpdateMediaServerConnectionInput {
+	id: ID!
+	provider: MediaServerProviderValue
+	displayName: String
+	baseUrl: String
+	enabled: Boolean
+	loginEnabled: Boolean
+	linkingEnabled: Boolean
+	autoAddEnabled: Boolean
+	defaultAppPermissions: [AppPermissionValue!]
+	defaultLibraryGrants: [MediaServerDefaultLibraryGrantInput!]
+	machineId: String
+	clearMachineId: Boolean
+	plexAuthToken: String
+	plexServerId: String
+	apiKey: String
+	clearApiKey: Boolean
+	adminUsername: String
+	adminPassword: String
+	pathMappings: [MediaServerPathMappingInput!]
+}
+
+input UpdateMediaSettingsInput {
+	scope: ContentScopeValue!
+	libraryPath: String
+	rootFolders: [RootFolderInput!]
+	requiredAudioLanguages: [String!]
+	folderTemplate: String
+	renameEnabled: Boolean
+	renameTemplate: String
+	renameCollisionPolicy: String
+	renameMissingMetadataPolicy: String
+	fillerPolicy: String
+	recapPolicy: String
+	monitorSpecials: Boolean
+	interSeasonMovies: Boolean
+	monitorFillerMovies: Boolean
+	nfoWriteOnImport: Boolean
+	plexmatchWriteOnImport: Boolean
+	importMode: String
+}
+
+input UpdateNotificationChannelInput {
+	id: ID!
+	name: String
+	config: [ProviderConfigValueInput!]
+	mediaServerConnectionId: ID
+	isEnabled: Boolean
+}
+
+input UpdateNotificationSubscriptionInput {
+	id: ID!
+	targetKind: String
+	targetId: ID
+	eventType: String
+	scope: String
+	scopeId: String
+	isEnabled: Boolean
+}
+
+input UpdatePostProcessingScriptInput {
+	id: ID!
+	name: String
+	description: String
+	scriptType: String
+	scriptContent: String
+	inlineShellAcknowledged: Boolean
+	appliedFacets: [String!]
+	executionMode: String
+	timeoutSecs: Int
+	priority: Int
+	enabled: Boolean
+	debug: Boolean
+}
+
+input UpdateRecycleBinSettingsInput {
+	enabled: Boolean!
+}
+
+input UpdateRuleSetInput {
+	id: ID!
+	name: String
+	description: String
+	regoSource: String
+	appliedFacets: [String!]
+	priority: Int
+}
+
+input UpdateSecuritySettingsInput {
+	formLoginEnabled: Boolean!
+	passwordMinLength: Int!
+	skipLoginForLocalIps: Boolean!
+	mfaRequireConfigStepUp: Boolean!
+	mfaRequirePasswordLogin: Boolean!
+	totpRequireJellyfinLogin: Boolean!
+}
+
+input UpdateServiceSettingsInput {
+	tlsCertPath: String!
+	tlsKeyPath: String!
+}
+
+input UpdateSubtitleProviderConfigInput {
+	id: ID!
+	name: String
+	providerType: String
+	config: [ProviderConfigValueInput!]
+	enabledFacets: [MediaFacetValue!]
+	isEnabled: Boolean
+	disabledUntil: DateTime
+}
+
+input UpdateSubtitleSettingsInput {
+	enabled: Boolean!
+	languages: [SubtitleLanguagePreferenceInput!]!
+	autoDownloadOnImport: Boolean!
+	minimumScoreSeries: Int!
+	minimumScoreMovie: Int!
+	searchIntervalHours: Int!
+	includeAiTranslated: Boolean!
+	includeMachineTranslated: Boolean!
+	syncEnabled: Boolean!
+	syncThresholdSeries: Int!
+	syncThresholdMovie: Int!
+	syncMaxOffsetSeconds: Int!
+}
+
+input UpdateTitleInput {
+	titleId: ID!
+	name: String
+	facet: MediaFacetValue
+	tags: [String!]
+	options: TitleOptionsInput
+}
+
+"""
+A multipart file upload
+"""
+scalar Upload
+
+enum UserAccountKindValue {
+	local
+	external_auto_provisioned
+}
+
+type UserLibraryPermissionGrantPayload {
+	libraryId: ID!
+	permissions: [LibraryPermissionValue!]!
+}
+
+type UserPayload {
+	id: ID!
+	username: String!
+	hasPassword: Boolean!
+	hasMfa: Boolean!
+	hasPasskey: Boolean!
+	accountKind: UserAccountKindValue!
+	appPermissions: [AppPermissionValue!]!
+	libraryPermissions: [UserLibraryPermissionGrantPayload!]!
+}
+
+input ValidateRuleSetInput {
+	regoSource: String!
+	ruleSetId: ID
+}
+
+type WantedItemPayload {
+	id: ID!
+	titleId: ID!
+	titleName: String
+	titleSlug: String
+	titleFacet: String
+	libraryId: ID
+	libraryName: String
+	librarySlug: String
+	episodeId: ID
+	collectionId: ID
+	seasonNumber: String
+	episodeNumber: String
+	mediaType: WantedMediaTypeValue!
+	searchPhase: WantedSearchPhaseValue!
+	nextSearchAt: DateTime
+	lastSearchAt: DateTime
+	searchCount: Int!
+	baselineDate: Date
+	status: WantedStatusValue!
+	grabbedRelease: String
+	currentScore: Int
+	latestReleaseDecision: ReleaseDecisionPayload
+	mismatchRecoveryEligible: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+	title: TitlePayload
+	collection: CollectionPayload
+	episode: EpisodePayload
+	releaseDecisions(limit: Int! = 50, offset: Int! = 0): ReleaseDecisionsPagePayload!
+	pendingReleases(limit: Int! = 50, offset: Int! = 0): PendingReleasesPayload!
+}
+
+type WantedItemsListPayload {
+	items: [WantedItemPayload!]!
+	total: Int!
+}
+
+type WantedItemsPagePayload {
+	items: [WantedItemPayload!]!
+	limit: Int!
+	offset: Int!
+	hasMore: Boolean!
+	totalCount: Int!
+}
+
+enum WantedMediaTypeValue {
+	movie
+	episode
+	series_movie
+}
+
+type WantedSearchPayload {
+	queuedCount: Int!
+	skippedInProgressCount: Int!
+	conflict: QueueDownloadConflictPayload
+}
+
+enum WantedSearchPhaseValue {
+	pre_air
+	pre_release
+	primary
+	secondary
+	long_tail
+}
+
+type WantedStatusCountPayload {
+	status: WantedStatusValue!
+	count: Int!
+}
+
+enum WantedStatusValue {
+	wanted
+	grabbed
+	paused
+	completed
+}
+
+type WebauthnChallengePayload {
+	challengeId: ID!
+	optionsJson: String!
+}
+
+input WebauthnCompleteInput {
+	challengeId: ID!
+	responseJson: String!
+}
+
+input WebauthnRegisterCompleteInput {
+	challengeId: ID!
+	responseJson: String!
+	friendlyName: String
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Indicates that an Input Object is a OneOf Input Object (and thus requires exactly one of its field be provided)
+"""
+directive @oneOf on INPUT_OBJECT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Provides a scalar specification URL for specifying the behavior of custom scalar types.
+"""
+directive @specifiedBy(url: String!) on SCALAR
+schema {
+	query: QueryRoot
+	mutation: MutationRoot
+	subscription: SubscriptionRoot
+}

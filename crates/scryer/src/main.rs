@@ -32,17 +32,19 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
-    IndexerPluginProvider, MovieFacetHandler, NotificationPluginProvider,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
-    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
-    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, AutoBackupRunOutcome,
+    DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry, IndexerPluginProvider,
+    JobTriggerSource, MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
+    SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
     start_background_subtitle_poller, start_background_title_hydration_loop,
     start_background_title_image_loop, start_download_queue_poller_with_options,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    start_notification_dispatcher,
+    tracked_downloads::{TrackedDownloadHandle, TrackedDownloadSnapshotIngestHandle},
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
@@ -70,8 +72,9 @@ use backup_routes::{
 };
 use base_path::BasePath;
 use middleware::{
-    AuthState, AuthlessAccessGuardState, AuthlessAccessPolicy, AuthlessWebClientProofRouteState,
-    AuthlessWebClientProofState, CorsConfig, WebSocketOriginPolicy,
+    AuthState, AuthlessAccessAllowlist, AuthlessAccessGuardState, AuthlessAccessPolicy,
+    AuthlessWebClientProofRouteState, AuthlessWebClientProofState, CorsConfig,
+    UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, WebSocketOriginPolicy,
     authless_web_client_proof_handler, cors_handler, enforce_authless_access_guard,
     graphql_handler, graphql_ws_handler, health_handler, rate_limit_http_api,
 };
@@ -94,6 +97,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
 const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
+const LOG_FILE_ENV: &str = "SCRYER_LOG_FILE";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -205,6 +209,10 @@ impl AuthModeConfig {
     fn effective_form_login_enabled(&self, saved_form_login_enabled: bool) -> bool {
         self.env_override_form_login_enabled
             .unwrap_or(saved_form_login_enabled)
+    }
+
+    fn effective_skip_login_for_local_ips(&self, saved_skip_login_for_local_ips: bool) -> bool {
+        saved_skip_login_for_local_ips && !self.recovery_active()
     }
 
     fn recovery_active(&self) -> bool {
@@ -396,9 +404,22 @@ fn log_smg_version_incompatibility(
 
 #[tokio::main]
 async fn main() {
-    // Phase 1: Extract --data-dir from args before subcommand dispatch.
+    // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
-    let data_dir_override = extract_data_dir(&mut args);
+    let data_dir_override = match extract_data_dir(&mut args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let log_file_override = match extract_log_file(&mut args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     // Phase 2: Handle CLI subcommands before any startup work.
     // args[0] is the binary name; subcommand (if any) is args[1].
@@ -419,7 +440,9 @@ async fn main() {
             }
             other => {
                 eprintln!("unknown argument: {other}");
-                eprintln!("usage: scryer [--data-dir <path>] [init | --generate-key | --version]");
+                eprintln!(
+                    "usage: scryer [--data-dir <path>] [--log-file <path>] [init | --generate-key | --version]"
+                );
                 std::process::exit(1);
             }
         }
@@ -431,17 +454,36 @@ async fn main() {
 
     scryer_outbound_http::install_default_rustls_provider();
 
-    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
-    let pre_restore_datastore_config =
-        match resolve_datastore_config_from_env(data_dir.clone(), migration_mode) {
-            Ok(config) => config,
-            Err(error) => {
-                eprintln!("{error}");
+    let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
+    let log_file_config = resolve_log_file_config(
+        log_file_override.as_deref(),
+        normalize_env_option(LOG_FILE_ENV).as_deref(),
+        &data_dir,
+        default_windows_log_file_path(),
+    );
+    let log_file_writer = match log_file_config.as_ref() {
+        Some(config) => match log_buffer::open_log_file(&config.path) {
+            Ok(writer) => Some(writer),
+            Err(error) if config.explicit => {
+                eprintln!(
+                    "failed to open Scryer log file at {}: {error}",
+                    config.path.display()
+                );
                 std::process::exit(1);
             }
-        };
-
-    let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
+            Err(error) => {
+                eprintln!(
+                    "warning: failed to open default Scryer log file at {}: {error}; continuing with console and in-app logs",
+                    config.path.display()
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    let file_logging_path = log_file_writer
+        .as_ref()
+        .and_then(|_| log_file_config.as_ref().map(|config| config.path.clone()));
 
     {
         use tracing_subscriber::layer::SubscriberExt;
@@ -454,13 +496,32 @@ async fn main() {
         let buffer_layer = tracing_subscriber::fmt::layer()
             .with_writer(log_buffer::LogBufferWriter::new(log_ring_buffer.clone()))
             .with_ansi(false);
+        let file_layer = log_file_writer.map(|writer| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false)
+        });
 
         tracing_subscriber::registry()
             .with(env_filter)
             .with(stdout_layer)
             .with(buffer_layer)
+            .with(file_layer)
             .init();
     }
+    if let Some(path) = file_logging_path.as_ref() {
+        tracing::info!(path = %path.display(), "file logging enabled");
+    }
+
+    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
+    let pre_restore_datastore_config =
+        match resolve_datastore_config_from_env(data_dir.clone(), migration_mode) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!("{error}");
+                std::process::exit(1);
+            }
+        };
 
     let finalized_pending_restore =
         match finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await {
@@ -712,6 +773,11 @@ async fn bootstrap_application(
 
     // Detect version upgrades by comparing with last-run version stored in DB
     let version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    record_post_upgrade_auto_backup_pending_if_needed(
+        bootstrap_settings_store.clone(),
+        &version_lifecycle,
+    )
+    .await;
     startup_migrations::_0001_legacy_history_retention_forever_override::clear_legacy_history_retention_forever_override(
         bootstrap_settings_store.clone(),
     )
@@ -956,6 +1022,10 @@ async fn bootstrap_application(
     let library_renamer = Arc::new(FileSystemLibraryRenamer::new());
 
     let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(64);
+    let (tracked_download_snapshot_tx, tracked_download_snapshot_rx) =
+        tokio::sync::mpsc::channel(64);
+    let tracked_download_snapshot_ingest =
+        TrackedDownloadSnapshotIngestHandle::new(tracked_download_snapshot_tx);
 
     // Warm up SMG enrollment so the mTLS client is ready before the first real
     // metadata query, and check for version incompatibility.
@@ -1103,6 +1173,11 @@ async fn bootstrap_application(
         bootstrap_settings_store.clone(),
     )
     .await;
+    spawn_post_upgrade_auto_backup_if_pending(
+        app_use_case.clone(),
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     if let Err(error) = app_use_case
         .repair_legacy_jellyfin_external_account_invites()
         .await
@@ -1164,7 +1239,7 @@ async fn bootstrap_application(
             .ok_or_else(|| format!("{RECOVERY_ADMIN_PASSWORD_ENV} was set but empty"))?;
         tracing::warn!(
             env = RECOVERY_ADMIN_PASSWORD_ENV,
-            "instance recovery mode is active; authentication is disabled for this boot and the reserved recovery-admin account will be created or repaired"
+            "instance recovery mode is active; form login is enabled for this boot and the reserved recovery-admin account will be created or repaired"
         );
         app_use_case
             .recover_reserved_admin_access(&recovery_password)
@@ -1182,9 +1257,11 @@ async fn bootstrap_application(
         .map_err(|error| format!("failed to load security settings: {error}"))?;
     let effective_form_login_enabled =
         auth_mode.effective_form_login_enabled(saved_security_settings.form_login_enabled);
+    let effective_skip_login_for_local_ips = auth_mode
+        .effective_skip_login_for_local_ips(saved_security_settings.skip_login_for_local_ips);
     let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
         form_login_enabled: saved_security_settings.form_login_enabled,
-        skip_login_for_local_ips: saved_security_settings.skip_login_for_local_ips,
+        skip_login_for_local_ips: effective_skip_login_for_local_ips,
         effective_form_login_enabled,
         webauthn_configured,
         passkey_enabled: webauthn_configured && effective_form_login_enabled,
@@ -1208,14 +1285,31 @@ async fn bootstrap_application(
             restart: restore_restart_controller.handle(),
         }),
     );
+    let authless_access_allowlist_raw =
+        normalize_env_option(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV).unwrap_or_default();
+    let authless_access_allowlist_env_configured =
+        comma_separated_env_has_entries(&authless_access_allowlist_raw);
+    let authless_access_allowlist = AuthlessAccessAllowlist::parse(&authless_access_allowlist_raw);
+    validate_unauthenticated_public_access_allowlist_config(
+        authless_access_allowlist_env_configured,
+        authless_access_allowlist.is_configured(),
+    )
+    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
     if auth_mode.used_legacy_dev_auto_login {
         tracing::warn!(
             "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
         );
     }
     if auth_runtime.snapshot().effective_form_login_enabled {
-        tracing::info!("running with authentication enabled");
-        ensure_admin_password_configured(&app_use_case).await?;
+        if auth_mode.recovery_active() {
+            tracing::warn!(
+                env = RECOVERY_ADMIN_PASSWORD_ENV,
+                "running with authentication enabled in recovery mode; recovery-admin credentials are available for this boot"
+            );
+        } else {
+            tracing::info!("running with authentication enabled");
+            ensure_admin_password_configured(&app_use_case).await?;
+        }
     } else {
         app_use_case
             .find_or_create_default_user()
@@ -1223,16 +1317,28 @@ async fn bootstrap_application(
             .map_err(|error| {
                 format!("failed to ensure default admin for disabled-auth mode: {error}")
             })?;
-        if auth_mode.recovery_active() {
-            tracing::warn!(
-                env = RECOVERY_ADMIN_PASSWORD_ENV,
-                "running in recovery mode with authentication disabled; only private/local clients are allowed"
-            );
-        } else if auth_mode.allow_unauthenticated_public_access {
-            tracing::warn!(
-                env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
-                "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
-            );
+        if auth_mode.allow_unauthenticated_public_access
+            || authless_access_allowlist.is_configured()
+        {
+            if authless_access_allowlist.is_configured() {
+                if auth_mode.allow_unauthenticated_public_access {
+                    tracing::warn!(
+                        env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                        allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                        "public unauthenticated access is explicitly enabled and narrowed by allowlist; matching clients will act as admin"
+                    );
+                } else {
+                    tracing::warn!(
+                        allowlist_env = UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+                        "public unauthenticated access is enabled by allowlist; matching clients will act as admin"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
+                    "public unauthenticated access is explicitly enabled; all reachable clients will act as admin"
+                );
+            }
         } else {
             tracing::warn!(
                 env = ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV,
@@ -1255,20 +1361,20 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
         tracked_download_rx,
+        tracked_download_snapshot_rx,
         poller_options,
     ));
     // Start the Weaver WebSocket subscription bridge when Weaver is primary.
-    // The bridge owns both subscription updates and its Weaver-only fallback
-    // polling when the socket is unavailable.
+    // The bridge feeds realtime Weaver observations into the tracked runtime.
     if let Some(bridge_client) = weaver_bridge_client {
         tracing::info!(
             client_type = "weaver",
             "using weaver subscription bridge for real-time download queue updates"
         );
         tokio::spawn(start_weaver_subscription_bridge(
-            app_use_case.clone(),
             shutdown_token.child_token(),
             bridge_client,
+            tracked_download_snapshot_ingest,
         ));
     }
     tokio::spawn(start_background_acquisition_poller(
@@ -1312,7 +1418,6 @@ async fn bootstrap_application(
     let rate_limiter = ScryerRateLimiter::from_env();
     let authless_access_policy = AuthlessAccessPolicy {
         allow_unauthenticated_public_access: auth_mode.allow_unauthenticated_public_access,
-        recovery_mode: auth_mode.recovery_active(),
     };
     let authless_web_client_proof = AuthlessWebClientProofState::new();
     let auth_state = AuthState {
@@ -1326,11 +1431,13 @@ async fn bootstrap_application(
     let authless_access_guard_state = AuthlessAccessGuardState {
         auth_runtime: auth_runtime.clone(),
         policy: authless_access_policy,
+        allowlist: authless_access_allowlist.clone(),
     };
     let authless_web_client_proof_route_state = AuthlessWebClientProofRouteState {
         auth_runtime: auth_runtime.clone(),
         policy: authless_access_policy,
         proof: authless_web_client_proof.clone(),
+        allowlist: authless_access_allowlist,
     };
 
     let cors_for_layer = cors.clone();
@@ -1340,6 +1447,7 @@ async fn bootstrap_application(
     let oauth_route_state = OAuthRouteState {
         app: app_use_case.clone(),
         base_path: base_path.clone(),
+        auth_runtime: auth_runtime.clone(),
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1573,25 +1681,49 @@ async fn shutdown_signal(token: CancellationToken) {
 
 /// Extract `--data-dir <path>` or `--data-dir=<path>` from the arg list,
 /// removing those elements so the remaining args are clean for subcommand dispatch.
-fn extract_data_dir(args: &mut Vec<String>) -> Option<PathBuf> {
+fn extract_data_dir(args: &mut Vec<String>) -> Result<Option<PathBuf>, String> {
+    extract_path_arg(args, "--data-dir")
+}
+
+/// Extract `--log-file <path>` or `--log-file=<path>` from the arg list,
+/// removing those elements so the remaining args are clean for subcommand dispatch.
+fn extract_log_file(args: &mut Vec<String>) -> Result<Option<PathBuf>, String> {
+    extract_path_arg(args, "--log-file")
+}
+
+fn extract_path_arg(args: &mut Vec<String>, flag: &str) -> Result<Option<PathBuf>, String> {
     let mut i = 1; // skip binary name
+    let equals_flag = format!("{flag}=");
     while i < args.len() {
-        if args[i] == "--data-dir" {
+        if args[i] == flag {
             args.remove(i);
             if i < args.len() {
-                return Some(PathBuf::from(args.remove(i)));
+                if is_startup_arg_token(&args[i]) {
+                    return Err(format!("{flag} requires a path argument"));
+                }
+                return Ok(Some(PathBuf::from(args.remove(i))));
             }
-            eprintln!("--data-dir requires a path argument");
-            std::process::exit(1);
-        } else if let Some(value) = args[i].strip_prefix("--data-dir=") {
+            return Err(format!("{flag} requires a path argument"));
+        } else if let Some(value) = args[i].strip_prefix(&equals_flag) {
+            if value.is_empty() {
+                return Err(format!("{flag} requires a path argument"));
+            }
             let path = PathBuf::from(value);
             args.remove(i);
-            return Some(path);
+            return Ok(Some(path));
         } else {
             i += 1;
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_startup_arg_token(value: &str) -> bool {
+    matches!(
+        value,
+        "--data-dir" | "--log-file" | "--generate-key" | "--version" | "-V" | "init"
+    ) || value.starts_with("--data-dir=")
+        || value.starts_with("--log-file=")
 }
 
 /// Resolve the data directory from CLI flag or platform default.
@@ -1606,6 +1738,63 @@ fn resolve_data_dir(cli_override: Option<&Path>) -> PathBuf {
     directories::ProjectDirs::from("", "", "scryer")
         .map(|p| p.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedLogFileConfig {
+    path: PathBuf,
+    explicit: bool,
+}
+
+fn resolve_log_file_config(
+    cli_override: Option<&Path>,
+    env_override: Option<&str>,
+    data_dir: &Path,
+    default_path: Option<PathBuf>,
+) -> Option<ResolvedLogFileConfig> {
+    if let Some(path) = cli_override {
+        return Some(ResolvedLogFileConfig {
+            path: resolve_explicit_log_file_path(path, data_dir),
+            explicit: true,
+        });
+    }
+
+    if let Some(path) = env_override {
+        return Some(ResolvedLogFileConfig {
+            path: resolve_explicit_log_file_path(Path::new(path), data_dir),
+            explicit: true,
+        });
+    }
+
+    default_path.map(|path| ResolvedLogFileConfig {
+        path,
+        explicit: false,
+    })
+}
+
+fn resolve_explicit_log_file_path(path: &Path, data_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        data_dir.join(path)
+    }
+}
+
+fn default_windows_log_file_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        return directories::BaseDirs::new().map(|dirs| {
+            dirs.data_local_dir()
+                .join("scryer")
+                .join("logs")
+                .join("scryer.log")
+        });
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 fn load_env_file(data_dir: Option<&Path>, include_managed_instance_secrets: bool) {
@@ -1666,6 +1855,10 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn comma_separated_env_has_entries(value: &str) -> bool {
+    value.split(',').any(|entry| !entry.trim().is_empty())
 }
 
 fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
@@ -1783,6 +1976,18 @@ fn parse_env_bool_value(raw: &str) -> Option<bool> {
     }
 }
 
+fn validate_unauthenticated_public_access_allowlist_config(
+    allowlist_env_configured: bool,
+    allowlist_has_valid_entries: bool,
+) -> Result<(), String> {
+    if allowlist_env_configured && !allowlist_has_valid_entries {
+        return Err(format!(
+            "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} is set but contains no valid IP, CIDR, or DNS entries; fix the allowlist or unset it"
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
@@ -1808,9 +2013,9 @@ fn resolve_auth_mode(
             ));
         }
         return Ok(AuthModeConfig {
-            env_override_form_login_enabled: Some(false),
+            env_override_form_login_enabled: Some(true),
             env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
-            used_legacy_dev_auto_login,
+            used_legacy_dev_auto_login: false,
             recovery_admin_password_set: true,
             allow_unauthenticated_public_access: false,
         });
@@ -1851,6 +2056,143 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn parse_optional_setting_string(value_json: &str) -> Option<String> {
+    serde_json::from_str::<Option<String>>(value_json)
+        .ok()
+        .flatten()
+        .or_else(|| serde_json::from_str::<String>(value_json).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+async fn read_post_upgrade_auto_backup_pending_version(
+    settings_store: Arc<SettingsStore>,
+) -> Option<String> {
+    match settings_store
+        .get_setting_with_defaults(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+        )
+        .await
+    {
+        Ok(Some(record)) => parse_optional_setting_string(&record.effective_value_json),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to read post-upgrade automatic backup marker"
+            );
+            None
+        }
+    }
+}
+
+async fn record_post_upgrade_auto_backup_pending_if_needed(
+    settings_store: Arc<SettingsStore>,
+    lifecycle: &VersionLifecycle,
+) {
+    if !matches!(lifecycle, VersionLifecycle::Upgraded { .. }) {
+        return;
+    }
+
+    let value_json = serde_json::to_string(VERSION).expect("VERSION serializes");
+    if let Err(error) = settings_store
+        .upsert_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+            value_json,
+            "system",
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to record post-upgrade automatic backup marker"
+        );
+    }
+}
+
+async fn clear_post_upgrade_auto_backup_pending_version(
+    settings_store: Arc<SettingsStore>,
+    reason: &'static str,
+) {
+    if let Err(error) = settings_store
+        .delete_setting_value(
+            SETTINGS_SCOPE_SYSTEM,
+            AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            reason,
+            "failed to clear post-upgrade automatic backup marker"
+        );
+    }
+}
+
+async fn spawn_post_upgrade_auto_backup_if_pending(
+    app: AppUseCase,
+    settings_store: Arc<SettingsStore>,
+) {
+    let pending_version =
+        read_post_upgrade_auto_backup_pending_version(settings_store.clone()).await;
+    if pending_version.as_deref() != Some(VERSION) {
+        return;
+    }
+
+    let settings = match app.auto_backup_settings().await {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to read automatic backup settings for post-upgrade backup"
+            );
+            return;
+        }
+    };
+    if !settings.enabled || !settings.auto_backup_key_present {
+        clear_post_upgrade_auto_backup_pending_version(settings_store, "auto backup not eligible")
+            .await;
+        return;
+    }
+
+    tokio::spawn(async move {
+        match app
+            .run_scheduled_auto_backup_job_now(JobTriggerSource::SystemInternal)
+            .await
+        {
+            Ok(AutoBackupRunOutcome::Created { info, .. }) => {
+                clear_post_upgrade_auto_backup_pending_version(
+                    settings_store,
+                    "post-upgrade automatic backup created",
+                )
+                .await;
+                tracing::info!(
+                    filename = %info.filename,
+                    "post-upgrade automatic backup completed"
+                );
+            }
+            Ok(AutoBackupRunOutcome::Skipped { reason }) => {
+                tracing::warn!(
+                    reason,
+                    "post-upgrade automatic backup skipped; will retry on next startup"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "post-upgrade automatic backup failed; will retry on next startup"
+                );
+            }
+        }
+    });
 }
 
 async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLifecycle {
@@ -2332,13 +2674,17 @@ async fn seed_builtin_plugin_installations(
 mod tests {
     use super::{
         ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
-        SelfRestartController, bootstrap_plugin_installations,
-        collect_runtime_plugin_load_candidates, load_runtime_plugin_state, resolve_auth_mode,
+        ResolvedLogFileConfig, SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
+        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
+        comma_separated_env_has_entries, extract_data_dir, extract_log_file,
+        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
         restart_spec_from_parts, title_image_handler,
+        validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
     use std::io;
+    use std::path::PathBuf;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -2400,6 +2746,171 @@ mod tests {
         std::thread::sleep(Duration::from_millis(40));
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn extract_log_file_removes_space_form_before_subcommand_dispatch() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "logs/scryer.log".to_string(),
+            "--version".to_string(),
+        ];
+
+        let path = extract_log_file(&mut args)
+            .expect("extract log file")
+            .expect("log file path");
+
+        assert_eq!(path, PathBuf::from("logs/scryer.log"));
+        assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn extract_log_file_removes_equals_form_before_subcommand_dispatch() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file=logs/scryer.log".to_string(),
+            "init".to_string(),
+        ];
+
+        let path = extract_log_file(&mut args)
+            .expect("extract log file")
+            .expect("log file path");
+
+        assert_eq!(path, PathBuf::from("logs/scryer.log"));
+        assert_eq!(args, vec!["scryer".to_string(), "init".to_string()]);
+    }
+
+    #[test]
+    fn extract_log_file_reports_missing_value() {
+        let mut args = vec!["scryer".to_string(), "--log-file".to_string()];
+
+        let error = extract_log_file(&mut args).expect_err("missing value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_rejects_version_flag_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "--version".to_string(),
+        ];
+
+        let error = extract_log_file(&mut args).expect_err("flag value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_rejects_subcommand_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--log-file".to_string(),
+            "init".to_string(),
+        ];
+
+        let error = extract_log_file(&mut args).expect_err("subcommand value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_data_dir_rejects_log_file_flag_as_value() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--data-dir".to_string(),
+            "--log-file".to_string(),
+            "logs/scryer.log".to_string(),
+        ];
+
+        let error = extract_data_dir(&mut args).expect_err("flag value should fail");
+
+        assert!(error.contains("--data-dir requires a path argument"));
+    }
+
+    #[test]
+    fn extract_log_file_reports_empty_equals_value() {
+        let mut args = vec!["scryer".to_string(), "--log-file=".to_string()];
+
+        let error = extract_log_file(&mut args).expect_err("empty value should fail");
+
+        assert!(error.contains("--log-file requires a path argument"));
+    }
+
+    #[test]
+    fn extract_data_dir_still_removes_data_dir_flag() {
+        let mut args = vec![
+            "scryer".to_string(),
+            "--data-dir".to_string(),
+            "/config".to_string(),
+            "--version".to_string(),
+        ];
+
+        let path = extract_data_dir(&mut args)
+            .expect("extract data dir")
+            .expect("data dir path");
+
+        assert_eq!(path, PathBuf::from("/config"));
+        assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn log_file_config_prefers_cli_then_env_then_default() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        let default = dir.path().join("default").join("scryer.log");
+
+        assert_eq!(
+            resolve_log_file_config(
+                Some(std::path::Path::new("cli.log")),
+                Some("env.log"),
+                &data_dir,
+                Some(default.clone())
+            ),
+            Some(ResolvedLogFileConfig {
+                path: data_dir.join("cli.log"),
+                explicit: true,
+            })
+        );
+        assert_eq!(
+            resolve_log_file_config(None, Some("env.log"), &data_dir, Some(default.clone())),
+            Some(ResolvedLogFileConfig {
+                path: data_dir.join("env.log"),
+                explicit: true,
+            })
+        );
+        assert_eq!(
+            resolve_log_file_config(None, None, &data_dir, Some(default.clone())),
+            Some(ResolvedLogFileConfig {
+                path: default,
+                explicit: false,
+            })
+        );
+    }
+
+    #[test]
+    fn log_file_config_has_no_default_when_default_path_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+
+        assert_eq!(resolve_log_file_config(None, None, &data_dir, None), None);
+    }
+
+    #[test]
+    fn log_file_config_keeps_absolute_explicit_paths() {
+        let dir = tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        let absolute = dir.path().join("scryer.log");
+
+        assert_eq!(
+            resolve_log_file_config(Some(&absolute), Some("env.log"), &data_dir, None),
+            Some(ResolvedLogFileConfig {
+                path: absolute,
+                explicit: true,
+            })
+        );
     }
 
     #[derive(Default)]
@@ -2841,16 +3352,43 @@ mod tests {
     }
 
     #[test]
-    fn recovery_admin_password_implies_auth_disabled_and_wins_over_auth_enabled() {
-        assert_eq!(
-            resolve_auth_mode(Some("true"), None, Some("new-password"), None).expect("auth mode"),
-            AuthModeConfig {
-                env_override_form_login_enabled: Some(false),
-                env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
-                used_legacy_dev_auto_login: false,
-                recovery_admin_password_set: true,
-                allow_unauthenticated_public_access: false,
-            }
+    fn recovery_admin_password_forces_form_login_and_suppresses_local_bypass() {
+        for (auth_enabled, legacy_dev_auto_login) in [
+            (Some("true"), None),
+            (Some("false"), None),
+            (None, Some("true")),
+        ] {
+            let auth_mode = resolve_auth_mode(
+                auth_enabled,
+                legacy_dev_auto_login,
+                Some("new-password"),
+                None,
+            )
+            .expect("auth mode");
+            assert_eq!(
+                auth_mode,
+                AuthModeConfig {
+                    env_override_form_login_enabled: Some(true),
+                    env_override_description: Some(format!("{RECOVERY_ADMIN_PASSWORD_ENV}=set")),
+                    used_legacy_dev_auto_login: false,
+                    recovery_admin_password_set: true,
+                    allow_unauthenticated_public_access: false,
+                }
+            );
+            assert!(auth_mode.effective_form_login_enabled(false));
+            assert!(!auth_mode.effective_skip_login_for_local_ips(true));
+            assert!(!auth_mode.effective_skip_login_for_local_ips(false));
+        }
+    }
+
+    #[test]
+    fn non_recovery_mode_preserves_saved_local_bypass() {
+        let auth_mode = resolve_auth_mode(Some("true"), None, None, None).expect("auth mode");
+        assert!(auth_mode.effective_skip_login_for_local_ips(true));
+        assert!(!auth_mode.effective_skip_login_for_local_ips(false));
+        assert!(
+            auth_mode.effective_form_login_enabled(false),
+            "explicit auth enabled should still force form login"
         );
     }
 
@@ -2875,6 +3413,39 @@ mod tests {
 
         assert!(error.contains(ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV));
         assert!(error.contains(RECOVERY_ADMIN_PASSWORD_ENV));
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_without_public_access_override() {
+        validate_unauthenticated_public_access_allowlist_config(true, true)
+            .expect("valid allowlist should imply narrowed public access");
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_rejects_no_valid_entries() {
+        let error = validate_unauthenticated_public_access_allowlist_config(true, false)
+            .expect_err("allowlist with no valid entries should be rejected");
+
+        assert!(error.contains(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV));
+        assert!(error.contains("no valid IP, CIDR, or DNS entries"));
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_public_access_override() {
+        validate_unauthenticated_public_access_allowlist_config(true, true)
+            .expect("allowlist should narrow public access override");
+    }
+
+    #[test]
+    fn unauthenticated_public_access_allowlist_accepts_unset_allowlist() {
+        validate_unauthenticated_public_access_allowlist_config(false, false)
+            .expect("unset allowlist keeps broad public access override");
+    }
+
+    #[test]
+    fn comma_separated_env_entries_ignore_empty_items() {
+        assert!(!comma_separated_env_has_entries(" ,, "));
+        assert!(comma_separated_env_has_entries(",,home.example.test,"));
     }
 
     #[tokio::test]

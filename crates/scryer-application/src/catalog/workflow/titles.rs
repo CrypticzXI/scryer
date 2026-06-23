@@ -103,7 +103,56 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "title catalog listing mirrors the user-visible filter, sort, pagination, and projection surface"
+    )]
     pub async fn list_titles(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        query: Option<String>,
+        filter: crate::TitleCatalogFilter,
+        sort: crate::TitleCatalogSort,
+        limit: usize,
+        offset: usize,
+        include_external_ids: bool,
+    ) -> AppResult<crate::TitleCatalogResult> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+        self.services
+            .catalog
+            .titles
+            .list_for_libraries_catalog(
+                facet,
+                &library_ids,
+                query,
+                filter,
+                sort,
+                limit,
+                offset,
+                include_external_ids,
+            )
+            .await
+    }
+
+    pub async fn list_titles_unpaged(
         &self,
         actor: &User,
         facet: Option<MediaFacet>,
@@ -785,65 +834,58 @@ impl AppUseCase {
         let actor = actor.into();
         let title_id = title.id.as_str();
 
-        if purge_recycle_bin_entries
-            && let Some(media_root) = crate::recycle_bin::media_root_for_title(self, title).await
-        {
-            let config = self
-                .recycle_bin_config_for_media_root(Some(&media_root))
-                .await;
+        if purge_recycle_bin_entries {
+            let media_roots = match self.all_library_root_folders_for_facet(&title.facet).await {
+                Ok(roots) => roots
+                    .into_iter()
+                    .filter(|root| root.library_id == title.library_id)
+                    .map(|root| root.path)
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id = %title_id,
+                        "failed to resolve recycle roots for deleted title"
+                    );
+                    Vec::new()
+                }
+            };
+            let configs = self.recycle_bin_configs_for_media_roots(media_roots).await;
             let mut purged = 0u32;
-            match crate::recycle_bin::list_committed_entries(&config).await {
-                Ok(entries) => {
-                    for entry in entries {
-                        if entry.manifest.title_id.as_deref() != Some(title_id) {
-                            continue;
-                        }
-                        match crate::recycle_bin::purge_committed_entry(
-                            &config,
-                            &entry.entry_dir,
-                            &entry.manifest,
-                        )
-                        .await
-                        {
-                            Ok(true) => {
-                                purged += 1;
-                                let event = new_title_domain_event(
-                                    actor.clone(),
-                                    title,
-                                    scryer_domain::DomainEventPayload::MediaFileDeleted(
-                                        scryer_domain::MediaFileDeletedEventData {
-                                            title: title_context_snapshot(title),
-                                            media_updates: vec![deleted_media_update(
-                                                entry.manifest.original_path.clone(),
-                                            )],
-                                            file_id: entry.manifest.original_file_id.clone(),
-                                            reason: scryer_domain::MediaFileDeletedReason::RecycleBinPurged,
-                                            episode_ids: Vec::new(),
-                                        },
-                                    ),
-                                );
-                                if let Err(error) = self.append_domain_event(event).await {
-                                    warn!(
-                                        error = %error,
-                                        title_id = %title_id,
-                                        "recycle entry purged for deleted title but audit event could not be recorded"
-                                    );
-                                }
+            for (media_root, config) in configs {
+                match crate::recycle_bin::list_committed_entries(&config).await {
+                    Ok(entries) => {
+                        for entry in entries {
+                            if entry.manifest.title_id.as_deref() != Some(title_id) {
+                                continue;
                             }
-                            Ok(false) => {}
-                            Err(error) => warn!(
-                                error = %error,
-                                title_id = %title_id,
-                                "failed to purge recycle entry for deleted title"
-                            ),
+                            match self
+                                .purge_recycle_entry_after_validation(
+                                    &media_root,
+                                    &config,
+                                    &entry,
+                                    actor.clone(),
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    purged += 1;
+                                }
+                                Ok(false) => {}
+                                Err(error) => warn!(
+                                    error = %error,
+                                    title_id = %title_id,
+                                    "failed to purge recycle entry for deleted title"
+                                ),
+                            }
                         }
                     }
+                    Err(e) => warn!(
+                        error = %e,
+                        title_id = %title_id,
+                        "failed to list recycle entries for deleted title"
+                    ),
                 }
-                Err(e) => warn!(
-                    error = %e,
-                    title_id = %title_id,
-                    "failed to list recycle entries for deleted title"
-                ),
             }
             if purged > 0 {
                 info!(

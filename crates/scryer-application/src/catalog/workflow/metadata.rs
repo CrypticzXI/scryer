@@ -112,7 +112,7 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .update_metadata(id, name, facet, tags)
+            .update_metadata(id, name, facet, tags, None)
             .await?;
         self.emit_title_updated_activity(actor, &title)
             .await;
@@ -128,27 +128,69 @@ impl AppUseCase {
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
     ) -> AppResult<Title> {
-        if name.is_none() && facet.is_none() && tags.is_none() {
+        self.update_title_metadata_with_root_folder_id(actor, id, name, facet, tags, None)
+            .await
+    }
+
+    pub async fn update_title_metadata_with_root_folder_id(
+        &self,
+        actor: &User,
+        id: &str,
+        name: Option<String>,
+        facet: Option<MediaFacet>,
+        tags: Option<Vec<String>>,
+        root_folder_id: Option<Option<String>>,
+    ) -> AppResult<Title> {
+        if name.is_none() && facet.is_none() && tags.is_none() && root_folder_id.is_none() {
             return Err(AppError::Validation(
                 "at least one title field must be provided".into(),
             ));
         }
-        let library_id = self
+        let title = self
             .services
             .catalog
-            .libraries
-            .title_library_id(id)
+            .titles
+            .get_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("title {id}")))?;
         self.require_library_permission(
             actor,
-            &library_id,
+            &title.library_id,
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        if let Some(facet) = facet.as_ref()
+            && facet != &title.facet
+        {
+            return Err(AppError::Validation(
+                "changing a title facet is not supported because titles cannot move between libraries"
+                    .into(),
+            ));
+        }
+        let resolved_root_folder_id = match root_folder_id {
+            Some(Some(root_folder_id)) => Some(
+                self.resolve_title_root_folder_id_for_library(
+                    &title.library_id,
+                    Some(root_folder_id.as_str()),
+                )
+                .await?,
+            ),
+            Some(None) => Some(
+                self.resolve_title_root_folder_id_for_library(&title.library_id, None)
+                    .await?,
+            ),
+            None => None,
+        };
 
-        self.apply_title_metadata_update(actor, id, name, facet, tags)
-            .await
+        let title = self
+            .services
+            .catalog
+            .titles
+            .update_metadata(id, name, facet, tags, resolved_root_folder_id)
+            .await?;
+
+        self.emit_title_updated_activity(actor, &title).await;
+        Ok(title)
     }
 
     pub async fn set_primary_movie_file(

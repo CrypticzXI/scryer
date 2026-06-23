@@ -433,9 +433,7 @@ export function SettingsPluginsContainer() {
     });
     try {
       const { data, error } = await client
-        .mutation(beginInstallPluginMutation, {
-          input: { pluginId: plugin.id },
-        })
+        .mutation(beginInstallPluginMutation, { pluginId: plugin.id })
         .toPromise();
       if (error) throw error;
       const snapshot = data?.beginInstallPlugin;
@@ -605,9 +603,7 @@ export function SettingsPluginsContainer() {
     });
     try {
       const { data, error } = await client
-        .mutation(beginUpgradePluginMutation, {
-          input: { pluginId: plugin.id },
-        })
+        .mutation(beginUpgradePluginMutation, { pluginId: plugin.id })
         .toPromise();
       if (error) throw error;
       const snapshot = data?.beginUpgradePlugin;
@@ -665,9 +661,7 @@ export function SettingsPluginsContainer() {
     beginPluginMutation(plugin.id);
     try {
       const { error } = await client
-        .mutation(uninstallPluginMutation, {
-          input: { pluginId: plugin.id },
-        })
+        .mutation(uninstallPluginMutation, { pluginId: plugin.id })
         .toPromise();
       if (error) throw error;
       setGlobalStatus(

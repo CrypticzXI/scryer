@@ -7,7 +7,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
 
 const DELETE_PREVIEW_SAMPLE_PATH_LIMIT: usize = 5;
 const LARGE_DELETE_MEDIA_THRESHOLD: usize = 50;
@@ -73,6 +72,8 @@ struct MediaFileDeleteContext {
     file_id: String,
     file_path: String,
     subtitle_paths: Vec<String>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +81,8 @@ struct SubtitleDeleteContext {
     title_id: String,
     subtitle_download_id: String,
     file_path: String,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +182,7 @@ impl AppUseCase {
         let context = self.resolve_title_delete_context(title_id).await?;
         self.require_delete_context_permission(actor, &context)
             .await?;
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         Ok(manifest.to_preview())
     }
 
@@ -334,7 +337,7 @@ impl AppUseCase {
         let context = self.resolve_media_file_delete_context(file_id).await?;
         self.require_delete_context_permission(actor, &context)
             .await?;
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         Ok(manifest.to_preview())
     }
 
@@ -446,11 +449,24 @@ impl AppUseCase {
             ));
         }
 
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&subtitle.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", subtitle.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
+
         self.execute_delete_context(
             UserDeleteContext::Subtitle(SubtitleDeleteContext {
                 title_id: subtitle.title_id.clone(),
                 subtitle_download_id: subtitle.id.clone(),
                 file_path: subtitle.file_path.clone(),
+                root_folders,
+                facet: title.facet,
             }),
             preview_fingerprint,
             typed_confirmation,
@@ -507,7 +523,7 @@ impl AppUseCase {
         preview_fingerprint: &str,
         typed_confirmation: Option<&str>,
     ) -> AppResult<()> {
-        let manifest = self.build_delete_manifest(context).await?;
+        let manifest = self.build_delete_manifest(context.clone()).await?;
         if manifest.fingerprint != preview_fingerprint {
             return Err(AppError::Validation(
                 "delete preview is stale; refresh the delete dialog and confirm again".into(),
@@ -521,6 +537,8 @@ impl AppUseCase {
                 "typed confirmation is required; enter {DELETE_TYPED_CONFIRMATION_VALUE}"
             )));
         }
+
+        ensure_delete_context_roots_available(&context)?;
 
         for entry in &manifest.entries {
             delete_single_path(entry).await.map_err(|error| {
@@ -614,6 +632,16 @@ impl AppUseCase {
             .get_media_file_by_id(file_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media file {}", file_id)))?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&media_file.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", media_file.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
         let subtitles = self
             .services
             .workflow
@@ -629,6 +657,8 @@ impl AppUseCase {
                 .into_iter()
                 .map(|record| record.file_path)
                 .collect(),
+            root_folders,
+            facet: title.facet,
         }))
     }
 
@@ -645,11 +675,23 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::NotFound(format!("external subtitle {}", subtitle_download_id))
             })?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&subtitle.title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", subtitle.title_id)))?;
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
 
         Ok(UserDeleteContext::Subtitle(SubtitleDeleteContext {
             title_id: subtitle.title_id,
             subtitle_download_id: subtitle.id,
             file_path: subtitle.file_path,
+            root_folders,
+            facet: title.facet,
         }))
     }
 }
@@ -718,7 +760,7 @@ where
         };
 
         for root in &normalized_roots {
-            if !normalized_file_path.starts_with(root) {
+            if !path_is_under_root(&normalized_file_path, root) {
                 continue;
             }
 
@@ -778,10 +820,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
         )));
     }
 
-    if normalized_roots
-        .iter()
-        .all(|root| !normalized_folder.starts_with(root))
-    {
+    if !path_is_under_any_root(&normalized_folder, &normalized_roots) {
         return Err(AppError::Validation(format!(
             "refusing to delete title folder {} because it is outside the configured root folders",
             normalized_folder.display()
@@ -790,7 +829,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
 
     for tracked in other_titles {
         let other_path = normalize_absolute_path(&stored_path_to_path_buf(&tracked.folder_path))?;
-        if other_path == normalized_folder || other_path.starts_with(&normalized_folder) {
+        if other_path == normalized_folder || path_is_under_root(&other_path, &normalized_folder) {
             return Err(AppError::Validation(format!(
                 "refusing to delete title folder {} because it includes tracked title folder {} ({})",
                 normalized_folder.display(),
@@ -841,12 +880,16 @@ fn build_media_file_delete_manifest(
 ) -> AppResult<UserDeleteManifest> {
     let mut paths = BTreeSet::new();
     let file_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
+    let nfo_path = file_path.with_extension("nfo");
     paths.insert(file_path);
+    paths.insert(nfo_path);
 
     for raw_path in context.subtitle_paths {
         let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&raw_path))?;
         paths.insert(subtitle_path);
     }
+
+    ensure_leaf_paths_within_roots(&paths, context.root_folders, context.facet, "media file")?;
 
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
@@ -861,6 +904,9 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
     let mut paths = BTreeSet::new();
     let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
     paths.insert(subtitle_path);
+
+    ensure_leaf_paths_within_roots(&paths, context.root_folders, context.facet, "subtitle")?;
+
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
         "subtitle",
@@ -868,6 +914,97 @@ fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<U
         context.file_path,
         entries,
     ))
+}
+
+fn ensure_delete_context_roots_available(context: &UserDeleteContext) -> AppResult<()> {
+    match context {
+        UserDeleteContext::Title(context) => {
+            let Some(folder_path) = context.folder_path.as_deref() else {
+                return Ok(());
+            };
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let path = normalize_absolute_path(&stored_path_to_path_buf(folder_path))?;
+            crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
+            Ok(())
+        }
+        UserDeleteContext::MediaFile(context) => {
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let mut raw_paths = Vec::with_capacity(context.subtitle_paths.len() + 1);
+            raw_paths.push(context.file_path.as_str());
+            raw_paths.extend(context.subtitle_paths.iter().map(String::as_str));
+            for raw_path in raw_paths {
+                let path = normalize_absolute_path(&stored_path_to_path_buf(raw_path))?;
+                crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
+            }
+            Ok(())
+        }
+        UserDeleteContext::Subtitle(context) => {
+            let roots =
+                normalize_root_folders(context.root_folders.clone(), context.facet.clone())?;
+            let path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
+            crate::fs_safety::resolve_available_root_for_path(&path, &roots)?;
+            Ok(())
+        }
+    }
+}
+
+/// Ensure every path lies inside one of the configured library root folders.
+/// The title-folder delete flow applies additional folder-specific checks before
+/// this guard. Fails closed when no roots resolve.
+#[cfg(test)]
+fn ensure_paths_within_roots(
+    paths: &BTreeSet<PathBuf>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
+    label: &str,
+) -> AppResult<()> {
+    let normalized_roots = normalize_root_folders(root_folders, facet)?;
+    for path in paths {
+        if !path_is_under_any_root(path, &normalized_roots) {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it is outside the configured root folders",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Ensure every leaf delete target has a parent directory under a configured root.
+/// This rejects root-equal media/subtitle paths even if the root path itself is a
+/// regular file or symlink.
+fn ensure_leaf_paths_within_roots(
+    paths: &BTreeSet<PathBuf>,
+    root_folders: Vec<RootFolderEntry>,
+    facet: MediaFacet,
+    label: &str,
+) -> AppResult<()> {
+    let normalized_roots = normalize_root_folders(root_folders, facet)?;
+    for path in paths {
+        let Some(parent) = path.parent() else {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it has no parent directory",
+                path.display()
+            )));
+        };
+        if path.file_name().is_none() || !path_is_under_any_root(parent, &normalized_roots) {
+            return Err(AppError::Validation(format!(
+                "refusing to delete {label} {} because it is outside the configured root folders",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    crate::recycle_bin::path_is_under_configured_root(path, root)
+}
+
+fn path_is_under_any_root(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path_is_under_root(path, root))
 }
 
 fn normalize_root_folders(
@@ -1166,21 +1303,15 @@ fn build_delete_manifest_fingerprint(
 
 async fn delete_single_path(entry: &DeleteManifestEntry) -> AppResult<()> {
     match entry.delete_kind {
-        DeletePathKind::File => fs::remove_file(&entry.path)
-            .await
-            .map_err(|error| AppError::Repository(error.to_string())),
-        DeletePathKind::Directory => fs::remove_dir(&entry.path)
-            .await
-            .map_err(|error| AppError::Repository(error.to_string())),
-        DeletePathKind::Symlink => match fs::remove_file(&entry.path).await {
+        DeletePathKind::File => crate::fs_safety::remove_file_safely(&entry.path).await,
+        DeletePathKind::Directory => crate::fs_safety::remove_dir_safely(&entry.path).await,
+        DeletePathKind::Symlink => match crate::fs_safety::remove_file_safely(&entry.path).await {
             Ok(()) => Ok(()),
-            Err(remove_file_error) => {
-                fs::remove_dir(&entry.path)
-                    .await
-                    .map_err(|remove_dir_error| {
-                        AppError::Repository(format!("{remove_file_error}; {remove_dir_error}"))
-                    })
-            }
+            Err(remove_file_error) => crate::fs_safety::remove_dir_safely(&entry.path)
+                .await
+                .map_err(|remove_dir_error| {
+                    AppError::Repository(format!("{remove_file_error}; {remove_dir_error}"))
+                }),
         },
     }
 }
@@ -1188,6 +1319,13 @@ async fn delete_single_path(entry: &DeleteManifestEntry) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root_entry(path: &Path) -> RootFolderEntry {
+        RootFolderEntry {
+            path: path_to_stored_string(path),
+            is_default: true,
+        }
+    }
 
     #[test]
     fn infer_title_folder_path_from_paths_uses_title_root_under_configured_root() {
@@ -1223,5 +1361,203 @@ mod tests {
         );
 
         assert_eq!(inferred, None);
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_accepts_paths_under_a_root() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from(
+            "/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv",
+        ));
+        paths.insert(PathBuf::from(
+            "/data/anime/Emberfall/Season 01/Emberfall - S01E01.srt",
+        ));
+
+        ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file")
+            .expect("paths inside the configured root must be accepted");
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_rejects_path_outside_roots() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/etc/passwd"));
+
+        let result =
+            ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "a path outside all configured roots must be refused"
+        );
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_rejects_sibling_prefix_path() {
+        // `/data/anime-secret` must NOT be considered inside `/data/anime`.
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime-secret/Show/file.mkv"));
+
+        let result =
+            ensure_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "component-wise containment must reject sibling-prefix paths"
+        );
+    }
+
+    #[test]
+    fn ensure_paths_within_roots_fails_closed_with_no_roots() {
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime/Show/file.mkv"));
+
+        let result = ensure_paths_within_roots(&paths, Vec::new(), MediaFacet::Anime, "media file");
+        assert!(
+            result.is_err(),
+            "no configured roots must fail closed rather than allowing deletion"
+        );
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_accepts_file_parent_under_root() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime/Show/file.mkv"));
+        paths.insert(PathBuf::from("/data/anime/Show/file.srt"));
+
+        ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file")
+            .expect("leaf files under a configured root must be accepted");
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_rejects_root_path() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime"));
+
+        let result =
+            ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "media file");
+        assert!(
+            result.is_err(),
+            "leaf delete containment must reject a path equal to the configured root"
+        );
+    }
+
+    #[test]
+    fn ensure_leaf_paths_within_roots_rejects_sibling_prefix_path() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+        let mut paths = BTreeSet::new();
+        paths.insert(PathBuf::from("/data/anime-secret/file.mkv"));
+
+        let result =
+            ensure_leaf_paths_within_roots(&paths, root_folders, MediaFacet::Anime, "subtitle");
+        assert!(
+            result.is_err(),
+            "leaf delete containment must reject sibling-prefix paths"
+        );
+    }
+
+    #[test]
+    fn media_file_manifest_includes_nfo_and_tracked_subtitles_but_not_plexmatch() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let title_dir = tempdir.path().join("Show");
+        std::fs::create_dir(&title_dir).expect("create title dir");
+        let media_path = title_dir.join("Episode.mkv");
+        let nfo_path = title_dir.join("Episode.nfo");
+        let subtitle_path = title_dir.join("Episode.en.srt");
+        let plexmatch_path = title_dir.join(".plexmatch");
+        std::fs::write(&media_path, b"media").expect("write media");
+        std::fs::write(&nfo_path, b"metadata").expect("write nfo");
+        std::fs::write(&subtitle_path, b"subtitle").expect("write subtitle");
+        std::fs::write(&plexmatch_path, b"title metadata").expect("write plexmatch");
+
+        let manifest = build_media_file_delete_manifest(MediaFileDeleteContext {
+            title_id: "title-1".to_string(),
+            file_id: "file-1".to_string(),
+            file_path: path_to_stored_string(&media_path),
+            subtitle_paths: vec![path_to_stored_string(&subtitle_path)],
+            root_folders: vec![test_root_entry(tempdir.path())],
+            facet: MediaFacet::Anime,
+        })
+        .expect("build manifest");
+
+        let paths: BTreeSet<_> = manifest.entries.iter().map(|entry| &entry.path).collect();
+        assert!(paths.contains(&media_path));
+        assert!(paths.contains(&nfo_path));
+        assert!(paths.contains(&subtitle_path));
+        assert!(!paths.contains(&plexmatch_path));
+    }
+
+    #[test]
+    fn title_folder_manifest_includes_plexmatch_from_directory_walk() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let title_dir = tempdir.path().join("Show");
+        std::fs::create_dir(&title_dir).expect("create title dir");
+        let media_path = title_dir.join("Episode.mkv");
+        let plexmatch_path = title_dir.join(".plexmatch");
+        std::fs::write(&media_path, b"media").expect("write media");
+        std::fs::write(&plexmatch_path, b"title metadata").expect("write plexmatch");
+
+        let manifest = build_title_delete_manifest(TitleDeleteContext {
+            title_id: "title-1".to_string(),
+            title_name: "Show".to_string(),
+            facet: MediaFacet::Anime,
+            folder_path: Some(path_to_stored_string(&title_dir)),
+            root_folders: vec![test_root_entry(tempdir.path())],
+            other_titles: Vec::new(),
+        })
+        .expect("build title manifest");
+
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.path == plexmatch_path),
+            "title folder delete should include .plexmatch via the directory walk"
+        );
+    }
+
+    #[test]
+    fn delete_context_root_availability_requires_non_empty_root_for_disk_delete() {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let missing_media_path = tempdir.path().join("Missing.mkv");
+        let context = UserDeleteContext::MediaFile(MediaFileDeleteContext {
+            title_id: "title-1".to_string(),
+            file_id: "file-1".to_string(),
+            file_path: path_to_stored_string(&missing_media_path),
+            subtitle_paths: Vec::new(),
+            root_folders: vec![test_root_entry(tempdir.path())],
+            facet: MediaFacet::Anime,
+        });
+
+        let empty_result = ensure_delete_context_roots_available(&context);
+        assert!(
+            matches!(empty_result, Err(AppError::Validation(_))),
+            "empty roots should not prove that a disk-delete target's root is mounted"
+        );
+
+        std::fs::write(tempdir.path().join(".mount-check"), b"mounted")
+            .expect("write mount marker");
+        ensure_delete_context_roots_available(&context)
+            .expect("missing target is allowed once the containing root is available");
     }
 }

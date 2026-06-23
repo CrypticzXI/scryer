@@ -53,6 +53,10 @@ import type {
 import type { ImportMode, MediaSettings } from "@/lib/types/settings";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import {
+  localPathStyleFromRuntimeValue,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
 
 type UseMediaSettingsArgs = {
   activeQualityScopeId: ViewCategoryId;
@@ -66,6 +70,7 @@ export type UseMediaSettingsResult = {
   setSeriesPath: (value: string) => void;
   rootFolders: RootFolderOption[];
   saveRootFolders: (folders: RootFolderOption[]) => void;
+  localPathStyle: LocalPathStyle | undefined;
   mediaSettingsLoading: boolean;
   mediaSettingsSaving: boolean;
   qualityProfiles: SearchableQualityProfileBody[];
@@ -185,6 +190,8 @@ export function useMediaSettings({
     DEFAULT_SERIES_LIBRARY_PATH,
   );
   const [rootFolders, setRootFolders] = React.useState<RootFolderOption[]>([]);
+  const [localPathStyle, setLocalPathStyle] =
+    React.useState<LocalPathStyle | undefined>(undefined);
   const [mediaSettingsLoading, setMediaSettingsLoading] = React.useState(false);
   const [mediaSettingsSaving, setMediaSettingsSaving] = React.useState(false);
   const [qualityProfiles, setQualityProfiles] = React.useState<
@@ -198,7 +205,7 @@ export function useMediaSettings({
   const [globalQualityProfileId, setGlobalQualityProfileId] =
     React.useState("");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("Balanced");
+    React.useState<ScoringPersonaId>("balanced");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] =
     React.useState<Record<ViewCategoryId, string>>({
       movie: QUALITY_PROFILE_INHERIT_VALUE,
@@ -516,9 +523,9 @@ export function useMediaSettings({
         current === resolvedGlobalId ? current : resolvedGlobalId,
       );
       setGlobalScoringPersona((current) =>
-        current === (qualityProfileSettings?.globalScoringPersona ?? "Balanced")
+        current === (qualityProfileSettings?.globalScoringPersona ?? "balanced")
           ? current
-          : (qualityProfileSettings?.globalScoringPersona ?? "Balanced"),
+          : (qualityProfileSettings?.globalScoringPersona ?? "balanced"),
       );
 
       setQualityProfiles((currentProfiles) =>
@@ -693,6 +700,9 @@ export function useMediaSettings({
         .toPromise();
       if (error) throw error;
 
+      setLocalPathStyle(
+        localPathStyleFromRuntimeValue(data?.runtimeInfo?.runtimePathStyle),
+      );
       applyMediaSettingsFromPayload(
         data.qualityProfileSettings,
         data.mediaSettings,
@@ -1143,6 +1153,7 @@ export function useMediaSettings({
     setSeriesPath,
     rootFolders,
     saveRootFolders,
+    localPathStyle,
     mediaSettingsLoading,
     mediaSettingsSaving,
     qualityProfiles,

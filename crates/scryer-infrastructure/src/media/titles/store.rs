@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, TitleArtworkUrlUpdate,
-    TitleDeletePreviewInfo, TitleMetadataUpdate, TitleRepository,
+    AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, SortDirection,
+    TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogResult,
+    TitleCatalogSort, TitleCatalogSortKey, TitleDeletePreviewInfo, TitleMetadataUpdate,
+    TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -25,14 +27,14 @@ use crate::queries::{
 use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
-    id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
+    id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
@@ -40,14 +42,14 @@ const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
 )";
 
 const TITLE_UPSERT_SQL: &str = "INSERT INTO titles (
-    id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
+    id, library_id, name, facet, monitored, tags, external_ids, root_folder_id, created_by, created_at,
     year, overview, poster_url, background_url, sort_title, slug, imdb_id,
     runtime_minutes, genres, content_status, language, first_aired, network, studio,
     country, aliases, metadata_language, metadata_fetched_at, min_availability,
     digital_release_date, folder_path, tagged_aliases_json,
     metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {},
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {}, {}, {},
     {}, {}, {}, {}, {},
@@ -60,6 +62,7 @@ ON CONFLICT (id) DO UPDATE SET
     monitored = excluded.monitored,
     tags = excluded.tags,
     external_ids = excluded.external_ids,
+    root_folder_id = excluded.root_folder_id,
     created_by = excluded.created_by,
     created_at = excluded.created_at,
     year = excluded.year,
@@ -100,6 +103,14 @@ ON CONFLICT (id) DO UPDATE SET
         WHEN {} THEN titles.metadata_hydration_attempt_count
         ELSE excluded.metadata_hydration_attempt_count
     END";
+const RECYCLE_BIN_PATH_SEGMENT: &str = "/.scryer-recycle/";
+const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
+
+#[derive(Clone, Copy)]
+enum TitleCatalogSqlDialect {
+    Sqlite,
+    Postgres,
+}
 
 #[derive(Clone)]
 pub struct TitleStore {
@@ -361,6 +372,75 @@ impl TitleRepository for TitleStore {
             false,
         )
         .await
+    }
+
+    async fn list_for_libraries_catalog(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+        filter: TitleCatalogFilter,
+        sort: TitleCatalogSort,
+        limit: usize,
+        offset: usize,
+        include_external_ids: bool,
+    ) -> AppResult<TitleCatalogResult> {
+        if library_ids.is_empty() {
+            return Ok(TitleCatalogResult {
+                items: Vec::new(),
+                limit,
+                offset,
+                has_more: false,
+                total_count: 0,
+            });
+        }
+
+        let query = query.as_deref();
+        let (count_sql, count_args) =
+            build_title_catalog_count_sql(facet.clone(), library_ids, query, &filter);
+        let total_count =
+            SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &count_args)
+                .await?
+                .map(|row| row.i64("count"))
+                .transpose()?
+                .unwrap_or(0)
+                .max(0) as usize;
+
+        if total_count == 0 || limit == 0 {
+            return Ok(TitleCatalogResult {
+                items: Vec::new(),
+                limit,
+                offset,
+                has_more: false,
+                total_count,
+            });
+        }
+
+        let (page_sql, page_args) = build_title_catalog_page_sql(
+            facet,
+            library_ids,
+            query,
+            &filter,
+            sort,
+            limit,
+            offset,
+            title_catalog_dialect_for_datastore(&self.datastore),
+        );
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &page_sql, &page_args).await?;
+        let items = decode_runtime_title_rows(
+            &rows,
+            PersistedTitleReadMode::Presentation,
+            include_external_ids,
+        )?;
+        let has_more = offset.saturating_add(items.len()) < total_count;
+
+        Ok(TitleCatalogResult {
+            items,
+            limit,
+            offset,
+            has_more,
+            total_count,
+        })
     }
 
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
@@ -824,8 +904,9 @@ impl TitleRepository for TitleStore {
         name: Option<String>,
         facet: Option<MediaFacet>,
         tags: Option<Vec<String>>,
+        root_folder_id: Option<String>,
     ) -> AppResult<Title> {
-        if name.is_none() && facet.is_none() && tags.is_none() {
+        if name.is_none() && facet.is_none() && tags.is_none() && root_folder_id.is_none() {
             return Err(AppError::Validation(
                 "at least one title field must be provided".to_string(),
             ));
@@ -837,6 +918,7 @@ impl TitleRepository for TitleStore {
             let name = name.clone();
             let facet = facet.clone();
             let tags = tags.clone();
+            let root_folder_id = root_folder_id.clone();
             Box::pin(async move {
                 let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                 if let Some(name) = name {
@@ -849,10 +931,19 @@ impl TitleRepository for TitleStore {
                     title.name = normalized.to_string();
                 }
                 if let Some(facet) = facet {
+                    if facet != title.facet {
+                        return Err(AppError::Validation(
+                            "changing a title facet is not supported because titles cannot move between libraries"
+                                .to_string(),
+                        ));
+                    }
                     title.facet = facet;
                 }
                 if let Some(tags) = tags {
                     title.tags = tags;
+                }
+                if let Some(root_folder_id) = root_folder_id {
+                    title.root_folder_id = root_folder_id;
                 }
                 persist_title_tx(tx, &title, HydrationStateWrite::Preserve).await?;
                 load_title_tx_or_not_found(tx, &id, true).await
@@ -1274,6 +1365,7 @@ where
         } else {
             Vec::new()
         },
+        root_folder_id: row.text("root_folder_id")?,
         created_by: row.opt_text("created_by")?,
         created_at: row.timestamp("created_at")?,
         year: row.opt_i32("year")?,
@@ -1465,6 +1557,317 @@ fn build_plain_title_list_sql(
     }
     sql.push_str(" ORDER BY LOWER(name), id");
     (sql, args)
+}
+
+fn build_title_catalog_count_sql(
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<&str>,
+    filter: &TitleCatalogFilter,
+) -> (String, Vec<SqlArg>) {
+    let mut sql = "SELECT COUNT(*) AS count FROM titles".to_string();
+    let (where_sql, args) = build_title_catalog_where_sql(facet, library_ids, query, filter);
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_sql);
+    }
+    (sql, args)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "title catalog SQL assembly mirrors the catalog query filter, sort, pagination, and dialect inputs"
+)]
+fn build_title_catalog_page_sql(
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<&str>,
+    filter: &TitleCatalogFilter,
+    sort: TitleCatalogSort,
+    limit: usize,
+    offset: usize,
+    dialect: TitleCatalogSqlDialect,
+) -> (String, Vec<SqlArg>) {
+    let mut sql = format!("SELECT {TITLE_COLUMNS} FROM titles");
+    sql.push_str(&build_title_catalog_sort_join_sql(sort.key, dialect));
+    let (where_sql, mut args) = build_title_catalog_where_sql(facet, library_ids, query, filter);
+    if !where_sql.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_sql);
+    }
+    sql.push(' ');
+    sql.push_str(&build_title_catalog_order_sql(sort, dialect));
+    sql.push_str(" LIMIT {} OFFSET {}");
+    args.push(SqlArg::I64(limit as i64));
+    args.push(SqlArg::I64(offset as i64));
+    (sql, args)
+}
+
+fn build_title_catalog_where_sql(
+    facet: Option<MediaFacet>,
+    library_ids: &[String],
+    query: Option<&str>,
+    filter: &TitleCatalogFilter,
+) -> (String, Vec<SqlArg>) {
+    let mut clauses = Vec::<String>::new();
+    let mut args = Vec::new();
+
+    if library_ids.is_empty() {
+        clauses.push("1 = 0".to_string());
+    } else {
+        let placeholders = std::iter::repeat_n("{}", library_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("library_id IN ({placeholders})"));
+        args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+    }
+
+    if let Some(facet) = facet {
+        clauses.push("facet = {}".to_string());
+        args.push(SqlArg::Text(facet.as_str().to_string()));
+    }
+
+    if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+        clauses.push("LOWER(name) LIKE {}".to_string());
+        args.push(SqlArg::Text(format!("%{}%", query.to_lowercase())));
+    }
+
+    if let Some(monitored) = filter.monitored {
+        clauses.push("monitored = {}".to_string());
+        args.push(SqlArg::Bool(monitored));
+    }
+
+    let statuses = title_catalog_content_status_values(&filter.content_statuses);
+    if !statuses.is_empty() {
+        let placeholders = std::iter::repeat_n("{}", statuses.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!(
+            "LOWER(TRIM(COALESCE(content_status, ''))) IN ({placeholders})"
+        ));
+        args.extend(statuses.into_iter().map(SqlArg::Text));
+    }
+
+    (clauses.join(" AND "), args)
+}
+
+fn title_catalog_content_status_values(statuses: &[TitleCatalogContentStatus]) -> Vec<String> {
+    let mut normalized: Vec<String> = Vec::new();
+    for status in statuses {
+        let values = match status {
+            TitleCatalogContentStatus::Continuing => ["continuing", "returning"],
+            TitleCatalogContentStatus::Ended => ["ended", "finished"],
+        };
+        for value in values {
+            if !normalized
+                .iter()
+                .any(|candidate| candidate.as_str() == value)
+            {
+                normalized.push(value.to_string());
+            }
+        }
+    }
+    normalized
+}
+
+fn build_title_catalog_sort_join_sql(
+    key: TitleCatalogSortKey,
+    dialect: TitleCatalogSqlDialect,
+) -> String {
+    match key {
+        TitleCatalogSortKey::Size => format!(
+            " LEFT JOIN ({}) catalog_media_size ON catalog_media_size.title_id = titles.id",
+            title_catalog_media_size_subquery(dialect)
+        ),
+        TitleCatalogSortKey::Episodes => format!(
+            " LEFT JOIN ({}) catalog_episode_progress ON catalog_episode_progress.title_id = titles.id",
+            title_catalog_episode_progress_subquery(dialect)
+        ),
+        TitleCatalogSortKey::Title
+        | TitleCatalogSortKey::Monitored
+        | TitleCatalogSortKey::Quality
+        | TitleCatalogSortKey::Status => String::new(),
+    }
+}
+
+fn build_title_catalog_order_sql(
+    sort: TitleCatalogSort,
+    dialect: TitleCatalogSqlDialect,
+) -> String {
+    let direction = match sort.direction {
+        SortDirection::Asc => "ASC",
+        SortDirection::Desc => "DESC",
+    };
+    match sort.key {
+        TitleCatalogSortKey::Title => format!(
+            "ORDER BY LOWER(COALESCE(NULLIF(TRIM(sort_title), ''), name)) {direction}, \
+             CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
+        ),
+        TitleCatalogSortKey::Monitored => format!(
+            "ORDER BY monitored {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Quality => {
+            let missing_direction = nullable_text_missing_direction(sort.direction);
+            let expression = title_catalog_quality_profile_expression(dialect);
+            format!(
+                "ORDER BY CASE WHEN {expression} = '' THEN 1 ELSE 0 END {missing_direction}, \
+                 {expression} {direction}, {}",
+                title_catalog_ascending_tie_order_sql()
+            )
+        }
+        TitleCatalogSortKey::Episodes => format!(
+            "ORDER BY CASE
+                 WHEN COALESCE(catalog_episode_progress.total_episodes, 0) > 0
+                 THEN (catalog_episode_progress.owned_episodes * 1.0) / catalog_episode_progress.total_episodes
+                 ELSE -1.0
+             END {direction},
+             COALESCE(catalog_episode_progress.owned_episodes, 0) {direction},
+             COALESCE(catalog_episode_progress.total_episodes, 0) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Status => {
+            let missing_direction = nullable_text_missing_direction(sort.direction);
+            let raw_expression = "LOWER(TRIM(COALESCE(content_status, '')))";
+            let expression = format!(
+                "CASE {raw_expression} \
+                 WHEN 'returning' THEN 'continuing' \
+                 WHEN 'finished' THEN 'ended' \
+                 ELSE {raw_expression} END"
+            );
+            format!(
+                "ORDER BY CASE WHEN {expression} = '' THEN 1 ELSE 0 END {missing_direction}, \
+                 {expression} {direction}, {}",
+                title_catalog_ascending_tie_order_sql()
+            )
+        }
+        TitleCatalogSortKey::Size => format!(
+            "ORDER BY COALESCE(catalog_media_size.total_size_bytes, -1) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+    }
+}
+
+fn title_catalog_ascending_tie_order_sql() -> &'static str {
+    "LOWER(COALESCE(NULLIF(TRIM(sort_title), ''), name)) ASC, \
+     CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year ASC, id ASC"
+}
+
+fn nullable_text_missing_direction(direction: SortDirection) -> &'static str {
+    match direction {
+        SortDirection::Asc => "ASC",
+        SortDirection::Desc => "DESC",
+    }
+}
+
+fn title_catalog_dialect_for_datastore(datastore: &StoreDatastore) -> TitleCatalogSqlDialect {
+    match datastore {
+        StoreDatastore::Sqlite { .. } => TitleCatalogSqlDialect::Sqlite,
+        StoreDatastore::Postgres { .. } => TitleCatalogSqlDialect::Postgres,
+    }
+}
+
+fn title_catalog_live_media_file_predicate(dialect: TitleCatalogSqlDialect, alias: &str) -> String {
+    match dialect {
+        TitleCatalogSqlDialect::Sqlite => {
+            format!("instr({alias}.file_path, '{RECYCLE_BIN_PATH_SEGMENT}') = 0")
+        }
+        TitleCatalogSqlDialect::Postgres => {
+            format!("POSITION('{RECYCLE_BIN_PATH_SEGMENT}' IN {alias}.file_path) = 0")
+        }
+    }
+}
+
+fn title_catalog_total_size_sum_expression(
+    dialect: TitleCatalogSqlDialect,
+    expression: &str,
+) -> String {
+    match dialect {
+        TitleCatalogSqlDialect::Sqlite => format!("COALESCE(SUM({expression}), 0)"),
+        TitleCatalogSqlDialect::Postgres => format!("COALESCE(SUM({expression}), 0)::BIGINT"),
+    }
+}
+
+fn title_catalog_bool_column_is_true(dialect: TitleCatalogSqlDialect, column: &str) -> String {
+    match dialect {
+        TitleCatalogSqlDialect::Sqlite => format!("{column} = 1"),
+        TitleCatalogSqlDialect::Postgres => column.to_string(),
+    }
+}
+
+fn title_catalog_quality_profile_expression(dialect: TitleCatalogSqlDialect) -> String {
+    match dialect {
+        TitleCatalogSqlDialect::Sqlite => format!(
+            "COALESCE((
+                SELECT LOWER(TRIM(SUBSTR(tag.value, LENGTH('{TITLE_QUALITY_PROFILE_TAG_PREFIX}') + 1)))
+                  FROM json_each(titles.tags) AS tag
+                 WHERE tag.value LIKE '{TITLE_QUALITY_PROFILE_TAG_PREFIX}%'
+                 LIMIT 1
+            ), '')"
+        ),
+        TitleCatalogSqlDialect::Postgres => format!(
+            "COALESCE((
+                SELECT LOWER(TRIM(SUBSTR(tag.value, LENGTH('{TITLE_QUALITY_PROFILE_TAG_PREFIX}') + 1)))
+                  FROM jsonb_array_elements_text(titles.tags) AS tag(value)
+                 WHERE tag.value LIKE '{TITLE_QUALITY_PROFILE_TAG_PREFIX}%'
+                 LIMIT 1
+            ), '')"
+        ),
+    }
+}
+
+fn title_catalog_media_size_subquery(dialect: TitleCatalogSqlDialect) -> String {
+    let total_size_expression =
+        title_catalog_total_size_sum_expression(dialect, "matched.size_bytes");
+    format!(
+        "SELECT matched.title_id,
+                {total_size_expression} AS total_size_bytes
+           FROM (
+                SELECT DISTINCT mf.id,
+                       mf.title_id,
+                       CASE
+                           WHEN mf.size_bytes > 0 THEN mf.size_bytes
+                           ELSE 0
+                       END AS size_bytes
+                  FROM media_files mf
+             LEFT JOIN file_episode_map fem
+                    ON fem.file_id = mf.id
+             LEFT JOIN collections c
+                    ON c.title_id = mf.title_id
+                   AND c.ordered_path = mf.file_path
+             LEFT JOIN file_series_movie_link_map fsmlm
+                    ON fsmlm.file_id = mf.id
+                 WHERE {}
+                   AND (
+                       fem.file_id IS NOT NULL
+                       OR c.id IS NOT NULL
+                       OR fsmlm.file_id IS NOT NULL
+                   )
+           ) matched
+          GROUP BY matched.title_id",
+        title_catalog_live_media_file_predicate(dialect, "mf")
+    )
+}
+
+fn title_catalog_episode_progress_subquery(dialect: TitleCatalogSqlDialect) -> String {
+    format!(
+        "SELECT e.title_id,
+                COUNT(DISTINCT e.id) AS total_episodes,
+                COUNT(DISTINCT CASE WHEN {} THEN e.id END) AS monitored_episodes,
+                COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
+           FROM episodes e
+          INNER JOIN collections c ON c.id = e.collection_id
+           LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
+           LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
+          WHERE c.collection_type <> 'specials'
+            AND c.collection_index <> '0'
+            AND trim(COALESCE(e.title, '')) <> ''
+            AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
+            AND trim(COALESCE(e.air_date, '')) <> ''
+          GROUP BY e.title_id",
+        title_catalog_bool_column_is_true(dialect, "e.monitored"),
+        title_catalog_live_media_file_predicate(dialect, "mf")
+    )
 }
 
 fn build_title_page_after_id_sql(after_id: Option<&str>, limit: usize) -> (String, Vec<SqlArg>) {
@@ -1704,6 +2107,7 @@ fn title_write_args(
         SqlArg::Json(
             serde_json::to_value(&title.external_ids).unwrap_or(JsonValue::Array(Vec::new())),
         ),
+        SqlArg::Text(title.root_folder_id.clone()),
         SqlArg::OptText(title.created_by.clone()),
         SqlArg::Timestamp(title.created_at),
         SqlArg::OptI64(title.year.map(i64::from)),

@@ -1,4 +1,4 @@
-use async_graphql::{ComplexObject, Context, Result as GqlResult};
+use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
 use scryer_application::{ReleaseDecisionsQuery, WantedItemsQuery};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 
@@ -9,6 +9,8 @@ use crate::mappers::{
 };
 use crate::types::*;
 
+const RELATION_PAGE_MAX_LIMIT: i32 = 300;
+
 fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
     match facet {
         MediaFacetValue::Movie => ContentScopeValue::Movie,
@@ -17,41 +19,50 @@ fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
     }
 }
 
+fn relation_page_limit(limit: i32) -> i32 {
+    limit.clamp(1, RELATION_PAGE_MAX_LIMIT)
+}
+
+fn relation_page_offset(offset: i32) -> i32 {
+    offset.max(0)
+}
+
 #[ComplexObject]
 impl LibraryPayload {
-    async fn quality_profile_id(&self, ctx: &Context<'_>) -> GqlResult<String> {
+    async fn quality_profile_id(&self, ctx: &Context<'_>) -> GqlResult<ID> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.title_quality_profile_id_for_library(&actor, &self.id)
+        app.title_quality_profile_id_for_library(&actor, self.id.as_ref())
             .await
+            .map(Into::into)
             .map_err(to_gql_error)
     }
 
-    async fn request_quality_profile_ids(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
+    async fn request_quality_profile_ids(&self, ctx: &Context<'_>) -> GqlResult<Vec<ID>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let settings = app
-            .request_quality_profile_settings_for_library(&actor, &self.id)
+            .request_quality_profile_settings_for_library(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(settings.profile_ids)
+        Ok(settings.profile_ids.into_iter().map(Into::into).collect())
     }
 
-    async fn request_quality_profile_default_id(&self, ctx: &Context<'_>) -> GqlResult<String> {
+    async fn request_quality_profile_default_id(&self, ctx: &Context<'_>) -> GqlResult<ID> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let settings = app
-            .request_quality_profile_settings_for_library(&actor, &self.id)
+            .request_quality_profile_settings_for_library(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(settings.default_profile_id)
+        Ok(settings.default_profile_id.into())
     }
 
     async fn settings(&self, ctx: &Context<'_>) -> GqlResult<LibrarySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let settings = app
-            .get_library_settings(&actor, &self.id)
+            .get_library_settings(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_settings(settings))
@@ -60,12 +71,31 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
+    async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.require_library_permission(
+            &actor,
+            self.library_id.as_ref(),
+            scryer_domain::LibraryPermission::View,
+        )
+        .await
+        .map_err(to_gql_error)?;
+        app.title_root_folder_path_for_parts(
+            self.root_folder_id.as_ref(),
+            self.library_id.as_ref(),
+            &self.facet.into_domain(),
+        )
+        .await
+        .map_err(to_gql_error)
+    }
+
     async fn required_audio_languages_override(
         &self,
         ctx: &Context<'_>,
     ) -> GqlResult<Option<Vec<String>>> {
         let app = app_from_ctx(ctx)?;
-        app.load_title_required_audio_override(&self.id)
+        app.load_title_required_audio_override(self.id.as_ref())
             .await
             .map_err(to_gql_error)
     }
@@ -76,7 +106,7 @@ impl TitlePayload {
     ) -> GqlResult<Vec<String>> {
         let app = app_from_ctx(ctx)?;
         if let Some(languages) = app
-            .load_title_required_audio_override(&self.id)
+            .load_title_required_audio_override(self.id.as_ref())
             .await
             .map_err(to_gql_error)?
         {
@@ -90,16 +120,19 @@ impl TitlePayload {
     async fn inherits_required_audio_languages(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         Ok(app
-            .load_title_required_audio_override(&self.id)
+            .load_title_required_audio_override(self.id.as_ref())
             .await?
             .is_none())
     }
 
     async fn collections(&self, ctx: &Context<'_>) -> GqlResult<Vec<CollectionPayload>> {
+        if let Some(collections) = &self.preloaded_collections {
+            return Ok(collections.clone());
+        }
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let collections = app
-            .list_collections(&actor, &self.id)
+            .list_collections(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(collections.into_iter().map(from_collection).collect())
@@ -112,7 +145,7 @@ impl TitlePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let links = app
-            .list_series_movie_links(&actor, &self.id)
+            .list_series_movie_links(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(links.into_iter().map(from_series_movie_link).collect())
@@ -122,7 +155,7 @@ impl TitlePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let files = app
-            .list_title_media_files(&actor, &self.id)
+            .list_title_media_files(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(files.into_iter().map(from_title_media_file).collect())
@@ -131,48 +164,81 @@ impl TitlePayload {
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
-        status: Option<String>,
-    ) -> GqlResult<Vec<WantedItemPayload>> {
+        status: Option<WantedStatusValue>,
+        #[graphql(default = 50)] limit: i32,
+        #[graphql(default = 0)] offset: i32,
+    ) -> GqlResult<WantedItemsPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let (items, _) = app
+        let limit = relation_page_limit(limit);
+        let offset = relation_page_offset(offset);
+        let (items, total_count) = app
             .list_wanted_items(
                 &actor,
                 WantedItemsQuery {
-                    statuses: status.into_iter().collect(),
+                    statuses: status
+                        .map(|value| value.as_str().to_string())
+                        .into_iter()
+                        .collect(),
                     media_types: Vec::new(),
-                    title_id: Some(self.id.clone()),
+                    title_id: Some(self.id.to_string()),
                     library_ids: Vec::new(),
                     title_search: None,
                     latest_decision_codes: Vec::new(),
-                    limit: 500,
-                    offset: 0,
+                    limit: i64::from(limit),
+                    offset: i64::from(offset),
                 },
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_wanted_item).collect())
+        Ok(WantedItemsPagePayload {
+            items: items
+                .into_iter()
+                .map(from_wanted_item)
+                .collect::<scryer_application::AppResult<Vec<_>>>()
+                .map_err(to_gql_error)?,
+            limit,
+            offset,
+            has_more: i64::from(offset) + i64::from(limit) < total_count,
+            total_count: total_count.min(i64::from(i32::MAX)) as i32,
+        })
     }
 
     async fn release_decisions(
         &self,
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: i64,
-    ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
+        #[graphql(default = 0)] offset: i32,
+    ) -> GqlResult<ReleaseDecisionsPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let limit = relation_page_limit(limit.min(i64::from(i32::MAX)) as i32);
+        let offset = relation_page_offset(offset);
         let decisions = app
             .list_release_decisions(
                 &actor,
                 ReleaseDecisionsQuery {
                     wanted_item_id: None,
-                    title_id: Some(self.id.clone()),
-                    limit,
+                    title_id: Some(self.id.to_string()),
+                    limit: i64::from(limit) + i64::from(offset) + 1,
                 },
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(decisions.into_iter().map(from_release_decision).collect())
+        let mut items = decisions
+            .into_iter()
+            .skip(offset as usize)
+            .map(from_release_decision)
+            .collect::<scryer_application::AppResult<Vec<_>>>()
+            .map_err(to_gql_error)?;
+        let has_more = items.len() > limit as usize;
+        items.truncate(limit as usize);
+        Ok(ReleaseDecisionsPagePayload {
+            items,
+            limit,
+            offset,
+            has_more,
+        })
     }
 
     async fn download_queue_items(
@@ -188,7 +254,7 @@ impl TitlePayload {
         let items = app
             .list_download_queue_for_title(
                 &actor,
-                &self.id,
+                self.id.as_ref(),
                 include_all_activity.unwrap_or(false),
                 include_history_only.unwrap_or(false),
                 include_import_activity.unwrap_or(false),
@@ -208,7 +274,7 @@ impl CollectionPayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title(&actor, &self.title_id)
+            .get_title(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -219,7 +285,7 @@ impl CollectionPayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let episodes = app
-            .list_episodes(&actor, &self.id)
+            .list_episodes(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(episodes.into_iter().map(from_episode).collect())
@@ -232,7 +298,7 @@ impl EpisodePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title(&actor, &self.title_id)
+            .get_title(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -257,10 +323,12 @@ impl EpisodePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let wanted_item = app
-            .get_title_wanted_item(&actor, &self.title_id, Some(&self.id))
+            .get_title_wanted_item(&actor, self.title_id.as_ref(), Some(self.id.as_ref()))
             .await
             .map_err(to_gql_error)?
-            .map(from_wanted_item);
+            .map(from_wanted_item)
+            .transpose()
+            .map_err(to_gql_error)?;
         Ok(wanted_item)
     }
 
@@ -268,12 +336,12 @@ impl EpisodePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let files = app
-            .list_title_media_files(&actor, &self.title_id)
+            .list_title_media_files(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?;
         Ok(files
             .into_iter()
-            .filter(|file| file.episode_id.as_deref() == Some(self.id.as_str()))
+            .filter(|file| file.episode_id.as_deref() == Some(self.id.as_ref()))
             .map(from_title_media_file)
             .collect())
     }
@@ -285,7 +353,7 @@ impl TitleMediaFilePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title(&actor, &self.title_id)
+            .get_title(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -313,7 +381,7 @@ impl WantedItemPayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title(&actor, &self.title_id)
+            .get_title(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -352,31 +420,67 @@ impl WantedItemPayload {
         &self,
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: i64,
-    ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
+        #[graphql(default = 0)] offset: i32,
+    ) -> GqlResult<ReleaseDecisionsPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let limit = relation_page_limit(limit.min(i64::from(i32::MAX)) as i32);
+        let offset = relation_page_offset(offset);
         let decisions = app
             .list_release_decisions(
                 &actor,
                 ReleaseDecisionsQuery {
-                    wanted_item_id: Some(self.id.clone()),
+                    wanted_item_id: Some(self.id.to_string()),
                     title_id: None,
-                    limit,
+                    limit: i64::from(limit) + i64::from(offset) + 1,
                 },
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(decisions.into_iter().map(from_release_decision).collect())
+        let mut items = decisions
+            .into_iter()
+            .skip(offset as usize)
+            .map(from_release_decision)
+            .collect::<scryer_application::AppResult<Vec<_>>>()
+            .map_err(to_gql_error)?;
+        let has_more = items.len() > limit as usize;
+        items.truncate(limit as usize);
+        Ok(ReleaseDecisionsPagePayload {
+            items,
+            limit,
+            offset,
+            has_more,
+        })
     }
 
-    async fn pending_releases(&self, ctx: &Context<'_>) -> GqlResult<Vec<PendingReleasePayload>> {
+    async fn pending_releases(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 50)] limit: i32,
+        #[graphql(default = 0)] offset: i32,
+    ) -> GqlResult<PendingReleasesPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let limit = relation_page_limit(limit);
+        let offset = relation_page_offset(offset);
         let releases = app
-            .list_pending_releases_for_wanted_item(&actor, &self.id)
+            .list_pending_releases_for_wanted_item(&actor, self.id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(releases.into_iter().map(from_pending_release).collect())
+        let total_count = releases.len().min(i32::MAX as usize) as i32;
+        let items = releases
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(from_pending_release)
+            .collect::<Vec<_>>();
+        Ok(PendingReleasesPayload {
+            items,
+            limit,
+            offset,
+            has_more: i64::from(offset) + i64::from(limit) < i64::from(total_count),
+            total_count,
+        })
     }
 }
 
@@ -386,7 +490,7 @@ impl ReleaseDecisionPayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title(&actor, &self.title_id)
+            .get_title(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -397,10 +501,12 @@ impl ReleaseDecisionPayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let item = app
-            .get_wanted_item(&actor, &self.wanted_item_id)
+            .get_wanted_item(&actor, self.wanted_item_id.as_ref())
             .await
             .map_err(to_gql_error)?
-            .map(from_wanted_item);
+            .map(from_wanted_item)
+            .transpose()
+            .map_err(to_gql_error)?;
         Ok(item)
     }
 }
@@ -470,7 +576,7 @@ impl PendingReleasePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let title = app
-            .get_title_for_management(&actor, &self.title_id)
+            .get_title_for_management(&actor, self.title_id.as_ref())
             .await
             .map_err(to_gql_error)?
             .map(from_title);
@@ -481,10 +587,12 @@ impl PendingReleasePayload {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let wanted_item = app
-            .get_wanted_item_for_management(&actor, &self.wanted_item_id)
+            .get_wanted_item_for_management(&actor, self.wanted_item_id.as_ref())
             .await
             .map_err(to_gql_error)?
-            .map(from_wanted_item);
+            .map(from_wanted_item)
+            .transpose()
+            .map_err(to_gql_error)?;
         Ok(wanted_item)
     }
 }

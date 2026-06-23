@@ -242,6 +242,17 @@ impl FromApplication<AppWantedStatus> for WantedStatusValue {
     }
 }
 
+impl IntoApplication<AppWantedStatus> for WantedStatusValue {
+    fn into_application(self) -> AppWantedStatus {
+        match self {
+            Self::Wanted => AppWantedStatus::Wanted,
+            Self::Grabbed => AppWantedStatus::Grabbed,
+            Self::Paused => AppWantedStatus::Paused,
+            Self::Completed => AppWantedStatus::Completed,
+        }
+    }
+}
+
 impl FromApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
     fn from_application(value: AppPendingReleaseStatus) -> Self {
         match value {
@@ -252,6 +263,20 @@ impl FromApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
             AppPendingReleaseStatus::Superseded => Self::Superseded,
             AppPendingReleaseStatus::Expired => Self::Expired,
             AppPendingReleaseStatus::Dismissed => Self::Dismissed,
+        }
+    }
+}
+
+impl IntoApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
+    fn into_application(self) -> AppPendingReleaseStatus {
+        match self {
+            Self::Waiting => AppPendingReleaseStatus::Waiting,
+            Self::Standby => AppPendingReleaseStatus::Standby,
+            Self::Processing => AppPendingReleaseStatus::Processing,
+            Self::Grabbed => AppPendingReleaseStatus::Grabbed,
+            Self::Superseded => AppPendingReleaseStatus::Superseded,
+            Self::Expired => AppPendingReleaseStatus::Expired,
+            Self::Dismissed => AppPendingReleaseStatus::Dismissed,
         }
     }
 }
@@ -390,17 +415,25 @@ impl FromApplication<AppLibraryScanStatus> for LibraryScanStatusValue {
 impl IntoApplication<AppSubmissionScope> for QueueDownloadScopeInput {
     fn into_application(self) -> AppSubmissionScope {
         match self {
-            Self::Episode(episode_id) => AppSubmissionScope::Episode { episode_id },
-            Self::EpisodeSet(mut episode_ids) => {
+            Self::Episode(episode_id) => AppSubmissionScope::Episode {
+                episode_id: episode_id.to_string(),
+            },
+            Self::EpisodeSet(episode_ids) => {
+                let mut episode_ids = episode_ids
+                    .into_iter()
+                    .map(|episode_id| episode_id.to_string())
+                    .collect::<Vec<_>>();
                 episode_ids.retain(|episode_id| !episode_id.trim().is_empty());
                 episode_ids.sort();
                 episode_ids.dedup();
                 AppSubmissionScope::EpisodeSet { episode_ids }
             }
             Self::SeriesMovie(series_movie_link_id) => AppSubmissionScope::SeriesMovie {
-                series_movie_link_id,
+                series_movie_link_id: series_movie_link_id.to_string(),
             },
-            Self::Collection(collection_id) => AppSubmissionScope::Collection { collection_id },
+            Self::Collection(collection_id) => AppSubmissionScope::Collection {
+                collection_id: collection_id.to_string(),
+            },
             Self::Title(_) => AppSubmissionScope::Title,
         }
     }

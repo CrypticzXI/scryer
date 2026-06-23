@@ -35,6 +35,7 @@ export const TITLE_CORE_FIELDS = `
     requiredAudioLanguagesOverride
     effectiveRequiredAudioLanguages
     inheritsRequiredAudioLanguages
+    rootFolderId
     rootFolderPath
     monitorType
     useSeasonFolders
@@ -43,6 +44,23 @@ export const TITLE_CORE_FIELDS = `
     fillerPolicy
     recapPolicy
     createdAt`;
+
+export const PROVIDER_CONFIG_VALUE_FIELDS = `
+    key
+    label
+    fieldType
+    required
+    defaultValue
+    valueSource
+    role
+    hostBinding
+    options { value label }
+    helpText
+    stringValue
+    boolValue
+    intValue
+    floatValue
+    secretStored`;
 
 const SERIES_MOVIE_LINK_FIELDS = `
       id
@@ -251,7 +269,9 @@ const TITLE_OVERVIEW_FIELDS = `${TITLE_CORE_FIELDS}
     }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
-    wantedItems {${WANTED_ITEM_FIELDS}
+    wantedItems {
+      items {${WANTED_ITEM_FIELDS}
+      }
     }`;
 
 const TITLE_EVENT_FIELDS = `
@@ -385,7 +405,9 @@ const NOTIFICATION_CHANNEL_FIELDS = `
     name
     channelType
     mediaServerConnectionId
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     createdAt
     updatedAt`;
@@ -463,14 +485,16 @@ const DELETE_PREVIEW_FIELDS = `
     targetLabel
     samplePaths`;
 
-export const titleDetailQuery = `query TitleDetail($id: String!) {
+export const titleDetailQuery = `query TitleDetail($id: ID!) {
   title(id: $id) {${TITLE_CORE_FIELDS}
     collections {${TITLE_COLLECTION_FIELDS}
     }
     seriesMovieLinks {${SERIES_MOVIE_LINK_FIELDS}
     }
   }
-  titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
+  titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
+    records {${TITLE_EVENT_FIELDS}
+    }
   }
 }`;
 
@@ -483,12 +507,12 @@ export const titleBySlugQuery = `query TitleBySlug($facet: MediaFacetValue!, $li
   }
 }`;
 
-export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId: String!, $limit: Int) {
+export const titleReleaseBlocklistQuery = `query TitleReleaseBlocklist($titleId: ID!, $limit: Int) {
   titleReleaseBlocklist(titleId: $titleId, limit: $limit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
 }`;
 
-export const titleOverviewNativeQuery = `query TitleOverviewNative($id: String!, $blocklistLimit: Int) {
+export const titleOverviewNativeQuery = `query TitleOverviewNative($id: ID!, $blocklistLimit: Int) {
   title(id: $id) {${TITLE_OVERVIEW_FIELDS}
   }
   titleAcquisitionDiagnostics(titleId: $id) {
@@ -522,7 +546,9 @@ export const titleOverviewNativeQuery = `query TitleOverviewNative($id: String!,
     latestDecisionAt
     latestWantedSearchAt
   }
-  titleEvents(titleId: $id, limit: 50, offset: 0) {${TITLE_EVENT_FIELDS}
+  titleHistory: titleHistory(filter: { titleIds: [$id], limit: 50, offset: 0 }) {
+    records {${TITLE_EVENT_FIELDS}
+    }
   }
   titleReleaseBlocklist(titleId: $id, limit: $blocklistLimit) {${TITLE_RELEASE_BLOCKLIST_FIELDS}
   }
@@ -533,14 +559,14 @@ export const titleOverviewNativeQuery = `query TitleOverviewNative($id: String!,
   }
 }`;
 
-export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: String!) {
+export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: ID!) {
   downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
   completedDownloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeHistoryOnly: true, activityFilter: all) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
 
-export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: String!) {
+export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: ID!) {
   title(id: $id) {
     id
     downloadQueueItems {${DOWNLOAD_QUEUE_ITEM_FIELDS}
@@ -548,8 +574,8 @@ export const titleDownloadQueueItemsQuery = `query TitleDownloadQueueItems($id: 
   }
 }`;
 
-export const deleteTitlePreviewQuery = `query DeleteTitlePreview($input: DeleteTitlePreviewInput!) {
-  deleteTitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+export const deleteTitlePreviewQuery = `query DeleteTitlePreview($titleId: ID!) {
+  deleteTitlePreview(titleId: $titleId) {${DELETE_PREVIEW_FIELDS}
   }
 }`;
 
@@ -570,12 +596,12 @@ export const deleteTitlesPreviewQuery = `query DeleteTitlesPreview($input: Delet
 export function buildDeleteTitlePreviewBatchQuery(count: number): string {
   const variables = Array.from(
     { length: count },
-    (_, index) => `$input${index}: DeleteTitlePreviewInput!`,
+    (_, index) => `$titleId${index}: ID!`,
   ).join(", ");
   const fields = Array.from(
     { length: count },
     (_, index) =>
-      `item${index}: deleteTitlePreview(input: $input${index}) {${DELETE_PREVIEW_FIELDS}
+      `item${index}: deleteTitlePreview(titleId: $titleId${index}) {${DELETE_PREVIEW_FIELDS}
   }`,
   ).join("\n");
 
@@ -584,22 +610,22 @@ ${fields}
 }`;
 }
 
-export const deleteMediaFilePreviewQuery = `query DeleteMediaFilePreview($input: DeleteMediaFilePreviewInput!) {
-  deleteMediaFilePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+export const deleteMediaFilePreviewQuery = `query DeleteMediaFilePreview($fileId: ID!) {
+  deleteMediaFilePreview(fileId: $fileId) {${DELETE_PREVIEW_FIELDS}
   }
 }`;
 
-export const deleteExternalSubtitlePreviewQuery = `query DeleteExternalSubtitlePreview($input: DeleteExternalSubtitlePreviewInput!) {
-  deleteExternalSubtitlePreview(input: $input) {${DELETE_PREVIEW_FIELDS}
+export const deleteExternalSubtitlePreviewQuery = `query DeleteExternalSubtitlePreview($externalSubtitleId: ID!) {
+  deleteExternalSubtitlePreview(externalSubtitleId: $externalSubtitleId) {${DELETE_PREVIEW_FIELDS}
   }
 }`;
 
-export const externalSubtitleBlocklistEntriesQuery = `query ExternalSubtitleBlocklistEntries($mediaFileId: String!) {
+export const externalSubtitleBlocklistEntriesQuery = `query ExternalSubtitleBlocklistEntries($mediaFileId: ID!) {
   externalSubtitleBlocklistEntries(mediaFileId: $mediaFileId) {${EXTERNAL_SUBTITLE_BLOCKLIST_FIELDS}
   }
 }`;
 
-export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: String!) {
+export const searchForTitleQuery = `query SearchReleasesForTitle($titleId: ID!) {
   searchReleases(input: { titleId: $titleId }) {
     source
     title
@@ -660,7 +686,7 @@ export const searchForTitleQuery = `query SearchIndexersForTitle($titleId: Strin
   }
 }`;
 
-export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: String!, $season: String!, $episode: String!) {
+export const searchForEpisodeQuery = `query SearchReleasesForEpisode($titleId: ID!, $season: String!, $episode: String!) {
   searchReleases(input: {
     titleId: $titleId,
     season: $season,
@@ -724,7 +750,7 @@ export const searchForEpisodeQuery = `query SearchIndexersForEpisode($titleId: S
   }
 }`;
 
-export const searchForSeriesMovieQuery = `query SearchIndexersForSeriesMovie($titleId: String!, $seriesMovieLinkId: String!) {
+export const searchForSeriesMovieQuery = `query SearchReleasesForSeriesMovie($titleId: ID!, $seriesMovieLinkId: ID!) {
   searchReleases(input: {
     titleId: $titleId,
     seriesMovieLinkId: $seriesMovieLinkId
@@ -801,6 +827,8 @@ export const TITLE_LIST_FIELDS = `
     imdbId
     posterUrl
     posterSourceUrl
+    rootFolderId
+    rootFolderPath
     qualityTier
     sizeBytes
     episodesOwned
@@ -897,7 +925,7 @@ export const mediaRequestRequesterLibrariesQuery = `query MediaRequestRequesterL
   }
 }`;
 
-export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) {
+export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
   librarySettings(libraryId: $libraryId) {
     requiredAudioLanguagesOverride
     requiredAudioLanguages
@@ -942,21 +970,47 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
   }
 }`;
 
-export const titlesQuery = `query Titles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
-  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+export const titlesQuery = `query Titles(
+  $facet: MediaFacetValue,
+  $libraryIds: [ID!],
+  $query: String,
+  $filter: TitleCatalogFilterInput,
+  $sort: TitleCatalogSortInput,
+  $limit: Int,
+  $offset: Int
+) {
+  titles(
+    facet: $facet,
+    libraryIds: $libraryIds,
+    query: $query,
+    filter: $filter,
+    sort: $sort,
+    limit: $limit,
+    offset: $offset
+  ) {
+    items {
 ${TITLE_LIST_FIELDS}
+    }
+    limit
+    offset
+    hasMore
+    totalCount
   }
 }`;
 
-export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
-  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [ID!], $query: String, $limit: Int = 25) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query, limit: $limit) {
+    items {
 ${TITLE_CATALOG_SEARCH_FIELDS}
+    }
   }
 }`;
 
-export const commandPaletteTitlesQuery = `query CommandPaletteTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
-  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+export const commandPaletteTitlesQuery = `query CommandPaletteTitles($facet: MediaFacetValue, $libraryIds: [ID!], $query: String, $limit: Int = 25) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query, limit: $limit) {
+    items {
 ${TITLE_COMMAND_PALETTE_FIELDS}
+    }
   }
 }`;
 
@@ -966,7 +1020,7 @@ ${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
   }
 }`;
 
-export const titleListEntryQuery = `query TitleListEntry($id: String!) {
+export const titleListEntryQuery = `query TitleListEntry($id: ID!) {
   title(id: $id) {
 ${TITLE_LIST_FIELDS}
   }
@@ -1018,7 +1072,7 @@ export type ReactiveRefreshQueryActionPlan =
       kind: "titleOverviewNative";
       titleAlias: string;
       titleAcquisitionDiagnosticsAlias: string;
-      titleEventsAlias: string;
+      titleHistoryAlias: string;
       titleReleaseBlocklistAlias: string;
       externalSubtitlesAlias: string;
       setupStatusAlias: string;
@@ -1050,7 +1104,7 @@ export function buildReactiveRefreshQuery(
         const facetVariableName = `catalogTitlesFacet${index}`;
         variableDefinitions.push(`$${facetVariableName}: MediaFacetValue`);
         fields.push(
-          `  ${titlesAlias}: titles(facet: $${facetVariableName}) {\n${TITLE_LIST_FIELDS}\n  }`,
+          `  ${titlesAlias}: titles(facet: $${facetVariableName}) {\n    items {\n${TITLE_LIST_FIELDS}\n    }\n  }`,
         );
         variables[facetVariableName] = action.facet ?? null;
         actionPlans.push({ key: action.key, kind: action.kind, titlesAlias });
@@ -1059,7 +1113,7 @@ export function buildReactiveRefreshQuery(
       case "catalogTitle": {
         const titleAlias = `catalogTitleAction${index}`;
         const titleIdVariableName = `catalogTitleId${index}`;
-        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_LIST_FIELDS}\n  }`,
         );
@@ -1072,12 +1126,12 @@ export function buildReactiveRefreshQuery(
         const blocklistLimitVariableName = `titleOverviewBlocklistLimit${index}`;
         const titleAlias = `titleOverviewTitleAction${index}`;
         const titleAcquisitionDiagnosticsAlias = `titleOverviewDiagnosticsAction${index}`;
-        const titleEventsAlias = `titleOverviewEventsAction${index}`;
+        const titleHistoryAlias = `titleOverviewHistoryAction${index}`;
         const titleReleaseBlocklistAlias = `titleOverviewBlocklistAction${index}`;
         const externalSubtitlesAlias = `titleOverviewExternalSubtitlesAction${index}`;
         const setupStatusAlias = `titleOverviewSetupStatusAction${index}`;
 
-        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         variableDefinitions.push(`$${blocklistLimitVariableName}: Int`);
         fields.push(
           `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_OVERVIEW_FIELDS}\n  }`,
@@ -1086,7 +1140,7 @@ export function buildReactiveRefreshQuery(
           `  ${titleAcquisitionDiagnosticsAlias}: titleAcquisitionDiagnostics(titleId: $${titleIdVariableName}) {\n    recentDecisions {\n      id\n      wantedItemId\n      titleId\n      releaseTitle\n      releaseUrl\n      releaseSizeBytes\n      decisionCode\n      candidateScore\n      currentScore\n      scoreDelta\n      explanationJson\n      createdAt\n    }\n    decisionCounts {\n      code\n      count\n    }\n    wantedStatusCounts {\n      status\n      count\n    }\n    pendingReleaseCounts {\n      status\n      count\n    }\n    mismatchRecoveryEligibleCount\n    latestDecisionAt\n    latestWantedSearchAt\n  }`,
         );
         fields.push(
-          `  ${titleEventsAlias}: titleEvents(titleId: $${titleIdVariableName}, limit: 50, offset: 0) {\n${TITLE_EVENT_FIELDS}\n  }`,
+          `  ${titleHistoryAlias}: titleHistory(filter: { titleIds: [$${titleIdVariableName}], limit: 50, offset: 0 }) {\n    records {\n${TITLE_EVENT_FIELDS}\n    }\n  }`,
         );
         fields.push(
           `  ${titleReleaseBlocklistAlias}: titleReleaseBlocklist(titleId: $${titleIdVariableName}, limit: $${blocklistLimitVariableName}) {\n${TITLE_RELEASE_BLOCKLIST_FIELDS}\n  }`,
@@ -1104,7 +1158,7 @@ export function buildReactiveRefreshQuery(
           kind: action.kind,
           titleAlias,
           titleAcquisitionDiagnosticsAlias,
-          titleEventsAlias,
+          titleHistoryAlias,
           titleReleaseBlocklistAlias,
           externalSubtitlesAlias,
           setupStatusAlias,
@@ -1116,7 +1170,7 @@ export function buildReactiveRefreshQuery(
         const downloadQueueItemsAlias = `titleOverviewDownloadQueueAction${index}`;
         const completedDownloadQueueItemsAlias = `titleOverviewCompletedDownloadQueueAction${index}`;
 
-        variableDefinitions.push(`$${titleIdVariableName}: String!`);
+        variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         fields.push(
           `  ${downloadQueueItemsAlias}: downloadQueue(titleId: $${titleIdVariableName}, includeAllActivity: true, includeImportActivity: true, activityFilter: all) {\n${DOWNLOAD_QUEUE_ITEM_FIELDS}\n  }`,
         );
@@ -1230,7 +1284,15 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
   }
 }`;
 
-const DOMAIN_EVENT_ENVELOPE_FIELDS = `
+export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
+  auditLog(
+    eventTypes: $eventTypes
+    titleId: $titleId
+    facet: $facet
+    beforeSequence: $beforeSequence
+    afterSequence: $afterSequence
+    limit: $limit
+  ) {
     sequence
     eventId
     occurredAt
@@ -1242,34 +1304,7 @@ const DOMAIN_EVENT_ENVELOPE_FIELDS = `
     eventType
     streamKind
     streamId
-    payloadJson`;
-
-export const libraryScanDomainEventsQuery = `query LibraryScanDomainEvents($afterSequence: Int, $limit: Int) {
-  domainEvents(
-    eventTypes: [library_scan_started, library_scan_title_discovered, library_scan_progressed, library_scan_completed, library_scan_canceled, library_scan_failed]
-    afterSequence: $afterSequence
-    limit: $limit
-  ) {
-${DOMAIN_EVENT_ENVELOPE_FIELDS}
-  }
-}`;
-
-export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: String, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
-  auditLog(
-    eventTypes: $eventTypes
-    titleId: $titleId
-    facet: $facet
-    beforeSequence: $beforeSequence
-    afterSequence: $afterSequence
-    limit: $limit
-  ) {
-${DOMAIN_EVENT_ENVELOPE_FIELDS}
-  }
-}`;
-
-export const libraryScanDomainEventFeedSubscriptionQuery = `subscription LibraryScanDomainEventFeed($afterSequence: Int) {
-  domainEventFeed(afterSequence: $afterSequence) {
-${DOMAIN_EVENT_ENVELOPE_FIELDS}
+    payloadJson
   }
 }`;
 
@@ -1419,7 +1454,8 @@ export const indexersQuery = `query Indexers($providerType: String) {
     lastHealthStatus
     lastErrorAt
     lastQueryAt
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
     createdAt
     updatedAt
   }
@@ -1441,7 +1477,9 @@ export const downloadClientsQuery = `query DownloadClients {
     name
     clientType
     baseUrl
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
+    storedSecretKeys
     isEnabled
     status
     lastError
@@ -1454,9 +1492,12 @@ export const downloadClientsQuery = `query DownloadClients {
 export const mediaServerConnectionsQuery = `query MediaServerConnections($provider: MediaServerProviderValue) {
   mediaServerConnections(provider: $provider) {${MEDIA_SERVER_CONNECTION_FIELDS}
   }
+  runtimeInfo {
+    runtimePathStyle
+  }
 }`;
 
-export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId: String!, $search: String) {
+export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId: ID!, $search: String) {
   jellyfinServerUsers(connectionId: $connectionId, search: $search) {
     id
     username
@@ -1481,7 +1522,7 @@ export const mediaServerUsersQuery = `query MediaServerUsers($search: String) {
   }
 }`;
 
-export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
+export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: ID, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
@@ -1495,7 +1536,7 @@ export const downloadImportQuery = `query DownloadImport($limit: Int, $offset: I
   }
 }`;
 
-export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset: Int, $filters: [DownloadHistoryFilterValue!], $clientIds: [String!], $scryerSubmittedOnly: Boolean, $sortKey: DownloadHistorySortKeyValue, $sortDirection: SortDirectionValue) {
+export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset: Int, $filters: [DownloadHistoryFilterValue!], $clientIds: [ID!], $scryerSubmittedOnly: Boolean, $sortKey: DownloadHistorySortKeyValue, $sortDirection: SortDirectionValue) {
   downloadHistory(limit: $limit, offset: $offset, filters: $filters, clientIds: $clientIds, scryerSubmittedOnly: $scryerSubmittedOnly, sortKey: $sortKey, sortDirection: $sortDirection) {
     items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
     }
@@ -1509,7 +1550,7 @@ export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset:
   }
 }`;
 
-export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
+export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: ID, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
 }`;
@@ -1525,7 +1566,8 @@ const downloadClientFieldSelection = `
     name
     clientType
     baseUrl
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
     isEnabled
     status
     lastError
@@ -1552,7 +1594,8 @@ const indexerFieldSelection = `
     lastHealthStatus
     lastErrorAt
     lastQueryAt
-    configJson
+    config {${PROVIDER_CONFIG_VALUE_FIELDS}
+    }
     createdAt
     updatedAt`;
 
@@ -1678,7 +1721,7 @@ export const seriesOverviewSettingsInitQuery = `query SeriesOverviewSettingsInit
   }
 }`;
 
-export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue, $libraryIds: [String!]) {
+export const cutoffUnmetTitlesQuery = `query CutoffUnmetTitles($facet: MediaFacetValue, $libraryIds: [ID!]) {
   cutoffUnmetTitles(facet: $facet, libraryIds: $libraryIds) {
     titleId
     titleName
@@ -1700,8 +1743,13 @@ export const downloadClientsInitQuery = `query DownloadClientsInit {
   }
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
-  systemHealth {
-    dbPath
+  runtimeInfo {
+    runtimePathStyle
+  }
+}`;
+
+export const libraryDownloadClientsQuery = `query LibraryDownloadClients {
+  downloadClientConfigs {${downloadClientFieldSelection}
   }
 }`;
 
@@ -1717,8 +1765,8 @@ export const setupWizardProviderTypesInitQuery = `query SetupWizardProviderTypes
   }
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
-  systemHealth {
-    dbPath
+  runtimeInfo {
+    runtimePathStyle
   }
 }`;
 
@@ -1730,6 +1778,9 @@ export const mediaSettingsInitQuery = `query MediaSettingsInit($scope: ContentSc
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
   mediaSettings(scope: $scope) {${mediaSettingsFieldSelection}
+  }
+  runtimeInfo {
+    runtimePathStyle
   }
 }`;
 
@@ -1878,7 +1929,7 @@ export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettin
   }
 }`;
 
-export const linkedAccountsQuery = `query LinkedAccounts($userId: String) {
+export const linkedAccountsQuery = `query LinkedAccounts($userId: ID) {
   linkedAccounts(userId: $userId) {
     id
     userId
@@ -1921,6 +1972,14 @@ export const autoBackupSettingsQuery = `query AutoBackupSettings {
     autoBackupKeyPresent
     autoBackupDisabledMissingKeyNotice
     nextRunAt
+  }
+}`;
+
+export const backupSettingsQuery = `query BackupSettings {
+  backupSettings {
+    customBackupPath
+    defaultBackupPath
+    effectiveBackupPath
   }
 }`;
 
@@ -2056,7 +2115,12 @@ export const importHistoryChangedSubscription = `subscription ImportHistoryChang
 }`;
 
 export const mediaRequestsChangedSubscription = `subscription MediaRequestsChanged {
-  mediaRequestsChanged
+  mediaRequestsChanged {
+    eventId
+    eventType
+    requestId
+    libraryId
+  }
 }`;
 
 export const indexersChangedSubscription = `subscription IndexersChanged {
@@ -2067,7 +2131,7 @@ export const providerCatalogChangedSubscription = `subscription ProviderCatalogC
   providerCatalogChanged
 }`;
 
-export const pluginInstallProgressSubscription = `subscription PluginInstallProgress($pluginId: String!) {
+export const pluginInstallProgressSubscription = `subscription PluginInstallProgress($pluginId: ID!) {
   pluginInstallProgress(pluginId: $pluginId) {
     pluginId
     operationKind
@@ -2107,12 +2171,12 @@ const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
     errorMessage
 `;
 
-export const externalImportMonitorWarmupStatusQuery = `query ExternalImportMonitorWarmupStatus($sessionId: String!) {
+export const externalImportMonitorWarmupStatusQuery = `query ExternalImportMonitorWarmupStatus($sessionId: ID!) {
   externalImportMonitorWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
   }
 }`;
 
-export const externalImportMonitorWarmupProgressSubscription = `subscription ExternalImportMonitorWarmupProgress($sessionId: String!) {
+export const externalImportMonitorWarmupProgressSubscription = `subscription ExternalImportMonitorWarmupProgress($sessionId: ID!) {
   externalImportMonitorWarmupProgress(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
   }
 }`;
@@ -2127,6 +2191,7 @@ export const systemHealthQuery = `query SystemHealth {
     dbPath
     datastoreEngine
     datastoreMigrationKey
+    runtimePathStyle
     totalTitles
     monitoredTitles
     totalUsers
@@ -2190,8 +2255,8 @@ export const serviceLogLinesSubscription = `subscription ServiceLogLines {
   serviceLogLines
 }`;
 
-export const previewManualImportQuery = `query PreviewManualImport($clientId: String, $downloadClientItemId: String!, $titleId: String!) {
-  previewManualImport(clientId: $clientId, downloadClientItemId: $downloadClientItemId, titleId: $titleId) {
+export const previewManualImportQuery = `query PreviewManualImport($input: PreviewManualImportInput!) {
+  previewManualImport(input: $input) {
     files {
       filePath
       fileName
@@ -2254,7 +2319,7 @@ export const previewManualImportPathQuery = `query PreviewManualImportPath($inpu
   }
 }`;
 
-export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!], $titleId: String, $libraryIds: [String!], $titleSearch: String, $latestDecisionCodes: [String!], $limit: Int, $offset: Int) {
+export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!], $titleId: ID, $libraryIds: [ID!], $titleSearch: String, $latestDecisionCodes: [String!], $limit: Int, $offset: Int) {
   wantedItems(statuses: $statuses, mediaTypes: $mediaTypes, titleId: $titleId, libraryIds: $libraryIds, titleSearch: $titleSearch, latestDecisionCodes: $latestDecisionCodes, limit: $limit, offset: $offset) {
     items {
       id
@@ -2290,22 +2355,25 @@ export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue
   }
 }`;
 
-export const releaseDecisionsQuery = `query ReleaseDecisions($wantedItemId: String!, $limit: Int) {
+export const releaseDecisionsQuery = `query ReleaseDecisions($wantedItemId: ID!, $limit: Int) {
   wantedItem(id: $wantedItemId) {
     id
     releaseDecisions(limit: $limit) {
-      id
-      wantedItemId
-      titleId
-      releaseTitle
-      releaseUrl
-      releaseSizeBytes
-      decisionCode
-      candidateScore
-      currentScore
-      scoreDelta
-      explanationJson
-      createdAt
+      items {
+        id
+        wantedItemId
+        titleId
+        releaseTitle
+        releaseUrl
+        releaseSizeBytes
+        decisionCode
+        candidateScore
+        currentScore
+        scoreDelta
+        explanationJson
+        createdAt
+      }
+      hasMore
     }
   }
 }`;
@@ -2360,7 +2428,7 @@ export const recycleBinSettingsQuery = `query RecycleBinSettings {
   }
 }`;
 
-export const recycledItemsQuery = `query RecycledItems($libraryIds: [String!]) {
+export const recycledItemsQuery = `query RecycledItems($libraryIds: [ID!]) {
   recycledItems(libraryIds: $libraryIds) {
     items {
       id
@@ -2455,6 +2523,9 @@ export const notificationsInitQuery = `query NotificationsInit {
   notificationProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
   notificationEventTypes
+  runtimeInfo {
+    runtimePathStyle
+  }
 }`;
 
 // ── Metadata Gateway (proxied through backend) ────────────────────────
@@ -2474,7 +2545,7 @@ const METADATA_SEARCH_FIELDS = `
     runtimeMinutes
     sortTitle`;
 
-export const searchMetadataQuery = `query SearchMetadata($query: String!, $type: String!, $limit: Int, $language: String! = "eng", $year: Int) {
+export const searchMetadataQuery = `query SearchMetadata($query: String!, $type: MediaFacetValue!, $limit: Int, $language: String! = "eng", $year: Int) {
   searchMetadata(query: $query, type: $type, limit: $limit, language: $language, year: $year) {${METADATA_SEARCH_FIELDS}
   }
 }`;
@@ -2504,7 +2575,7 @@ export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
   }
 }`;
 
-export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [String!], $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
+export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue!, $libraryIds: [ID!], $status: PendingImportStatusValue! = pending, $limit: Int = 50, $offset: Int = 0) {
   pendingImports(facet: $facet, libraryIds: $libraryIds, status: $status, limit: $limit, offset: $offset) {
     total
     items {
@@ -2531,7 +2602,7 @@ export const pendingImportsQuery = `query PendingImports($facet: MediaFacetValue
   }
 }`;
 
-export const pendingImportBindingPreviewQuery = `query PendingImportBindingPreview($pendingImportId: String!) {
+export const pendingImportBindingPreviewQuery = `query PendingImportBindingPreview($pendingImportId: ID!) {
   pendingImportBindingPreview(pendingImportId: $pendingImportId) {
     title {
       id
@@ -2573,8 +2644,8 @@ export const searchMetadataMultiQuery = `query SearchMetadataMulti($query: Strin
   }
 }`;
 
-export const metadataMovieQuery = `query MetadataMovie($tvdbId: Int!, $language: String! = "eng") {
-  metadataMovie(tvdbId: $tvdbId, language: $language) {
+export const metadataMovieQuery = `query MetadataMovie($input: MetadataMovieInput!) {
+  metadataMovie(input: $input) {
     tvdbId
     name
     slug
@@ -2592,8 +2663,8 @@ export const metadataMovieQuery = `query MetadataMovie($tvdbId: Int!, $language:
   }
 }`;
 
-export const metadataSeriesQuery = `query MetadataSeries($id: String!, $includeEpisodes: Boolean, $language: String! = "eng") {
-  metadataSeries(id: $id, includeEpisodes: $includeEpisodes, language: $language) {
+export const metadataSeriesQuery = `query MetadataSeries($input: MetadataSeriesInput!) {
+  metadataSeries(input: $input) {
     tvdbId
     name
     sortName
@@ -2627,24 +2698,30 @@ export const metadataSeriesQuery = `query MetadataSeries($id: String!, $includeE
   }
 }`;
 
-export const pendingReleasesQuery = `query PendingReleases {
-  pendingReleases {
-    id
-    wantedItemId
-    titleId
-    releaseTitle
-    releaseUrl
-    releaseSizeBytes
-    releaseScore
-    scoringLogJson
-    indexerSource
-    addedAt
-    delayUntil
-    status
+export const pendingReleasesQuery = `query PendingReleases($filter: PendingReleaseFilterInput, $limit: Int, $offset: Int) {
+  pendingReleases(filter: $filter, limit: $limit, offset: $offset) {
+    items {
+      id
+      wantedItemId
+      titleId
+      releaseTitle
+      releaseUrl
+      releaseSizeBytes
+      releaseScore
+      scoringLogJson
+      indexerSource
+      addedAt
+      delayUntil
+      status
+    }
+    limit
+    offset
+    hasMore
+    totalCount
   }
 }`;
 
-export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: String!, $endDate: String!, $libraryIds: [String!]) {
+export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: Date!, $endDate: Date!, $libraryIds: [ID!]) {
   calendarEpisodes(startDate: $startDate, endDate: $endDate, libraryIds: $libraryIds) {
     id
     titleId
@@ -2697,7 +2774,7 @@ export const postProcessingScriptsQuery = `query PostProcessingScripts {
   }
 }`;
 
-export const postProcessingScriptRunsQuery = `query PostProcessingScriptRuns($scriptId: String!, $limit: Int) {
+export const postProcessingScriptRunsQuery = `query PostProcessingScriptRuns($scriptId: ID!, $limit: Int) {
   postProcessingScriptRuns(scriptId: $scriptId, limit: $limit) {
     id
     scriptId
@@ -2716,7 +2793,7 @@ export const postProcessingScriptRunsQuery = `query PostProcessingScriptRuns($sc
   }
 }`;
 
-export const externalSubtitlesQuery = `query ExternalSubtitles($titleId: String!) {
+export const externalSubtitlesQuery = `query ExternalSubtitles($titleId: ID!) {
   externalSubtitles(titleId: $titleId) {${EXTERNAL_SUBTITLE_FIELDS}
   }
 }`;
@@ -2759,7 +2836,7 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
   }
 }`;
 
-export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, $libraryIds: [ID!], $status: MediaRequestStatusValue) {
   mediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
     id
     libraryId
@@ -2799,7 +2876,7 @@ export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, 
   }
 }`;
 
-export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetValue, $libraryIds: [ID!], $status: MediaRequestStatusValue) {
   myMediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
     id
     libraryId
@@ -2836,21 +2913,5 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
     createdByUserId
     createdAt
     updatedAt
-  }
-}`;
-
-export const episodeHistoryQuery = `query EpisodeHistory($episodeId: String!, $limit: Int) {
-  episodeHistory(episodeId: $episodeId, limit: $limit) {
-    id
-    titleId
-    episodeId
-    collectionId
-    eventType
-    sourceTitle
-    quality
-    downloadId
-    dataJson
-    occurredAt
-    createdAt
   }
 }`;

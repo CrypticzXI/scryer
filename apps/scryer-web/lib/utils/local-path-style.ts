@@ -1,4 +1,5 @@
 export type LocalPathStyle = "unix" | "windows";
+export type RuntimePathStyleValue = "UNIX" | "WINDOWS";
 
 function isWindowsDriveAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path);
@@ -6,24 +7,6 @@ function isWindowsDriveAbsolutePath(path: string): boolean {
 
 function isWindowsUncAbsolutePath(path: string): boolean {
   return /^\\\\[^\\/]+[\\/][^\\/]+/.test(path);
-}
-
-export function detectBrowserLocalPathStyle(): LocalPathStyle {
-  if (typeof navigator !== "undefined") {
-    const navigatorWithUserAgentData = navigator as Navigator & {
-      userAgentData?: { platform?: string };
-    };
-    const platform =
-      navigatorWithUserAgentData.userAgentData?.platform ??
-      navigator.platform ??
-      navigator.userAgent ??
-      "";
-    if (/win/i.test(platform)) {
-      return "windows";
-    }
-  }
-
-  return "unix";
 }
 
 export function inferLocalPathStyleFromPath(
@@ -45,10 +28,16 @@ export function inferLocalPathStyleFromPath(
   return null;
 }
 
-export function resolveLocalPathStyle(
-  path: string | null | undefined,
-): LocalPathStyle {
-  return inferLocalPathStyleFromPath(path) ?? detectBrowserLocalPathStyle();
+export function localPathStyleFromRuntimeValue(
+  value: string | null | undefined,
+): LocalPathStyle | undefined {
+  if (value === "WINDOWS") {
+    return "windows";
+  }
+  if (value === "UNIX") {
+    return "unix";
+  }
+  return undefined;
 }
 
 export function isAbsoluteLocalPathForStyle(
@@ -60,4 +49,21 @@ export function isAbsoluteLocalPathForStyle(
   }
 
   return path.startsWith("/");
+}
+
+/**
+ * Format-validate a local path against the server's path style, tolerating an
+ * unknown style. While the runtime style is still unknown (e.g. the
+ * `runtimeInfo` query has not resolved yet, or an older server does not report
+ * it), the format check is skipped so valid paths are not transiently flagged
+ * as invalid. Server-side validation remains the source of truth on save.
+ */
+export function isLocalPathFormatValidForStyle(
+  path: string,
+  style: LocalPathStyle | undefined,
+): boolean {
+  if (!style) {
+    return true;
+  }
+  return isAbsoluteLocalPathForStyle(path, style);
 }

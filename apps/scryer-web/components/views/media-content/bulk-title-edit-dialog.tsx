@@ -17,19 +17,18 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
-import type { RootFolderOption } from "@/lib/types/titles";
+import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 
 const UNCHANGED_VALUE = "__unchanged__";
 const INHERIT_VALUE = "__inherit__";
-const DEFAULT_ROOT_FOLDER_VALUE = "__default__";
 const ENABLED_VALUE = "enabled";
 const DISABLED_VALUE = "disabled";
 
 type DraftState = {
   qualityProfileId: string;
-  rootFolderPath: string;
+  rootFolderId: string;
   monitorType: string;
   useSeasonFolders: string;
   monitorSpecials: string;
@@ -44,7 +43,7 @@ type BulkTitleEditDialogProps = {
   view: string;
   selectedTitles: TitleRecord[];
   qualityProfiles: ParsedQualityProfile[];
-  rootFolders: RootFolderOption[];
+  rootFolders: LibraryRootRecord[];
   busy: boolean;
   onSubmit: (changes: TitleOptionUpdates) => Promise<void> | void;
 };
@@ -52,7 +51,7 @@ type BulkTitleEditDialogProps = {
 function initialDraftState(): DraftState {
   return {
     qualityProfileId: UNCHANGED_VALUE,
-    rootFolderPath: UNCHANGED_VALUE,
+    rootFolderId: UNCHANGED_VALUE,
     monitorType: UNCHANGED_VALUE,
     useSeasonFolders: UNCHANGED_VALUE,
     monitorSpecials: UNCHANGED_VALUE,
@@ -84,8 +83,14 @@ export function BulkTitleEditDialog({
     (path: string) => path.split("/").filter(Boolean).pop() ?? path,
     [],
   );
-  const defaultRootFolderPath = React.useMemo(
-    () => rootFolders.find((folder) => folder.isDefault)?.path ?? null,
+  const sortedRootFolders = React.useMemo(
+    () =>
+      [...rootFolders].sort((left, right) => {
+        if (left.isDefault !== right.isDefault) {
+          return left.isDefault ? -1 : 1;
+        }
+        return left.path.localeCompare(right.path);
+      }),
     [rootFolders],
   );
 
@@ -136,11 +141,8 @@ export function BulkTitleEditDialog({
       changes.qualityProfileId =
         draft.qualityProfileId === INHERIT_VALUE ? "" : draft.qualityProfileId;
     }
-    if (draft.rootFolderPath !== UNCHANGED_VALUE) {
-      changes.rootFolderPath =
-        draft.rootFolderPath === DEFAULT_ROOT_FOLDER_VALUE
-          ? ""
-          : draft.rootFolderPath;
+    if (draft.rootFolderId !== UNCHANGED_VALUE) {
+      changes.rootFolderId = draft.rootFolderId;
     }
     if (draft.monitorType !== UNCHANGED_VALUE) {
       changes.monitorType = draft.monitorType;
@@ -212,9 +214,9 @@ export function BulkTitleEditDialog({
 
           <EditableField label={t("title.rootFolder")}>
             <Select
-              value={draft.rootFolderPath}
+              value={draft.rootFolderId}
               onValueChange={(value) =>
-                setDraft((previous) => ({ ...previous, rootFolderPath: value }))
+                setDraft((previous) => ({ ...previous, rootFolderId: value }))
               }
               disabled={busy}
             >
@@ -225,16 +227,13 @@ export function BulkTitleEditDialog({
                 <SelectItem value={UNCHANGED_VALUE}>
                   {t("label.unchanged")}
                 </SelectItem>
-                <SelectItem value={DEFAULT_ROOT_FOLDER_VALUE}>
-                  {defaultRootFolderPath
-                    ? t("title.defaultRootFolder", {
-                        path: folderLabel(defaultRootFolderPath),
-                      })
-                    : t("label.default")}
-                </SelectItem>
-                {rootFolders.map((rootFolder) => (
-                  <SelectItem key={rootFolder.path} value={rootFolder.path}>
-                    {folderLabel(rootFolder.path)}
+                {sortedRootFolders.map((rootFolder) => (
+                  <SelectItem key={rootFolder.id} value={rootFolder.id}>
+                    {rootFolder.isDefault
+                      ? t("title.defaultRootFolder", {
+                          path: folderLabel(rootFolder.path),
+                        })
+                      : folderLabel(rootFolder.path)}
                   </SelectItem>
                 ))}
               </SelectContent>

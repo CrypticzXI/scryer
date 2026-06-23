@@ -14,5 +14,5 @@ pub use scryer_interface_media::{mappers, types};
 
 pub use context::{
     ApiContext, ApiSchema, LogBuffer, RestoreContext, RestoreRestartHandle, build_schema,
-    build_schema_with_log_buffer, build_schema_with_log_buffer_and_restore,
+    build_schema_with_log_buffer, build_schema_with_log_buffer_and_restore, export_schema_sdl,
 };

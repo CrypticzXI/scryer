@@ -33,7 +33,11 @@ import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
-import { TitleTableActionButton } from "./media-content/title-table-shared";
+import {
+  TitleTableActionButton,
+  type TitleTableSortDirection,
+  type TitleTableSortKey,
+} from "./media-content/title-table-shared";
 import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
 import {
   hasActiveTitleQuickFilters,
@@ -48,6 +52,7 @@ import type {
   ScoringPersonaId,
 } from "@/lib/types/quality-profiles";
 import { buildViewPath } from "@/lib/utils/routing";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import type { ContentViewMode } from "./media-content/content-view-mode";
 
 type Facet = "movie" | "series" | "anime";
@@ -109,6 +114,22 @@ function isMediaSettingsSection(section: ContentSettingsSection): boolean {
   );
 }
 
+function canAccessMediaSettingsSection(
+  section: ContentSettingsSection,
+  canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
+): boolean {
+  if (!isMediaSettingsSection(section)) {
+    return true;
+  }
+
+  if (section === "library") {
+    return canManageConfig || canManageLibrarySettings;
+  }
+
+  return canManageConfig;
+}
+
 export function MediaContentView({
   state,
 }: {
@@ -116,11 +137,15 @@ export function MediaContentView({
     view: ViewId;
     contentSettingsSection: ContentSettingsSection;
     canManageConfig: boolean;
+    canManageSystemSettings: boolean;
+    canManageCatalogSettings: boolean;
+    canManageLibrarySettings: boolean;
     contentSettingsLabel: string;
     moviesPath: string;
     setMoviesPath: (value: string) => void;
     seriesPath: string;
     setSeriesPath: (value: string) => void;
+    localPathStyle: LocalPathStyle | undefined;
     mediaSettingsLoading: boolean;
     librarySettingsSaving: boolean;
     qualityProfiles: ParsedQualityProfile[];
@@ -209,6 +234,12 @@ export function MediaContentView({
     setTitleFilter: (value: string) => void;
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
+    catalogHasMoreTitles: boolean;
+    catalogLoadingMoreTitles: boolean;
+    loadMoreCatalogTitles: () => Promise<void> | void;
+    titleCatalogSortKey: TitleTableSortKey;
+    titleCatalogSortDirection: TitleTableSortDirection;
+    updateTitleCatalogSort: (key: TitleTableSortKey) => void;
     catalogBootstrapLoading: boolean;
     catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
@@ -293,7 +324,11 @@ export function MediaContentView({
     view,
     contentSettingsSection,
     canManageConfig,
+    canManageSystemSettings,
+    canManageCatalogSettings,
+    canManageLibrarySettings,
     contentSettingsLabel,
+    localPathStyle,
     mediaSettingsLoading,
     librarySettingsSaving,
     qualityProfiles,
@@ -355,6 +390,12 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    loadMoreCatalogTitles,
+    titleCatalogSortKey,
+    titleCatalogSortDirection,
+    updateTitleCatalogSort,
     catalogBootstrapLoading,
     catalogInitialLoadComplete,
     monitoredTitles,
@@ -426,9 +467,17 @@ export function MediaContentView({
     [deferredMonitoredTitles, selectedTitleIds],
   );
   const effectiveContentSettingsSection =
-    !canManageConfig && isMediaSettingsSection(contentSettingsSection)
-      ? "overview"
-      : contentSettingsSection;
+    canAccessMediaSettingsSection(
+      contentSettingsSection,
+      canManageConfig,
+      canManageLibrarySettings,
+    )
+      ? contentSettingsSection
+      : canManageLibrarySettings &&
+          !canManageConfig &&
+          isMediaSettingsSection(contentSettingsSection)
+        ? "library"
+        : "overview";
 
   const scopeLabel =
     activeQualityScopeId === "movie"
@@ -458,13 +507,13 @@ export function MediaContentView({
     !librariesLoading &&
     relevantLibraries.some((library) => invalidRootLibraryIds.includes(library.id));
   const showInitialScanAction =
-    canManageConfig &&
+    canManageLibrarySettings &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     hasConfiguredRootFolders === true &&
     !hasInvalidConfiguredRootFolders;
   const showConfigureRootFoldersAction =
-    canManageConfig &&
+    canManageLibrarySettings &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     (hasConfiguredRootFolders === false || hasInvalidConfiguredRootFolders);
@@ -751,9 +800,14 @@ export function MediaContentView({
             scanLoading={libraryScanLoading}
             scanNotice={libraryScanNotice}
             scanSummary={libraryScanSummary}
+            localPathStyle={localPathStyle}
             qualityProfiles={qualityProfiles}
             downloadClients={libraryDownloadClients}
             downloadClientsLoading={libraryDownloadClientsLoading}
+            canCreateLibrary={canManageCatalogSettings}
+            canManageDownloadClientRouting={
+              canManageSystemSettings || canManageCatalogSettings
+            }
             loadLibrarySettings={state.loadLibrarySettings}
             loadFacetDownloadClientRouting={state.loadFacetDownloadClientRouting}
             onCreateLibrary={state.createLibrary}
@@ -977,6 +1031,12 @@ export function MediaContentView({
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}
+                      catalogHasMoreTitles={catalogHasMoreTitles}
+                      catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                      onCatalogEndReached={loadMoreCatalogTitles}
+                      sortKey={titleCatalogSortKey}
+                      sortDirection={titleCatalogSortDirection}
+                      onSortChange={updateTitleCatalogSort}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
@@ -1012,9 +1072,12 @@ export function MediaContentView({
                     view={view}
                     titles={deferredMonitoredTitles}
                     titleLoading={titleLoading || catalogBootstrapLoading}
-                    resolvedProfileName={resolvedProfileName}
-                    qualityProfiles={qualityProfiles}
-                    qualityProfilesLoading={mediaSettingsLoading}
+                    catalogHasMoreTitles={catalogHasMoreTitles}
+                    catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                    onCatalogEndReached={loadMoreCatalogTitles}
+                    sortKey={titleCatalogSortKey}
+                    sortDirection={titleCatalogSortDirection}
+                    onSortChange={updateTitleCatalogSort}
                     onOpenOverview={onOpenOverview}
                     onDelete={handleDeleteCatalogTitle}
                     onAutoQueue={queueExisting}

@@ -222,7 +222,7 @@ fn match_release_to_title_context<'a>(
     best.map(|(info, _)| info)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title: &Title) -> bool {
     parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }
@@ -1443,6 +1443,7 @@ mod tests {
             name: name.to_string(),
             facet: MediaFacet::Movie,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
             external_ids: vec![],

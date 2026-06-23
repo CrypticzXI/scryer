@@ -481,30 +481,58 @@ async fn cleanup_superseded_episode_incumbents(
     superseded: &[crate::EpisodeScopedMediaFile],
     replacement_file_id: &str,
     replacement_path: &Path,
-    media_root: Option<&str>,
-    recycle_config: &crate::recycle_bin::RecycleBinConfig,
 ) {
     for incumbent in superseded {
         let mut recycle_result = None;
-        let old_path = PathBuf::from(&incumbent.media_file.file_path);
+        let old_path = crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
         if old_path.exists() {
-            let manifest = crate::recycle_bin::RecycleManifest::pending_upgrade(
-                incumbent.media_file.file_path.clone(),
-                incumbent.media_file.id.clone(),
-                incumbent.media_file.size_bytes as u64,
-                title.id.clone(),
-                media_root.map(str::to_string),
-            );
+            let old_file_recycle_context =
+                match crate::upgrade::resolve_old_file_recycle_context(
+                    app,
+                    title,
+                    &incumbent.media_file,
+                )
+                .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            path = %old_path.display(),
+                            file_id = %incumbent.media_file.id,
+                            "failed to resolve recycle context for superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
+                        );
+                        continue;
+                    }
+                };
+            let metadata = crate::recycle_bin::ReplacedMediaRecycleMetadata {
+                original_path: &incumbent.media_file.file_path,
+                original_file_id: &incumbent.media_file.id,
+                size_bytes: incumbent.media_file.size_bytes as u64,
+                title_id: &title.id,
+                media_root: Some(old_file_recycle_context.media_root.as_str()),
+            };
 
-            match crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await {
+            match crate::recycle_bin::recycle_replaced_media_file(
+                &old_file_recycle_context.recycle_config,
+                &old_path,
+                metadata,
+                true,
+            )
+            .await
+            {
                 Ok(result) => recycle_result = result,
                 Err(error) => {
+                    // Physical cleanup failed or was refused for safety. The file is
+                    // still on disk, so keep its database record rather than orphaning
+                    // the file; a later upgrade can retry cleanup.
                     tracing::warn!(
                         error = %error,
                         path = %old_path.display(),
                         file_id = %incumbent.media_file.id,
-                        "failed to recycle superseded episode incumbent; deleting stale database record anyway"
+                        "failed to recycle superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
                     );
+                    continue;
                 }
             }
         }
@@ -533,10 +561,7 @@ async fn cleanup_superseded_episode_incumbents(
         }
 
         let deleted_record = match app
-            .services
-            .library
-            .media_files
-            .delete_media_file(&incumbent.media_file.id)
+            .delete_media_file_record_with_dependents(&incumbent.media_file.id)
             .await
         {
             Ok(()) => true,
@@ -820,13 +845,7 @@ pub(crate) async fn resolve_import_paths(
     title: &scryer_domain::Title,
 ) -> AppResult<ImportPathSettings> {
     let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
-    let default_root = app.default_media_root_for_title(title).await?;
-    let media_root = title
-        .tags
-        .iter()
-        .find(|t| t.starts_with("scryer:root-folder:"))
-        .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
-        .unwrap_or(default_root);
+    let media_root = app.title_root_folder_path_override(title).await?;
 
     let rename_enabled = app.resolve_rename_enabled(&title.facet).await?;
     let rename_template = app

@@ -35,7 +35,7 @@ import { useClient } from "urql";
 type FilePreview = {
   filePath: string;
   fileName: string;
-  sizeBytes: string;
+  sizeBytes: number;
   quality: string | null;
   parsedSeason: number | null;
   parsedEpisodes: number[];
@@ -170,9 +170,11 @@ export function ManualImportDialog({
     setLoading(true);
     setError(null);
     client.query(previewManualImportQuery, {
-      clientId,
-      downloadClientItemId,
-      titleId,
+      input: {
+        clientId,
+        downloadClientItemId,
+        titleId,
+      },
     }).toPromise()
       .then(({ data, error: queryError }) => {
         if (queryError) throw queryError;
@@ -318,7 +320,7 @@ export function ManualImportDialog({
                         </div>
                       </TableCell>
                       <TableCell className="text-right text-xs text-muted-foreground">
-                        {formatFileSize(Number(file.sizeBytes))}
+                        {formatFileSize(file.sizeBytes)}
                       </TableCell>
                       <TableCell className="text-center">
                         {file.quality ? (

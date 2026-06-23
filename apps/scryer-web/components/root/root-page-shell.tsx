@@ -287,6 +287,33 @@ function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
   return section === "import" || isMediaSettingsSection(section);
 }
 
+function canAccessMediaSettingsSection(
+  section: ContentSettingsSection,
+  canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
+): boolean {
+  if (!isManageConfigMediaSection(section)) {
+    return true;
+  }
+
+  if (section === "library") {
+    return canManageConfig || canManageLibrarySettings;
+  }
+
+  return canManageConfig;
+}
+
+function fallbackMediaContentSettingsSection(
+  section: ContentSettingsSection,
+  canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
+): ContentSettingsSection {
+  if (canManageLibrarySettings && !canManageConfig && isMediaSettingsSection(section)) {
+    return "library";
+  }
+  return "overview";
+}
+
 function canAccessSettingsSection(
   section: SettingsSection,
   canManageUsers: boolean,
@@ -328,6 +355,7 @@ function defaultAccessibleRoute(
   canRequestMedia: boolean,
   canManageUsers: boolean,
   canManageConfig: boolean,
+  canManageLibrarySettings: boolean,
 ): {
   view: ViewId;
   settingsSection?: SettingsSection;
@@ -344,6 +372,13 @@ function defaultAccessibleRoute(
     return {
       view: "movies",
       contentSettingsSection: "requests",
+    };
+  }
+
+  if (canManageLibrarySettings && !canManageConfig) {
+    return {
+      view: "movies",
+      contentSettingsSection: "library",
     };
   }
 
@@ -591,7 +626,10 @@ function MainContent({
   canAccessRecycleBin,
   canManageTitle,
   canManageUsers,
+  canManageSystemSettings,
+  canManageCatalogSettings,
   canManageConfig,
+  canManageLibrarySettings,
 }: {
   view: ViewId;
   overviewTitleId: string | null;
@@ -620,7 +658,10 @@ function MainContent({
   canAccessRecycleBin: boolean;
   canManageTitle: boolean;
   canManageUsers: boolean;
+  canManageSystemSettings: boolean;
+  canManageCatalogSettings: boolean;
   canManageConfig: boolean;
+  canManageLibrarySettings: boolean;
 }) {
   if (view === "activity") {
     if (!canAccessActivity) {
@@ -734,16 +775,26 @@ function MainContent({
       />
     );
   }
+  const effectiveContentSettingsSection = canAccessMediaSettingsSection(
+    contentSettingsSection,
+    canManageConfig,
+    canManageLibrarySettings,
+  )
+    ? contentSettingsSection
+    : fallbackMediaContentSettingsSection(
+        contentSettingsSection,
+        canManageConfig,
+        canManageLibrarySettings,
+      );
   return (
     <MediaContentContainer
-      key={`${view}-${!canManageConfig && isManageConfigMediaSection(contentSettingsSection) ? "overview" : contentSettingsSection}`}
+      key={`${view}-${effectiveContentSettingsSection}`}
       view={view}
-      contentSettingsSection={
-        !canManageConfig && isManageConfigMediaSection(contentSettingsSection)
-          ? "overview"
-          : contentSettingsSection
-      }
+      contentSettingsSection={effectiveContentSettingsSection}
       canManageConfig={canManageConfig}
+      canManageSystemSettings={canManageSystemSettings}
+      canManageCatalogSettings={canManageCatalogSettings}
+      canManageLibrarySettings={canManageLibrarySettings}
       onOpenOverview={handleOpenOverview}
     />
   );
@@ -1670,6 +1721,9 @@ function AuthenticatedHomePage({
   );
   const canManageUsers = canManageUserAccounts || canManagePermissions;
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+  const canManageLibrarySettings =
+    canManageConfig ||
+    hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageLibrary);
   const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
   const viewingBackupsSettings =
     view === "settings" && settingsSection === "backups";
@@ -1818,14 +1872,33 @@ function AuthenticatedHomePage({
   useEffect(() => {
     if (
       !isMediaView(view) ||
-      canManageConfig ||
-      !isManageConfigMediaSection(contentSettingsSection)
+      canAccessMediaSettingsSection(
+        contentSettingsSection,
+        canManageConfig,
+        canManageLibrarySettings,
+      )
     ) {
       return;
     }
 
-    navigateTo(view, undefined, "overview", undefined, undefined);
-  }, [canManageConfig, contentSettingsSection, navigateTo, view]);
+    navigateTo(
+      view,
+      undefined,
+      fallbackMediaContentSettingsSection(
+        contentSettingsSection,
+        canManageConfig,
+        canManageLibrarySettings,
+      ),
+      undefined,
+      undefined,
+    );
+  }, [
+    canManageConfig,
+    canManageLibrarySettings,
+    contentSettingsSection,
+    navigateTo,
+    view,
+  ]);
 
   const navigateToAccessibleDefault = useCallback(() => {
     const fallback = defaultAccessibleRoute(
@@ -1833,6 +1906,7 @@ function AuthenticatedHomePage({
       canRequestMedia,
       canManageUsers,
       canManageConfig,
+      canManageLibrarySettings,
     );
     navigateTo(
       fallback.view,
@@ -1843,6 +1917,7 @@ function AuthenticatedHomePage({
     );
   }, [
     canManageConfig,
+    canManageLibrarySettings,
     canManageUsers,
     canRequestMedia,
     canViewCatalog,
@@ -1859,8 +1934,11 @@ function AuthenticatedHomePage({
         )
       : !(
           isMediaView(view) &&
-          isManageConfigMediaSection(contentSettingsSection) &&
-          !canManageConfig
+          !canAccessMediaSettingsSection(
+            contentSettingsSection,
+            canManageConfig,
+            canManageLibrarySettings,
+          )
         );
   const protectedSettingsRoute =
     routeCanAccessSettingsContent &&
@@ -2363,7 +2441,16 @@ function AuthenticatedHomePage({
                                   canAccessRecycleBin={canAccessRecycleBin}
                                   canManageTitle={canManageTitle}
                                   canManageUsers={canManageUsers}
+                                  canManageSystemSettings={
+                                    canManageSystemSettings
+                                  }
+                                  canManageCatalogSettings={
+                                    canManageCatalogSettings
+                                  }
                                   canManageConfig={canManageConfig}
+                                  canManageLibrarySettings={
+                                    canManageLibrarySettings
+                                  }
                                 />
                               )}
                             </Suspense>

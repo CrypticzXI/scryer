@@ -316,10 +316,8 @@ impl AppUseCase {
         }
 
         for key in secret_keys {
-            let incoming_is_blank = incoming.get(&key).is_none_or(|value| {
-                value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty())
-            });
-            if incoming_is_blank
+            let incoming_is_missing = !incoming.contains_key(&key);
+            if incoming_is_missing
                 && let Some(existing_value) = existing.get(&key).filter(|value| !value.is_null())
             {
                 incoming.insert(key, existing_value.clone());

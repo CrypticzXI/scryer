@@ -360,7 +360,7 @@ pub(crate) fn normalize_library_root_drafts(
         if root.path.is_empty() {
             continue;
         }
-        let key = root.path.to_ascii_lowercase();
+        let key = normalize_library_root_path(&root.path);
         if !seen.insert(key) {
             return Err(AppError::Validation(
                 "library roots must be unique within a library".into(),
@@ -382,7 +382,7 @@ pub(crate) fn normalize_library_root_drafts(
 }
 
 fn normalize_library_root_path(path: &str) -> String {
-    path.trim().trim_end_matches('/').to_ascii_lowercase()
+    scryer_domain::normalize_library_root_path(path)
 }
 
 fn conflicting_library_names_for_roots(
@@ -475,6 +475,11 @@ impl AppUseCase {
             return Err(AppError::Validation("library name is required".into()));
         }
         let roots = normalize_library_root_drafts(roots)?;
+        if roots.is_empty() {
+            return Err(AppError::Validation(
+                "libraries require at least one root folder".into(),
+            ));
+        }
         self.validate_library_root_conflicts(None, &roots).await?;
         let now = Utc::now();
         let library = Library {
@@ -538,9 +543,9 @@ impl AppUseCase {
                 })
                 .collect(),
         };
-        if roots_were_provided && existing.is_default && roots.is_empty() {
+        if roots_were_provided && roots.is_empty() {
             return Err(AppError::Validation(
-                "default libraries require at least one root folder".into(),
+                "libraries require at least one root folder".into(),
             ));
         }
         let previous_roots = if roots_were_provided {

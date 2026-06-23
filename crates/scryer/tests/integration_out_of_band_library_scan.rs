@@ -47,7 +47,7 @@ async fn seed_media_path_settings(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "media".into(),
                 scope: "media".into(),
-                key_name: "movie.path".into(),
+                key_name: "movies.path".into(),
                 data_type: "string".into(),
                 default_value_json: "\"/data/movies\"".into(),
                 is_sensitive: false,
@@ -74,7 +74,7 @@ async fn seed_media_path_settings(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "media".into(),
                 scope: "media".into(),
-                key_name: "movie.root_folders".into(),
+                key_name: "movies.root_folders".into(),
                 data_type: "json".into(),
                 default_value_json: "[]".into(),
                 is_sensitive: false,
@@ -140,10 +140,7 @@ async fn seed_series_title(
         library_id: scryer_domain::default_library_id_for_facet(&facet),
         facet,
         monitored: true,
-        tags: vec![format!(
-            "scryer:root-folder:{}",
-            media_root.to_string_lossy()
-        )],
+        tags: vec![],
         external_ids: tvdb_id
             .map(|value| {
                 vec![ExternalId {
@@ -152,6 +149,9 @@ async fn seed_series_title(
                 }]
             })
             .unwrap_or_default(),
+        root_folder_id: scryer_domain::root_folder_id_for_path(
+            media_root.to_string_lossy().as_ref(),
+        ),
         created_by: None,
         created_at: chrono::Utc::now(),
         year: Some(2024),
@@ -262,6 +262,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         media_root.path().to_string_lossy().as_ref(),
     )
     .await;
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
 
     let title_dir = media_root.path().join("Known Show");
     std::fs::create_dir_all(&title_dir).expect("create title directory");
@@ -369,6 +370,7 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
         media_root.path().to_string_lossy().as_ref(),
     )
     .await;
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
 
     let title_dir = media_root.path().join("Removal Show");
     std::fs::create_dir_all(&title_dir).expect("create title directory");
@@ -727,10 +729,11 @@ async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_ti
     let media_root = tempfile::tempdir().expect("movie root");
     set_media_path(
         &ctx,
-        "movie.path",
+        "movies.path",
         media_root.path().to_string_lossy().as_ref(),
     )
     .await;
+    set_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
     let movie_dir = media_root.path().join("Redline (2010)");
     std::fs::create_dir_all(&movie_dir).expect("create movie dir");
