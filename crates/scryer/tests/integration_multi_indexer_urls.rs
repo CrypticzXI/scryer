@@ -773,7 +773,7 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
     assert_id_only_then_fallback(
         &newznab_urls,
         "imdbid=000245429",
-        "q=Lantern+Tide%3A+Hidden+Current",
+        "q=Lantern+Tide+Hidden+Current",
     );
     assert_id_only_then_fallback(
         &torznab_urls,
