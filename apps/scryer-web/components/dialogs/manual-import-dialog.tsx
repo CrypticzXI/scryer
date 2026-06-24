@@ -2,6 +2,7 @@
 import * as React from "react";
 import { FileVideo, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -324,9 +325,9 @@ export function ManualImportDialog({
                       </TableCell>
                       <TableCell className="text-center">
                         {file.quality ? (
-                          <span className="rounded border border-blue-500/30 bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-300">
+                          <Badge tone="info" className="px-1.5 text-[10px]">
                             {file.quality}
-                          </span>
+                          </Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground/60">—</span>
                         )}

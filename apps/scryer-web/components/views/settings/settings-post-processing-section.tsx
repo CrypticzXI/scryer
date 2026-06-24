@@ -9,6 +9,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -23,6 +24,7 @@ import {
   sanitizeDigits,
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { LazyRegoEditor } from "@/components/common/lazy-rego-editor";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
@@ -71,20 +73,17 @@ const FACET_OPTIONS = [
 function FacetBadges({ facets }: { facets: string[] }) {
   if (facets.length === 0) {
     return (
-      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+      <Badge tone="info" className="capitalize">
         All
-      </span>
+      </Badge>
     );
   }
   return (
     <div className="flex gap-1">
       {facets.map((f) => (
-        <span
-          key={f}
-          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground capitalize"
-        >
+        <Badge key={f} tone="neutral" className="capitalize">
           {f}
-        </span>
+        </Badge>
       ))}
     </div>
   );
@@ -564,41 +563,35 @@ export const SettingsPostProcessingSection = React.memo(
                 <Label className="mb-2 block">
                   {t("settings.pp.executionMode")}
                 </Label>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2">
-                    <input
+                <RadioGroup
+                  value={scriptDraft.executionMode}
+                  onValueChange={(value) =>
+                    setScriptDraft((prev) => ({
+                      ...prev,
+                      executionMode: value,
+                    }))
+                  }
+                >
+                  <label
+                    htmlFor="settings-post-processing-execution-blocking"
+                    className="flex items-center gap-2"
+                  >
+                    <RadioGroupItem
                       id="settings-post-processing-execution-blocking"
-                      type="radio"
-                      name="executionMode"
                       value="blocking"
-                      checked={scriptDraft.executionMode === "blocking"}
-                      onChange={() =>
-                        setScriptDraft((prev) => ({
-                          ...prev,
-                          executionMode: "blocking",
-                        }))
-                      }
-                      className="accent-primary"
                     />
                     <span className="text-sm">{t("settings.pp.blocking")}</span>
                     <span className="text-xs text-muted-foreground">
                       {t("settings.pp.blockingHelp")}
                     </span>
                   </label>
-                  <label className="flex items-center gap-2">
-                    <input
+                  <label
+                    htmlFor="settings-post-processing-execution-fire-and-forget"
+                    className="flex items-center gap-2"
+                  >
+                    <RadioGroupItem
                       id="settings-post-processing-execution-fire-and-forget"
-                      type="radio"
-                      name="executionMode"
                       value="fire_and_forget"
-                      checked={scriptDraft.executionMode === "fire_and_forget"}
-                      onChange={() =>
-                        setScriptDraft((prev) => ({
-                          ...prev,
-                          executionMode: "fire_and_forget",
-                        }))
-                      }
-                      className="accent-primary"
                     />
                     <span className="text-sm">
                       {t("settings.pp.fireAndForget")}
@@ -607,7 +600,7 @@ export const SettingsPostProcessingSection = React.memo(
                       {t("settings.pp.fireAndForgetHelp")}
                     </span>
                   </label>
-                </div>
+                </RadioGroup>
               </div>
 
               {/* Timeout + Priority (only for blocking) */}

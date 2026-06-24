@@ -2,6 +2,7 @@ import * as React from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { InfoHelp } from "@/components/common/info-help";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -507,18 +508,12 @@ export function RenameSettingsForm({
                   {t("settings.monitorSpecialsLabel")}
                 </Label>
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={categoryMonitorSpecials[activeQualityScopeId] !== "false"}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
-                    onClick={() => handleMonitorSpecialsChange(categoryMonitorSpecials[activeQualityScopeId] === "false")}
+                  <SettingsToggleSwitch
+                    checked={categoryMonitorSpecials[activeQualityScopeId] !== "false"}
+                    ariaLabel={t("settings.monitorSpecialsLabel")}
                     disabled={mediaSettingsLoading}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryMonitorSpecials[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
-                    />
-                  </button>
+                    onChange={(nextValue) => handleMonitorSpecialsChange(nextValue)}
+                  />
                   <span className="text-xs text-muted-foreground">{t("settings.monitorSpecialsDescription")}</span>
                 </div>
               </div>
@@ -527,18 +522,12 @@ export function RenameSettingsForm({
                   {t("settings.interSeasonMoviesLabel")}
                 </Label>
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={categoryInterSeasonMovies[activeQualityScopeId] !== "false"}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "bg-primary" : "bg-muted"}`}
-                    onClick={() => handleInterSeasonMoviesChange(categoryInterSeasonMovies[activeQualityScopeId] === "false")}
+                  <SettingsToggleSwitch
+                    checked={categoryInterSeasonMovies[activeQualityScopeId] !== "false"}
+                    ariaLabel={t("settings.interSeasonMoviesLabel")}
                     disabled={mediaSettingsLoading}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${categoryInterSeasonMovies[activeQualityScopeId] !== "false" ? "translate-x-5" : "translate-x-0"}`}
-                    />
-                  </button>
+                    onChange={(nextValue) => handleInterSeasonMoviesChange(nextValue)}
+                  />
                   <span className="text-xs text-muted-foreground">{t("settings.interSeasonMoviesDescription")}</span>
                 </div>
               </div>
@@ -551,18 +540,12 @@ export function RenameSettingsForm({
                 {t("settings.nfoWriteOnImportLabel")}
               </Label>
               <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={nfoWriteOnImport[activeQualityScopeId] === "true"}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${nfoWriteOnImport[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
-                  onClick={() => handleNfoWriteChange(nfoWriteOnImport[activeQualityScopeId] !== "true")}
+                <SettingsToggleSwitch
+                  checked={nfoWriteOnImport[activeQualityScopeId] === "true"}
+                  ariaLabel={t("settings.nfoWriteOnImportLabel")}
                   disabled={mediaSettingsLoading}
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${nfoWriteOnImport[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
-                  />
-                </button>
+                  onChange={(nextValue) => handleNfoWriteChange(nextValue)}
+                />
                 <span className="text-xs text-muted-foreground">{t("settings.nfoWriteOnImportDescription")}</span>
               </div>
             </div>
@@ -572,18 +555,12 @@ export function RenameSettingsForm({
                   {t("settings.plexmatchWriteOnImportLabel")}
                 </Label>
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={plexmatchWriteOnImport[activeQualityScopeId] === "true"}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${plexmatchWriteOnImport[activeQualityScopeId] === "true" ? "bg-primary" : "bg-muted"}`}
-                    onClick={() => handlePlexmatchWriteChange(plexmatchWriteOnImport[activeQualityScopeId] !== "true")}
+                  <SettingsToggleSwitch
+                    checked={plexmatchWriteOnImport[activeQualityScopeId] === "true"}
+                    ariaLabel={t("settings.plexmatchWriteOnImportLabel")}
                     disabled={mediaSettingsLoading}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${plexmatchWriteOnImport[activeQualityScopeId] === "true" ? "translate-x-5" : "translate-x-0"}`}
-                    />
-                  </button>
+                    onChange={(nextValue) => handlePlexmatchWriteChange(nextValue)}
+                  />
                   <span className="text-xs text-muted-foreground">{t("settings.plexmatchWriteOnImportDescription")}</span>
                 </div>
               </div>

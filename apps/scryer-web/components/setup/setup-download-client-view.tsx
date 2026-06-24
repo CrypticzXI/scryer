@@ -311,9 +311,9 @@ export function SetupDownloadClientView({
         <Button id="setup-download-client-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button id="setup-download-client-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <Button id="setup-download-client-skip" type="button" variant="link" onClick={onSkip}>
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
           <Button id="setup-download-client-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}

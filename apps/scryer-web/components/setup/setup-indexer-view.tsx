@@ -1,5 +1,6 @@
 import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -70,14 +71,12 @@ function DynamicConfigField({
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2">
-        <input
+        <Checkbox
           id={fieldId}
-          type="checkbox"
           checked={value === "true"}
-          onChange={(event) =>
-            onChange(field.key, event.target.checked ? "true" : "false")
+          onCheckedChange={(checkedValue) =>
+            onChange(field.key, checkedValue === true ? "true" : "false")
           }
-          className="accent-primary"
         />
         <span className="inline-flex items-center gap-2 text-sm">
           {field.label}
@@ -303,9 +302,9 @@ export function SetupIndexerView({
         <Button id="setup-indexer-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button id="setup-indexer-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <Button id="setup-indexer-skip" type="button" variant="link" onClick={onSkip}>
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
           <Button id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}

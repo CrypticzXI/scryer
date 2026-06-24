@@ -22,12 +22,11 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
-import {
-  APP_PERMISSIONS,
-  LIBRARY_PERMISSIONS,
-  hasAnyLibraryPermission,
-  hasAppPermission,
-} from "@/lib/utils/permissions";
+import { usePermissions } from "@/lib/hooks/use-permissions";
+import { useSmgNotices } from "@/lib/hooks/use-smg-notices";
+import { useNavigationBadges } from "@/lib/hooks/use-navigation-badges";
+import { useAutoBackupNotice } from "@/lib/hooks/use-auto-backup-notice";
+import { useConfigStepUp } from "@/lib/hooks/use-config-step-up";
 
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
@@ -43,17 +42,11 @@ import { GlobalSearchProvider } from "@/components/root/global-search-provider";
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
-import {
-  backendClient,
-  MFA_STEP_UP_REQUIRED_EVENT,
-} from "@/lib/graphql/urql-client";
+import { backendClient } from "@/lib/graphql/urql-client";
 import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
-import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
-import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import { TotpCodeForm } from "@/components/auth/totp-code-form";
-import { toast } from "@/components/ui/sonner";
 import {
   Dialog,
   DialogContent,
@@ -94,85 +87,18 @@ import {
   parseWantedSectionFromPath,
 } from "@/lib/utils/routing";
 import {
+  canAccessMediaSettingsSection,
+  canAccessSettingsSection,
+  isMediaSettingsSection,
+  isProtectedSettingsRoute,
+} from "@/lib/utils/routes";
+import {
   FACET_REGISTRY,
   isMediaView,
   facetForView,
 } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
-import {
-  autoBackupSettingsQuery,
-  authRuntimeStateQuery,
-  navigationBadgeCountsQuery,
-  scryerVersionQuery,
-  smgScryerUpdateNoticeQuery,
-  smgVersionCompatibilityNoticeQuery,
-} from "@/lib/graphql/queries";
-import {
-  acknowledgeAutoBackupDisabledMissingKeyNoticeMutation,
-  mfaVerifyStepUpMutation,
-} from "@/lib/graphql/mutations";
-import { decodeJwtPayload, jwtDateClaimToMillis } from "@/lib/utils/jwt";
-import type { PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
-import {
-  dispatchNavigationBadgesRefresh,
-  NAVIGATION_BADGES_REFRESH_EVENT,
-  type NavigationBadgesRefreshDetail,
-} from "@/lib/events/navigation-badges";
-const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
-const SMG_SCRYER_UPDATE_NOTICE_KEY = "smg.scryer_update_notice";
-const SMG_SCRYER_UPDATE_DISMISSED_KEY = "scryer.smgUpdate.dismissed";
-const SMG_NOTICE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
-const CONFIG_STEP_UP_EXPIRY_LEEWAY_MS = 1_000;
-const AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID =
-  "auto-backup-disabled-missing-key-notice";
-
-function scheduleAfterFirstPaint(callback: () => void) {
-  if (typeof window === "undefined") {
-    callback();
-    return () => {};
-  }
-
-  let cancelled = false;
-  let frameId = 0;
-  let idleId: number | null = null;
-  let timeoutId: number | null = null;
-  const idleWindow = window as Window & {
-    requestIdleCallback?: (
-      callback: IdleRequestCallback,
-      options?: IdleRequestOptions,
-    ) => number;
-    cancelIdleCallback?: (handle: number) => void;
-  };
-
-  const run = () => {
-    if (!cancelled) {
-      callback();
-    }
-  };
-
-  frameId = window.requestAnimationFrame(() => {
-    if (idleWindow.requestIdleCallback) {
-      idleId = idleWindow.requestIdleCallback(run, { timeout: 1_500 });
-      return;
-    }
-
-    timeoutId = window.setTimeout(run, 250);
-  });
-
-  return () => {
-    cancelled = true;
-    if (frameId !== 0) {
-      window.cancelAnimationFrame(frameId);
-    }
-    if (idleId != null) {
-      idleWindow.cancelIdleCallback?.(idleId);
-    }
-    if (timeoutId != null) {
-      window.clearTimeout(timeoutId);
-    }
-  };
-}
 
 const mediaContainers = () =>
   import("@/components/containers/media-containers");
@@ -246,63 +172,6 @@ function normalizeSmgVersionCompatibilityStatus(
     : "blocked";
 }
 
-function isMediaSettingsSection(section: ContentSettingsSection): boolean {
-  return (
-    section === "library" ||
-    section === "general" ||
-    section === "quality" ||
-    section === "renaming" ||
-    section === "routing"
-  );
-}
-
-function isProtectedSettingsRoute(
-  view: ViewId,
-  settingsSection: SettingsSection,
-  contentSettingsSection: ContentSettingsSection,
-): boolean {
-  if (view === "settings") {
-    return settingsSection !== "profile";
-  }
-
-  return isMediaView(view) && isMediaSettingsSection(contentSettingsSection);
-}
-
-function configStepUpExpiresAt(token: string | null): number | null {
-  if (!token) {
-    return null;
-  }
-
-  return jwtDateClaimToMillis(decodeJwtPayload(token)?.mfaStepUpVerifiedUntil);
-}
-
-function hasFreshConfigStepUp(token: string | null, now: number): boolean {
-  const expiresAt = configStepUpExpiresAt(token);
-  return (
-    expiresAt !== null && expiresAt - CONFIG_STEP_UP_EXPIRY_LEEWAY_MS > now
-  );
-}
-
-function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
-  return section === "import" || isMediaSettingsSection(section);
-}
-
-function canAccessMediaSettingsSection(
-  section: ContentSettingsSection,
-  canManageConfig: boolean,
-  canManageLibrarySettings: boolean,
-): boolean {
-  if (!isManageConfigMediaSection(section)) {
-    return true;
-  }
-
-  if (section === "library") {
-    return canManageConfig || canManageLibrarySettings;
-  }
-
-  return canManageConfig;
-}
-
 function fallbackMediaContentSettingsSection(
   section: ContentSettingsSection,
   canManageConfig: boolean,
@@ -312,27 +181,6 @@ function fallbackMediaContentSettingsSection(
     return "library";
   }
   return "overview";
-}
-
-function canAccessSettingsSection(
-  section: SettingsSection,
-  canManageUsers: boolean,
-  canManageConfig: boolean,
-  canAccessRecycleBin: boolean,
-): boolean {
-  if (section === "profile") {
-    return true;
-  }
-
-  if (section === "security" || section === "users") {
-    return canManageUsers;
-  }
-
-  if (section === "recycleBin") {
-    return canAccessRecycleBin;
-  }
-
-  return canManageConfig;
 }
 
 function defaultSettingsSection(
@@ -454,19 +302,6 @@ function SmgUpgradeBanner({
       </div>
     </div>
   );
-}
-
-function buildSmgScryerUpdateDismissalValue(
-  notice: SmgScryerUpdateNotice | null,
-): string | null {
-  if (!notice?.available) {
-    return null;
-  }
-  const latest = notice.latestTag.trim() || notice.latestVersion.trim();
-  if (!latest) {
-    return null;
-  }
-  return `${latest}:${notice.latestVersion.trim()}`;
 }
 
 function SmgScryerUpdateBanner({
@@ -1020,37 +855,12 @@ function AuthenticatedHomePage({
 
   const [, setGlobalStatusRaw] = useState("");
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw);
-  type NavigationBadgeCountsPayload = {
-    pendingImportCounts?: PendingImportCounts | null;
-    pendingMediaRequestCounts?: PendingImportCounts | null;
-    activityImportCount?: number | null;
-    pluginUpdateCount?: number | null;
-  };
-  const [pendingImportCounts, setPendingImportCounts] =
-    useState<PendingImportCounts | null>(null);
-  const [pendingMediaRequestCounts, setPendingMediaRequestCounts] =
-    useState<PendingImportCounts | null>(null);
-  const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
-  const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
-  const [scryerVersion, setScryerVersion] = useState<string | null>(null);
-  const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
-    useState<SmgVersionCompatibilityNotice | null>(null);
-  const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
-    useState<SmgScryerUpdateNotice | null>(null);
-  const [
-    autoBackupDisabledMissingKeyNotice,
-    setAutoBackupDisabledMissingKeyNotice,
-  ] = useState(false);
-  const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
-    () => {
-      if (typeof window === "undefined") {
-        return "";
-      }
-      return (
-        window.localStorage.getItem(SMG_SCRYER_UPDATE_DISMISSED_KEY) ?? ""
-      );
-    },
-  );
+  const {
+    smgVersionCompatibilityNotice,
+    smgScryerUpdateNotice,
+    showSmgScryerUpdateReminder,
+    dismissSmgScryerUpdateReminder,
+  } = useSmgNotices();
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
@@ -1074,98 +884,6 @@ function AuthenticatedHomePage({
   });
   const showInstallBanner =
     !isInstalled && !installBannerDismissed && (canPrompt || isIosSafari);
-  const [configStepUpPolicy, setConfigStepUpPolicy] = useState({
-    loading: true,
-    required: false,
-    error: false,
-  });
-  const [configStepUpNow, setConfigStepUpNow] = useState(() => Date.now());
-  const [settingsStepUpCode, setSettingsStepUpCode] = useState("");
-  const [settingsStepUpBusy, setSettingsStepUpBusy] = useState(false);
-  const [settingsStepUpError, setSettingsStepUpError] = useState<string | null>(
-    null,
-  );
-  const [settingsStepUpForced, setSettingsStepUpForced] = useState(false);
-
-  const refreshConfigStepUpPolicy = useCallback(async () => {
-    setConfigStepUpPolicy((current) => ({
-      ...current,
-      loading: true,
-      error: false,
-    }));
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          authRuntimeState?: {
-            mfaRequireConfigStepUp?: boolean | null;
-          } | null;
-        }>(authRuntimeStateQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-
-      const runtimeState = data?.authRuntimeState;
-      setConfigStepUpPolicy({
-        loading: false,
-        required: runtimeState?.mfaRequireConfigStepUp === true,
-        error: false,
-      });
-    } catch (error) {
-      console.warn("Failed to refresh MFA step-up policy", error);
-      setConfigStepUpPolicy({ loading: false, required: false, error: true });
-    }
-  }, []);
-
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshConfigStepUpPolicy();
-    });
-  }, [refreshConfigStepUpPolicy]);
-
-  useSettingsSubscription(
-    useCallback(
-      (changedKeys) => {
-        if (
-          changedKeys.includes("auth.mfa.require_config_step_up") ||
-          changedKeys.includes("auth.totp.require_config_step_up") ||
-          changedKeys.includes("auth.form_login_enabled") ||
-          changedKeys.includes("auth.form.enabled")
-        ) {
-          void refreshConfigStepUpPolicy();
-        }
-      },
-      [refreshConfigStepUpPolicy],
-    ),
-  );
-
-  useEffect(() => {
-    const expiresAt = configStepUpExpiresAt(authToken);
-    if (expiresAt === null || typeof window === "undefined") {
-      return;
-    }
-
-    const delay = Math.max(
-      0,
-      expiresAt - Date.now() - CONFIG_STEP_UP_EXPIRY_LEEWAY_MS + 250,
-    );
-    const timeoutId = window.setTimeout(
-      () => setConfigStepUpNow(Date.now()),
-      delay,
-    );
-    return () => window.clearTimeout(timeoutId);
-  }, [authToken]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const refreshClock = () => setConfigStepUpNow(Date.now());
-    window.addEventListener("focus", refreshClock);
-    return () => window.removeEventListener("focus", refreshClock);
-  }, []);
-
   useEffect(() => {
     if (!isInstalled || typeof window === "undefined") {
       return;
@@ -1181,202 +899,6 @@ function AuthenticatedHomePage({
       window.localStorage.setItem(INSTALL_BANNER_DISMISSED_KEY, "true");
     }
   }, []);
-
-  const refreshScryerVersion = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{ scryerVersion?: string | null }>(scryerVersionQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setScryerVersion(data?.scryerVersion ?? null);
-    } catch (error) {
-      console.warn("Failed to refresh Scryer version", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!serviceRestarting) {
-      return scheduleAfterFirstPaint(() => {
-        void refreshScryerVersion();
-      });
-    }
-  }, [refreshScryerVersion, serviceRestarting]);
-
-  const refreshSmgVersionCompatibilityNotice = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          smgVersionCompatibilityNotice?: SmgVersionCompatibilityNotice | null;
-        }>(smgVersionCompatibilityNoticeQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setSmgVersionCompatibilityNotice(
-        data?.smgVersionCompatibilityNotice ?? null,
-      );
-    } catch (error) {
-      console.warn("Failed to refresh SMG version compatibility notice", error);
-    }
-  }, []);
-
-  const refreshSmgScryerUpdateNotice = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          smgScryerUpdateNotice?: SmgScryerUpdateNotice | null;
-        }>(smgScryerUpdateNoticeQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setSmgScryerUpdateNotice(data?.smgScryerUpdateNotice ?? null);
-    } catch (error) {
-      console.warn("Failed to refresh SMG Scryer update notice", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    });
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
-
-  useSettingsSubscription(
-    useCallback(
-      (changedKeys) => {
-        if (
-          changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY) ||
-          changedKeys.includes(SMG_SCRYER_UPDATE_NOTICE_KEY)
-        ) {
-          void refreshSmgVersionCompatibilityNotice();
-          void refreshSmgScryerUpdateNotice();
-        }
-      },
-      [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
-    ),
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      return;
-    }
-
-    const handleFocus = () => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void refreshSmgVersionCompatibilityNotice();
-        void refreshSmgScryerUpdateNotice();
-      }
-    };
-
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    const intervalId = window.setInterval(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    }, SMG_NOTICE_REFRESH_INTERVAL_MS);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.clearInterval(intervalId);
-    };
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
-
-  const refreshNavigationBadges = useCallback(async () => {
-    try {
-      const badgeCountsResult = await backendClient
-        .query(navigationBadgeCountsQuery, {})
-        .toPromise();
-
-      if (badgeCountsResult.error) {
-        throw badgeCountsResult.error;
-      }
-
-      const badgeCounts = badgeCountsResult.data?.navigationBadgeCounts as
-        | NavigationBadgeCountsPayload
-        | undefined;
-      setPendingImportCounts(
-        badgeCounts?.pendingImportCounts ?? { movie: 0, series: 0, anime: 0 },
-      );
-      setPendingMediaRequestCounts(
-        badgeCounts?.pendingMediaRequestCounts ?? {
-          movie: 0,
-          series: 0,
-          anime: 0,
-        },
-      );
-      setManualImportRequiredCount(
-        Number(badgeCounts?.activityImportCount ?? 0),
-      );
-      setPluginUpdateCount(Number(badgeCounts?.pluginUpdateCount ?? 0));
-    } catch (error) {
-      console.warn("Failed to refresh navigation badges", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshNavigationBadges();
-    });
-  }, [refreshNavigationBadges]);
-
-  useEffect(() => {
-    const refreshFromPulse = () => {
-      dispatchNavigationBadgesRefresh({ source: "poll" });
-    };
-    const refreshFromFocus = () => {
-      dispatchNavigationBadgesRefresh({ source: "focus" });
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        refreshFromFocus();
-      }
-    };
-    const handleNavigationBadgeRefresh = (event: Event) => {
-      const delta =
-        event instanceof CustomEvent &&
-        typeof (event as CustomEvent<NavigationBadgesRefreshDetail>).detail
-          ?.delta === "number"
-          ? Number(
-              (event as CustomEvent<NavigationBadgesRefreshDetail>).detail
-                ?.delta,
-            )
-          : 0;
-      if (delta !== 0) {
-        setManualImportRequiredCount((current) => Math.max(0, current + delta));
-        window.setTimeout(() => {
-          void refreshNavigationBadges();
-        }, 2_000);
-        return;
-      }
-      void refreshNavigationBadges();
-    };
-    window.addEventListener(
-      NAVIGATION_BADGES_REFRESH_EVENT,
-      handleNavigationBadgeRefresh,
-    );
-    window.addEventListener("focus", refreshFromFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    const intervalId = window.setInterval(() => {
-      refreshFromPulse();
-    }, 30_000);
-    return () => {
-      window.removeEventListener(
-        NAVIGATION_BADGES_REFRESH_EVENT,
-        handleNavigationBadgeRefresh,
-      );
-      window.removeEventListener("focus", refreshFromFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.clearInterval(intervalId);
-    };
-  }, [refreshNavigationBadges]);
 
   const activeFacet = useMemo<Facet>(
     () => facetForView(view)?.id ?? "movie",
@@ -1686,158 +1208,39 @@ function AuthenticatedHomePage({
     ],
     [t],
   );
-  const canViewCatalog = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.view,
-  );
-  const canManageTitle = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.manageTitles,
-  );
-  const canRequestMedia = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.request,
-  );
-  const canResolveImports = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.resolveImports,
-  );
-  const canAccessActivity = canResolveImports || canManageTitle;
-  const canManageUserAccounts = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageUsers,
-  );
-  const canManagePermissions = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.managePermissions,
-  );
-  const canManageSystemSettings = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageSystemSettings,
-  );
-  const canManageCatalogSettings = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageCatalogSettings,
-  );
-  const canManageUsers = canManageUserAccounts || canManagePermissions;
-  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
-  const canManageLibrarySettings =
-    canManageConfig ||
-    hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageLibrary);
-  const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
+  const {
+    canViewCatalog,
+    canManageTitle,
+    canRequestMedia,
+    canAccessActivity,
+    canManageSystemSettings,
+    canManageCatalogSettings,
+    canManageUsers,
+    canManageConfig,
+    canManageLibrarySettings,
+    canAccessRecycleBin,
+  } = usePermissions(authenticatedUser);
+  const {
+    pendingImportCounts,
+    pendingMediaRequestCounts,
+    manualImportRequiredCount,
+    pluginUpdateCount,
+    scryerVersion,
+  } = useNavigationBadges({
+    serviceRestarting,
+    canManageTitle,
+    canRequestMedia,
+  });
   const viewingBackupsSettings =
     view === "settings" && settingsSection === "backups";
 
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!canManageSystemSettings || serviceRestarting) {
-      setAutoBackupDisabledMissingKeyNotice(false);
-      return;
-    }
-
-    const cancelScheduledQuery = scheduleAfterFirstPaint(() => {
-      void backendClient
-        .query<{
-          autoBackupSettings?: {
-            autoBackupDisabledMissingKeyNotice?: boolean | null;
-          } | null;
-        }>(autoBackupSettingsQuery, {})
-        .toPromise()
-        .then(({ data, error }) => {
-          if (cancelled || error) {
-            return;
-          }
-
-          setAutoBackupDisabledMissingKeyNotice(
-            data?.autoBackupSettings?.autoBackupDisabledMissingKeyNotice ===
-              true,
-          );
-        });
-    });
-
-    return () => {
-      cancelled = true;
-      cancelScheduledQuery();
-    };
-  }, [canManageSystemSettings, serviceRestarting]);
-
-  useEffect(() => {
-    if (
-      !autoBackupDisabledMissingKeyNotice ||
-      !canManageSystemSettings ||
-      viewingBackupsSettings
-    ) {
-      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
-      return;
-    }
-
-    toast.warning(t("settings.autoBackupsDisabledMissingKeyToastTitle"), {
-      id: AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID,
-      description: t("settings.autoBackupsDisabledMissingKeyToastDescription"),
-      duration: Infinity,
-      action: {
-        label: t("settings.autoBackupsDisabledMissingKeyToastAction"),
-        onClick: () => {
-          navigateTo("settings", "backups");
-        },
-      },
-    });
-
-    return () => {
-      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
-    };
-  }, [
-    autoBackupDisabledMissingKeyNotice,
+  useAutoBackupNotice({
     canManageSystemSettings,
+    serviceRestarting,
+    viewingBackupsSettings,
     navigateTo,
     t,
-    viewingBackupsSettings,
-  ]);
-
-  useEffect(() => {
-    if (
-      !autoBackupDisabledMissingKeyNotice ||
-      !canManageSystemSettings ||
-      !viewingBackupsSettings
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    void backendClient
-      .mutation<{
-        acknowledgeAutoBackupDisabledMissingKeyNotice?: {
-          autoBackupDisabledMissingKeyNotice?: boolean | null;
-        } | null;
-      }>(acknowledgeAutoBackupDisabledMissingKeyNoticeMutation, {})
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled || error) {
-          return;
-        }
-
-        setAutoBackupDisabledMissingKeyNotice(
-          data?.acknowledgeAutoBackupDisabledMissingKeyNotice
-            ?.autoBackupDisabledMissingKeyNotice === true,
-        );
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    autoBackupDisabledMissingKeyNotice,
-    canManageSystemSettings,
-    viewingBackupsSettings,
-  ]);
-
-  useMediaRequestsSubscription(
-    () => {
-      void refreshNavigationBadges();
-    },
-    { pause: !canManageTitle && !canRequestMedia },
-  );
+  });
 
   const routeCommandPalette = useMemo(
     () =>
@@ -1943,148 +1346,25 @@ function AuthenticatedHomePage({
   const protectedSettingsRoute =
     routeCanAccessSettingsContent &&
     isProtectedSettingsRoute(view, settingsSection, contentSettingsSection);
-  const configStepUpFresh = hasFreshConfigStepUp(authToken, configStepUpNow);
-  const settingsStepUpOpen =
-    protectedSettingsRoute &&
-    !configStepUpPolicy.loading &&
-    !configStepUpPolicy.error &&
-    configStepUpPolicy.required &&
-    (!configStepUpFresh || settingsStepUpForced);
-  const settingsStepUpPolicyLoadFailed =
-    protectedSettingsRoute && configStepUpPolicy.error;
-  const settingsStepUpBlocksContent =
-    protectedSettingsRoute &&
-    (configStepUpPolicy.loading ||
-      settingsStepUpPolicyLoadFailed ||
-      settingsStepUpOpen);
-  const smgScryerUpdateDismissalValue = useMemo(
-    () => buildSmgScryerUpdateDismissalValue(smgScryerUpdateNotice),
-    [smgScryerUpdateNotice],
-  );
-  const showSmgScryerUpdateReminder =
-    !smgVersionCompatibilityNotice &&
-    Boolean(smgScryerUpdateNotice?.available) &&
-    Boolean(smgScryerUpdateDismissalValue) &&
-    dismissedSmgScryerUpdate !== smgScryerUpdateDismissalValue;
-
-  const dismissSmgScryerUpdateReminder = useCallback(() => {
-    if (!smgScryerUpdateDismissalValue) {
-      return;
-    }
-    setDismissedSmgScryerUpdate(smgScryerUpdateDismissalValue);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(
-        SMG_SCRYER_UPDATE_DISMISSED_KEY,
-        smgScryerUpdateDismissalValue,
-      );
-    }
-  }, [smgScryerUpdateDismissalValue]);
-
-  const navigateToSettingsProfile = useCallback(() => {
-    navigateTo("settings", "profile", undefined, undefined, undefined);
-  }, [navigateTo]);
-
-  const handleCancelSettingsStepUp = useCallback(() => {
-    setSettingsStepUpCode("");
-    setSettingsStepUpError(null);
-    setSettingsStepUpForced(false);
-    navigateToSettingsProfile();
-  }, [navigateToSettingsProfile]);
-
-  const handleSettingsStepUpSubmit = useCallback(async () => {
-    if (settingsStepUpCode.length !== 6) {
-      return;
-    }
-
-    setSettingsStepUpBusy(true);
-    setSettingsStepUpError(null);
-    try {
-      const result = await backendClient
-        .mutation<
-          { mfaVerifyStepUp?: { token: string; user: AuthUser | null } | null },
-          { input: { code: string } }
-        >(mfaVerifyStepUpMutation, { input: { code: settingsStepUpCode } })
-        .toPromise();
-
-      if (result.error || !result.data?.mfaVerifyStepUp) {
-        const message = t("settings.mfaStepUpFailed");
-        setSettingsStepUpCode("");
-        setSettingsStepUpError(null);
-        setSettingsStepUpForced(false);
-        setGlobalStatus(message);
-        navigateToSettingsProfile();
-        return;
-      }
-
-      adoptSession(
-        result.data.mfaVerifyStepUp.token,
-        result.data.mfaVerifyStepUp.user,
-      );
-      setSettingsStepUpCode("");
-      setSettingsStepUpError(null);
-      setSettingsStepUpForced(false);
-      setConfigStepUpNow(Date.now());
-      setGlobalStatus(t("settings.mfaStepUpVerified"));
-    } catch {
-      const message = t("settings.mfaStepUpFailed");
-      setSettingsStepUpCode("");
-      setSettingsStepUpError(null);
-      setSettingsStepUpForced(false);
-      setGlobalStatus(message);
-      navigateToSettingsProfile();
-    } finally {
-      setSettingsStepUpBusy(false);
-    }
-  }, [
-    adoptSession,
-    navigateToSettingsProfile,
-    setGlobalStatus,
+  const {
+    refreshConfigStepUpPolicy,
     settingsStepUpCode,
+    setSettingsStepUpCode,
+    settingsStepUpBusy,
+    settingsStepUpError,
+    settingsStepUpOpen,
+    settingsStepUpPolicyLoadFailed,
+    settingsStepUpBlocksContent,
+    handleCancelSettingsStepUp,
+    handleSettingsStepUpSubmit,
+  } = useConfigStepUp({
+    authToken,
+    protectedSettingsRoute,
+    adoptSession,
+    setGlobalStatus,
+    navigateTo,
     t,
-  ]);
-
-  useEffect(() => {
-    if (!configStepUpFresh) {
-      return;
-    }
-
-    setSettingsStepUpForced(false);
-  }, [configStepUpFresh]);
-
-  useEffect(() => {
-    if (settingsStepUpOpen) {
-      return;
-    }
-
-    setSettingsStepUpCode("");
-    setSettingsStepUpError(null);
-  }, [settingsStepUpOpen]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const handleMfaStepUpRequired = () => {
-      if (!protectedSettingsRoute || !configStepUpPolicy.required) {
-        return;
-      }
-
-      setSettingsStepUpForced(true);
-      setSettingsStepUpError(t("settings.mfaStepUpRequiredAgain"));
-      setGlobalStatus(t("settings.mfaStepUpRequiredAgain"));
-    };
-
-    window.addEventListener(
-      MFA_STEP_UP_REQUIRED_EVENT,
-      handleMfaStepUpRequired,
-    );
-    return () =>
-      window.removeEventListener(
-        MFA_STEP_UP_REQUIRED_EVENT,
-        handleMfaStepUpRequired,
-      );
-  }, [configStepUpPolicy.required, protectedSettingsRoute, setGlobalStatus, t]);
+  });
 
   useEffect(() => {
     if (view !== "activity" || canAccessActivity) {

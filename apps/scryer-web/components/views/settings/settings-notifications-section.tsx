@@ -250,12 +250,10 @@ function DynamicConfigField({
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2">
-        <input
+        <Checkbox
           id={fieldId}
-          type="checkbox"
           checked={value === "true"}
-          onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
-          className="accent-primary"
+          onCheckedChange={(checkedValue) => onChange(field.key, checkedValue === true ? "true" : "false")}
         />
         <span className="inline-flex items-center gap-2 text-sm">
           {field.label}
@@ -861,17 +859,15 @@ export function SettingsNotificationsSection({
               ) : null}
 
               <label className="flex items-center gap-2">
-                <input
+                <Checkbox
                   id="settings-notification-channel-enabled"
-                  type="checkbox"
                   checked={channelDraft.isEnabled}
-                  onChange={(event) =>
+                  onCheckedChange={(value) =>
                     setChannelDraft((prev) => ({
                       ...prev,
-                      isEnabled: event.target.checked,
+                      isEnabled: value === true,
                     }))
                   }
-                  className="accent-primary"
                 />
                 <span className="text-sm">{t("label.enabled")}</span>
               </label>
@@ -1224,17 +1220,15 @@ export function SettingsNotificationsSection({
               ) : null}
 
               <label className="flex items-center gap-2">
-                <input
+                <Checkbox
                   id="settings-notification-subscription-enabled"
-                  type="checkbox"
                   checked={subscriptionDraft.isEnabled}
-                  onChange={(event) =>
+                  onCheckedChange={(value) =>
                     setSubscriptionDraft((prev) => ({
                       ...prev,
-                      isEnabled: event.target.checked,
+                      isEnabled: value === true,
                     }))
                   }
-                  className="accent-primary"
                 />
                 <span className="text-sm">{t("label.enabled")}</span>
               </label>

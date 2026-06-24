@@ -181,15 +181,7 @@ function WantedFilterSection<T extends string>({
               }
               className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
             >
-              <Checkbox
-                checked={checked}
-                className={[
-                  "pointer-events-none",
-                  implicitChecked
-                    ? "data-[state=checked]:border-muted-foreground/30 data-[state=checked]:bg-muted data-[state=checked]:text-muted-foreground"
-                    : "",
-                ].join(" ")}
-              />
+              <Checkbox checked={checked} className="pointer-events-none" />
               <span className={implicitChecked ? "text-muted-foreground" : undefined}>
                 {option.label}
               </span>

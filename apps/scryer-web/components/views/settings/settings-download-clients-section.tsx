@@ -2,6 +2,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Server, Trash2 } from "lucide-react";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
+import { QBitTorrentIcon, SabnzbdIcon, WeaverIcon } from "@/components/common/download-client-type-logo";
 import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
@@ -58,72 +59,6 @@ const NzbgetIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
     <rect x="398.66641" y="266.66647" width="94.66664" height="51.33332" fill="#000000" />
     <path d="m399.33309,215.33316l92.66665,0l0,33.33332l-92.66665,0l0,-33.33332z" fill="#000000" />
     <path d="m399.33309,163.99984l92.66664,0l0,33.33332l-92.66664,0l0,-33.33332z" fill="#000000" />
-  </svg>
-);
-
-const QBitTorrentIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 1024 1024"
-    fill="none"
-    {...props}
-  >
-    <circle
-      cx="512"
-      cy="512"
-      r="496"
-      fill="#72b4f5"
-      stroke="#daefff"
-      strokeWidth="32"
-    />
-    <path
-      d="M712.9 332.4c44.4 0 78.9 15.2 103.4 45.7 24.7 30.2 37 73.1 37 128.7 0 55.5-12.4 98.8-37.3 129.6-24.7 30.7-59 46-103.1 46-22 0-42.2-4-60.5-12-18.1-8.2-33.3-20.8-45.7-37.6H603l-10.8 43.5h-36.7V196h51.2v116.6c0 26.1-.8 49.6-2.5 70.4h2.5c23.9-33.7 59.3-50.6 106.2-50.6m-7.4 42.9c-35 0-60.2 10.1-75.6 30.2-15.4 20-23.1 53.7-23.1 101.2s7.9 81.6 23.8 102.1c15.8 20.4 41.2 30.5 76.2 30.5 31.5 0 54.9-11.4 70.4-34.3 15.4-23 23.1-56.1 23.1-99.1q0-66-23.1-98.4c-15.5-21.4-39.4-32.2-71.7-32.2"
-      fill="#ffffff"
-    />
-    <path
-      d="M317.3 639.5c34.2 0 59-9.2 74.7-27.5 15.6-18.3 24-49.2 25-92.6V508c0-47.3-8-81.4-24.1-102.1-16-20.8-41.5-31.2-76.2-31.2-30 0-53.1 11.7-69.1 35.2-15.8 23.2-23.8 56.2-23.8 98.8s7.8 75.1 23.5 97.5c15.8 22.1 39.1 33.2 70 33.3m-7.7 42.8c-43.6 0-77.7-15.3-102.1-46-24.5-30.7-36.7-73.4-36.7-128.4 0-55.3 12.3-98.5 37-129.6s59-46.6 103.1-46.6q69.45 0 106.8 52.5h2.8l7.4-46.3h40.4v490h-51.2V683.3c0-20.6 1.1-38.1 3.4-52.5h-4c-23.8 34.4-59.4 51.5-106.9 51.5"
-      fill="#c8e8ff"
-    />
-  </svg>
-);
-
-const SabnzbdIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" fill="none" {...props}>
-    <path
-      fill="none"
-      stroke="#f5f5f5"
-      strokeLinejoin="round"
-      strokeWidth="74"
-      d="M200.4 39.3h598.1v437.8h161l-460.1 483L39.4 477h161z"
-    />
-    <path fill="#ffb300" fillRule="evenodd" d="M200.4 39.3h598.1v437.8h161l-460.1 483-460-483h161z" />
-    <path fill="#ffca28" fillRule="evenodd" d="M499.4 960.2 201.1 39.4h596.7z" />
-    <path
-      fill="none"
-      stroke="#f5f5f5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="74"
-      d="M329.2 843.5H83v-51.8h146.1v-45.9H83V596.9h246.2v51.5H183.1v45.9h146.1zm292.2 0H375.2V694.3h146.1v-45.9H375.2v-51.5h246.2zm-146.1-97.8h46v46h-46zm192.1 97.8v-344h100.1v97.4h146.1v246.6zm100.1-195.2h46v143.4h-46z"
-    />
-    <path
-      fill="#0f0f0f"
-      fillRule="evenodd"
-      d="M329.2 843.5H83v-51.8h146.1v-45.9H83V596.9h246.2v51.5H183.1v45.9h146.1zm292.2 0H375.2V694.3h146.1v-45.9H375.2v-51.5h246.2zm-146.1-51.8h46v-46h-46zm192.1 51.9v-344h100.1V597h146.1v246.6zm100.1-51.9h46V648.4h-46z"
-    />
-  </svg>
-);
-
-const WeaverIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" {...props}>
-    <rect x="8" y="10" width="48" height="44" rx="12" fill="#141c2b" />
-    <path
-      d="M18 20l8 24 6-18 6 18 8-24"
-      stroke="#78f0c5"
-      strokeWidth="5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
   </svg>
 );
 

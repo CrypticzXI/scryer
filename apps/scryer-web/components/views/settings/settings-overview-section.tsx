@@ -1,6 +1,8 @@
 import * as React from "react";
 import { AlertTriangle, ChevronDown, Loader2, Rocket, ShieldPlus, Trash2, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
@@ -163,20 +165,12 @@ export function SettingsOverviewSection({
           <>
             <div className="flex items-center gap-3">
               <Label>{t("settings.keepHistoryForever")}</Label>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={generalSettings.keepHistoryForever}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${generalSettings.keepHistoryForever ? "bg-primary" : "bg-muted"}`}
-                onClick={() =>
-                  updateGeneralSettings({
-                    keepHistoryForever: !generalSettings.keepHistoryForever,
-                  })}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${generalSettings.keepHistoryForever ? "translate-x-5" : "translate-x-0"}`}
-                />
-              </button>
+              <SettingsToggleSwitch
+                checked={generalSettings.keepHistoryForever}
+                ariaLabel={t("settings.keepHistoryForever")}
+                onChange={(nextValue) =>
+                  updateGeneralSettings({ keepHistoryForever: nextValue })}
+              />
             </div>
 
             <div className="space-y-1">
@@ -231,9 +225,9 @@ export function SettingsOverviewSection({
                 <span className="text-left">
                   {t("settings.pluginHttpTrustTitle")}
                 </span>
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                <Badge tone="warning" className="rounded-full text-[10px] font-semibold uppercase tracking-wide">
                   {t("settings.pluginHttpTrustAdvancedLabel")}
-                </span>
+                </Badge>
               </span>
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>

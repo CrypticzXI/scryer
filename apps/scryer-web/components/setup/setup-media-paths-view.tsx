@@ -149,9 +149,9 @@ export function SetupMediaPathsView({
         <Button id="setup-media-paths-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button id="setup-media-paths-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <Button id="setup-media-paths-skip" type="button" variant="link" onClick={onSkip}>
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
           <Button id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}

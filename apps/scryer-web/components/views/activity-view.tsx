@@ -6,23 +6,18 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
-  ChevronUp,
   CircleOff,
   CircleAlert,
   Clock3,
   Filter,
   HardDrive,
-  Link2,
   Loader2,
   Pause,
-  Play,
   Trash2,
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
-  Fragment,
   type UIEvent,
   useCallback,
   useEffect,
@@ -37,7 +32,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
-import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
+import { QueueRowItem } from "@/components/views/activity/queue-row-item";
+import { QueueTableRow } from "@/components/views/activity/queue-table-row";
 import {
   Table,
   TableBody,
@@ -55,20 +51,25 @@ import type {
   DownloadQueueItem,
   SortConfig,
 } from "@/lib/types";
-import type { ActivitySection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
+import { downloadQueueItemIdentityKey } from "@/lib/utils/download-queue";
 import {
-  buildQueueStatusDetail,
-  downloadQueueItemIdentityKey,
-  normalizeQueueState,
-} from "@/lib/utils/download-queue";
-
-type TranslateFn = ReturnType<typeof useTranslate>;
-
-type ActivityTab = ActivitySection;
+  activityStatusRank,
+  type ActivityTab,
+  canDeleteImportItem,
+  canIgnoreImportItem,
+  compareStrings,
+  deriveQueueRowPresentation,
+  downloadQueueItemRowSelectorKey,
+  effectiveQueueItemProgress,
+  parseByteCount,
+  type QueueRowPresentation,
+  queueStateLabels,
+  type TranslateFn,
+} from "@/lib/utils/activity-utils";
 
 type ActivityViewState = {
   queueItems: DownloadQueueItem[];
@@ -111,46 +112,6 @@ type ActivityViewState = {
   historyHasNextPage: boolean;
   visibleHasMore: boolean;
   requestMoreItems: () => Promise<void>;
-};
-
-const queueStateClasses: Record<string, string> = {
-  queued: "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  downloading: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  post_processing: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
-  paused: "border-purple-500/40 bg-purple-500/10 text-purple-200",
-  completed: "border-emerald-500/40 bg-emerald-500/15 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  importing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  removing: "border-sky-500/40 bg-sky-500/10 text-sky-200",
-  import_pending: "border-indigo-500/40 bg-indigo-500/10 text-indigo-200",
-  import_blocked: "border-amber-500/40 bg-amber-500/10 text-amber-200",
-  import_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-  remove_failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-  failed: "border-rose-500/40 bg-rose-500/10 text-rose-200",
-};
-
-const queueStateLabels: Record<string, string> = {
-  queued: "queue.state.queued",
-  downloading: "queue.state.downloading",
-  post_processing: "queue.state.postProcessing",
-  paused: "queue.state.paused",
-  completed: "queue.state.completed",
-  importing: "queue.state.importing",
-  removing: "queue.deleting",
-  import_pending: "queue.state.importPending",
-  import_blocked: "queue.state.importBlocked",
-  import_failed: "queue.manualImportFailed",
-  remove_failed: "queue.removeFailed",
-  failed: "queue.state.failed",
-};
-
-const queueStateAttention: Record<string, boolean> = {
-  failed: true,
-  importing: true,
-  removing: true,
-  import_pending: true,
-  import_blocked: true,
-  import_failed: true,
-  remove_failed: true,
 };
 
 type ActivityFilterChipOption<T extends string> = {
@@ -228,258 +189,6 @@ const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = 
     iconClassName: "text-rose-400",
   },
 ];
-
-function compareStrings(left: string, right: string): number {
-  return left.localeCompare(right, undefined, { sensitivity: "base" });
-}
-
-function activityStatusRank(tab: ActivityTab, displayState: string): number {
-  switch (tab) {
-    case "import":
-      switch (displayState) {
-        case "importing":
-          return 0;
-        case "import_pending":
-          return 1;
-        case "import_blocked":
-          return 2;
-        case "import_failed":
-          return 3;
-        default:
-          return 99;
-      }
-    case "history":
-      switch (displayState) {
-        case "completed":
-          return 0;
-        case "failed":
-        case "remove_failed":
-          return 1;
-        default:
-          return 99;
-      }
-    case "activity":
-    default:
-      switch (displayState) {
-        case "downloading":
-          return 0;
-        case "queued":
-          return 1;
-        case "paused":
-          return 2;
-        case "post_processing":
-          return 3;
-        default:
-          return 99;
-      }
-  }
-}
-
-type QueueRowPresentation = {
-  stateKey: string;
-  trackedStateKey: string;
-  trackedMatchTypeKey: string;
-  displayStateKey: string;
-  percent: number;
-  remainingLabel: string | null;
-  hasTransferProgress: boolean;
-  needsManualImport: boolean;
-  statusLabel: string;
-  failureReason: string;
-  hasStatusDetails: boolean;
-  hasExpandableDetails: boolean;
-  displayTitle: string;
-  releaseTitle: string;
-  canPause: boolean;
-  canResume: boolean;
-  canAssignTitle: boolean;
-  canIgnore: boolean;
-  canMarkFailed: boolean;
-  canInteractiveManualImport: boolean;
-  canDirectManualImport: boolean;
-};
-
-function deriveQueueRowPresentation(
-  queueItem: DownloadQueueItem,
-  t: TranslateFn,
-): QueueRowPresentation {
-  const stateKey = normalizeQueueState(queueItem.state);
-  const trackedStateKey = normalizeQueueState(queueItem.trackedState);
-  const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
-  const failureReason = buildQueueStatusDetail(queueItem);
-  const displayStateKey = queueItem.displayState;
-  const transferBytes = parseByteCount(queueItem.importTransferBytes);
-  const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
-  const hasTransferProgress =
-    displayStateKey === "importing" &&
-    queueItem.importTransferPhase !== null &&
-    transferBytes !== null &&
-    transferTotalBytes !== null &&
-    transferTotalBytes > 0;
-  const percent = hasTransferProgress
-    ? formatProgress((transferBytes / transferTotalBytes) * 100)
-    : formatProgress(queueItem.progressPercent);
-  const remainingLabel = hasTransferProgress
-    ? `${formatByteCount(transferBytes)} / ${formatByteCount(transferTotalBytes)}`
-    : formatRemainingDuration(queueItem.remainingSeconds);
-  const needsManualImport =
-    queueItem.attentionRequired ||
-    queueStateAttention[stateKey] ||
-    queueStateAttention[displayStateKey];
-  const postProcessingStatusKey =
-    stateKey === "verifying"
-      ? "queue.state.verifying"
-      : stateKey === "repairing"
-        ? "queue.state.repairing"
-        : stateKey === "extracting"
-          ? "queue.state.extracting"
-          : "queue.state.postProcessing";
-  const statusLabel =
-    queueItem.importTransferPhase === "copying"
-      ? t("queue.transfer.copying")
-      : queueItem.importTransferPhase === "finalizing"
-        ? t("queue.transfer.finalizing")
-        : displayStateKey === "post_processing"
-          ? t(postProcessingStatusKey)
-          : t(queueStateLabels[displayStateKey] ?? "queue.state.unknown");
-  const hasStatusDetails =
-    (stateKey === "failed" ||
-      displayStateKey === "remove_failed" ||
-      displayStateKey === "import_blocked" ||
-      displayStateKey === "import_failed") &&
-    failureReason.length > 0;
-  const isCompleted = stateKey === "completed" || stateKey === "import_pending";
-  const canRetryManualImport =
-    displayStateKey === "import_blocked" || displayStateKey === "import_failed";
-  const canAssignTitle =
-    trackedStateKey === "import_blocked" &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
-  const canIgnore =
-    trackedStateKey === "import_blocked" &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
-  const canMarkFailed =
-    (trackedStateKey === "import_blocked" ||
-      trackedStateKey === "import_pending" ||
-      trackedStateKey === "failed_pending") &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing";
-  const canInteractiveManualImport =
-    Boolean(queueItem.titleId) &&
-    (queueItem.facet === "series" || queueItem.facet === "anime") &&
-    canRetryManualImport;
-  const canDirectManualImport =
-    Boolean(queueItem.titleId) &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing" &&
-    ((isCompleted && needsManualImport) ||
-      (canRetryManualImport && queueItem.facet === "movie"));
-  const releaseTitle =
-    queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "\u2014";
-  const displayTitle = releaseTitle;
-  const hasExpandableDetails =
-    (displayStateKey === "import_blocked" ||
-      displayStateKey === "import_failed" ||
-      displayStateKey === "remove_failed") &&
-    (failureReason.length > 0 || releaseTitle !== "\u2014");
-
-  return {
-    stateKey,
-    trackedStateKey,
-    trackedMatchTypeKey,
-    displayStateKey,
-    percent,
-    remainingLabel,
-    hasTransferProgress,
-    needsManualImport,
-    statusLabel,
-    failureReason,
-    hasStatusDetails,
-    hasExpandableDetails,
-    displayTitle,
-    releaseTitle,
-    canPause: stateKey === "downloading" || stateKey === "queued",
-    canResume: stateKey === "paused",
-    canAssignTitle,
-    canIgnore,
-    canMarkFailed,
-    canInteractiveManualImport,
-    canDirectManualImport,
-  };
-}
-
-function downloadQueueItemRowSelectorKey(
-  queueItem: DownloadQueueItem,
-  fallbackKey: string,
-): string {
-  if (queueItem.downloadId?.trim()) {
-    return queueItem.downloadId.trim();
-  }
-
-  const ownerKey = queueItem.clientId.trim() || queueItem.clientType.trim();
-  const itemKey = queueItem.downloadClientItemId.trim() || queueItem.id.trim();
-  const queuedAt = queueItem.queuedAt?.trim();
-  const selectorParts = [ownerKey, itemKey, queuedAt].filter(Boolean);
-  return selectorParts.length >= 2 ? selectorParts.join("::") : fallbackKey;
-}
-
-function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
-  const trackedStateKey = normalizeQueueState(queueItem.trackedState);
-  const displayStateKey = normalizeQueueState(queueItem.displayState);
-  return (
-    trackedStateKey === "import_blocked" &&
-    displayStateKey !== "importing" &&
-    displayStateKey !== "removing"
-  );
-}
-
-function canDeleteImportItem(queueItem: DownloadQueueItem): boolean {
-  const displayStateKey = normalizeQueueState(queueItem.displayState);
-  return displayStateKey !== "importing" && displayStateKey !== "removing";
-}
-
-function ActivityQueueStatusBadge({
-  stateKey,
-  statusLabel,
-  isExpandable,
-  isExpanded,
-  detailId,
-  expandLabel,
-  onToggle,
-}: {
-  stateKey: string;
-  statusLabel: string;
-  isExpandable: boolean;
-  isExpanded: boolean;
-  detailId: string;
-  expandLabel: string;
-  onToggle: () => void;
-}) {
-  const className = `inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs font-medium ${queueStateClasses[stateKey] ?? "border-border bg-muted text-card-foreground"}`;
-
-  if (!isExpandable) {
-    return <span className={className}>{statusLabel}</span>;
-  }
-
-  return (
-    <button
-      type="button"
-      className={className}
-      aria-expanded={isExpanded}
-      aria-controls={detailId}
-      aria-label={`${statusLabel}. ${expandLabel}`}
-      onClick={onToggle}
-    >
-      <span>{statusLabel}</span>
-      {isExpanded ? (
-        <ChevronUp className="h-3.5 w-3.5 opacity-80" aria-hidden="true" />
-      ) : (
-        <ChevronDown className="h-3.5 w-3.5 opacity-80" aria-hidden="true" />
-      )}
-    </button>
-  );
-}
 
 function ActivityFilterSection<T extends string>({
   title,
@@ -580,178 +289,6 @@ function ActivityBooleanFilterSection({
       </label>
     </div>
   );
-}
-
-function ActivityQueueTitleContent({
-  displayTitle,
-  releaseTitle,
-}: {
-  displayTitle: string;
-  releaseTitle: string;
-}) {
-  return (
-    <div className="space-y-1">
-      <p className="break-words whitespace-normal text-sm text-foreground">{displayTitle}</p>
-      {releaseTitle !== displayTitle ? (
-        <p
-          className="break-words whitespace-normal text-xs text-muted-foreground"
-          title={releaseTitle}
-        >
-          {releaseTitle}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function ActivityQueueDetailsPanel({
-  detailId,
-  releaseTitle,
-  errorCode,
-  failureReason,
-  t,
-}: {
-  detailId: string;
-  releaseTitle: string;
-  errorCode?: string | null;
-  failureReason: string;
-  t: TranslateFn;
-}) {
-  return (
-    <div
-      id={detailId}
-      className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
-    >
-      <div className="grid gap-4 md:grid-cols-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            {t("queue.releaseTitle")}
-          </p>
-          <p className="mt-1 break-words text-sm text-foreground">{releaseTitle}</p>
-        </div>
-        <div>
-          {errorCode ? (
-            <>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                {t("queue.errorCode")}
-              </p>
-              <p className="mt-1 break-words text-sm font-mono text-foreground">{errorCode}</p>
-            </>
-          ) : null}
-        </div>
-      </div>
-      <div className="mt-4">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            {t("queue.blockReason")}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">
-            {failureReason || "\u2014"}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function parseByteCount(sizeBytes: number | string | null): number | null {
-  if (sizeBytes === null || sizeBytes === "") {
-    return null;
-  }
-  const bytes = typeof sizeBytes === "number" ? sizeBytes : Number.parseFloat(sizeBytes);
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return null;
-  }
-  return bytes;
-}
-
-function formatByteCount(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "\u2014";
-  }
-  if (bytes === 0) {
-    return "0 B";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
-}
-
-function formatBytes(sizeBytes: number | string | null): string {
-  const bytes = parseByteCount(sizeBytes);
-  return bytes === null ? "\u2014" : formatByteCount(bytes);
-}
-
-function formatProgress(progressPercent: number): number {
-  if (!Number.isFinite(progressPercent)) {
-    return 0;
-  }
-  if (progressPercent < 0) {
-    return 0;
-  }
-  if (progressPercent > 100) {
-    return 100;
-  }
-  return Math.round(progressPercent);
-}
-
-function effectiveQueueItemProgress(queueItem: DownloadQueueItem): number {
-  const transferBytes = parseByteCount(queueItem.importTransferBytes);
-  const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
-  if (
-    queueItem.displayState === "importing" &&
-    queueItem.importTransferPhase !== null &&
-    transferBytes !== null &&
-    transferTotalBytes !== null &&
-    transferTotalBytes > 0
-  ) {
-    return formatProgress((transferBytes / transferTotalBytes) * 100);
-  }
-  return formatProgress(queueItem.progressPercent);
-}
-
-function formatRemainingDuration(remainingSeconds: number | null): string | null {
-  if (remainingSeconds === null || !Number.isFinite(remainingSeconds)) {
-    return null;
-  }
-  const totalSeconds = Math.max(0, Math.floor(remainingSeconds));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds
-      .toString()
-      .padStart(2, "0")}`;
-  }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-function getProgressBarColor(stateKey: string): string {
-  switch (stateKey) {
-    case "completed":
-      return "bg-emerald-500";
-    case "failed":
-    case "remove_failed":
-      return "bg-rose-500";
-    case "paused":
-      return "bg-amber-500";
-    case "import_pending":
-      return "bg-indigo-500";
-    case "downloading":
-    case "removing":
-      return "bg-sky-500";
-    case "post_processing":
-      return "bg-cyan-500";
-    case "queued":
-      return "bg-gray-400";
-    default:
-      return "bg-muted-foreground";
-  }
 }
 
 function ActivityTableLoadingMask({ label }: { label: string }) {
@@ -1243,323 +780,135 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     historyAvailableClients,
   ]);
 
+  const buildQueueRowProps = useCallback(
+    (queueItem: DownloadQueueItem) => {
+      const rowId = downloadQueueItemIdentityKey(queueItem);
+      const row: QueueRowPresentation = deriveQueueRowPresentation(queueItem, t);
+      const rowSelectorKey = selectorId(
+        downloadQueueItemRowSelectorKey(queueItem, rowId),
+      );
+      const isActionLoading = actionLoadingId === rowId;
+      const isRowBusy = rowActionBusy[rowId] ?? false;
+      const isManualImportPending = row.displayStateKey === "importing";
+      const isDeletePending = row.displayStateKey === "removing";
+      const isRowBlocked =
+        isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
+      const isDeleteConfirming =
+        deleteConfirmItem !== null &&
+        downloadQueueItemIdentityKey(deleteConfirmItem) === rowId;
+      const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
+      const isExpanded = Boolean(expandedItemIds[rowId]);
+      const detailId = `activity-queue-details-${rowId}`;
+      const rowActionVisualClass = isRowFullyBusy
+        ? "pointer-events-none opacity-45 grayscale"
+        : "";
+      const isImportSelected = Boolean(selectedImportItemKeys[rowId]);
+
+      return {
+        queueItem,
+        row,
+        activeTab,
+        rowId,
+        rowSelectorKey,
+        detailId,
+        isActionLoading,
+        isRowBlocked,
+        isRowFullyBusy,
+        isManualImportPending,
+        isExpanded,
+        isImportSelected,
+        rowActionVisualClass,
+        t,
+        onToggleImportSelected: () => toggleImportItemSelected(queueItem),
+        onToggleExpanded: () => toggleExpandedDetails(rowId),
+        onPause: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestPause(queueItem).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((c) => (c === rowId ? null : c));
+          });
+        },
+        onResume: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestResume(queueItem).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((c) => (c === rowId ? null : c));
+          });
+        },
+        onManualImport: () => {
+          setRowBusy(rowId, true);
+          void requestManualImport(queueItem).finally(() => {
+            setRowBusy(rowId, false);
+          });
+        },
+        onAssignTitle: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestAssignTitle(queueItem).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((current) => (current === rowId ? null : current));
+          });
+        },
+        onIgnore: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestIgnore(queueItem).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((current) => (current === rowId ? null : current));
+          });
+        },
+        onMarkFailedSearchAgain: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestMarkFailed(queueItem, false).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((current) => (current === rowId ? null : current));
+          });
+        },
+        onMarkFailedOnly: () => {
+          setActionLoadingId(rowId);
+          setRowBusy(rowId, true);
+          void requestMarkFailed(queueItem, true).finally(() => {
+            setRowBusy(rowId, false);
+            setActionLoadingId((current) => (current === rowId ? null : current));
+          });
+        },
+        onRequestDelete: () => {
+          setRowBusy(rowId, true);
+          setDeleteConfirmItem(queueItem);
+        },
+      };
+    },
+    [
+      activeTab,
+      actionLoadingId,
+      deleteConfirmItem,
+      expandedItemIds,
+      requestAssignTitle,
+      requestIgnore,
+      requestManualImport,
+      requestMarkFailed,
+      requestPause,
+      requestResume,
+      rowActionBusy,
+      selectedImportItemKeys,
+      setRowBusy,
+      t,
+      toggleExpandedDetails,
+      toggleImportItemSelected,
+    ],
+  );
+
   const renderMobileQueueCards = (
     items: DownloadQueueItem[],
     showHistorySpinner = false,
   ) => (
     <div className="space-y-3">
       {items.map((queueItem) => {
-        const rowId = downloadQueueItemIdentityKey(queueItem);
-        const row = deriveQueueRowPresentation(queueItem, t);
-        const rowSelectorKey = selectorId(
-          downloadQueueItemRowSelectorKey(queueItem, rowId),
-        );
-        const isActionLoading = actionLoadingId === rowId;
-        const isRowBusy = rowActionBusy[rowId] ?? false;
-        const isManualImportPending = row.displayStateKey === "importing";
-        const isDeletePending = row.displayStateKey === "removing";
-        const isRowBlocked =
-          isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
-        const isDeleteConfirming =
-          deleteConfirmItem !== null && downloadQueueItemIdentityKey(deleteConfirmItem) === rowId;
-        const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
-        const isExpanded = Boolean(expandedItemIds[rowId]);
-        const detailId = `activity-queue-details-${rowId}`;
-        const rowActionVisualClass = isRowFullyBusy
-          ? "pointer-events-none opacity-45 grayscale"
-          : "";
-        const isImportSelected = Boolean(selectedImportItemKeys[rowId]);
-
-        return (
-          <div
-            key={rowId}
-            id={selectorId("activity", activeTab, "row", rowSelectorKey)}
-            data-ui="activity-row"
-            data-activity-tab={activeTab}
-            data-activity-row-id={rowId}
-            data-activity-download-id={queueItem.id}
-            data-activity-client-item-id={queueItem.downloadClientItemId}
-            data-activity-title-id={queueItem.titleId ?? ""}
-            data-activity-client-id={queueItem.clientId}
-            data-activity-client-name={queueItem.clientName ?? ""}
-            data-activity-client-type={queueItem.clientType}
-            className="rounded-xl border border-border bg-card/40 p-3"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex min-w-0 flex-1 items-start gap-3">
-                {activeTab === "import" ? (
-                  <Checkbox
-                    checked={isImportSelected}
-                    aria-label={t("activity.selectImportItem")}
-                    className="mt-0.5"
-                    onCheckedChange={() => toggleImportItemSelected(queueItem)}
-                  />
-                ) : null}
-                <div className="min-w-0 flex-1">
-                  <ActivityQueueTitleContent
-                    displayTitle={row.displayTitle}
-                    releaseTitle={row.releaseTitle}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
-                  </p>
-                </div>
-              </div>
-              <div className="shrink-0">
-                <ActivityQueueStatusBadge
-                  stateKey={row.displayStateKey}
-                  statusLabel={row.statusLabel}
-                  isExpandable={row.hasExpandableDetails}
-                  isExpanded={isExpanded}
-                  detailId={detailId}
-                  expandLabel={t(
-                    isExpanded ? "queue.hideDetails" : "queue.showDetails",
-                  )}
-                  onToggle={() => toggleExpandedDetails(rowId)}
-                />
-              </div>
-            </div>
-            {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
-            !row.hasStatusDetails ? (
-              <p className="mt-2 break-words text-xs text-rose-400">
-                {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
-              </p>
-            ) : null}
-            {row.hasExpandableDetails && isExpanded ? (
-              <div className="mt-3">
-                <ActivityQueueDetailsPanel
-                  detailId={detailId}
-                  releaseTitle={row.releaseTitle}
-                  errorCode={queueItem.importErrorCode}
-                  failureReason={row.failureReason}
-                  t={t}
-                />
-              </div>
-            ) : null}
-            <div className="mt-3">
-              <ActivityProgressBar
-                percent={row.percent}
-                remainingLabel={row.remainingLabel}
-                colorClass={getProgressBarColor(row.displayStateKey)}
-              />
-            </div>
-            <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-              <span>{formatBytes(queueItem.sizeBytes)}</span>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {row.canPause && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (
-                      isActionLoading || isRowBlocked
-                    ) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestPause(queueItem).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((c) => (c === rowId ? null : c));
-                    });
-                  }}
-                >
-                  <Pause className="h-4 w-4" />
-                  <span>{t("queue.pause")}</span>
-                </Button>
-              )}
-              {row.canResume && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (
-                      isActionLoading || isRowBlocked
-                    ) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestResume(queueItem).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((c) => (c === rowId ? null : c));
-                    });
-                  }}
-                >
-                  <Play className="h-4 w-4" />
-                  <span>{t("queue.resume")}</span>
-                </Button>
-              )}
-              {(row.canInteractiveManualImport || row.canDirectManualImport) && (
-                <Button
-                  id={selectorId("activity", activeTab, "manual-import", rowSelectorKey)}
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (
-                      isActionLoading || isRowBlocked
-                    ) {
-                      return;
-                    }
-                    setRowBusy(rowId, true);
-                    void requestManualImport(queueItem).finally(() => {
-                      setRowBusy(rowId, false);
-                    });
-                  }}
-                >
-                  {isManualImportPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ArrowDownToLine className="h-4 w-4" />
-                  )}
-                  <span>
-                    {isManualImportPending
-                      ? t("queue.manualImporting")
-                      : t("queue.manualImportTooltip")}
-                  </span>
-                </Button>
-              )}
-              {row.canAssignTitle && (
-                <Button
-                  id={selectorId("activity", activeTab, "assign-title", rowSelectorKey)}
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (
-                      isActionLoading || isRowBlocked
-                    ) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestAssignTitle(queueItem).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((current) =>
-                        current === rowId ? null : current,
-                      );
-                    });
-                  }}
-                >
-                  <Link2 className="h-4 w-4" />
-                  <span>
-                    {row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
-                      ? t("queue.assignTitle")
-                      : t("queue.reassignTitle")}
-                  </span>
-                </Button>
-              )}
-              {row.canIgnore && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (
-                      isActionLoading || isRowBlocked
-                    ) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestIgnore(queueItem).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((current) =>
-                        current === rowId ? null : current,
-                      );
-                    });
-                  }}
-                >
-                  <CircleOff className="h-4 w-4" />
-                  <span>{t("queue.ignore")}</span>
-                </Button>
-              )}
-              {row.canMarkFailed && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (isActionLoading || isRowBlocked) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestMarkFailed(queueItem, false).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((current) =>
-                        current === rowId ? null : current,
-                      );
-                    });
-                  }}
-                >
-                  <CircleAlert className="h-4 w-4" />
-                  <span>{t("queue.markFailedSearchAgain")}</span>
-                </Button>
-              )}
-              {row.canMarkFailed && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className={`flex-1 ${rowActionVisualClass}`}
-                  disabled={isRowFullyBusy}
-                  onClick={() => {
-                    if (isActionLoading || isRowBlocked) {
-                      return;
-                    }
-                    setActionLoadingId(rowId);
-                    setRowBusy(rowId, true);
-                    void requestMarkFailed(queueItem, true).finally(() => {
-                      setRowBusy(rowId, false);
-                      setActionLoadingId((current) =>
-                        current === rowId ? null : current,
-                      );
-                    });
-                  }}
-                >
-                  <XCircle className="h-4 w-4" />
-                  <span>{t("queue.markFailedOnly")}</span>
-                </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                className={`flex-1 ${rowActionVisualClass}`}
-                disabled={isRowFullyBusy}
-                onClick={() => {
-                  if (
-                    isActionLoading || isRowBlocked
-                  ) {
-                    return;
-                  }
-                  setRowBusy(rowId, true);
-                  setDeleteConfirmItem(queueItem);
-                }}
-              >
-                <Trash2 className="h-4 w-4" />
-                <span>{t("label.delete")}</span>
-              </Button>
-            </div>
-          </div>
-        );
+        const rowProps = buildQueueRowProps(queueItem);
+        return <QueueRowItem key={rowProps.rowId} {...rowProps} />;
       })}
       {showHistorySpinner ? (
         <div className="flex items-center justify-center py-3 text-sm text-muted-foreground">
@@ -1576,344 +925,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   ) => (
     <>
       {items.map((queueItem) => {
-        const rowId = downloadQueueItemIdentityKey(queueItem);
-        const row = deriveQueueRowPresentation(queueItem, t);
-        const rowSelectorKey = selectorId(
-          downloadQueueItemRowSelectorKey(queueItem, rowId),
-        );
-        const isActionLoading = actionLoadingId === rowId;
-        const isRowBusy = rowActionBusy[rowId] ?? false;
-        const isManualImportPending = row.displayStateKey === "importing";
-        const isDeletePending = row.displayStateKey === "removing";
-        const isRowBlocked =
-          isRowBusy || isManualImportPending || isDeletePending || isActionLoading;
-        const isDeleteConfirming =
-          deleteConfirmItem !== null && downloadQueueItemIdentityKey(deleteConfirmItem) === rowId;
-        const isRowFullyBusy = isRowBlocked || isDeleteConfirming;
-        const rowActionVisualClass = isRowFullyBusy
-          ? "pointer-events-none opacity-45 grayscale"
-          : "";
-        const isExpanded = Boolean(expandedItemIds[rowId]);
-        const detailId = `activity-queue-details-${rowId}`;
-
-        return (
-          <Fragment key={rowId}>
-            <TableRow
-              id={selectorId("activity", activeTab, "row", rowSelectorKey)}
-              data-ui="activity-row"
-              data-activity-tab={activeTab}
-              data-activity-row-id={rowId}
-              data-activity-download-id={queueItem.id}
-              data-activity-client-item-id={queueItem.downloadClientItemId}
-              data-activity-title-id={queueItem.titleId ?? ""}
-              data-activity-client-id={queueItem.clientId}
-              data-activity-client-name={queueItem.clientName ?? ""}
-              data-activity-client-type={queueItem.clientType}
-            >
-              {activeTab === "import" ? (
-                <TableCell className="w-12 min-w-12 align-middle">
-                  <Checkbox
-                    checked={Boolean(selectedImportItemKeys[rowId])}
-                    aria-label={t("activity.selectImportItem")}
-                    onCheckedChange={() => toggleImportItemSelected(queueItem)}
-                  />
-                </TableCell>
-              ) : null}
-              <TableCell className="w-[28%] min-w-72">
-                <ActivityQueueTitleContent
-                  displayTitle={row.displayTitle}
-                  releaseTitle={row.releaseTitle}
-                />
-              </TableCell>
-              <TableCell className="w-36 min-w-36 align-middle">
-                <p className="break-words whitespace-normal text-sm">
-                  {queueItem.clientName || queueItem.clientType}
-                </p>
-                <p className="text-xs text-muted-foreground">{queueItem.clientType}</p>
-              </TableCell>
-              <TableCell className="w-44 min-w-44 align-middle">
-                <ActivityQueueStatusBadge
-                  stateKey={row.displayStateKey}
-                  statusLabel={row.statusLabel}
-                  isExpandable={row.hasExpandableDetails}
-                  isExpanded={isExpanded}
-                  detailId={detailId}
-                  expandLabel={t(
-                    isExpanded ? "queue.hideDetails" : "queue.showDetails",
-                  )}
-                  onToggle={() => toggleExpandedDetails(rowId)}
-                />
-                {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
-                  !row.hasStatusDetails && (
-                  <p
-                    className="mt-1 max-w-full break-words whitespace-normal text-xs text-rose-400"
-                    title={queueItem.deleteErrorMessage ?? queueItem.importErrorMessage ?? ""}
-                  >
-                    {queueItem.deleteErrorMessage ?? queueItem.importErrorMessage}
-                  </p>
-                )}
-              </TableCell>
-              {activeTab === "activity" || activeTab === "import" ? (
-                <TableCell className="w-48 min-w-48 align-middle">
-                  <ActivityProgressBar
-                    percent={row.percent}
-                    remainingLabel={row.remainingLabel}
-                    colorClass={getProgressBarColor(row.displayStateKey)}
-                  />
-                </TableCell>
-              ) : null}
-              <TableCell className="w-24 min-w-24 align-middle">
-                {formatBytes(queueItem.sizeBytes)}
-              </TableCell>
-              <TableCell className="w-44 min-w-44 align-middle text-right">
-                <div className="flex items-center justify-end gap-2">
-                  {row.canPause && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={t("queue.pause")}
-                      aria-label={t("queue.pause")}
-                      onClick={() => {
-                        if (
-                          isActionLoading || isRowBlocked
-                        ) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestPause(queueItem).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((c) => (c === rowId ? null : c));
-                        });
-                      }}
-                    >
-                      <Pause className="h-6 w-6" />
-                    </Button>
-                  )}
-                  {row.canResume && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={t("queue.resume")}
-                      aria-label={t("queue.resume")}
-                      onClick={() => {
-                        if (
-                          isActionLoading || isRowBlocked
-                        ) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestResume(queueItem).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((c) => (c === rowId ? null : c));
-                        });
-                      }}
-                    >
-                      <Play className="h-6 w-6" />
-                    </Button>
-                  )}
-                  {(row.canInteractiveManualImport || row.canDirectManualImport) && (
-                    <Button
-                      id={selectorId("activity", activeTab, "manual-import", rowSelectorKey)}
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-emerald-500/60 dark:border-emerald-500/50 bg-emerald-600/20 dark:bg-emerald-600/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-600/30 dark:hover:bg-emerald-600/25 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={
-                        isManualImportPending
-                          ? t("queue.manualImporting")
-                          : t("queue.manualImportTooltip")
-                      }
-                      aria-label={
-                        isManualImportPending
-                          ? t("queue.manualImporting")
-                          : t("queue.manualImportTooltip")
-                      }
-                      onClick={() => {
-                        if (
-                          isActionLoading || isRowBlocked
-                        ) {
-                          return;
-                        }
-                        setRowBusy(rowId, true);
-                        void requestManualImport(queueItem).finally(() => {
-                          setRowBusy(rowId, false);
-                        });
-                      }}
-                    >
-                      {isManualImportPending ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <ArrowDownToLine className="h-5 w-5" />
-                      )}
-                    </Button>
-                  )}
-                  {row.canAssignTitle && (
-                    <Button
-                      id={selectorId("activity", activeTab, "assign-title", rowSelectorKey)}
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-amber-500/60 bg-amber-600/15 text-amber-200 hover:bg-amber-600/25 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={
-                        row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
-                          ? t("queue.assignTitle")
-                          : t("queue.reassignTitle")
-                      }
-                      aria-label={
-                        row.trackedMatchTypeKey === "unmatched" || !queueItem.titleId
-                          ? t("queue.assignTitle")
-                          : t("queue.reassignTitle")
-                      }
-                      onClick={() => {
-                        if (
-                          isActionLoading || isRowBlocked
-                        ) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestAssignTitle(queueItem).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((current) =>
-                            current === rowId ? null : current,
-                          );
-                        });
-                      }}
-                    >
-                      <Link2 className="h-5 w-5" />
-                    </Button>
-                  )}
-                  {row.canIgnore && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-border/50 bg-muted/70 text-foreground hover:bg-accent/90 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={t("queue.ignore")}
-                      aria-label={t("queue.ignore")}
-                      onClick={() => {
-                        if (
-                          isActionLoading || isRowBlocked
-                        ) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestIgnore(queueItem).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((current) =>
-                            current === rowId ? null : current,
-                          );
-                        });
-                      }}
-                    >
-                      <CircleOff className="h-5 w-5" />
-                    </Button>
-                  )}
-                  {row.canMarkFailed && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-orange-500/50 bg-orange-600/15 text-orange-200 hover:bg-orange-600/25 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={t("queue.markFailedSearchAgain")}
-                      aria-label={t("queue.markFailedSearchAgain")}
-                      onClick={() => {
-                        if (isActionLoading || isRowBlocked) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestMarkFailed(queueItem, false).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((current) =>
-                            current === rowId ? null : current,
-                          );
-                        });
-                      }}
-                    >
-                      <CircleAlert className="h-5 w-5" />
-                    </Button>
-                  )}
-                  {row.canMarkFailed && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-200 hover:bg-rose-600/25 ${rowActionVisualClass}`}
-                      disabled={isRowFullyBusy}
-                      title={t("queue.markFailedOnly")}
-                      aria-label={t("queue.markFailedOnly")}
-                      onClick={() => {
-                        if (isActionLoading || isRowBlocked) {
-                          return;
-                        }
-                        setActionLoadingId(rowId);
-                        setRowBusy(rowId, true);
-                        void requestMarkFailed(queueItem, true).finally(() => {
-                          setRowBusy(rowId, false);
-                          setActionLoadingId((current) =>
-                            current === rowId ? null : current,
-                          );
-                        });
-                      }}
-                    >
-                      <XCircle className="h-5 w-5" />
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className={`h-10 w-10 border border-rose-500/50 bg-rose-600/15 text-rose-300 hover:bg-rose-600/25 ${rowActionVisualClass}`}
-                    disabled={isRowFullyBusy}
-                    title={t("label.delete")}
-                    aria-label={t("label.delete")}
-                    onClick={() => {
-                      if (
-                        isActionLoading || isRowBlocked
-                      ) {
-                        return;
-                      }
-                      setRowBusy(rowId, true);
-                      setDeleteConfirmItem(queueItem);
-                    }}
-                  >
-                    <Trash2 className="h-6 w-6" />
-                  </Button>
-                </div>
-              </TableCell>
-            </TableRow>
-            {row.hasExpandableDetails && isExpanded ? (
-              <TableRow>
-                <TableCell
-                  colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
-                  className="bg-muted/10 p-3"
-                >
-                  <ActivityQueueDetailsPanel
-                    detailId={detailId}
-                    releaseTitle={row.releaseTitle}
-                    errorCode={queueItem.importErrorCode}
-                    failureReason={row.failureReason}
-                    t={t}
-                  />
-                </TableCell>
-              </TableRow>
-            ) : null}
-          </Fragment>
-        );
+        const rowProps = buildQueueRowProps(queueItem);
+        return <QueueTableRow key={rowProps.rowId} {...rowProps} />;
       })}
       {showHistorySpinner ? (
         <TableRow>

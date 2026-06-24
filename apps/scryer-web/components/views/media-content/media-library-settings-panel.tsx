@@ -1,5 +1,6 @@
 import * as React from "react";
 import { FolderOpen, Pencil, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
@@ -222,6 +223,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 }: MediaLibrarySettingsPanelProps) {
   const t = useTranslate();
   const [mode, setMode] = React.useState<"existing" | "new">("existing");
+  const [deleteLibraryOpen, setDeleteLibraryOpen] = React.useState(false);
   const [activeLibraryId, setActiveLibraryId] = React.useState<string | null>(null);
   const [draftName, setDraftName] = React.useState("");
   const [draftRoots, setDraftRoots] = React.useState<RootFolderOption[]>([]);
@@ -856,11 +858,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     void onScan(libraryId);
   };
 
-  const handleDeleteLibrary = async () => {
+  const handleDeleteLibrary = () => {
     if (!activeLibrary || activeLibrary.isDefault) {
       return;
     }
-    if (!window.confirm(t("settings.libraryDeleteConfirm", { name: activeLibrary.name }))) {
+    setDeleteLibraryOpen(true);
+  };
+
+  const handleConfirmDeleteLibrary = async () => {
+    setDeleteLibraryOpen(false);
+    if (!activeLibrary || activeLibrary.isDefault) {
       return;
     }
     await onDeleteLibrary(activeLibrary.id);
@@ -1560,6 +1567,19 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         onSelect={handleBrowserSelect}
         initialPath={browserInitialPath}
         title={browserTitle}
+      />
+      <ConfirmDialog
+        open={deleteLibraryOpen}
+        title={t("settings.libraryDeleteButton")}
+        description={
+          activeLibrary
+            ? t("settings.libraryDeleteConfirm", { name: activeLibrary.name })
+            : ""
+        }
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        onConfirm={handleConfirmDeleteLibrary}
+        onCancel={() => setDeleteLibraryOpen(false)}
       />
     </>
   );

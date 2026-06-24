@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from "react";
 import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2, Upload } from "lucide-react";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
@@ -478,34 +479,24 @@ function PluginTable({
                 <TableCell className={statusColumnClass}>
                   <div className="flex items-center gap-2">
                     {plugin.builtin && (
-                      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
-                        {t("settings.pluginBuiltin")}
-                      </span>
+                      <Badge tone="info">{t("settings.pluginBuiltin")}</Badge>
                     )}
                     {plugin.official && (
-                      <span className="rounded bg-purple-900/40 px-1.5 py-0.5 text-xs text-purple-300">
-                        {t("settings.pluginOfficial")}
-                      </span>
+                      <Badge tone="info">{t("settings.pluginOfficial")}</Badge>
                     )}
                     {plugin.supportTier === "verified_community" && (
-                      <span className="rounded bg-cyan-900/40 px-1.5 py-0.5 text-xs text-cyan-300">
+                      <Badge tone="positive">
                         {t("settings.pluginVerifiedCommunity")}
-                      </span>
+                      </Badge>
                     )}
                     {plugin.supportTier === "unverified" && (
-                      <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
-                        {t("settings.pluginUnverified")}
-                      </span>
+                      <Badge tone="warning">{t("settings.pluginUnverified")}</Badge>
                     )}
                     {plugin.status === "beta" && (
-                      <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-xs text-yellow-300">
-                        {t("settings.pluginBeta")}
-                      </span>
+                      <Badge tone="warning">{t("settings.pluginBeta")}</Badge>
                     )}
                     {isDownloadedBuiltinOverride(plugin) && (
-                      <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
-                        {t("settings.pluginOverride")}
-                      </span>
+                      <Badge tone="warning">{t("settings.pluginOverride")}</Badge>
                     )}
                   </div>
                 </TableCell>
@@ -679,9 +670,9 @@ export function SettingsPluginsSection({
         <div className="flex items-center gap-2">
           <p className="text-sm text-muted-foreground">{t("settings.pluginsSection")}</p>
           {upgradeCount > 0 && (
-            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] font-medium text-white">
+            <Badge tone="info" className="h-5 min-w-5 rounded-full px-1.5 text-[11px]">
               {upgradeCount}
-            </span>
+            </Badge>
           )}
         </div>
         <div className="flex items-center gap-2">

@@ -1,5 +1,6 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Badge as UiBadge } from "@/components/ui/badge";
 import { ChevronDown } from "lucide-react";
 
 export type AudioStreamDetail = {
@@ -148,40 +149,29 @@ function resolveSourceType(source: string): string | null {
 
 function Badge({
   children,
-  color,
+  tone = "info",
 }: {
   children: React.ReactNode;
-  color: "sky" | "blue" | "indigo" | "violet" | "cyan" | "teal" | "purple" | "amber" | "red";
+  tone?: "info" | "warning" | "negative";
 }) {
-  const colorClasses: Record<typeof color, string> = {
-    sky: "border-sky-500/40 bg-sky-500/20 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300",
-    blue: "border-blue-500/40 bg-blue-500/20 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300",
-    indigo: "border-indigo-500/40 bg-indigo-500/20 text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/15 dark:text-indigo-300",
-    violet: "border-violet-500/40 bg-violet-500/20 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300",
-    cyan: "border-cyan-500/40 bg-cyan-500/20 text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-300",
-    teal: "border-teal-500/40 bg-teal-500/20 text-teal-700 dark:border-teal-500/30 dark:bg-teal-500/15 dark:text-teal-300",
-    purple: "border-purple-500/40 bg-purple-500/20 text-purple-700 dark:border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300",
-    amber: "border-amber-500/40 bg-amber-500/20 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
-    red: "border-red-500/40 bg-red-500/20 text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300",
-  };
   return (
-    <span className={`rounded border px-1.5 py-0.5 text-[11px] font-medium ${colorClasses[color]}`}>
+    <UiBadge tone={tone} className="px-1.5 text-[11px]">
       {children}
-    </span>
+    </UiBadge>
   );
 }
 
 function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
   const t = useTranslate();
   if (streams.length === 1) {
-    return <Badge color="purple">{formatSingleAudioTrack(streams[0])}</Badge>;
+    return <Badge tone="info">{formatSingleAudioTrack(streams[0])}</Badge>;
   }
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex cursor-pointer items-center gap-1 rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-500/30 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25"
+          className="inline-flex cursor-pointer items-center gap-1 rounded border border-sky-500/40 bg-sky-500/20 px-1.5 py-0.5 text-[11px] font-medium text-sky-700 hover:bg-sky-500/30 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300 dark:hover:bg-sky-500/25"
         >
           {t("mediaFile.audioCount", { count: streams.length })}
           <ChevronDown className="h-3 w-3 opacity-70" />
@@ -208,7 +198,7 @@ function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
 function SubtitleTracksPopover({ streams }: { streams: SubtitleStreamDetail[] }) {
   const t = useTranslate();
   if (streams.length === 1) {
-    return <Badge color="amber">{formatSingleSubtitleTrack(streams[0])}</Badge>;
+    return <Badge tone="info">{formatSingleSubtitleTrack(streams[0])}</Badge>;
   }
   return (
     <Popover>
@@ -250,13 +240,6 @@ export function MediaInfoBadges({ file }: { file: MediaInfoFile }) {
   const resolution = resolveResolution(file.videoWidth, file.videoHeight);
   const videoCodec = resolveVideoCodec(file.videoCodec);
 
-  const hdrColor = (): "indigo" | "violet" | "cyan" | "teal" => {
-    if (file.videoHdrFormat === "Dolby Vision") return "indigo";
-    if (file.videoHdrFormat === "HDR10+") return "violet";
-    if (file.videoHdrFormat === "HLG") return "teal";
-    return "cyan";
-  };
-
   const sourceType = file.sourceType ? resolveSourceType(file.sourceType) : null;
   const hasVideo = !!(resolution || videoCodec || file.videoHdrFormat);
   const hasRelease = !!(sourceType || file.edition);
@@ -269,11 +252,11 @@ export function MediaInfoBadges({ file }: { file: MediaInfoFile }) {
 
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {resolution ? <Badge color="sky">{resolution}</Badge> : null}
-      {videoCodec ? <Badge color="blue">{videoCodec}</Badge> : null}
-      {file.videoHdrFormat ? <Badge color={hdrColor()}>{file.videoHdrFormat}</Badge> : null}
-      {sourceType ? <Badge color="teal">{sourceType}</Badge> : null}
-      {file.edition ? <Badge color="cyan">{file.edition}</Badge> : null}
+      {resolution ? <Badge tone="info">{resolution}</Badge> : null}
+      {videoCodec ? <Badge tone="info">{videoCodec}</Badge> : null}
+      {file.videoHdrFormat ? <Badge tone="info">{file.videoHdrFormat}</Badge> : null}
+      {sourceType ? <Badge tone="info">{sourceType}</Badge> : null}
+      {file.edition ? <Badge tone="info">{file.edition}</Badge> : null}
       {hasAudioStreams ? <AudioTracksPopover streams={file.audioStreams} /> : null}
       {hasSubtitles ? (
         <SubtitleTracksPopover
@@ -288,8 +271,8 @@ export function MediaInfoBadges({ file }: { file: MediaInfoFile }) {
               }))}
         />
       ) : null}
-      {isPendingScan ? <Badge color="amber">{t("mediaFile.pendingScan")}</Badge> : null}
-      {isScanFailed ? <Badge color="red">{t("mediaFile.scanFailed")}</Badge> : null}
+      {isPendingScan ? <Badge tone="warning">{t("mediaFile.pendingScan")}</Badge> : null}
+      {isScanFailed ? <Badge tone="negative">{t("mediaFile.scanFailed")}</Badge> : null}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
@@ -41,18 +42,12 @@ export function SettingsAcquisitionSection({
     <div id="settings-acquisition-section" className="space-y-6 text-sm">
       <div className="flex items-center gap-3">
         <Label htmlFor="settings-acquisition-enabled">{t("settings.acq.enabled")}</Label>
-        <button
+        <SettingsToggleSwitch
           id="settings-acquisition-enabled"
-          type="button"
-          role="switch"
-          aria-checked={settings.enabled}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${settings.enabled ? "bg-primary" : "bg-muted"}`}
-          onClick={() => update({ enabled: !settings.enabled })}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${settings.enabled ? "translate-x-5" : "translate-x-0"}`}
-          />
-        </button>
+          checked={settings.enabled}
+          ariaLabel={t("settings.acq.enabled")}
+          onChange={(nextValue) => update({ enabled: nextValue })}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

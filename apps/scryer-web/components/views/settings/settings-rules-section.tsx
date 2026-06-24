@@ -19,6 +19,7 @@ import {
   rulePackRegistryQuery,
   rulePackTemplatesQuery,
 } from "@/lib/graphql/queries";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -26,6 +27,7 @@ import {
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Input,
   integerInputProps,
@@ -342,29 +344,26 @@ function managedRuleLabel(key: string): string {
 
 function ManagedBadge({ managedKey }: { managedKey: string }) {
   return (
-    <span className="ml-2 inline-flex items-center rounded-full bg-teal-900/40 px-2 py-0.5 text-[10px] font-medium text-teal-300">
+    <Badge tone="info" className="ml-2 rounded-full text-[10px]">
       {managedRuleLabel(managedKey)}
-    </span>
+    </Badge>
   );
 }
 
 function FacetBadges({ facets }: { facets: string[] }) {
   if (facets.length === 0) {
     return (
-      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+      <Badge tone="info" className="capitalize">
         Global
-      </span>
+      </Badge>
     );
   }
   return (
     <div className="flex gap-1">
       {facets.map((f) => (
-        <span
-          key={f}
-          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground capitalize"
-        >
+        <Badge key={f} tone="neutral" className="capitalize">
           {f}
-        </span>
+        </Badge>
       ))}
     </div>
   );
@@ -597,9 +596,9 @@ function RuleLibrary({
                     {pack.description}
                   </p>
                   <div className="mt-2 flex items-center gap-2">
-                    <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 dark:text-teal-300">
+                    <Badge tone="info" className="text-[10px]">
                       {pack.author}
-                    </span>
+                    </Badge>
                     <span className="text-[10px] text-muted-foreground">
                       v{pack.version}
                     </span>
@@ -638,18 +637,15 @@ function TemplateGrid({
             {tpl.description}
           </p>
           <div className="mt-2 flex items-center gap-2">
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <Badge tone="neutral" className="text-[10px]">
               {tpl.category}
-            </span>
+            </Badge>
             {tpl.appliedFacets
               ?.filter((f) => f.toLowerCase() !== tpl.category.toLowerCase())
               .map((f) => (
-                <span
-                  key={f}
-                  className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-700 dark:text-blue-300"
-                >
+                <Badge key={f} tone="info" className="text-[10px]">
                   {f}
-                </span>
+                </Badge>
               ))}
           </div>
         </button>
@@ -913,23 +909,22 @@ export function SettingsRulesSection({
                         key={opt.value}
                         className="flex items-center gap-2"
                       >
-                        <input
+                        <Checkbox
                           id={selectorId("settings-rule-facet", opt.value)}
-                          type="checkbox"
                           checked={ruleSetDraft.appliedFacets.includes(
                             opt.value,
                           )}
-                          onChange={(e) => {
+                          onCheckedChange={(value) => {
                             setRuleSetDraft((prev) => {
-                              const next = e.target.checked
-                                ? [...prev.appliedFacets, opt.value]
-                                : prev.appliedFacets.filter(
-                                    (f) => f !== opt.value,
-                                  );
+                              const next =
+                                value === true
+                                  ? [...prev.appliedFacets, opt.value]
+                                  : prev.appliedFacets.filter(
+                                      (f) => f !== opt.value,
+                                    );
                               return { ...prev, appliedFacets: next };
                             });
                           }}
-                          className="accent-primary"
                         />
                         <span className="text-sm">{opt.label}</span>
                       </label>
@@ -938,17 +933,15 @@ export function SettingsRulesSection({
                 </div>
 
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-rule-enabled"
-                    type="checkbox"
                     checked={ruleSetDraft.enabled}
-                    onChange={(e) =>
+                    onCheckedChange={(value) =>
                       setRuleSetDraft((prev) => ({
                         ...prev,
-                        enabled: e.target.checked,
+                        enabled: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">{t("label.enabled")}</span>
                 </label>

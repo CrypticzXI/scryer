@@ -181,14 +181,7 @@ export function LibraryMultiSelect({
                     onClick={() => toggleLibrary(library.id)}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
                   >
-                    <Checkbox
-                      checked={checked}
-                      className={cn(
-                        "pointer-events-none",
-                        implicitChecked &&
-                          "data-[state=checked]:border-muted-foreground/30 data-[state=checked]:bg-muted data-[state=checked]:text-muted-foreground",
-                      )}
-                    />
+                    <Checkbox checked={checked} className="pointer-events-none" />
                     <span
                       className={cn(
                         "truncate",

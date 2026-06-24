@@ -10,6 +10,7 @@ import {
 
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -253,12 +254,10 @@ export function SetupImportReviewView({
                       : "cursor-not-allowed opacity-50"
                   }`}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={isSelected}
-                    onChange={() => onToggleDc(dc.dedupKey)}
+                    onCheckedChange={() => onToggleDc(dc.dedupKey)}
                     disabled={!dc.supported}
-                    className="accent-primary"
                   />
                   <div className="flex-1">
                     <span className="font-medium">{dc.name}</span>
@@ -360,12 +359,10 @@ export function SetupImportReviewView({
                       : "cursor-not-allowed opacity-50"
                   }`}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={isSelected}
-                    onChange={() => onToggleIdx(idx.dedupKey)}
+                    onCheckedChange={() => onToggleIdx(idx.dedupKey)}
                     disabled={!idx.supported || isDirectProwlarr}
-                    className="accent-primary"
                   />
                   <div className="flex-1">
                     <span className="font-medium">{idx.name}</span>
@@ -549,11 +546,9 @@ function ImportPathFacetSection({
             key={folder.path}
             className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={selectedImportedPaths.includes(folder.path)}
-              onChange={() => onToggleImported(folder.path)}
-              className="accent-primary"
+              onCheckedChange={() => onToggleImported(folder.path)}
             />
             <code className="min-w-0 flex-1 truncate text-xs">
               {folder.path}

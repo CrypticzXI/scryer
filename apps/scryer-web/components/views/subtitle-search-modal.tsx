@@ -3,6 +3,7 @@ import { useClient } from "urql";
 import { Search, ArrowDownToLine, Loader2, Hash, CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -363,9 +364,9 @@ export function SubtitleSearchModal({
                         className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
                       >
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                          <Badge tone="info" className="px-1.5 text-[10px] uppercase tracking-wide">
                             {entry.language}
-                          </span>
+                          </Badge>
                           <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                             {entry.provider}
                           </span>
@@ -433,24 +434,24 @@ export function SubtitleSearchModal({
                       <TableCell className="text-center">
                         <div className="flex justify-center gap-1">
                           {r.hearingImpaired ? (
-                            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                            <Badge tone="warning" className="px-1.5 text-[10px]">
                               {t("subtitle.hearingImpaired")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.forced ? (
-                            <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300">
+                            <Badge tone="info" className="px-1.5 text-[10px]">
                               {t("subtitle.forced")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.aiTranslated ? (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                            <Badge tone="negative" className="px-1.5 text-[10px]">
                               {t("subtitle.aiTranslated")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.machineTranslated ? (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                            <Badge tone="negative" className="px-1.5 text-[10px]">
                               {t("subtitle.machineTranslated")}
-                            </span>
+                            </Badge>
                           ) : null}
                         </div>
                       </TableCell>

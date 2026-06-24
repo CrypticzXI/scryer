@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Table,
   TableBody,
@@ -22,6 +23,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type {
   DelayProfileDraft,
   DelayProfileFacet,
+  DelayProfileProtocol,
   ParsedDelayProfile,
 } from "@/lib/types/delay-profiles";
 import { FACET_OPTIONS } from "@/lib/utils/delay-profiles";
@@ -246,22 +248,33 @@ export function SettingsDelayProfilesSection({
             {/* Preferred protocol */}
             <div className="space-y-1.5">
               <Label>{t("settings.delayProfilePreferred")}</Label>
-              <div className="flex gap-4">
+              <RadioGroup
+                className="flex gap-4"
+                value={draft.preferred_protocol}
+                onValueChange={(value) =>
+                  updateField(
+                    "preferred_protocol",
+                    value as DelayProfileProtocol,
+                  )
+                }
+              >
                 {(["usenet", "torrent"] as const).map((proto) => (
-                  <label key={proto} className="flex items-center gap-2 text-sm">
-                    <input
+                  <label
+                    key={proto}
+                    htmlFor={selectorId(
+                      "settings-delay-profile-preferred",
+                      proto,
+                    )}
+                    className="flex items-center gap-2 text-sm"
+                  >
+                    <RadioGroupItem
                       id={selectorId("settings-delay-profile-preferred", proto)}
-                      type="radio"
-                      name="preferred_protocol"
                       value={proto}
-                      checked={draft.preferred_protocol === proto}
-                      onChange={() => updateField("preferred_protocol", proto)}
-                      className="accent-primary"
                     />
                     {proto === "usenet" ? "Usenet" : "Torrent"}
                   </label>
                 ))}
-              </div>
+              </RadioGroup>
               <p className="text-muted-foreground text-xs">
                 {t("settings.delayProfilePreferredHelp")}
               </p>

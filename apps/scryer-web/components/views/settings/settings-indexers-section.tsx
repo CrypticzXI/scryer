@@ -2,6 +2,7 @@ import * as React from "react";
 import { Edit, Lock, MonitorCog, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -239,14 +240,12 @@ function DynamicConfigField({
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2">
-        <input
+        <Checkbox
           id={fieldId}
-          type="checkbox"
           checked={value === "true"}
-          onChange={(e) =>
-            onChange(field.key, e.target.checked ? "true" : "false")
+          onCheckedChange={(checkedValue) =>
+            onChange(field.key, checkedValue === true ? "true" : "false")
           }
-          className="accent-primary"
         />
         <span className="inline-flex items-center gap-2 text-sm">
           {field.label}
@@ -789,34 +788,30 @@ export function SettingsIndexersSection({
             ) : (
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-indexer-enable-interactive-search"
-                    type="checkbox"
                     checked={indexerDraft.enableInteractiveSearch}
-                    onChange={(event) =>
+                    onCheckedChange={(value) =>
                       setIndexerDraft((prev: IndexerDraft) => ({
                         ...prev,
-                        enableInteractiveSearch: event.target.checked,
+                        enableInteractiveSearch: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">
                     {t("settings.indexerInteractiveSearch")}
                   </span>
                 </label>
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-indexer-enable-auto-search"
-                    type="checkbox"
                     checked={indexerDraft.enableAutoSearch}
-                    onChange={(event) =>
+                    onCheckedChange={(value) =>
                       setIndexerDraft((prev: IndexerDraft) => ({
                         ...prev,
-                        enableAutoSearch: event.target.checked,
+                        enableAutoSearch: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">
                     {t("settings.indexerAutoSearch")}

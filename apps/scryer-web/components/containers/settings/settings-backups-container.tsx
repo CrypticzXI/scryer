@@ -132,8 +132,6 @@ const DEFAULT_BACKUP_SETTINGS: BackupSettings = {
   effectiveBackupPath: "",
 };
 const AUTO_BACKUP_KEY_MIN_LENGTH = 8;
-const UNSAVED_BACKUP_CHANGES_MESSAGE =
-  "You have unsaved backup settings changes. Leave without saving?";
 
 type SaveFilePickerWindow = Window & {
   showSaveFilePicker?: (options: {
@@ -504,16 +502,17 @@ export function SettingsBackupsContainer() {
     return () => window.clearInterval(intervalId);
   }, [backups, fetchBackups]);
 
-  React.useEffect(() => {
+  const handleConfirmLeaveUnsavedBackup = React.useCallback(() => {
     if (autoBackupNavigationBlocker.state !== "blocked") {
       return;
     }
+    autoBackupNavigationBlocker.proceed();
+  }, [autoBackupNavigationBlocker]);
 
-    if (window.confirm(UNSAVED_BACKUP_CHANGES_MESSAGE)) {
-      autoBackupNavigationBlocker.proceed();
+  const handleCancelLeaveUnsavedBackup = React.useCallback(() => {
+    if (autoBackupNavigationBlocker.state !== "blocked") {
       return;
     }
-
     autoBackupNavigationBlocker.reset();
   }, [autoBackupNavigationBlocker]);
 
@@ -830,7 +829,7 @@ export function SettingsBackupsContainer() {
                       <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:max-w-xl">
                         <Checkbox
                           id="auto-backups-clear-key"
-                          className="size-5 rounded-md data-[state=checked]:border-rose-500 data-[state=checked]:bg-rose-500 data-[state=indeterminate]:border-rose-500 data-[state=indeterminate]:bg-rose-500"
+                          className="size-5 rounded-md"
                           checked={clearAutoBackupKey}
                           disabled={
                             autoBackupSaving || autoBackupSettings.enabled || autoBackupKey.length > 0
@@ -1186,6 +1185,15 @@ export function SettingsBackupsContainer() {
           }
           setPendingDelete(null);
         }}
+      />
+      <ConfirmDialog
+        open={autoBackupNavigationBlocker.state === "blocked"}
+        title={t("settings.unsavedBackupChangesTitle")}
+        description={t("settings.unsavedBackupChangesConfirm")}
+        confirmLabel={t("label.discard")}
+        cancelLabel={t("label.cancel")}
+        onConfirm={handleConfirmLeaveUnsavedBackup}
+        onCancel={handleCancelLeaveUnsavedBackup}
       />
     </>
   );

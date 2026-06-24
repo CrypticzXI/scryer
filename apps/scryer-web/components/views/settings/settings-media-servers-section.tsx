@@ -18,6 +18,7 @@ import {
   type LibraryPermissionDrafts,
 } from "@/components/common/permission-checkboxes";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -119,42 +120,29 @@ function updateLibraryGrant(
     : filtered;
 }
 
+type CapabilityBadgeTone = "neutral" | "positive" | "info";
+
 function capabilityBadges(
   connection: MediaServerConnection,
   effectiveFormLoginEnabled: boolean,
-): Array<{ label: string; tone: string }> {
-  const badges: Array<{ label: string; tone: string }> = [];
+): Array<{ label: string; tone: CapabilityBadgeTone }> {
+  const badges: Array<{ label: string; tone: CapabilityBadgeTone }> = [];
   if (connection.provider === "emby") {
-    badges.push({
-      label: "Notifications",
-      tone: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    });
+    badges.push({ label: "Notifications", tone: "info" });
     return badges;
   }
   if (effectiveFormLoginEnabled && connection.loginEnabled) {
-    badges.push({
-      label: "Login",
-      tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    });
+    badges.push({ label: "Login", tone: "positive" });
   }
   if (connection.linkingEnabled) {
-    badges.push({
-      label: "Linking",
-      tone: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-    });
+    badges.push({ label: "Linking", tone: "info" });
   }
   if (connection.autoAddEnabled) {
-    badges.push({
-      label: "Auto-add",
-      tone: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
-    });
+    badges.push({ label: "Auto-add", tone: "info" });
   }
   return badges.length > 0
     ? badges
-    : [{
-        label: "Connection only",
-        tone: "border-border bg-background text-muted-foreground",
-      }];
+    : [{ label: "Connection only", tone: "neutral" }];
 }
 
 function MediaServerActionButton({
@@ -296,12 +284,9 @@ export function SettingsMediaServersSection({
                   <TableCell>
                     <div className="flex flex-wrap gap-1.5">
                       {capabilityBadges(connection, effectiveFormLoginEnabled).map((badge) => (
-                        <span
-                          key={badge.label}
-                          className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${badge.tone}`}
-                        >
+                        <Badge key={badge.label} tone={badge.tone} className="rounded-full">
                           {badge.label}
-                        </span>
+                        </Badge>
                       ))}
                     </div>
                   </TableCell>

@@ -18,7 +18,6 @@ import {
 import {
   browsePathQuery,
   deleteTitlePreviewQuery,
-  deleteTitlesPreviewQuery,
   downloadClientRoutingQuery,
   jobRunEventsSubscription,
   jobRunsQuery,
@@ -46,6 +45,7 @@ import {
   singleSelectedLibraryId,
 } from "@/lib/utils/library-filter";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
@@ -65,7 +65,7 @@ import type {
   RuleSetRecord,
 } from "@/lib/types";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
-import type { DeletePreview, DeleteTitlesPreview } from "@/lib/types/delete-preview";
+import type { DeletePreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
@@ -643,18 +643,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       : titleCatalogSort;
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
-  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = React.useState(false);
-  const [bulkDeleteFilesOnDisk, setBulkDeleteFilesOnDisk] =
-    React.useState(false);
-  const [bulkDeleteTypedConfirmation, setBulkDeleteTypedConfirmation] =
-    React.useState("");
-  const [bulkDeletePreviewLoading, setBulkDeletePreviewLoading] =
-    React.useState(false);
-  const [bulkDeletePreviewError, setBulkDeletePreviewError] = React.useState<
-    string | null
-  >(null);
-  const [bulkDeletePreviewsByTitleId, setBulkDeletePreviewsByTitleId] =
-    React.useState<Record<string, DeletePreview>>({});
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
@@ -899,19 +887,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       return sameIdSet(current, next) ? current : next;
     });
   }, [visibleTitles]);
-
-  React.useEffect(() => {
-    if (selectedTitles.length > 0) {
-      return;
-    }
-    setBulkEditDialogOpen(false);
-    setBulkDeleteDialogOpen(false);
-    setBulkDeleteFilesOnDisk(false);
-    setBulkDeleteTypedConfirmation("");
-    setBulkDeletePreviewLoading(false);
-    setBulkDeletePreviewError(null);
-    setBulkDeletePreviewsByTitleId({});
-  }, [selectedTitles.length]);
 
   const {
     moviesPath,
@@ -1467,6 +1442,55 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [refreshTrackedDeletionJobs]);
+
+  const {
+    bulkDeleteDialogOpen,
+    setBulkDeleteDialogOpen,
+    bulkDeleteFilesOnDisk,
+    setBulkDeleteFilesOnDisk,
+    bulkDeleteTypedConfirmation,
+    setBulkDeleteTypedConfirmation,
+    bulkDeletePreviewLoading,
+    setBulkDeletePreviewLoading,
+    bulkDeletePreviewError,
+    setBulkDeletePreviewError,
+    setBulkDeletePreviewsByTitleId,
+    closeBulkDeleteDialog,
+    bulkDeletePreview,
+    bulkDeleteConfirmDisabled,
+    confirmBulkDeleteTitles,
+    openBulkTitleDelete,
+  } = useBulkDelete({
+    selectedTitles,
+    selectedTitleLibraryIds,
+    bulkActionBusy,
+    setBulkActionBusy,
+    client,
+    t,
+    setGlobalStatus,
+    recordCriticalCatalogMutation,
+    registerInteractiveJobRun,
+    scheduleDeletionJobFallbackChecks,
+    setPendingDeletedTitleIds,
+    setSelectedTitleIds,
+    deletionJobIdsRef,
+    batchFailureDetail,
+    withFailureDetail,
+    aggregateDeletePreviews,
+  });
+
+  React.useEffect(() => {
+    if (selectedTitles.length > 0) {
+      return;
+    }
+    setBulkEditDialogOpen(false);
+    setBulkDeleteDialogOpen(false);
+    setBulkDeleteFilesOnDisk(false);
+    setBulkDeleteTypedConfirmation("");
+    setBulkDeletePreviewLoading(false);
+    setBulkDeletePreviewError(null);
+    setBulkDeletePreviewsByTitleId({});
+  }, [selectedTitles.length]);
 
   useDeferredWsSubscription<{ data?: { jobRunEvents?: unknown } }>({
     requestKey: "mediaContentTitleDeletionJobRuns",
@@ -2093,15 +2117,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [bulkActionBusy, client, reloadTitles, selectedTitles, setGlobalStatus, t],
   );
 
-  const closeBulkDeleteDialog = React.useCallback(() => {
-    setBulkDeleteDialogOpen(false);
-    setBulkDeleteFilesOnDisk(false);
-    setBulkDeleteTypedConfirmation("");
-    setBulkDeletePreviewLoading(false);
-    setBulkDeletePreviewError(null);
-    setBulkDeletePreviewsByTitleId({});
-  }, []);
-
   React.useEffect(() => {
     if (!isMediaView || librariesLoading) {
       setInvalidRootLibraryIds([]);
@@ -2173,209 +2188,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [client, isMediaView, libraries, librariesLoading, selectedLibraryIds]);
 
-  React.useEffect(() => {
-    if (!bulkDeleteFilesOnDisk) {
-      setBulkDeleteTypedConfirmation("");
-      setBulkDeletePreviewLoading(false);
-      setBulkDeletePreviewError(null);
-      setBulkDeletePreviewsByTitleId({});
-    }
-  }, [bulkDeleteFilesOnDisk]);
-
-  React.useEffect(() => {
-    if (!bulkDeleteDialogOpen || !bulkDeleteFilesOnDisk) {
-      return;
-    }
-
-    const targets = [...selectedTitles];
-    if (targets.length === 0) {
-      setBulkDeletePreviewLoading(false);
-      setBulkDeletePreviewError(null);
-      setBulkDeletePreviewsByTitleId({});
-      return;
-    }
-
-    let cancelled = false;
-    setBulkDeletePreviewLoading(true);
-    setBulkDeletePreviewError(null);
-
-    const loadPreviews = async () => {
-      try {
-        const result = await client
-          .query<{ deleteTitlesPreview: DeleteTitlesPreview }>(
-            deleteTitlesPreviewQuery,
-            { input: { titleIds: targets.map((title) => title.id) } },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise();
-        if (cancelled) {
-          return;
-        }
-
-        if (result.error || !result.data?.deleteTitlesPreview) {
-          throw result.error ?? new Error("delete title preview failed");
-        }
-        const payload = result.data.deleteTitlesPreview;
-        const nextPreviewsByTitleId: Record<string, DeletePreview> = {};
-        const failedTitles: string[] = [];
-
-        for (const item of payload.items) {
-          if (item.preview) {
-            nextPreviewsByTitleId[item.titleId] = item.preview;
-          } else {
-            const title = targets.find((target) => target.id === item.titleId);
-            failedTitles.push(title?.name ?? item.titleId);
-          }
-        }
-
-        setBulkDeletePreviewsByTitleId(nextPreviewsByTitleId);
-        if (payload.failedCount > 0) {
-          setBulkDeletePreviewError(
-            withFailureDetail(
-              t("status.bulkDeletePreviewFailed", { failed: payload.failedCount }),
-              failedTitles.slice(0, 5).join(", "),
-            ),
-          );
-        } else {
-          setBulkDeletePreviewError(null);
-        }
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        setBulkDeletePreviewsByTitleId({});
-        setBulkDeletePreviewError(
-          withFailureDetail(
-            t("status.bulkDeletePreviewFailed", { failed: targets.length }),
-            batchFailureDetail(error),
-          ),
-        );
-      } finally {
-        if (!cancelled) {
-          setBulkDeletePreviewLoading(false);
-        }
-      }
-    };
-
-    void loadPreviews();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    bulkDeleteDialogOpen,
-    bulkDeleteFilesOnDisk,
-    client,
-    selectedTitles,
-    t,
-  ]);
-
-  const bulkDeletePreview = React.useMemo(
-    () =>
-      aggregateDeletePreviews(
-        Object.values(bulkDeletePreviewsByTitleId).filter(Boolean),
-      ),
-    [bulkDeletePreviewsByTitleId],
-  );
-  const bulkDeletePreviewMissing =
-    bulkDeleteFilesOnDisk &&
-    selectedTitles.some((title) => !bulkDeletePreviewsByTitleId[title.id]);
-  const bulkDeleteConfirmDisabled =
-    bulkActionBusy ||
-    selectedTitles.length === 0 ||
-    (bulkDeleteFilesOnDisk &&
-      (bulkDeletePreviewLoading ||
-        !!bulkDeletePreviewError ||
-        bulkDeletePreviewMissing ||
-        !bulkDeletePreview ||
-        (bulkDeletePreview.requiresTypedConfirmation &&
-          bulkDeleteTypedConfirmation.trim() !== "DELETE")));
-
-  const confirmBulkDeleteTitles = React.useCallback(async () => {
-    const targets = [...selectedTitles];
-    if (targets.length === 0 || bulkActionBusy) {
-      return;
-    }
-
-    setBulkActionBusy(true);
-    try {
-      const items = targets.map((title) => {
-        const preview = bulkDeletePreviewsByTitleId[title.id];
-        if (bulkDeleteFilesOnDisk && !preview) {
-          throw new Error("Delete preview is not ready yet.");
-        }
-        return {
-          titleId: title.id,
-          ...(bulkDeleteFilesOnDisk
-            ? { previewFingerprint: preview?.fingerprint }
-            : {}),
-        };
-      });
-      const result = await client
-        .mutation<{
-          deleteTitles?: {
-            acceptedTitleIds?: string[];
-            jobRun?: unknown;
-          };
-        }>(deleteTitlesMutation, {
-          input: {
-            items,
-            deleteFilesOnDisk: bulkDeleteFilesOnDisk,
-            ...(bulkDeleteFilesOnDisk && bulkDeleteTypedConfirmation.trim()
-              ? { typedConfirmation: bulkDeleteTypedConfirmation.trim() }
-              : {}),
-          },
-        })
-        .toPromise();
-      if (result.error) {
-        throw result.error;
-      }
-      const acceptedIds = result.data?.deleteTitles?.acceptedTitleIds ?? [];
-      if (acceptedIds.length > 0) {
-        recordCriticalCatalogMutation();
-      }
-      const run = normalizeJobRun(result.data?.deleteTitles?.jobRun);
-      if (run) {
-        deletionJobIdsRef.current.add(run.id);
-        registerInteractiveJobRun(run);
-        scheduleDeletionJobFallbackChecks();
-      }
-      setPendingDeletedTitleIds((current) => {
-        const next = new Set(current);
-        for (const id of acceptedIds) {
-          next.add(id);
-        }
-        return next;
-      });
-      setSelectedTitleIds(new Set());
-      closeBulkDeleteDialog();
-      setGlobalStatus(
-        `Queued deletion for ${acceptedIds.length} title${acceptedIds.length === 1 ? "" : "s"}.`,
-      );
-    } catch (error) {
-      setGlobalStatus(
-        withFailureDetail(
-          t("status.bulkTitleDeleteFailed"),
-          batchFailureDetail(error),
-        ),
-      );
-    } finally {
-      setBulkActionBusy(false);
-    }
-  }, [
-    bulkActionBusy,
-    bulkDeleteFilesOnDisk,
-    bulkDeletePreviewsByTitleId,
-    bulkDeleteTypedConfirmation,
-    client,
-    closeBulkDeleteDialog,
-    recordCriticalCatalogMutation,
-    registerInteractiveJobRun,
-    scheduleDeletionJobFallbackChecks,
-    selectedTitles,
-    setGlobalStatus,
-    t,
-  ]);
-
   const openBulkTitleEdit = React.useCallback(() => {
     if (selectedTitles.length === 0 || bulkActionBusy) {
       return;
@@ -2385,22 +2197,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       return;
     }
     setBulkEditDialogOpen(true);
-  }, [bulkActionBusy, selectedTitleLibraryIds.length, selectedTitles.length, setGlobalStatus]);
-
-  const openBulkTitleDelete = React.useCallback(() => {
-    if (selectedTitles.length === 0 || bulkActionBusy) {
-      return;
-    }
-    if (selectedTitleLibraryIds.length !== 1) {
-      setGlobalStatus("Bulk actions require titles from one library.");
-      return;
-    }
-    setBulkDeleteFilesOnDisk(false);
-    setBulkDeleteTypedConfirmation("");
-    setBulkDeletePreviewLoading(false);
-    setBulkDeletePreviewError(null);
-    setBulkDeletePreviewsByTitleId({});
-    setBulkDeleteDialogOpen(true);
   }, [bulkActionBusy, selectedTitleLibraryIds.length, selectedTitles.length, setGlobalStatus]);
 
   const requestDeleteTitle = React.useCallback(

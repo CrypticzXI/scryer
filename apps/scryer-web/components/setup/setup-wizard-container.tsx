@@ -6,9 +6,7 @@ import { useClient } from "urql";
 
 import {
   externalImportMonitorWarmupStatusQuery,
-  pluginsQuery,
   externalImportMonitorWarmupProgressSubscription,
-  pluginInstallProgressSubscription,
   qualityProfilesInitQuery,
   setupStatusQuery,
   setupWizardProviderTypesInitQuery,
@@ -16,45 +14,27 @@ import {
 import {
   saveQualityProfileSettingsMutation,
   updateLibraryPathsMutation,
-  createDownloadClientMutation,
-  testDownloadClientConnectionMutation,
-  createIndexerMutation,
-  testIndexerConnectionMutation,
   completeSetupMutation,
   previewExternalImportMutation,
   executeExternalImportMutation,
   startExternalImportMonitorWarmupMutation,
   cancelExternalImportMonitorWarmupMutation,
   finalizeExternalImportMutation,
-  beginInstallPluginMutation,
-  refreshPluginCatalogMutation,
-  uninstallPluginMutation,
   scanLibraryMutation,
 } from "@/lib/graphql/mutations";
 import { wsClient } from "@/lib/graphql/ws-client";
+import { buildDownloadClientTypeOptions } from "@/lib/utils/download-clients";
+import { useDownloadClientSetup } from "@/lib/hooks/use-download-client-setup";
 import {
-  DEFAULT_DOWNLOAD_CLIENT_DRAFT,
-  DEFAULT_PORT_FOR_CLIENT_TYPE,
-} from "@/lib/constants/download-clients";
-import {
-  buildDownloadClientConfigValues,
-  buildDownloadClientTypeOptions,
-  ensureDownloadClientTypeOption,
-  normalizeDownloadClientType,
-} from "@/lib/utils/download-clients";
-import { providerConfigRecordToValues } from "@/lib/utils/provider-config";
-import {
-  localPathStyleFromRuntimeValue,
-  type LocalPathStyle,
-} from "@/lib/utils/local-path-style";
+  useIndexerSetup,
+  type SetupIndexerProviderOption,
+} from "@/lib/hooks/use-indexer-setup";
+import { usePluginManagement } from "@/lib/hooks/use-plugin-management";
+import { localPathStyleFromRuntimeValue } from "@/lib/utils/local-path-style";
 import {
   qualityProfileSettingsToEntries,
   qualityProfileEntryToMutationInput,
 } from "@/lib/utils/quality-profiles";
-import type {
-  DownloadClientDraft,
-  DownloadClientTypeOption,
-} from "@/lib/types/download-clients";
 import type {
   FacetQualityPrefs,
   QualityTargetId,
@@ -66,7 +46,7 @@ import type {
   ExternalImportPreview,
   ExternalImportResult,
 } from "@/lib/types/external-import";
-import type { ConfigFieldDef, ProviderTypeInfo } from "@/lib/types";
+import type { ProviderTypeInfo } from "@/lib/types";
 
 import { SetupProgressBar } from "./setup-progress-bar";
 import { SetupWelcomeView } from "./setup-welcome-view";
@@ -80,17 +60,6 @@ import { SetupImportReviewView } from "./setup-import-review-view";
 import { SetupPluginsView } from "./setup-plugins-view";
 import { SetupRestoreView } from "./setup-restore-view";
 import { findMissingExternalImportApiKeyRequirement } from "./setup-import-api-key-requirements";
-import type {
-  PluginInstallProgressRecord,
-  RegistryPluginRecord,
-} from "@/components/views/settings/settings-plugins-section";
-
-type SetupIndexerProviderOption = {
-  value: string;
-  label: string;
-  defaultBaseUrl?: string;
-  configFields: ConfigFieldDef[];
-};
 
 const FALLBACK_PROVIDER_OPTIONS: SetupIndexerProviderOption[] = [];
 
@@ -98,172 +67,11 @@ function defaultLibraryIdForFacet(facet: "movie" | "series" | "anime") {
   return `${facet}_default_library`;
 }
 
-function setupIndexerConfigFields(fields: ConfigFieldDef[]) {
-  return fields.filter((field) => field.valueSource !== "host_binding");
-}
-
-function buildSetupIndexerConfigValues(
-  fields: ConfigFieldDef[],
-): Record<string, string> {
-  const values: Record<string, string> = {};
-  for (const field of setupIndexerConfigFields(fields)) {
-    values[field.key] =
-      field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
-  }
-  return values;
-}
-
-function serializeSetupIndexerConfigValues(
-  fields: ConfigFieldDef[],
-  values: Record<string, string>,
-): ReturnType<typeof providerConfigRecordToValues> | undefined {
-  const entries: Record<string, string> = {};
-  const fieldKeySet = new Set(fields.map((field) => field.key));
-
-  for (const [key, value] of Object.entries(values)) {
-    if (!fieldKeySet.has(key) && value.trim() !== "") {
-      entries[key] = value;
-    }
-  }
-
-  for (const field of setupIndexerConfigFields(fields)) {
-    let value =
-      values[field.key] ??
-      field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
-    if (field.fieldType === "bool") {
-      entries[field.key] = value.trim() || field.defaultValue || "false";
-      continue;
-    }
-    if (value.trim() === "" && field.defaultValue) {
-      value = field.defaultValue;
-    }
-    if (value.trim() !== "") {
-      entries[field.key] = value;
-    }
-  }
-
-  const secretInputKeys = setupIndexerConfigFields(fields)
-    .filter((field) => field.fieldType === "password")
-    .map((field) => field.key);
-  return Object.keys(entries).length > 0
-    ? providerConfigRecordToValues(entries, secretInputKeys)
-    : undefined;
-}
-
-function findMissingSetupIndexerField(
-  fields: ConfigFieldDef[],
-  values: Record<string, string>,
-): ConfigFieldDef | null {
-  for (const field of setupIndexerConfigFields(fields)) {
-    if (!field.required) {
-      continue;
-    }
-    const value =
-      values[field.key] ??
-      field.defaultValue ??
-      (field.fieldType === "bool" ? "false" : "");
-    if (field.fieldType !== "bool" && value.trim() === "") {
-      return field;
-    }
-  }
-  return null;
-}
-
-type PluginInstallProgressSubscriptionResult = {
-  data?: {
-    pluginInstallProgress?: PluginInstallProgressRecord;
-  };
-};
-
 type ExternalImportMonitorWarmupProgressSubscriptionResult = {
   data?: {
     externalImportMonitorWarmupProgress?: ExternalImportMonitorWarmupProgress;
   };
 };
-
-function extractPluginMutationErrorMessage(error: unknown): string | null {
-  if (error && typeof error === "object" && "graphQLErrors" in error) {
-    const graphQLErrors = (
-      error as { graphQLErrors?: Array<{ message?: string }> }
-    ).graphQLErrors;
-    const message = graphQLErrors?.find(
-      (entry) => typeof entry.message === "string",
-    )?.message;
-    if (message?.trim()) {
-      return message.trim();
-    }
-  }
-
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
-
-  return null;
-}
-
-function extractPluginMutationErrorCode(error: unknown): string | null {
-  if (
-    error &&
-    typeof error === "object" &&
-    "graphQLErrors" in error &&
-    Array.isArray((error as { graphQLErrors?: unknown[] }).graphQLErrors)
-  ) {
-    const graphQLErrors = (
-      error as {
-        graphQLErrors?: Array<{ extensions?: { code?: unknown } }>;
-      }
-    ).graphQLErrors;
-    const code = graphQLErrors?.find(
-      (entry) => typeof entry.extensions?.code === "string",
-    )?.extensions?.code;
-    return typeof code === "string" ? code : null;
-  }
-
-  return null;
-}
-
-function formatPluginInstallError(
-  plugin: RegistryPluginRecord,
-  error: unknown,
-  t: SetupWizardContainerProps["t"],
-): string {
-  const rawMessage = extractPluginMutationErrorMessage(error);
-  const normalized = rawMessage
-    ?.replace(/^\[GraphQL\]\s*/i, "")
-    .replace(/^validation:\s*/i, "")
-    .trim();
-
-  if (normalized && /WASM SHA256 mismatch/i.test(normalized)) {
-    return t("status.pluginInstallFailedChecksumMismatch", {
-      name: plugin.name,
-    });
-  }
-
-  if (
-    normalized &&
-    normalized.includes("has sdk_constraint") &&
-    normalized.includes("but registry selected")
-  ) {
-    return t("status.pluginInstallFailedSdkMetadataMismatch", {
-      name: plugin.name,
-    });
-  }
-
-  if (normalized) {
-    if (
-      extractPluginMutationErrorCode(error) === "PLUGIN_INSTALL_IN_PROGRESS"
-    ) {
-      return t("status.pluginInstallAlreadyInProgress", { name: plugin.name });
-    }
-    return t("status.pluginInstallFailedWithReason", {
-      name: plugin.name,
-      reason: normalized,
-    });
-  }
-
-  return t("status.failedToUpdate");
-}
 
 interface SetupWizardContainerProps {
   t: (
@@ -381,50 +189,41 @@ export function SetupWizardContainer({
   const [mediaPathsError, setMediaPathsError] = useState<string | null>(null);
 
   // ── Step 4 (fresh): Download Client ─────────────────────────────────
-  const [dcDraft, setDcDraft] = useState<DownloadClientDraft>({
-    ...DEFAULT_DOWNLOAD_CLIENT_DRAFT,
-  });
-  const [dcTypeOptions, setDcTypeOptions] = useState<
-    DownloadClientTypeOption[]
-  >(() => buildDownloadClientTypeOptions([]));
-  const [dcLocalPathStyle, setDcLocalPathStyle] =
-    useState<LocalPathStyle | undefined>(undefined);
-  const [dcTesting, setDcTesting] = useState(false);
-  const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(
-    null,
-  );
-  const [dcSaving, setDcSaving] = useState(false);
-  const [dcSaved, setDcSaved] = useState(false);
-  const [dcError, setDcError] = useState<string | null>(null);
+  const {
+    dcDraft,
+    dcLocalPathStyle,
+    setDcLocalPathStyle,
+    setDcTypeOptions,
+    availableDcTypeOptions,
+    dcTesting,
+    dcTestResult,
+    dcSaving,
+    dcSaved,
+    dcError,
+    handleDcDraftChange,
+    testDownloadClient,
+    handleDcTestAndSave,
+  } = useDownloadClientSetup({ client });
 
   // ── Step 5 (fresh): Indexer ─────────────────────────────────────────
-  const [idxName, setIdxName] = useState("");
-  const [idxProviderType, setIdxProviderType] = useState("");
-  const [idxConfigValues, setIdxConfigValues] = useState<
-    Record<string, string>
-  >({});
-  const [idxProviderOptions, setIdxProviderOptions] = useState<
-    SetupIndexerProviderOption[]
-  >([]);
-  const [idxTesting, setIdxTesting] = useState(false);
-  const [idxTestResult, setIdxTestResult] = useState<
-    "success" | "failed" | null
-  >(null);
-  const [idxSaving, setIdxSaving] = useState(false);
-  const [idxSaved, setIdxSaved] = useState(false);
-  const [idxError, setIdxError] = useState<string | null>(null);
-
-  // ── Step 3 (fresh): Plugins ────────────────────────────────────────
-  const [plugins, setPlugins] = useState<RegistryPluginRecord[]>([]);
-  const [pluginsLoading, setPluginsLoading] = useState(true);
-  const [pluginsRefreshing, setPluginsRefreshing] = useState(false);
-  const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
-  const [pluginProgress, setPluginProgress] = useState<
-    Record<string, PluginInstallProgressRecord>
-  >({});
-  const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
-  const [pluginsError, setPluginsError] = useState<string | null>(null);
-  const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
+  const {
+    idxName,
+    idxProviderType,
+    idxConfigValues,
+    idxProviderOptions,
+    setIdxProviderOptions,
+    idxTesting,
+    idxTestResult,
+    idxSaving,
+    idxSaved,
+    idxError,
+    indexerProviderConfigFieldsByType,
+    handleIdxNameChange,
+    handleIdxProviderTypeChange,
+    handleIdxConfigValueChange,
+    testIndexer,
+    handleIdxTestAndSave,
+  } = useIndexerSetup({ client, t });
 
   // ── Import: Connect ─────────────────────────────────────────────────
   const [sonarrUrl, setSonarrUrl] = useState("");
@@ -489,38 +288,6 @@ export function SetupWizardContainer({
     "finish" | "importOnly" | "importAndScan" | null
   >(null);
   const finishing = finishingAction !== null;
-
-  const beginPluginMutation = useCallback((pluginId: string) => {
-    setMutatingPluginIds((current) =>
-      current.includes(pluginId) ? current : [...current, pluginId],
-    );
-  }, []);
-
-  const endPluginMutation = useCallback((pluginId: string) => {
-    setMutatingPluginIds((current) => current.filter((id) => id !== pluginId));
-  }, []);
-
-  const clearPluginProgress = useCallback((pluginId: string) => {
-    setPluginProgress((current) => {
-      if (!(pluginId in current)) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[pluginId];
-      return next;
-    });
-  }, []);
-
-  const stopPluginInstallProgressSubscription = useCallback(
-    (pluginId: string) => {
-      const unsubscribe = installProgressSubscriptionsRef.current.get(pluginId);
-      if (unsubscribe) {
-        unsubscribe();
-        installProgressSubscriptionsRef.current.delete(pluginId);
-      }
-    },
-    [],
-  );
 
   const stopImportWarmupProgressSubscription = useCallback(() => {
     if (warmupSubscriptionRef.current) {
@@ -663,350 +430,18 @@ export function SetupWizardContainer({
     }
   }, [client]);
 
-  const loadPlugins = useCallback(
-    async (refreshIfEmpty = false) => {
-      const { data, error } = await client.query(pluginsQuery, {}).toPromise();
-      if (error) throw error;
-
-      const nextPlugins = (data?.plugins ?? []) as RegistryPluginRecord[];
-      if (nextPlugins.length > 0 || !refreshIfEmpty) {
-        setPlugins(nextPlugins);
-        return nextPlugins;
-      }
-
-      const { data: refreshData, error: refreshError } = await client
-        .mutation(refreshPluginCatalogMutation, {})
-        .toPromise();
-      if (refreshError) throw refreshError;
-
-      const refreshedPlugins = (refreshData?.refreshPluginCatalog ??
-        []) as RegistryPluginRecord[];
-      setPlugins(refreshedPlugins);
-      return refreshedPlugins;
-    },
-    [client],
-  );
-
-  useEffect(() => {
-    void (async () => {
-      setPluginsLoading(true);
-      setPluginsError(null);
-      try {
-        await Promise.all([refreshProviderOptions(), loadPlugins(true)]);
-      } catch (error) {
-        setPluginsError(
-          error instanceof Error ? error.message : t("status.failedToLoad"),
-        );
-      } finally {
-        setPluginsLoading(false);
-      }
-    })();
-  }, [loadPlugins, refreshProviderOptions, t]);
-
-  useEffect(() => {
-    setDcDraft((prev) => {
-      const normalizedClientType = normalizeDownloadClientType(prev.clientType);
-      if (
-        dcTypeOptions.some((option) => option.value === normalizedClientType)
-      ) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        clientType:
-          dcTypeOptions[0]?.value ?? DEFAULT_DOWNLOAD_CLIENT_DRAFT.clientType,
-      };
-    });
-  }, [dcTypeOptions]);
-
-  useEffect(() => {
-    if (idxProviderOptions.some((option) => option.value === idxProviderType)) {
-      return;
-    }
-    const firstProvider = idxProviderOptions[0];
-    if (firstProvider?.value) {
-      setIdxProviderType(firstProvider.value);
-      setIdxConfigValues(
-        buildSetupIndexerConfigValues(firstProvider.configFields),
-      );
-      setIdxName((current) => current || firstProvider.label);
-    }
-  }, [idxProviderOptions, idxProviderType]);
-
-  useEffect(() => {
-    const subscriptions = installProgressSubscriptionsRef.current;
-    return () => {
-      for (const unsubscribe of subscriptions.values()) {
-        unsubscribe();
-      }
-      subscriptions.clear();
-    };
-  }, []);
-
-  const availableDcTypeOptions = ensureDownloadClientTypeOption(
-    dcTypeOptions,
-    dcDraft.clientType,
-  );
-  const selectedIdxProvider = useMemo(
-    () =>
-      idxProviderOptions.find((option) => option.value === idxProviderType) ??
-      null,
-    [idxProviderOptions, idxProviderType],
-  );
-  const selectedIdxProviderFields = useMemo(
-    () => selectedIdxProvider?.configFields ?? [],
-    [selectedIdxProvider],
-  );
-  const indexerProviderConfigFieldsByType = useMemo(
-    () =>
-      new Map(
-        idxProviderOptions.map(
-          (option) => [option.value, option.configFields] as const,
-        ),
-      ),
-    [idxProviderOptions],
-  );
-
-  const resetIndexerSavedState = useCallback(() => {
-    setIdxSaved(false);
-    setIdxTestResult(null);
-    setIdxError(null);
-  }, []);
-
-  const handleIdxNameChange = useCallback(
-    (value: string) => {
-      setIdxName(value);
-      resetIndexerSavedState();
-    },
-    [resetIndexerSavedState],
-  );
-
-  const handleIdxProviderTypeChange = useCallback(
-    (nextProviderType: string) => {
-      const nextProvider =
-        idxProviderOptions.find(
-          (option) => option.value === nextProviderType,
-        ) ?? null;
-      setIdxProviderType(nextProviderType);
-      setIdxConfigValues(
-        buildSetupIndexerConfigValues(nextProvider?.configFields ?? []),
-      );
-      setIdxName((current) => current || nextProvider?.label || "");
-      resetIndexerSavedState();
-    },
-    [idxProviderOptions, resetIndexerSavedState],
-  );
-
-  const handleIdxConfigValueChange = useCallback(
-    (key: string, value: string) => {
-      setIdxConfigValues((current) => ({ ...current, [key]: value }));
-      resetIndexerSavedState();
-    },
-    [resetIndexerSavedState],
-  );
-
-  const buildIndexerConfigValues = useCallback(() => {
-    if (!idxProviderType) {
-      setIdxError(t("form.providerTypePlaceholder"));
-      return null;
-    }
-
-    const missingField = findMissingSetupIndexerField(
-      selectedIdxProviderFields,
-      idxConfigValues,
-    );
-    if (missingField) {
-      setIdxError(`${missingField.label}: ${t("setup.required")}`);
-      return null;
-    }
-
-    return serializeSetupIndexerConfigValues(
-      selectedIdxProviderFields,
-      idxConfigValues,
-    );
-  }, [idxConfigValues, idxProviderType, selectedIdxProviderFields, t]);
-
-  const refreshPluginsRegistry = useCallback(async () => {
-    setPluginsRefreshing(true);
-    setPluginsError(null);
-    try {
-      const { data, error } = await client
-        .mutation(refreshPluginCatalogMutation, {})
-        .toPromise();
-      if (error) throw error;
-
-      setPlugins((data?.refreshPluginCatalog ?? []) as RegistryPluginRecord[]);
-    } catch (error) {
-      setPluginsError(
-        error instanceof Error ? error.message : t("status.failedToLoad"),
-      );
-    } finally {
-      setPluginsRefreshing(false);
-    }
-  }, [client, t]);
-
-  const beginLivePluginProgress = useCallback(
-    (
-      plugin: RegistryPluginRecord,
-      initialSnapshot: PluginInstallProgressRecord,
-    ) => {
-      stopPluginInstallProgressSubscription(plugin.id);
-      setPluginProgress((current) => ({
-        ...current,
-        [plugin.id]: initialSnapshot,
-      }));
-      const unsubscribe = wsClient.subscribe(
-        {
-          query: pluginInstallProgressSubscription,
-          variables: { pluginId: plugin.id },
-        },
-        {
-          next: (result: PluginInstallProgressSubscriptionResult) => {
-            const snapshot = result.data?.pluginInstallProgress;
-            if (!snapshot) {
-              return;
-            }
-            setPluginProgress((current) => ({
-              ...current,
-              [plugin.id]: snapshot,
-            }));
-
-            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
-              stopPluginInstallProgressSubscription(plugin.id);
-              void (async () => {
-                try {
-                  if (snapshot.state === "succeeded") {
-                    setPluginErrors((current) => {
-                      const next = { ...current };
-                      delete next[plugin.id];
-                      return next;
-                    });
-                    await Promise.all([
-                      loadPlugins(false),
-                      refreshProviderOptions(),
-                    ]);
-                  } else {
-                    setPluginErrors((current) => ({
-                      ...current,
-                      [plugin.id]: formatPluginInstallError(
-                        plugin,
-                        new Error(snapshot.error ?? snapshot.label),
-                        t,
-                      ),
-                    }));
-                  }
-                } catch (error) {
-                  setPluginsError(
-                    error instanceof Error
-                      ? error.message
-                      : t("status.failedToLoad"),
-                  );
-                } finally {
-                  clearPluginProgress(plugin.id);
-                  endPluginMutation(plugin.id);
-                }
-              })();
-            }
-          },
-          error: (error) => {
-            stopPluginInstallProgressSubscription(plugin.id);
-            clearPluginProgress(plugin.id);
-            endPluginMutation(plugin.id);
-            setPluginErrors((current) => ({
-              ...current,
-              [plugin.id]: formatPluginInstallError(plugin, error, t),
-            }));
-          },
-          complete: () => {
-            installProgressSubscriptionsRef.current.delete(plugin.id);
-          },
-        },
-      );
-      installProgressSubscriptionsRef.current.set(plugin.id, unsubscribe);
-    },
-    [
-      clearPluginProgress,
-      endPluginMutation,
-      loadPlugins,
-      refreshProviderOptions,
-      stopPluginInstallProgressSubscription,
-      t,
-    ],
-  );
-
-  const installPlugin = useCallback(
-    async (plugin: RegistryPluginRecord) => {
-      beginPluginMutation(plugin.id);
-      setPluginErrors((current) => {
-        const next = { ...current };
-        delete next[plugin.id];
-        return next;
-      });
-      setPluginsError(null);
-      try {
-	        const { data, error } = await client
-	          .mutation(beginInstallPluginMutation, { pluginId: plugin.id })
-          .toPromise();
-        if (error) throw error;
-        const snapshot = data?.beginInstallPlugin;
-        if (!snapshot) {
-          throw new Error("plugin install did not return progress");
-        }
-        beginLivePluginProgress(plugin, snapshot);
-      } catch (error) {
-        setPluginErrors((current) => ({
-          ...current,
-          [plugin.id]: formatPluginInstallError(plugin, error, t),
-        }));
-        endPluginMutation(plugin.id);
-      }
-    },
-    [
-      beginLivePluginProgress,
-      beginPluginMutation,
-      client,
-      endPluginMutation,
-      t,
-    ],
-  );
-
-  const uninstallPlugin = useCallback(
-    async (plugin: RegistryPluginRecord) => {
-      beginPluginMutation(plugin.id);
-      setPluginErrors((current) => {
-        const next = { ...current };
-        delete next[plugin.id];
-        return next;
-      });
-      setPluginsError(null);
-      try {
-	        const { error } = await client
-	          .mutation(uninstallPluginMutation, { pluginId: plugin.id })
-          .toPromise();
-        if (error) throw error;
-
-        await Promise.all([loadPlugins(false), refreshProviderOptions()]);
-      } catch (error) {
-        setPluginErrors((current) => ({
-          ...current,
-          [plugin.id]:
-            extractPluginMutationErrorMessage(error) ??
-            t("status.failedToDelete"),
-        }));
-      } finally {
-        endPluginMutation(plugin.id);
-      }
-    },
-    [
-      beginPluginMutation,
-      client,
-      endPluginMutation,
-      loadPlugins,
-      refreshProviderOptions,
-      t,
-    ],
-  );
+  const {
+    plugins,
+    pluginsLoading,
+    pluginsRefreshing,
+    mutatingPluginIds,
+    pluginProgress,
+    pluginErrors,
+    pluginsError,
+    refreshPluginsRegistry,
+    installPlugin,
+    uninstallPlugin,
+  } = usePluginManagement({ client, t, refreshProviderOptions });
 
   // ── Step labels per path ────────────────────────────────────────────
   const stepLabels =
@@ -1128,209 +563,6 @@ export function SetupWizardContainer({
       setMediaPathsSaving(false);
     }
   }, [client, moviesPath, seriesPath, animePath, goToStep]);
-
-  const handleDcDraftChange = useCallback(
-    (updates: Partial<DownloadClientDraft>) => {
-      const next = { ...dcDraft, ...updates };
-      if (updates.clientType && updates.clientType !== dcDraft.clientType) {
-        const prevDefault =
-          DEFAULT_PORT_FOR_CLIENT_TYPE[dcDraft.clientType] ?? "8080";
-        if (dcDraft.port === "" || dcDraft.port === prevDefault) {
-          next.port =
-            DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
-        }
-      }
-
-      const hasChanged = (
-        Object.keys(next) as Array<keyof DownloadClientDraft>
-      ).some((key) => next[key] !== dcDraft[key]);
-
-      if (!hasChanged) {
-        return;
-      }
-
-      setDcDraft(next);
-      setDcSaved(false);
-      setDcTestResult(null);
-      setDcError(null);
-    },
-    [dcDraft],
-  );
-
-  // ── Download client test ────────────────────────────────────────────
-  const testDownloadClient = useCallback(async () => {
-    setDcTesting(true);
-    setDcTestResult(null);
-    setDcError(null);
-    try {
-      const { data, error } = await client
-        .mutation(testDownloadClientConnectionMutation, {
-          input: {
-            clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      if (data?.testDownloadClientConnection?.status === "ok") {
-        setDcTestResult("success");
-      } else {
-        setDcTestResult("failed");
-      }
-    } catch {
-      setDcTestResult("failed");
-    } finally {
-      setDcTesting(false);
-    }
-  }, [client, dcDraft]);
-
-  // ── Download client save ────────────────────────────────────────────
-  const saveDownloadClient = useCallback(async () => {
-    setDcSaving(true);
-    setDcError(null);
-    try {
-      const { error } = await client
-        .mutation(createDownloadClientMutation, {
-          input: {
-            name: dcDraft.name.trim(),
-            clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
-            isEnabled: true,
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      setDcSaved(true);
-    } catch (err) {
-      setDcError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setDcSaving(false);
-    }
-  }, [client, dcDraft]);
-
-  const handleDcTestAndSave = useCallback(async () => {
-    setDcTesting(true);
-    setDcTestResult(null);
-    setDcError(null);
-    try {
-      const { data, error } = await client
-        .mutation(testDownloadClientConnectionMutation, {
-          input: {
-            clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      if (data?.testDownloadClientConnection?.status === "ok") {
-        setDcTestResult("success");
-        setDcTesting(false);
-        await saveDownloadClient();
-      } else {
-        setDcTestResult("failed");
-        setDcTesting(false);
-      }
-    } catch {
-      setDcTestResult("failed");
-      setDcTesting(false);
-    }
-  }, [client, dcDraft, saveDownloadClient]);
-
-  // ── Indexer test ────────────────────────────────────────────────────
-  const testIndexer = useCallback(async () => {
-    setIdxTesting(true);
-    setIdxTestResult(null);
-    setIdxError(null);
-    const config = buildIndexerConfigValues();
-    if (config === null) {
-      setIdxTesting(false);
-      return;
-    }
-    try {
-      const { data, error } = await client
-        .mutation(testIndexerConnectionMutation, {
-          input: {
-            providerType: idxProviderType,
-            config,
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      if (data?.testIndexerConnection?.status === "ok") {
-        setIdxTestResult("success");
-      } else {
-        setIdxTestResult("failed");
-      }
-    } catch {
-      setIdxTestResult("failed");
-    } finally {
-      setIdxTesting(false);
-    }
-  }, [buildIndexerConfigValues, client, idxProviderType]);
-
-  // ── Indexer save ────────────────────────────────────────────────────
-  const saveIndexer = useCallback(async () => {
-    setIdxSaving(true);
-    setIdxError(null);
-    const config = buildIndexerConfigValues();
-    if (config === null) {
-      setIdxSaving(false);
-      return;
-    }
-    try {
-      const { error } = await client
-        .mutation(createIndexerMutation, {
-          input: {
-            name: idxName.trim(),
-            providerType: idxProviderType,
-            config,
-            isEnabled: true,
-            enableInteractiveSearch: true,
-            enableAutoSearch: true,
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      setIdxSaved(true);
-    } catch (err) {
-      setIdxError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setIdxSaving(false);
-    }
-  }, [buildIndexerConfigValues, client, idxName, idxProviderType]);
-
-  const handleIdxTestAndSave = useCallback(async () => {
-    setIdxTesting(true);
-    setIdxTestResult(null);
-    setIdxError(null);
-    const config = buildIndexerConfigValues();
-    if (config === null) {
-      setIdxTesting(false);
-      return;
-    }
-    try {
-      const { data, error } = await client
-        .mutation(testIndexerConnectionMutation, {
-          input: {
-            providerType: idxProviderType,
-            config,
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      if (data?.testIndexerConnection?.status === "ok") {
-        setIdxTestResult("success");
-        setIdxTesting(false);
-        await saveIndexer();
-      } else {
-        setIdxTestResult("failed");
-        setIdxTesting(false);
-      }
-    } catch {
-      setIdxTestResult("failed");
-      setIdxTesting(false);
-    }
-  }, [buildIndexerConfigValues, client, idxProviderType, saveIndexer]);
 
   // ── Import: Connect & Scan ──────────────────────────────────────────
   const handleImportConnect = useCallback(async () => {

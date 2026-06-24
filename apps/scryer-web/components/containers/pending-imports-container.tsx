@@ -1,17 +1,14 @@
 import * as React from "react";
-import { ChevronDown, Loader2, Search } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import { TitlePoster } from "@/components/title-poster";
+import { PendingImportCard } from "@/components/containers/pending-import-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import type { ViewId } from "@/components/root/types";
+import type { Translate, ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetForView } from "@/lib/facets/registry";
@@ -164,14 +161,17 @@ function pendingImportKnownTitleLabel(item: PendingImportItem): string {
   return item.titleName?.trim() || item.titleId?.trim() || "";
 }
 
-function formatBindingEpisodeKey(episode: PendingImportBindingEpisode): string | null {
+function formatBindingEpisodeKey(
+  episode: PendingImportBindingEpisode,
+  t: Translate,
+): string | null {
   const season = episode.seasonNumber?.trim();
   const episodeNumber = episode.episodeNumber?.trim();
   if (season && episodeNumber) {
     return `S${season.padStart(2, "0")}E${episodeNumber.padStart(2, "0")}`;
   }
   if (episodeNumber) {
-    return `Episode ${episodeNumber}`;
+    return t("pendingImports.episodeNumberLabel", { number: episodeNumber });
   }
   return null;
 }
@@ -180,8 +180,8 @@ function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string
   return episode.episodeLabel?.trim() || episode.title?.trim() || episode.id;
 }
 
-function formatBindingEpisodeDisplay(episode: PendingImportBindingEpisode) {
-  const key = formatBindingEpisodeKey(episode);
+function formatBindingEpisodeDisplay(episode: PendingImportBindingEpisode, t: Translate) {
+  const key = formatBindingEpisodeKey(episode, t);
   const label = formatBindingEpisodeLabel(episode);
   return {
     key,
@@ -605,7 +605,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           );
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : "Failed to load binding preview";
+          const message = err instanceof Error ? err.message : t("pendingImports.bindPreviewLoadFailed");
           setBindingError(message);
           setGlobalStatus(message);
         })
@@ -617,7 +617,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       ? item.query.trim()
       : folderSearchSeedFromPath(item.folderPath) || item.displayName.trim();
     setSearchQuery(seedQuery);
-  }, [client, setGlobalStatus]);
+  }, [client, setGlobalStatus, t]);
 
   const handleRequestIgnore = React.useCallback((item: PendingImportItem) => {
     if (item.status !== "pending") {
@@ -668,7 +668,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
     if (selectedEpisodeIds.length === 0) {
-      setGlobalStatus("Select at least one episode.");
+      setGlobalStatus(t("pendingImports.selectAtLeastOneEpisode"));
       return;
     }
 
@@ -696,7 +696,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       );
       clearActiveItem();
     } catch (err) {
-      setGlobalStatus(err instanceof Error ? err.message : "Failed to bind pending import.");
+      setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.bindFailed"));
     } finally {
       setResolvingItemId(null);
     }
@@ -812,332 +812,38 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         const libraryLabel = item.libraryName ?? libraryNameById.get(item.libraryId) ?? item.libraryId;
 
         return (
-          <Card key={item.id} className="border-border/80 bg-card/60">
-            <CardHeader className="space-y-2">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <CardTitle className="text-base">{item.displayName}</CardTitle>
-                  <p className="text-sm text-muted-foreground">{summarizePendingImport(item)}</p>
-                  <p className="text-xs text-muted-foreground">Library: {libraryLabel}</p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={isActive ? "secondary" : item.status === "ignored" ? "outline" : "default"}
-                    onClick={() => handleOpenSearch(item)}
-                    disabled={isBusy}
-                  >
-                    {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
-                    {item.titleId ? "Bind Episodes" : t("pendingImports.searchAction")}
-                  </Button>
-                  {item.status === "pending" ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => handleRequestIgnore(item)}
-                      disabled={isBusy}
-                    >
-                      {t("pendingImports.ignore")}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div>
-                <span className="font-medium text-foreground">{t("pendingImports.path")}:</span>{" "}
-                <span className="break-all text-muted-foreground">{item.path}</span>
-              </div>
-              {item.folderPath ? (
-                <div>
-                  <span className="font-medium text-foreground">{t("pendingImports.folderPath")}:</span>{" "}
-                  <span className="break-all text-muted-foreground">{item.folderPath}</span>
-                </div>
-              ) : null}
-              {item.titleId ? (
-                <div>
-                  <span className="font-medium text-foreground">Known title:</span>{" "}
-                  {knownTitleHref ? (
-                    <Link
-                      to={knownTitleHref}
-                      className="break-all text-primary underline-offset-4 hover:underline"
-                    >
-                      {knownTitleLabel}
-                    </Link>
-                  ) : (
-                    <span className="break-all text-muted-foreground">{knownTitleLabel}</span>
-                  )}
-                </div>
-              ) : null}
-              {isActive ? (
-                <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
-                  {item.titleId ? (
-                    <>
-                      {bindingLoading ? (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Loading episode bindings...
-                        </div>
-                      ) : null}
-                      {bindingError ? (
-                        <div className="text-sm text-destructive">{bindingError}</div>
-                      ) : null}
-                      {bindingPreview ? (
-                        <div className="space-y-4">
-                          <div className="space-y-1">
-                            <div className="text-sm font-medium text-foreground">
-                              {bindingPreview.title.name}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {bindingPreview.file.fileName}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Parsed hints:
-                              {bindingPreview.file.parsedSeason != null
-                                ? ` season ${bindingPreview.file.parsedSeason}`
-                                : ""}
-                              {bindingPreview.file.parsedEpisodes.length > 0
-                                ? ` • episodes ${bindingPreview.file.parsedEpisodes.join(", ")}`
-                                : ""}
-                              {bindingPreview.file.parsedAbsoluteNumbers.length > 0
-                                ? ` • absolute ${bindingPreview.file.parsedAbsoluteNumbers.join(", ")}`
-                                : ""}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={isBusy}
-                              onClick={() => {
-                                const suggestedEpisodeIds = bindingPreview.file.suggestedEpisodeIds;
-                                setSelectedEpisodeIds(suggestedEpisodeIds);
-                                setExpandedBindingSeasonKeys(
-                                  bindingSeasonKeysForSelection(
-                                    bindingPreview.availableEpisodes,
-                                    suggestedEpisodeIds,
-                                  ),
-                                );
-                              }}
-                            >
-                              Use Suggested
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={isBusy}
-                              onClick={() => {
-                                setSelectedEpisodeIds([]);
-                                setExpandedBindingSeasonKeys([]);
-                              }}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-
-                          <div className="space-y-4">
-                            {bindingGroups.map(([seasonKey, episodes]) => {
-                              const seasonOpen = expandedBindingSeasonKeys.includes(seasonKey);
-                              return (
-                                <Collapsible
-                                  key={seasonKey}
-                                  open={seasonOpen}
-                                  onOpenChange={(open) =>
-                                    setExpandedBindingSeasonKeys((current) =>
-                                      open
-                                        ? current.includes(seasonKey)
-                                          ? current
-                                          : [...current, seasonKey]
-                                        : current.filter((key) => key !== seasonKey),
-                                    )
-                                  }
-                                  className="space-y-2"
-                                >
-                                  <div className="flex items-center justify-between gap-3">
-                                    <CollapsibleTrigger asChild>
-                                      <button
-                                        type="button"
-                                        className="flex min-w-0 items-center gap-2 text-left text-sm font-medium text-foreground"
-                                      >
-                                        <ChevronDown
-                                          className={`h-4 w-4 shrink-0 transition-transform ${
-                                            seasonOpen ? "rotate-0" : "-rotate-90"
-                                          }`}
-                                        />
-                                        <span>
-                                          {seasonKey === "specials"
-                                            ? "Specials"
-                                            : `Season ${seasonKey}`}
-                                        </span>
-                                      </button>
-                                    </CollapsibleTrigger>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="ghost"
-                                      disabled={isBusy}
-                                      onClick={() => {
-                                        setSelectedEpisodeIds((current) => {
-                                          const next = new Set(current);
-                                          for (const episode of episodes) {
-                                            next.add(episode.id);
-                                          }
-                                          return Array.from(next);
-                                        });
-                                        setExpandedBindingSeasonKeys((current) =>
-                                          current.includes(seasonKey)
-                                            ? current
-                                            : [...current, seasonKey],
-                                        );
-                                      }}
-                                    >
-                                      Select Season
-                                    </Button>
-                                  </div>
-                                  <CollapsibleContent>
-                                    <div className="space-y-2 rounded-md border border-border/70 p-3">
-                                      {episodes.map((episode) => {
-                                        const episodeDisplay =
-                                          formatBindingEpisodeDisplay(episode);
-                                        return (
-                                          <label
-                                            key={episode.id}
-                                            className="flex items-start gap-3 text-sm text-foreground"
-                                          >
-                                            <Checkbox
-                                              checked={selectedEpisodeIds.includes(episode.id)}
-                                              onCheckedChange={(checked) =>
-                                                toggleEpisodeSelection(
-                                                  episode.id,
-                                                  Boolean(checked),
-                                                )
-                                              }
-                                              disabled={isBusy}
-                                            />
-                                            <span className="min-w-0">
-                                              {episodeDisplay.showSeparateLabel ? (
-                                                <>
-                                                  <span className="font-medium">
-                                                    {episodeDisplay.key}
-                                                  </span>
-                                                  <span className="ml-2 text-muted-foreground">
-                                                    {episodeDisplay.label}
-                                                  </span>
-                                                </>
-                                              ) : (
-                                                <span>
-                                                  {episodeDisplay.key ?? episodeDisplay.label}
-                                                </span>
-                                              )}
-                                            </span>
-                                          </label>
-                                        );
-                                      })}
-                                    </div>
-                                  </CollapsibleContent>
-                                </Collapsible>
-                              );
-                            })}
-                          </div>
-
-                          <div className="flex justify-end">
-                            <Button
-                              type="button"
-                              disabled={isBusy || selectedEpisodeIds.length === 0}
-                              onClick={() => void handleBind()}
-                            >
-                              {isResolving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                              Bind Selected Episodes
-                            </Button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <Input
-                        value={searchQuery}
-                        onChange={(event) => setSearchQuery(event.target.value)}
-                        placeholder={t("pendingImports.searchPlaceholder")}
-                        disabled={isBusy}
-                      />
-
-                      {searching ? (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          {t("pendingImports.searching")}
-                        </div>
-                      ) : null}
-
-                      {!searching && searchQuery.trim() && searchResults.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          {t("pendingImports.noSearchResults")}
-                        </div>
-                      ) : null}
-
-                      <div className="space-y-3">
-                        {searchResults.map((result) => (
-                          <div
-                            key={`${item.id}-${result.tvdbId}`}
-                            className="flex gap-3 rounded-lg border border-border bg-card/40 p-3"
-                          >
-                            <div className="h-24 w-16 flex-none overflow-hidden rounded-md border border-border bg-muted">
-                              {result.posterUrl ? (
-                                <TitlePoster src={result.posterUrl} alt={result.name} />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0 flex-1 space-y-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-medium text-foreground">{result.name}</span>
-                                {result.year ? (
-                                  <span className="text-xs text-muted-foreground">{result.year}</span>
-                                ) : null}
-                                <span className="text-xs text-muted-foreground">TVDB {result.tvdbId}</span>
-                              </div>
-                              {result.status ? (
-                                <div className="text-xs text-muted-foreground">{result.status}</div>
-                              ) : null}
-                              {result.overview ? (
-                                <p className="line-clamp-3 text-sm text-muted-foreground">
-                                  {result.overview}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="flex flex-none items-start">
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => void handleResolve(String(result.tvdbId))}
-                                disabled={isBusy}
-                              >
-                                {t("pendingImports.match")}
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={clearActiveItem}
-                      disabled={isBusy}
-                    >
-                      {t("label.cancel")}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
+          <PendingImportCard
+            key={item.id}
+            item={item}
+            isActive={isActive}
+            isResolving={isResolving}
+            isBusy={isBusy}
+            libraryLabel={libraryLabel}
+            knownTitleHref={knownTitleHref}
+            knownTitleLabel={knownTitleLabel}
+            summary={summarizePendingImport(item)}
+            bindingLoading={bindingLoading}
+            bindingError={bindingError}
+            bindingPreview={bindingPreview}
+            bindingGroups={bindingGroups}
+            expandedBindingSeasonKeys={expandedBindingSeasonKeys}
+            selectedEpisodeIds={selectedEpisodeIds}
+            searchQuery={searchQuery}
+            searchResults={searchResults}
+            searching={searching}
+            formatBindingEpisodeDisplay={(episode) =>
+              formatBindingEpisodeDisplay(episode, t)
+            }
+            onOpenSearch={handleOpenSearch}
+            onRequestIgnore={handleRequestIgnore}
+            onBind={handleBind}
+            onResolve={handleResolve}
+            onToggleEpisodeSelection={toggleEpisodeSelection}
+            onSetSelectedEpisodeIds={setSelectedEpisodeIds}
+            onSetExpandedBindingSeasonKeys={setExpandedBindingSeasonKeys}
+            onSearchQueryChange={setSearchQuery}
+            onClearActiveItem={clearActiveItem}
+          />
         );
       })}
     </div>

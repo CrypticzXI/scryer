@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -253,14 +254,12 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "bool") {
     return (
       <label className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
-        <input
+        <Checkbox
           id={fieldId}
-          type="checkbox"
           checked={value === "true"}
-          onChange={(event) =>
-            onChange(field.key, event.target.checked ? "true" : "false")
+          onCheckedChange={(checkedValue) =>
+            onChange(field.key, checkedValue === true ? "true" : "false")
           }
-          className="accent-primary"
         />
         <div className="space-y-1">
           <span className="inline-flex items-center gap-2 text-sm font-medium">
@@ -638,17 +637,15 @@ export function SettingsSubtitleProvidersSection({
             </div>
 
             <label className="flex items-center gap-2">
-              <input
+              <Checkbox
                 id="settings-subtitle-provider-enabled"
-                type="checkbox"
                 checked={providerDraft.isEnabled}
-                onChange={(event) =>
+                onCheckedChange={(value) =>
                   setProviderDraft((previous) => ({
                     ...previous,
-                    isEnabled: event.target.checked,
+                    isEnabled: value === true,
                   }))
                 }
-                className="accent-primary"
               />
               <span className="text-sm">{t("label.enabled")}</span>
             </label>
@@ -661,14 +658,12 @@ export function SettingsSubtitleProvidersSection({
                     key={facet.value}
                     className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm"
                   >
-                    <input
+                    <Checkbox
                       id={selectorId("settings-subtitle-provider-facet", facet.value)}
-                      type="checkbox"
                       checked={providerDraft.enabledFacets.includes(facet.value)}
-                      onChange={(event) =>
-                        handleFacetToggle(facet.value, event.target.checked)
+                      onCheckedChange={(value) =>
+                        handleFacetToggle(facet.value, value === true)
                       }
-                      className="accent-primary"
                     />
                     <span>{t(facet.labelKey)}</span>
                   </label>
