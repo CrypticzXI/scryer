@@ -26,3 +26,4 @@ skills-lock.json
 .*.Dockerfile
 
 scryer/apps/scryer-web/.ds-sync/node_modules/**/*
+design_handoff*
