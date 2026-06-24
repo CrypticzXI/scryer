@@ -1,5 +1,5 @@
 use super::*;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 // ── is_video_file ─────────────────────────────────────────────────────────
 
@@ -149,6 +149,54 @@ fn catalog_settings_permission_does_not_include_system_settings() {
             .app
             .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
     );
+}
+
+#[test]
+fn explicit_query_facets_gate_text_search() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        supported_query_facets: vec!["movie".to_string(), "anime".to_string()],
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("movie"));
+    assert!(caps.supports_query_for_facet("ANIME"));
+    assert!(!caps.supports_query_for_facet("series"));
+}
+
+#[test]
+fn legacy_supported_id_facets_imply_text_search() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        supported_ids: HashMap::from([("anime".to_string(), vec!["anidb_id".to_string()])]),
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("anime"));
+    assert!(!caps.supports_query_for_facet("movie"));
+}
+
+#[test]
+fn legacy_query_only_caps_accept_current_facets() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("movie"));
+    assert!(caps.supports_query_for_facet("series"));
+    assert!(caps.supports_query_for_facet("anime"));
+    assert!(!caps.supports_query_for_facet("music"));
+}
+
+#[test]
+fn missing_query_param_disables_query_facets() {
+    let caps = IndexerProviderCapabilities {
+        supported_query_facets: vec!["movie".to_string()],
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(!caps.supports_query_for_facet("movie"));
 }
 
 // ── match_fuzzy ───────────────────────────────────────────────────────────

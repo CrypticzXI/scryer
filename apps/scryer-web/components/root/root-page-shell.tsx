@@ -4,7 +4,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import {
   ActivitySquare,
@@ -14,7 +16,6 @@ import {
   Download,
   ListChecks,
   Loader2,
-  MonitorCog,
   Settings,
   CircleFadingArrowUp,
   WifiOff,
@@ -176,23 +177,37 @@ function fallbackMediaContentSettingsSection(
   section: ContentSettingsSection,
   canManageConfig: boolean,
   canManageLibrarySettings: boolean,
+  canResolveImports = false,
 ): ContentSettingsSection {
   if (canManageLibrarySettings && !canManageConfig && isMediaSettingsSection(section)) {
     return "library";
+  }
+  if (canResolveImports) {
+    return "import";
   }
   return "overview";
 }
 
 function defaultSettingsSection(
-  canManageUsers: boolean,
-  canManageConfig: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
 ): SettingsSection {
-  if (canManageConfig) {
+  if (canManageSystemSettings) {
     return "general";
   }
 
-  if (canManageUsers) {
+  if (canManageCatalogSettings) {
+    return "qualityProfiles";
+  }
+
+  if (canManageUserAccounts) {
     return "security";
+  }
+
+  if (canManageUserAccess) {
+    return "users";
   }
 
   return "profile";
@@ -201,14 +216,19 @@ function defaultSettingsSection(
 function defaultAccessibleRoute(
   canViewCatalog: boolean,
   canRequestMedia: boolean,
-  canManageUsers: boolean,
-  canManageConfig: boolean,
+  canResolveImports: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
   canManageLibrarySettings: boolean,
 ): {
   view: ViewId;
   settingsSection?: SettingsSection;
   contentSettingsSection?: ContentSettingsSection;
 } {
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+
   if (canViewCatalog) {
     return {
       view: "movies",
@@ -223,6 +243,13 @@ function defaultAccessibleRoute(
     };
   }
 
+  if (canResolveImports) {
+    return {
+      view: "movies",
+      contentSettingsSection: "import",
+    };
+  }
+
   if (canManageLibrarySettings && !canManageConfig) {
     return {
       view: "movies",
@@ -232,7 +259,12 @@ function defaultAccessibleRoute(
 
   return {
     view: "settings",
-    settingsSection: defaultSettingsSection(canManageUsers, canManageConfig),
+    settingsSection: defaultSettingsSection(
+      canManageSystemSettings,
+      canManageCatalogSettings,
+      canManageUserAccounts,
+      canManageUserAccess,
+    ),
   };
 }
 
@@ -459,7 +491,9 @@ function MainContent({
   handleImportRouteEmpty,
   canAccessActivity,
   canAccessRecycleBin,
+  canResolveImports,
   canManageTitle,
+  canManageUserAccounts,
   canManageUsers,
   canManageSystemSettings,
   canManageCatalogSettings,
@@ -491,7 +525,9 @@ function MainContent({
   handleImportRouteEmpty: () => void;
   canAccessActivity: boolean;
   canAccessRecycleBin: boolean;
+  canResolveImports: boolean;
   canManageTitle: boolean;
+  canManageUserAccounts: boolean;
   canManageUsers: boolean;
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
@@ -558,7 +594,7 @@ function MainContent({
   if (
     isMediaView(view) &&
     contentSettingsSection === "import" &&
-    canManageConfig
+    canResolveImports
   ) {
     return (
       <PendingImportsContainer
@@ -591,12 +627,19 @@ function MainContent({
   if (view === "settings") {
     const resolvedSettingsSection = canAccessSettingsSection(
       settingsSection,
+      canManageUserAccounts,
       canManageUsers,
-      canManageConfig,
+      canManageSystemSettings,
+      canManageCatalogSettings,
       canAccessRecycleBin,
     )
       ? settingsSection
-      : defaultSettingsSection(canManageUsers, canManageConfig);
+      : defaultSettingsSection(
+          canManageSystemSettings,
+          canManageCatalogSettings,
+          canManageUserAccounts,
+          canManageUsers,
+        );
     return (
       <SettingsContainer
         key="settings"
@@ -614,12 +657,14 @@ function MainContent({
     contentSettingsSection,
     canManageConfig,
     canManageLibrarySettings,
+    canResolveImports,
   )
     ? contentSettingsSection
     : fallbackMediaContentSettingsSection(
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       );
   return (
     <MediaContentContainer
@@ -696,7 +741,7 @@ export default function HomePage() {
   if (authLoading || (!setupChecked && user)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
   }
@@ -705,7 +750,7 @@ export default function HomePage() {
     if (effectiveFormLoginEnabled !== true) {
       return (
         <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-          <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
       );
     }
@@ -855,6 +900,8 @@ function AuthenticatedHomePage({
 
   const [, setGlobalStatusRaw] = useState("");
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw);
+  const shellFrameRef = useRef<HTMLDivElement>(null);
+  const [shellTopOffset, setShellTopOffset] = useState(0);
   const {
     smgVersionCompatibilityNotice,
     smgScryerUpdateNotice,
@@ -884,6 +931,51 @@ function AuthenticatedHomePage({
   });
   const showInstallBanner =
     !isInstalled && !installBannerDismissed && (canPrompt || isIosSafari);
+  useEffect(() => {
+    const frame = shellFrameRef.current;
+    if (!frame || typeof window === "undefined") {
+      return;
+    }
+
+    let animationFrame: number | null = null;
+    const updateShellOffset = () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      animationFrame = window.requestAnimationFrame(() => {
+        const topOffset = Math.round(Math.max(0, frame.getBoundingClientRect().top));
+        setShellTopOffset((previousOffset) =>
+          previousOffset === topOffset ? previousOffset : topOffset,
+        );
+        animationFrame = null;
+      });
+    };
+
+    updateShellOffset();
+    window.addEventListener("resize", updateShellOffset);
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateShellOffset);
+    observer?.observe(frame);
+    if (frame.parentElement) {
+      observer?.observe(frame.parentElement);
+    }
+
+    return () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      window.removeEventListener("resize", updateShellOffset);
+      observer?.disconnect();
+    };
+  }, [
+    isOnline,
+    showInstallBanner,
+    showSmgScryerUpdateReminder,
+    smgScryerUpdateNotice,
+    smgVersionCompatibilityNotice,
+  ]);
   useEffect(() => {
     if (!isInstalled || typeof window === "undefined") {
       return;
@@ -1204,7 +1296,6 @@ function AuthenticatedHomePage({
       },
       { id: "wanted" as ViewId, label: t("nav.wanted"), icon: ListChecks },
       { id: "settings" as ViewId, label: t("nav.settings"), icon: Settings },
-      { id: "system" as ViewId, label: t("nav.system"), icon: MonitorCog },
     ],
     [t],
   );
@@ -1212,9 +1303,11 @@ function AuthenticatedHomePage({
     canViewCatalog,
     canManageTitle,
     canRequestMedia,
+    canResolveImports,
     canAccessActivity,
     canManageSystemSettings,
     canManageCatalogSettings,
+    canManageUserAccounts,
     canManageUsers,
     canManageConfig,
     canManageLibrarySettings,
@@ -1246,16 +1339,16 @@ function AuthenticatedHomePage({
     () =>
       buildRouteCommands({
         t,
-        pendingImportCounts,
         user: authenticatedUser,
+        activeFacet,
         activityImportCount: manualImportRequiredCount,
         onNavigate: navigateTo,
       }),
     [
+      activeFacet,
       authenticatedUser,
       manualImportRequiredCount,
       navigateTo,
-      pendingImportCounts,
       t,
     ],
   );
@@ -1279,6 +1372,7 @@ function AuthenticatedHomePage({
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       )
     ) {
       return;
@@ -1291,6 +1385,7 @@ function AuthenticatedHomePage({
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       ),
       undefined,
       undefined,
@@ -1298,6 +1393,7 @@ function AuthenticatedHomePage({
   }, [
     canManageConfig,
     canManageLibrarySettings,
+    canResolveImports,
     contentSettingsSection,
     navigateTo,
     view,
@@ -1307,8 +1403,11 @@ function AuthenticatedHomePage({
     const fallback = defaultAccessibleRoute(
       canViewCatalog,
       canRequestMedia,
+      canResolveImports,
+      canManageUserAccounts,
       canManageUsers,
-      canManageConfig,
+      canManageSystemSettings,
+      canManageCatalogSettings,
       canManageLibrarySettings,
     );
     navigateTo(
@@ -1319,9 +1418,12 @@ function AuthenticatedHomePage({
       undefined,
     );
   }, [
-    canManageConfig,
+    canManageCatalogSettings,
     canManageLibrarySettings,
+    canManageSystemSettings,
+    canManageUserAccounts,
     canManageUsers,
+    canResolveImports,
     canRequestMedia,
     canViewCatalog,
     navigateTo,
@@ -1331,8 +1433,10 @@ function AuthenticatedHomePage({
     view === "settings"
       ? canAccessSettingsSection(
           settingsSection,
+          canManageUserAccounts,
           canManageUsers,
-          canManageConfig,
+          canManageSystemSettings,
+          canManageCatalogSettings,
           canAccessRecycleBin,
         )
       : !(
@@ -1341,6 +1445,7 @@ function AuthenticatedHomePage({
             contentSettingsSection,
             canManageConfig,
             canManageLibrarySettings,
+            canResolveImports,
           )
         );
   const protectedSettingsRoute =
@@ -1373,6 +1478,14 @@ function AuthenticatedHomePage({
 
     navigateToAccessibleDefault();
   }, [canAccessActivity, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
+    if ((view !== "calendar" && view !== "wanted") || canViewCatalog) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canViewCatalog, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
     if (view !== "system" || canManageConfig) {
@@ -1446,8 +1559,10 @@ function AuthenticatedHomePage({
     if (
       canAccessSettingsSection(
         settingsSection,
+        canManageUserAccounts,
         canManageUsers,
-        canManageConfig,
+        canManageSystemSettings,
+        canManageCatalogSettings,
         canAccessRecycleBin,
       )
     ) {
@@ -1456,10 +1571,17 @@ function AuthenticatedHomePage({
 
     navigateTo(
       "settings",
-      defaultSettingsSection(canManageUsers, canManageConfig),
+      defaultSettingsSection(
+        canManageSystemSettings,
+        canManageCatalogSettings,
+        canManageUserAccounts,
+        canManageUsers,
+      ),
     );
   }, [
-    canManageConfig,
+    canManageCatalogSettings,
+    canManageSystemSettings,
+    canManageUserAccounts,
     canManageUsers,
     canAccessRecycleBin,
     navigateTo,
@@ -1520,7 +1642,7 @@ function AuthenticatedHomePage({
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <div className="flex min-h-screen flex-col bg-background text-foreground">
+          <div className="flex min-h-screen flex-col text-foreground">
             {serviceRestarting && <BackendRestartOverlay />}
             <Suspense fallback={<ViewLoadingFallback />}>
               <LibraryScanProgressProvider>
@@ -1532,11 +1654,6 @@ function AuthenticatedHomePage({
                       queueFacet={queueFacet}
                       uiLanguage={uiLanguage}
                     >
-                      <RootHeader
-                        onOpenOverview={handleOpenOverview}
-                        routeCommandPalette={routeCommandPaletteConfig}
-                      />
-
                       {smgVersionCompatibilityNotice ? (
                         <SmgUpgradeBanner
                           notice={smgVersionCompatibilityNotice}
@@ -1635,7 +1752,15 @@ function AuthenticatedHomePage({
                         </DialogContent>
                       </Dialog>
 
-                      <div className="mx-auto flex w-full max-w-[1720px] flex-1 min-h-0 px-4 pb-10 pt-4">
+                      <div
+                        ref={shellFrameRef}
+                        className="flex w-full flex-1 min-h-0"
+                        style={
+                          {
+                            "--root-shell-top-offset": `${shellTopOffset}px`,
+                          } as CSSProperties
+                        }
+                      >
                         <RootSidebar
                           topNav={topNav}
                           view={view}
@@ -1650,6 +1775,12 @@ function AuthenticatedHomePage({
                           manualImportRequiredCount={manualImportRequiredCount}
                           pluginUpdateCount={pluginUpdateCount}
                           scryerVersion={scryerVersion}
+                          header={
+                            <RootHeader
+                              onOpenOverview={handleOpenOverview}
+                              routeCommandPalette={routeCommandPaletteConfig}
+                            />
+                          }
                           onNavigate={navigateTo}
                         >
                           <main
@@ -1719,7 +1850,9 @@ function AuthenticatedHomePage({
                                   handleImportRouteEmpty={handleBackToList}
                                   canAccessActivity={canAccessActivity}
                                   canAccessRecycleBin={canAccessRecycleBin}
+                                  canResolveImports={canResolveImports}
                                   canManageTitle={canManageTitle}
+                                  canManageUserAccounts={canManageUserAccounts}
                                   canManageUsers={canManageUsers}
                                   canManageSystemSettings={
                                     canManageSystemSettings

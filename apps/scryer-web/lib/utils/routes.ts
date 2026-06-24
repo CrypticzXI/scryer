@@ -28,14 +28,19 @@ export function isProtectedSettingsRoute(
 }
 
 export function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
-  return section === "import" || isMediaSettingsSection(section);
+  return isMediaSettingsSection(section);
 }
 
 export function canAccessMediaSettingsSection(
   section: ContentSettingsSection,
   canManageConfig: boolean,
   canManageLibrarySettings: boolean,
+  canResolveImports = false,
 ): boolean {
+  if (section === "import") {
+    return canResolveImports;
+  }
+
   if (!isManageConfigMediaSection(section)) {
     return true;
   }
@@ -49,21 +54,37 @@ export function canAccessMediaSettingsSection(
 
 export function canAccessSettingsSection(
   section: SettingsSection,
-  canManageUsers: boolean,
-  canManageConfig: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
   canAccessRecycleBin: boolean,
 ): boolean {
-  if (section === "profile") {
-    return true;
+  switch (section) {
+    case "profile":
+      return true;
+    case "security":
+      return canManageUserAccounts;
+    case "users":
+      return canManageUserAccess;
+    case "recycleBin":
+      return canAccessRecycleBin;
+    case "general":
+    case "backups":
+    case "mediaServers":
+    case "indexers":
+    case "downloadClients":
+    case "plugins":
+    case "notifications":
+      return canManageSystemSettings;
+    case "qualityProfiles":
+    case "delayProfiles":
+    case "acquisition":
+    case "rules":
+    case "post-processing":
+    case "subtitles":
+      return canManageCatalogSettings;
+    default:
+      return false;
   }
-
-  if (section === "security" || section === "users") {
-    return canManageUsers;
-  }
-
-  if (section === "recycleBin") {
-    return canAccessRecycleBin;
-  }
-
-  return canManageConfig;
 }

@@ -87,6 +87,14 @@ function isMetadataEmpty(results: MetadataSearchResults): boolean {
   return Object.values(results).every((arr) => arr.length === 0);
 }
 
+function hasOpenDialogContent(): boolean {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  return document.querySelector("[data-slot='dialog-content'][data-state='open']") !== null;
+}
+
 function normalizeOrderedLookupValues(values: string[]): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -229,13 +237,14 @@ export interface UseGlobalSearchResult {
   metadataSearchLoading: boolean;
   tvdbCandidates: MetadataTvdbSearchItem[];
   runTvdbSearch: (query: string) => Promise<MetadataTvdbSearchItem[]>;
-  forceSearchGlobal: () => Promise<void>;
+  forceSearchGlobal: (queryOverride?: string) => Promise<void>;
   setTvdbCandidates: (value: MetadataTvdbSearchItem[]) => void;
   catalogSearchResults: TitleRecord[];
   metadataSearchResults: MetadataSearchResults;
   isGlobalSearchPanelOpen: boolean;
   openGlobalSearchPanel: (force?: boolean) => void;
   closeGlobalSearchPanel: () => void;
+  clearGlobalSearch: () => void;
   resetGlobalSearch: () => void;
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
   catalogConfigLoading: boolean;
@@ -405,6 +414,8 @@ export function useGlobalSearch({
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const autocompleteDebounceTimerRef = useRef<number | null>(null);
+  const skipNextAutocompleteQueryRef = useRef<string | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
   const pendingRequestKeysRef = useRef<Set<string>>(new Set());
   const catalogConfigRefreshPromiseRef = useRef<{
@@ -414,6 +425,10 @@ export function useGlobalSearch({
   const catalogConfigRefreshTokenRef = useRef(0);
 
   const cancelAutocomplete = useCallback(() => {
+    if (autocompleteDebounceTimerRef.current !== null) {
+      window.clearTimeout(autocompleteDebounceTimerRef.current);
+      autocompleteDebounceTimerRef.current = null;
+    }
     autocompleteRequestId.current += 1;
     autocompleteAbortRef.current?.abort();
     autocompleteAbortRef.current = null;
@@ -966,6 +981,12 @@ export function useGlobalSearch({
   useEffect(() => {
     const trimmed = globalSearch.trim();
 
+    if (skipNextAutocompleteQueryRef.current === trimmed) {
+      skipNextAutocompleteQueryRef.current = null;
+      return;
+    }
+    skipNextAutocompleteQueryRef.current = null;
+
     if (trimmed.length < AUTOCOMPLETE_MIN_CHARS) {
       cancelAutocomplete();
       setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
@@ -986,11 +1007,16 @@ export function useGlobalSearch({
     }
 
     const debounceTimer = window.setTimeout(() => {
+      autocompleteDebounceTimerRef.current = null;
       void runMetadataAutocomplete(trimmed);
     }, AUTOCOMPLETE_DEBOUNCE_MS);
+    autocompleteDebounceTimerRef.current = debounceTimer;
 
     return () => {
       window.clearTimeout(debounceTimer);
+      if (autocompleteDebounceTimerRef.current === debounceTimer) {
+        autocompleteDebounceTimerRef.current = null;
+      }
     };
   }, [
     cancelAutocomplete,
@@ -1022,8 +1048,7 @@ export function useGlobalSearch({
     setIsGlobalSearchPanelOpen(false);
   }, []);
 
-  const resetGlobalSearch = useCallback(() => {
-    forcedOpenRef.current = false;
+  const clearGlobalSearchState = useCallback(() => {
     cancelAutocomplete();
     setGlobalSearch("");
     setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
@@ -1033,41 +1058,69 @@ export function useGlobalSearch({
     setCatalogTitlesByTvdbId((previous) =>
       Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
     );
-    setIsGlobalSearchPanelOpen(false);
   }, [
     cancelAutocomplete,
     emptyCatalogTitlesByTvdbId,
     emptyMetadataSearchResults,
   ]);
 
+  const clearGlobalSearch = useCallback(() => {
+    forcedOpenRef.current = true;
+    clearGlobalSearchState();
+    setIsGlobalSearchPanelOpen(true);
+  }, [clearGlobalSearchState]);
+
+  const resetGlobalSearch = useCallback(() => {
+    forcedOpenRef.current = false;
+    clearGlobalSearchState();
+    setIsGlobalSearchPanelOpen(false);
+  }, [clearGlobalSearchState]);
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
-      if (event.key !== "/") {
-        return;
-      }
+      const key = event.key.toLowerCase();
+      const isSlashShortcut =
+        key === "/" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+      const isCommandShortcut =
+        key === "k" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
 
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      if (!isSlashShortcut && !isCommandShortcut) {
         return;
       }
 
       const target = event.target as HTMLElement | null;
-      if (
+      const isTypingTarget =
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable ||
-        target?.tagName === "SELECT"
-      ) {
+        target?.tagName === "SELECT";
+      if (isSlashShortcut && isTypingTarget) {
+        return;
+      }
+
+      if (hasOpenDialogContent()) {
+        event.preventDefault();
         return;
       }
 
       event.preventDefault();
-      globalSearchInputRef.current?.focus();
-      globalSearchInputRef.current?.select();
+      if (isCommandShortcut && isGlobalSearchPanelOpen) {
+        resetGlobalSearch();
+        globalSearchInputRef.current?.blur();
+        return;
+      }
+
+      forcedOpenRef.current = true;
+      setIsGlobalSearchPanelOpen(true);
+      window.requestAnimationFrame(() => {
+        globalSearchInputRef.current?.focus();
+        globalSearchInputRef.current?.select();
+      });
     };
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [isGlobalSearchPanelOpen, resetGlobalSearch]);
 
   const addMetadataSearchResultToCatalog = useCallback(
     async (
@@ -1221,12 +1274,17 @@ export function useGlobalSearch({
   );
 
   /** Force-trigger global search (bypasses autocomplete min-char threshold). */
-  const forceSearchGlobal = useCallback(async () => {
-    const trimmed = globalSearch.trim();
+  const forceSearchGlobal = useCallback(async (queryOverride?: string) => {
+    const trimmed = (queryOverride ?? globalSearch).trim();
     if (!trimmed) return;
+    cancelAutocomplete();
+    if (queryOverride !== undefined && trimmed !== globalSearch.trim()) {
+      skipNextAutocompleteQueryRef.current = trimmed;
+      setGlobalSearch(trimmed);
+    }
     setIsGlobalSearchPanelOpen(true);
     await runMetadataAutocomplete(trimmed);
-  }, [globalSearch, runMetadataAutocomplete]);
+  }, [cancelAutocomplete, globalSearch, runMetadataAutocomplete]);
 
   return {
     globalSearch,
@@ -1244,6 +1302,7 @@ export function useGlobalSearch({
     isGlobalSearchPanelOpen,
     openGlobalSearchPanel,
     closeGlobalSearchPanel,
+    clearGlobalSearch,
     resetGlobalSearch,
     catalogQualityProfileOptions,
     catalogConfigLoading,

@@ -58,10 +58,28 @@ enum IdDispatchMode {
     QueryOnly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextDispatchMode {
+    None,
+    FacetScoped,
+    GenericOnly,
+}
+
+impl TextDispatchMode {
+    fn can_dispatch(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn is_generic_only(self) -> bool {
+        matches!(self, Self::GenericOnly)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedSearchCapabilities {
     caps: IndexerProviderCapabilities,
     id_dispatch_mode: IdDispatchMode,
+    text_dispatch_mode: TextDispatchMode,
     query_only_reason: Option<&'static str>,
     transport_kind: Option<NabTransportKind>,
     caps_source: &'static str,
@@ -587,6 +605,7 @@ impl MultiIndexerSearchClient {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                text_dispatch_mode: text_dispatch_mode_for_static(static_caps, query_facet),
                 query_only_reason: None,
                 transport_kind: None,
                 caps_source: "static",
@@ -599,6 +618,7 @@ impl MultiIndexerSearchClient {
                 return ResolvedSearchCapabilities {
                     caps: static_caps.clone(),
                     id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                    text_dispatch_mode: text_dispatch_mode_for_static(static_caps, query_facet),
                     query_only_reason: None,
                     transport_kind,
                     caps_source: "legacy_static",
@@ -614,6 +634,11 @@ impl MultiIndexerSearchClient {
                         ..static_caps.clone()
                     },
                     id_dispatch_mode: IdDispatchMode::QueryOnly,
+                    text_dispatch_mode: if static_caps.query_param.is_some() {
+                        TextDispatchMode::GenericOnly
+                    } else {
+                        TextDispatchMode::None
+                    },
                     query_only_reason: Some("caps snapshot unavailable"),
                     transport_kind,
                     caps_source: "query_only_fallback",
@@ -626,6 +651,7 @@ impl MultiIndexerSearchClient {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                text_dispatch_mode: text_dispatch_mode_for_static(static_caps, query_facet),
                 query_only_reason: None,
                 transport_kind,
                 caps_source: "static",
@@ -634,8 +660,14 @@ impl MultiIndexerSearchClient {
 
         let mut caps = static_caps.clone();
         caps.supported_ids = supported_ids_from_caps_snapshot(snapshot);
-        caps.query_param =
-            caps_snapshot_has_query(snapshot, query_facet).then_some("q".to_string());
+        let text_dispatch_mode = caps_snapshot_text_dispatch_mode(snapshot, query_facet);
+        caps.query_param = text_dispatch_mode.can_dispatch().then_some("q".to_string());
+        caps.supported_query_facets = if matches!(text_dispatch_mode, TextDispatchMode::FacetScoped)
+        {
+            vec![query_facet.to_string()]
+        } else {
+            Vec::new()
+        };
         caps.search_inputs = caps_search_inputs(snapshot, query_facet);
         caps.supported_external_ids = supported_external_ids_from_caps_snapshot(snapshot);
         caps.season_param = node_supports_param(snapshot.tv_search.as_ref(), "season")
@@ -654,6 +686,7 @@ impl MultiIndexerSearchClient {
         ResolvedSearchCapabilities {
             caps,
             id_dispatch_mode,
+            text_dispatch_mode,
             query_only_reason,
             transport_kind,
             caps_source: "snapshot",
@@ -1031,22 +1064,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                 continue;
             }
 
-            // Skip indexers that can't contribute to this facet.
-            // - Indexers with declared facets that don't include the current facet are skipped.
-            // - Indexers that have the facet but only for ID-based search (deduplicates_aliases)
-            //   are skipped when none of their supported IDs are available.
-            let has_facet_entry = caps.has_facet(&facet);
-            let has_id_facet_entry = caps.has_facet(&id_search_facet);
-            let has_declared_facets = !caps.supported_ids.is_empty();
-            let skip_no_facet = !has_facet_entry
-                && !has_id_facet_entry
-                && has_declared_facets
+            let eligible_ids =
+                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet));
+            let can_dispatch_id = !eligible_ids.is_empty()
+                && caps.has_facet(&id_search_facet)
                 && !matches!(resolved_caps.id_dispatch_mode, IdDispatchMode::QueryOnly);
-            let skip_no_matching_id = has_id_facet_entry && caps.deduplicates_aliases && {
-                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet))
-                    .is_empty()
-            };
-            if !is_rss_request && (skip_no_facet || skip_no_matching_id) {
+            let can_dispatch_text =
+                !query.trim().is_empty() && resolved_caps.text_dispatch_mode.can_dispatch();
+            if !is_rss_request && !can_dispatch_id && !can_dispatch_text {
                 info!(
                     indexer = config.name.as_str(),
                     facet, "skipping indexer: no supported IDs for facet and no freetext"
@@ -1063,8 +1088,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            let eligible_ids =
-                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet));
             if matches!(
                 resolved_caps.id_dispatch_mode,
                 IdDispatchMode::Aggregate | IdDispatchMode::QueryOnly
@@ -1226,6 +1249,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 absolute_episode,
                 caps: &caps,
                 id_dispatch_mode: resolved_caps.id_dispatch_mode,
+                text_dispatch_mode: resolved_caps.text_dispatch_mode,
                 is_alias_query: false,
             });
 
@@ -1242,6 +1266,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     absolute_episode,
                     caps: &caps,
                     id_dispatch_mode: resolved_caps.id_dispatch_mode,
+                    text_dispatch_mode: resolved_caps.text_dispatch_mode,
                     is_alias_query: true,
                 });
 
@@ -1606,6 +1631,7 @@ struct StrategyParams<'a> {
     absolute_episode: Option<u32>,
     caps: &'a scryer_domain::IndexerProviderCapabilities,
     id_dispatch_mode: IdDispatchMode,
+    text_dispatch_mode: TextDispatchMode,
     is_alias_query: bool,
 }
 
@@ -1621,6 +1647,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     let absolute_episode = p.absolute_episode;
     let caps = p.caps;
     let id_dispatch_mode = p.id_dispatch_mode;
+    let text_dispatch_mode = p.text_dispatch_mode;
     let is_alias_query = p.is_alias_query;
     // Alias queries skip indexers that deduplicate aliases internally
     if is_alias_query && caps.deduplicates_aliases {
@@ -1682,20 +1709,19 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
         }
     }
 
-    // Freetext strategy: skip if indexer has no capability for this facet at all.
-    // An indexer that only declares "anime" should not get freetext for "series" searches.
-    // For alias queries, indexers with deduplicates_aliases skip freetext (handled at top).
-    let has_facet_entry = caps.has_facet(query_facet);
-    let skip_no_facet = !has_facet_entry && !caps.supported_ids.is_empty();
-    let generic_query_only = id_dispatch_mode == IdDispatchMode::QueryOnly;
-    if caps.query_param.is_some() && !query.is_empty() && !skip_no_facet {
+    let generic_query_only = text_dispatch_mode.is_generic_only();
+    let text_season = text_strategy_season(caps, text_dispatch_mode, season);
+    let text_episode = text_strategy_episode(caps, text_dispatch_mode, episode);
+    let text_absolute_episode =
+        text_strategy_absolute_episode(caps, text_dispatch_mode, absolute_episode);
+    if text_dispatch_mode.can_dispatch() && caps.query_param.is_some() && !query.is_empty() {
         strategies.push(SearchStrategy {
             request_query: query.to_string(),
             request_facet: query_facet.to_string(),
             ids: HashMap::new(),
-            season,
-            episode,
-            absolute_episode: None,
+            season: text_season,
+            episode: text_episode,
+            absolute_episode: text_absolute_episode,
             generic_query_only,
             label: if is_alias_query {
                 "freetext_alias".into()
@@ -1706,14 +1732,18 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     }
 
     // If no strategies were generated, fall back to a single combined call
-    if strategies.is_empty() && !query.is_empty() && caps.query_param.is_some() {
+    if strategies.is_empty()
+        && !query.is_empty()
+        && caps.query_param.is_some()
+        && text_dispatch_mode.can_dispatch()
+    {
         strategies.push(SearchStrategy {
             request_query: query.to_string(),
             request_facet: query_facet.to_string(),
             ids: HashMap::new(),
-            season,
-            episode,
-            absolute_episode: None,
+            season: text_season,
+            episode: text_episode,
+            absolute_episode: text_absolute_episode,
             generic_query_only,
             label: "fallback".into(),
         });
@@ -1761,6 +1791,17 @@ fn supported_external_ids_from_caps_snapshot(snapshot: &IndexerCapsSnapshot) -> 
     ids.sort();
     ids.dedup();
     ids
+}
+
+fn text_dispatch_mode_for_static(
+    caps: &IndexerProviderCapabilities,
+    facet: &str,
+) -> TextDispatchMode {
+    if caps.supports_query_for_facet(facet) {
+        TextDispatchMode::FacetScoped
+    } else {
+        TextDispatchMode::None
+    }
 }
 
 fn actionable_ids_for_node(node: Option<&IndexerCapsSearchNode>, search_kind: &str) -> Vec<String> {
@@ -1815,13 +1856,29 @@ fn node_supports_param(node: Option<&IndexerCapsSearchNode>, param: &str) -> boo
     })
 }
 
-fn caps_snapshot_has_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+fn caps_snapshot_has_facet_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+    match facet {
+        "movie" => node_supports_param(snapshot.movie_search.as_ref(), "q"),
+        "series" | "anime" => node_supports_param(snapshot.tv_search.as_ref(), "q"),
+        _ => false,
+    }
+}
+
+fn caps_snapshot_has_generic_query(snapshot: &IndexerCapsSnapshot) -> bool {
     node_supports_param(snapshot.search.as_ref(), "q")
-        || match facet {
-            "movie" => node_supports_param(snapshot.movie_search.as_ref(), "q"),
-            "series" | "anime" => node_supports_param(snapshot.tv_search.as_ref(), "q"),
-            _ => false,
-        }
+}
+
+fn caps_snapshot_text_dispatch_mode(
+    snapshot: &IndexerCapsSnapshot,
+    facet: &str,
+) -> TextDispatchMode {
+    if caps_snapshot_has_facet_query(snapshot, facet) {
+        TextDispatchMode::FacetScoped
+    } else if caps_snapshot_has_generic_query(snapshot) {
+        TextDispatchMode::GenericOnly
+    } else {
+        TextDispatchMode::None
+    }
 }
 
 fn caps_search_inputs(
@@ -1829,7 +1886,7 @@ fn caps_search_inputs(
     facet: &str,
 ) -> Vec<scryer_domain::IndexerSearchInputCapability> {
     let mut inputs = Vec::new();
-    if caps_snapshot_has_query(snapshot, facet) {
+    if caps_snapshot_text_dispatch_mode(snapshot, facet).can_dispatch() {
         inputs.push(scryer_domain::IndexerSearchInputCapability::TitleQuery);
     }
 
@@ -1847,6 +1904,63 @@ fn caps_search_inputs(
     }
 
     inputs
+}
+
+fn supports_search_input_or_legacy(
+    caps: &IndexerProviderCapabilities,
+    input: scryer_domain::IndexerSearchInputCapability,
+) -> bool {
+    caps.search_inputs.is_empty() || caps.search_inputs.contains(&input)
+}
+
+fn text_strategy_season(
+    caps: &IndexerProviderCapabilities,
+    text_dispatch_mode: TextDispatchMode,
+    season: Option<u32>,
+) -> Option<u32> {
+    if matches!(text_dispatch_mode, TextDispatchMode::FacetScoped)
+        && supports_search_input_or_legacy(
+            caps,
+            scryer_domain::IndexerSearchInputCapability::Season,
+        )
+    {
+        season
+    } else {
+        None
+    }
+}
+
+fn text_strategy_episode(
+    caps: &IndexerProviderCapabilities,
+    text_dispatch_mode: TextDispatchMode,
+    episode: Option<u32>,
+) -> Option<u32> {
+    if matches!(text_dispatch_mode, TextDispatchMode::FacetScoped)
+        && supports_search_input_or_legacy(
+            caps,
+            scryer_domain::IndexerSearchInputCapability::Episode,
+        )
+    {
+        episode
+    } else {
+        None
+    }
+}
+
+fn text_strategy_absolute_episode(
+    caps: &IndexerProviderCapabilities,
+    text_dispatch_mode: TextDispatchMode,
+    absolute_episode: Option<u32>,
+) -> Option<u32> {
+    if matches!(text_dispatch_mode, TextDispatchMode::FacetScoped)
+        && caps
+            .search_inputs
+            .contains(&scryer_domain::IndexerSearchInputCapability::AbsoluteEpisode)
+    {
+        absolute_episode
+    } else {
+        None
+    }
 }
 
 fn filter_ids_for_types(
@@ -2276,6 +2390,7 @@ mod tests {
     struct RecordedCall {
         query: String,
         ids: HashMap<String, String>,
+        category: Option<String>,
         facet: Option<String>,
         categories: Vec<String>,
         season: Option<u32>,
@@ -2296,7 +2411,7 @@ mod tests {
             &self,
             query: String,
             ids: HashMap<String, String>,
-            _category: Option<String>,
+            category: Option<String>,
             facet: Option<String>,
             _id_search_facet: Option<String>,
             newznab_categories: Option<Vec<String>>,
@@ -2310,6 +2425,7 @@ mod tests {
             let call = RecordedCall {
                 query,
                 ids,
+                category,
                 facet,
                 categories: newznab_categories.unwrap_or_default(),
                 season,
@@ -3202,8 +3318,217 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert!(recorded[0].ids.is_empty());
         assert_eq!(recorded[0].query, "12 Lanterns of Winter");
+        assert_eq!(recorded[0].category, None);
         assert_eq!(recorded[0].facet, None);
         assert!(recorded[0].categories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn id_free_text_capable_movie_provider_receives_freetext() {
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Jujutsu.Kaisen.0.2021.1080p"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: false,
+                    supported_ids: HashMap::new(),
+                    query_param: Some("q".into()),
+                    supported_query_facets: vec!["movie".into()],
+                    search: true,
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let response = multi
+            .search(
+                "JUJUTSU KAISEN 0".to_string(),
+                HashMap::from([("imdb_id".to_string(), "tt14331144".to_string())]),
+                Some("movie".to_string()),
+                Some("movie".to_string()),
+                None,
+                Some(vec!["2000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("movie freetext search should dispatch");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].ids.is_empty());
+        assert_eq!(recorded[0].query, "JUJUTSU KAISEN 0");
+        assert_eq!(recorded[0].category.as_deref(), Some("movie"));
+        assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
+        assert_eq!(recorded[0].categories, vec!["2000".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn legacy_anime_id_provider_does_not_receive_movie_freetext() {
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Unexpected.Movie.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: anime_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "JUJUTSU KAISEN 0".to_string(),
+                HashMap::from([("imdb_id".to_string(), "tt14331144".to_string())]),
+                Some("movie".to_string()),
+                Some("movie".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("unsupported facet should skip provider");
+
+        assert!(response.results.is_empty());
+        assert!(calls.lock().expect("calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn generic_nab_query_only_fallback_strips_structured_context() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot_with_availability(false, &["q"], false, &["q"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Naruto.Shippuuden.09.1080p"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: anime_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Naruto Shippuuden 09".to_string(),
+                HashMap::from([("anidb_id".to_string(), "1234".to_string())]),
+                Some("anime".to_string()),
+                Some("anime".to_string()),
+                None,
+                Some(vec!["5070".to_string()]),
+                None,
+                SearchMode::Interactive,
+                Some(1),
+                Some(9),
+                Some(9),
+                vec![],
+            )
+            .await
+            .expect("generic fallback should search");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].ids.is_empty());
+        assert_eq!(recorded[0].category, None);
+        assert_eq!(recorded[0].facet, None);
+        assert!(recorded[0].categories.is_empty());
+        assert_eq!(recorded[0].season, None);
+        assert_eq!(recorded[0].episode, None);
+        assert_eq!(recorded[0].absolute_episode, None);
+    }
+
+    #[tokio::test]
+    async fn facet_scoped_text_dispatch_preserves_advertised_anime_context() {
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Naruto.Shippuuden.09.1080p"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: false,
+                    supported_ids: HashMap::new(),
+                    query_param: Some("q".into()),
+                    supported_query_facets: vec!["anime".into()],
+                    search_inputs: vec![
+                        scryer_domain::IndexerSearchInputCapability::TitleQuery,
+                        scryer_domain::IndexerSearchInputCapability::Category,
+                        scryer_domain::IndexerSearchInputCapability::Season,
+                        scryer_domain::IndexerSearchInputCapability::Episode,
+                        scryer_domain::IndexerSearchInputCapability::AbsoluteEpisode,
+                    ],
+                    search: true,
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Naruto Shippuuden 09".to_string(),
+                HashMap::from([("anidb_id".to_string(), "1234".to_string())]),
+                Some("anime".to_string()),
+                Some("anime".to_string()),
+                None,
+                Some(vec!["5070".to_string()]),
+                None,
+                SearchMode::Interactive,
+                Some(1),
+                Some(9),
+                Some(9),
+                vec![],
+            )
+            .await
+            .expect("facet-scoped text search should dispatch");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].ids.is_empty());
+        assert_eq!(recorded[0].category.as_deref(), Some("anime"));
+        assert_eq!(recorded[0].facet.as_deref(), Some("anime"));
+        assert_eq!(recorded[0].categories, vec!["5070".to_string()]);
+        assert_eq!(recorded[0].season, Some(1));
+        assert_eq!(recorded[0].episode, Some(9));
+        assert_eq!(recorded[0].absolute_episode, Some(9));
     }
 
     #[tokio::test]
@@ -3669,6 +3994,7 @@ mod tests {
             absolute_episode: None,
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            text_dispatch_mode: TextDispatchMode::None,
             is_alias_query: false,
         });
 
@@ -4154,6 +4480,7 @@ mod tests {
             absolute_episode: Some(33),
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            text_dispatch_mode: TextDispatchMode::FacetScoped,
             is_alias_query: false,
         });
 
@@ -4274,6 +4601,7 @@ mod tests {
             absolute_episode: Some(33),
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            text_dispatch_mode: TextDispatchMode::FacetScoped,
             is_alias_query: true,
         });
 

@@ -3486,6 +3486,13 @@ pub struct IndexerProviderCapabilities {
     /// None → indexer does not accept freetext queries (RSS-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_param: Option<String>,
+    /// Facets for which the provider can accept title/freetext searches.
+    ///
+    /// Empty means legacy inference: ID-declared facets are query-capable, and
+    /// query-only providers with no `supported_ids` are assumed to accept all
+    /// current search facets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_query_facets: Vec<String>,
 
     // -- Legacy boolean fields kept for backward compat during migration.
     // -- New code should use supported_ids / query_param instead.
@@ -3524,9 +3531,38 @@ pub struct IndexerManagementCapabilities {
 }
 
 impl IndexerProviderCapabilities {
+    pub const QUERY_FACETS: [&'static str; 3] = ["movie", "series", "anime"];
+
     /// Whether this indexer supports any structured or freetext search at all.
     pub fn supports_any_search(&self) -> bool {
         self.query_param.is_some() || !self.supported_ids.is_empty() || self.search
+    }
+
+    /// Whether this indexer can accept a title/freetext query for `facet`.
+    pub fn supports_query_for_facet(&self, facet: &str) -> bool {
+        if self.query_param.is_none() {
+            return false;
+        }
+
+        let facet = facet.trim();
+        if facet.is_empty() {
+            return false;
+        }
+
+        if !self.supported_query_facets.is_empty() {
+            return self
+                .supported_query_facets
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(facet));
+        }
+
+        if self.supported_ids.is_empty() {
+            return Self::QUERY_FACETS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(facet));
+        }
+
+        self.has_facet(facet)
     }
 
     /// Whether this indexer has any ID types for the given facet.

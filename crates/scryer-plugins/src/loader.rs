@@ -674,6 +674,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                 season_param: Some("season".into()),
                 episode_param: Some("ep".into()),
                 query_param: Some("q".into()),
+                supported_query_facets: vec!["movie".into(), "series".into(), "anime".into()],
                 search: true,
                 imdb_search: true,
                 tvdb_search: true,
@@ -1545,6 +1546,29 @@ fn validate_indexer_descriptor(
 }
 
 fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
+    if let Some(indexer) = descriptor.indexer() {
+        let invalid_facets = indexer
+            .capabilities
+            .supported_query_facets
+            .iter()
+            .filter(|facet| {
+                !scryer_domain::IndexerProviderCapabilities::QUERY_FACETS
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(facet.trim()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !invalid_facets.is_empty() {
+            warn!(
+                plugin = descriptor.id.as_str(),
+                provider_type = descriptor.provider_type(),
+                facets = ?invalid_facets,
+                "indexer descriptor rejected: unsupported query facet"
+            );
+            return false;
+        }
+    }
+
     let connection_url_count = descriptor
         .config_fields()
         .iter()
@@ -3403,6 +3427,22 @@ mod tests {
         ));
         assert!(validate_indexer_descriptor(
             &descriptor("torrent_indexer"),
+            PluginLoadSource::External { first_party: false }
+        ));
+    }
+
+    #[test]
+    fn indexer_query_facets_must_be_known_search_facets() {
+        let mut descriptor = descriptor("indexer");
+        if let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider {
+            indexer.capabilities.supported_query_facets =
+                vec!["movie".to_string(), "music".to_string()];
+        } else {
+            unreachable!("test descriptor should be an indexer");
+        }
+
+        assert!(!validate_indexer_descriptor(
+            &descriptor,
             PluginLoadSource::External { first_party: false }
         ));
     }

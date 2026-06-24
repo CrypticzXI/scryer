@@ -34,7 +34,6 @@ const TOP_NAV_IDS: ViewId[] = [
   "activity",
   "calendar",
   "wanted",
-  "history",
   "settings",
   "system",
 ];
@@ -134,8 +133,8 @@ export function SeriesOverviewShell() {
   const routeCommandPalette = useMemo(() => {
     return buildRouteCommands({
       t,
-      pendingImportCounts: null,
       user: permissionUser,
+      activeFacet: "series",
       activityImportCount: 0,
       onNavigate: navigateTo,
     });
@@ -163,13 +162,8 @@ export function SeriesOverviewShell() {
             queueFacet="series"
             uiLanguage={uiLanguage}
           >
-            <div className="min-h-screen bg-background text-foreground">
-              <RootHeader
-                routeCommandPalette={routeCommandPaletteConfig}
-                onOpenOverview={handleOpenOverview}
-              />
-
-              <div className="mx-auto w-full max-w-[1480px] px-3 pb-10 pt-4">
+            <div className="flex min-h-screen flex-col bg-background text-foreground">
+              <div className="flex min-h-0 w-full flex-1">
                 <RootSidebar
                   topNav={topNav}
                   view="series"
@@ -184,6 +178,12 @@ export function SeriesOverviewShell() {
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}
                   scryerVersion={null}
+                  header={
+                    <RootHeader
+                      routeCommandPalette={routeCommandPaletteConfig}
+                      onOpenOverview={handleOpenOverview}
+                    />
+                  }
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

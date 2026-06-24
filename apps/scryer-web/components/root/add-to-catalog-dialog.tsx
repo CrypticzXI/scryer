@@ -376,7 +376,7 @@ export function AddToCatalogDialog({
             id="add-to-catalog-config-loading"
             className="flex items-center gap-2 rounded-md border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
           >
-            <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
             <span>{t("label.loading")}</span>
           </div>
         ) : null}
@@ -401,7 +401,7 @@ export function AddToCatalogDialog({
               !qualityProfileValue ||
               (libraryRequired && !selectedLibrary)
             }
-            className="bg-emerald-600 text-foreground hover:bg-emerald-500"
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
             {isSubmitting ? t("search.adding") : t("title.addToCatalog")}
           </Button>

@@ -1,16 +1,22 @@
 import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
+  Archive,
   Bell,
   CalendarDays,
   Captions,
-  ClipboardList,
+  Database,
+  Download,
+  FileText,
   FolderCog,
-  MonitorCog,
+  Inbox,
+  ListChecks,
   Puzzle,
   Search,
+  Server,
   Settings,
   Shield,
+  SlidersHorizontal,
   Trash2,
   User,
   Users,
@@ -25,7 +31,7 @@ import type {
   WantedSection,
 } from "@/components/root/types";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
-import { hasImportItemsForView, type PendingImportCounts } from "@/lib/types";
+import type { Facet } from "@/lib/types";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
 
@@ -40,8 +46,8 @@ export type RouteCommand = {
 
 type BuildRouteCommandsArgs = {
   t: Translate;
-  pendingImportCounts: PendingImportCounts | null;
   user: AuthUser;
+  activeFacet: Facet;
   activityImportCount?: number;
   onNavigate: (
     nextView: ViewId,
@@ -69,8 +75,8 @@ function buildNavigate(
 
 export function buildRouteCommands({
   t,
-  pendingImportCounts,
   user,
+  activeFacet,
   activityImportCount = 0,
   onNavigate,
 }: BuildRouteCommandsArgs): RouteCommand[] {
@@ -78,7 +84,8 @@ export function buildRouteCommands({
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
   const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
-  const canManageUsers = hasAnyAppPermission(user, [
+  const canManageUserAccounts = hasAnyAppPermission(user, [APP_PERMISSIONS.manageUsers]);
+  const canManageUserAccess = hasAnyAppPermission(user, [
     APP_PERMISSIONS.manageUsers,
     APP_PERMISSIONS.managePermissions,
   ]);
@@ -87,134 +94,125 @@ export function buildRouteCommands({
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canManageLibrarySettings =
     canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
-  const mediaCommands = canViewCatalog || canRequestMedia || canManageLibrarySettings ? FACET_REGISTRY.flatMap((f) => {
-    const commands: RouteCommand[] = [];
+  const requestFacet = FACET_REGISTRY.find((f) => f.id === activeFacet) ?? FACET_REGISTRY[0];
+  const requestView = requestFacet.viewId as ViewId;
+  const mediaOverviewCommands = canViewCatalog ? FACET_REGISTRY.map((f) => ({
+    id: `${f.viewId}-overview`,
+    label: t(f.overviewLabelKey),
+    description: t(f.navLabelKey),
+    keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
+    icon: f.icon,
+    onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "overview"),
+  }) satisfies RouteCommand) : [];
+  const mediaDetailCommands = canResolveImports || canManageConfig || canManageLibrarySettings
+    ? FACET_REGISTRY.flatMap((f) => {
+        const commands: RouteCommand[] = [];
 
-    if (canViewCatalog) {
-      commands.push({
-        id: `${f.viewId}-overview`,
-        label: t(f.overviewLabelKey),
-        description: t(f.navLabelKey),
-        keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
-        icon: f.icon,
-        onSelect: buildNavigate(onNavigate, f.viewId as ViewId),
-      });
-    }
+        if (canResolveImports) {
+          commands.push({
+            id: `${f.viewId}-import`,
+            label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
+            description: t("nav.import"),
+            keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
+            icon: f.icon,
+            onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
+          });
+        }
 
-    if (canResolveImports && hasImportItemsForView(pendingImportCounts, f.viewId)) {
-      commands.push({
-        id: `${f.viewId}-import`,
-        label: `${t(f.navLabelKey)} / ${t("nav.import")}`,
-        description: t("nav.import"),
-        keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
-        icon: f.icon,
-        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
-      });
-    }
+        if (canManageLibrarySettings) {
+          commands.push({
+            id: `${f.viewId}-settings`,
+            label: t(f.settingsLabelKey),
+            description: t(f.settingsLabelKey),
+            keywords: [f.viewId, f.id, "settings", "media", "paths", "folder"],
+            icon: Settings,
+            onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "library"),
+          });
 
-    if (canManageTitle || canRequestMedia) {
-      commands.push({
-        id: `${f.viewId}-requests`,
-        label: `${t(f.navLabelKey)} / ${t("nav.requests")}`,
-        description: t("nav.requests"),
-        keywords: [f.viewId, f.id, "requests", "request queue", "media requests", "library"],
-        icon: ClipboardList,
-        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "requests"),
-      });
-    }
+          const facetSubSections: Array<{
+            section: ContentSettingsSection;
+            labelKey: string;
+            extraKeywords: string[];
+          }> = [
+            {
+              section: "library",
+              labelKey: "nav.library",
+              extraKeywords: ["library", "roots", "folders", "scan", "overrides"],
+            },
+            {
+              section: "general",
+              labelKey: "facetSettings.general",
+              extraKeywords: ["general", "sidecar", "nfo", "plexmatch"],
+            },
+            {
+              section: "quality",
+              labelKey: "facetSettings.quality",
+              extraKeywords: ["quality", "profiles"],
+            },
+            {
+              section: "renaming",
+              labelKey: "facetSettings.renaming",
+              extraKeywords: ["renaming", "naming", "format"],
+            },
+            {
+              section: "routing",
+              labelKey: "facetSettings.routing",
+              extraKeywords: ["routing", "paths", "folders", "root"],
+            },
+          ];
+          for (const sub of canManageConfig
+            ? facetSubSections
+            : facetSubSections.filter((entry) => entry.section === "library")) {
+            commands.push({
+              id: `${f.viewId}-settings-${sub.section}`,
+              label: `${t(f.settingsLabelKey)} / ${t(sub.labelKey)}`,
+              description: t(sub.labelKey),
+              keywords: [f.viewId, f.id, "settings", ...sub.extraKeywords],
+              icon: Settings,
+              onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, sub.section),
+            });
+          }
+        }
 
-    if (canManageLibrarySettings) {
-      commands.push({
-        id: `${f.viewId}-settings`,
-        label: t(f.settingsLabelKey),
-        description: t(f.settingsLabelKey),
-        keywords: [f.viewId, f.id, "settings", "media", "paths", "folder"],
-        icon: Settings,
-        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "library"),
-      });
-
-      const facetSubSections: Array<{
-        section: ContentSettingsSection;
-        labelKey: string;
-        extraKeywords: string[];
-      }> = [
-        {
-          section: "library",
-          labelKey: "nav.library",
-          extraKeywords: ["library", "roots", "folders", "scan", "overrides"],
-        },
-        {
-          section: "general",
-          labelKey: "facetSettings.general",
-          extraKeywords: ["general", "sidecar", "nfo", "plexmatch"],
-        },
-        {
-          section: "quality",
-          labelKey: "facetSettings.quality",
-          extraKeywords: ["quality", "profiles"],
-        },
-        {
-          section: "renaming",
-          labelKey: "facetSettings.renaming",
-          extraKeywords: ["renaming", "naming", "format"],
-        },
-        {
-          section: "routing",
-          labelKey: "facetSettings.routing",
-          extraKeywords: ["routing", "paths", "folders", "root"],
-        },
-      ];
-      for (const sub of canManageConfig
-        ? facetSubSections
-        : facetSubSections.filter((entry) => entry.section === "library")) {
-        commands.push({
-          id: `${f.viewId}-settings-${sub.section}`,
-          label: `${t(f.settingsLabelKey)} / ${t(sub.labelKey)}`,
-          description: t(sub.labelKey),
-          keywords: [f.viewId, f.id, "settings", ...sub.extraKeywords],
-          icon: Settings,
-          onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, sub.section),
-        });
-      }
-    }
-
-    return commands;
-  }) : [];
+        return commands;
+      })
+    : [];
 
   return [
-    ...mediaCommands,
-    {
-      id: "wanted-items",
-      label: "Wanted / Wanted Items",
-      description: t("wanted.tabWanted"),
-      keywords: ["wanted", "missing", "wanted items", "acquisition", "search"],
-      icon: ActivitySquare,
-      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "wanted"),
-    },
-    {
-      id: "wanted-cutoff",
-      label: "Wanted / Cutoff Unmet",
-      description: t("wanted.tabCutoff"),
-      keywords: ["wanted", "cutoff", "upgrade", "quality", "unmet"],
-      icon: ActivitySquare,
-      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "cutoff"),
-    },
-    {
-      id: "wanted-pending",
-      label: "Wanted / Pending",
-      description: t("wanted.tabPending"),
-      keywords: ["wanted", "pending", "delayed", "releases"],
-      icon: ActivitySquare,
-      onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
-    },
+    ...mediaOverviewCommands,
+    ...(canManageTitle || canRequestMedia
+      ? [{
+          id: "requests",
+          label: t("nav.requests"),
+          description: FACET_REGISTRY.map((f) => t(f.navLabelKey)).join(" / "),
+          keywords: [
+            "requests",
+            "request queue",
+            "media requests",
+            "movies",
+            "series",
+            "anime",
+            "library",
+          ],
+          icon: Inbox,
+          onSelect: buildNavigate(onNavigate, requestView, undefined, "requests"),
+        } satisfies RouteCommand]
+      : []),
     ...(canViewCatalog
       ? [{
-          id: "wanted-history",
-          label: `${t("nav.wanted")} / ${t("history.title")}`,
-          description: t("history.title"),
-          keywords: ["wanted", "history", "imports", "downloads", "blocklist", "failures"],
-          icon: ActivitySquare,
-          onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "history"),
+          id: "wanted-items",
+          label: `${t("nav.wanted")} / ${t("wanted.tabWanted")}`,
+          description: t("wanted.tabWanted"),
+          keywords: ["wanted", "missing", "wanted items", "acquisition", "search"],
+          icon: ListChecks,
+          onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "wanted"),
+        } satisfies RouteCommand, {
+          id: "calendar",
+          label: t("nav.calendar"),
+          description: t("nav.calendar"),
+          keywords: ["calendar", "episodes", "airing", "schedule", "upcoming"],
+          icon: CalendarDays,
+          onSelect: buildNavigate(onNavigate, "calendar"),
         } satisfies RouteCommand]
       : []),
     ...(canResolveImports || canManageTitle
@@ -225,6 +223,34 @@ export function buildRouteCommands({
           keywords: ["activity", "events", "log", "audit", "system", "queue"],
           icon: ActivitySquare,
           onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "activity"),
+        } satisfies RouteCommand]
+      : []),
+    ...mediaDetailCommands,
+    ...(canViewCatalog
+      ? [{
+          id: "wanted-cutoff",
+          label: `${t("nav.wanted")} / ${t("wanted.tabCutoff")}`,
+          description: t("wanted.tabCutoff"),
+          keywords: ["wanted", "cutoff", "upgrade", "quality", "unmet"],
+          icon: ListChecks,
+          onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "cutoff"),
+        } satisfies RouteCommand, {
+          id: "wanted-pending",
+          label: `${t("nav.wanted")} / ${t("wanted.tabPending")}`,
+          description: t("wanted.tabPending"),
+          keywords: ["wanted", "pending", "delayed", "releases"],
+          icon: ListChecks,
+          onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "pending"),
+        } satisfies RouteCommand]
+      : []),
+    ...(canViewCatalog && canManageTitle
+      ? [{
+          id: "wanted-history",
+          label: `${t("nav.wanted")} / ${t("history.title")}`,
+          description: t("history.title"),
+          keywords: ["wanted", "history", "imports", "downloads", "blocklist", "failures"],
+          icon: ListChecks,
+          onSelect: buildNavigate(onNavigate, "wanted", undefined, undefined, undefined, "history"),
         } satisfies RouteCommand]
       : []),
     ...(canResolveImports && activityImportCount > 0
@@ -247,52 +273,47 @@ export function buildRouteCommands({
           onSelect: buildNavigate(onNavigate, "activity", undefined, undefined, undefined, undefined, "history"),
         } satisfies RouteCommand]
       : []),
-    {
-      id: "calendar",
-      label: t("nav.calendar"),
-      description: t("nav.calendar"),
-      keywords: ["calendar", "episodes", "airing", "schedule", "upcoming"],
-      icon: CalendarDays,
-      onSelect: buildNavigate(onNavigate, "calendar"),
-    },
     ...(canManageSystemSettings
       ? [{
           id: "settings-general",
-          label: `${t("nav.settings")} / ${t("settings.general")}`,
+          label: `${t("settings.navGroup.account")} / ${t("settings.general")}`,
           description: t("nav.settings"),
           keywords: ["settings", "general", "preferences", "configuration", "system"],
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "general"),
         } satisfies RouteCommand, {
           id: "settings-backups",
-          label: `${t("nav.settings")} / ${t("settings.backups")}`,
+          label: `${t("nav.group.system")} / ${t("settings.backups")}`,
           description: t("settings.backups"),
           keywords: ["settings", "backups", "backup", "restore", "bundle", "download"],
-          icon: Settings,
+          icon: Archive,
           onSelect: buildNavigate(onNavigate, "settings", "backups"),
         } satisfies RouteCommand]
       : []),
     {
       id: "settings-profile",
-      label: `${t("nav.settings")} / ${t("settings.profile")}`,
+      label: `${t("settings.navGroup.account")} / ${t("settings.profile")}`,
       description: t("settings.profile"),
       keywords: ["settings", "profile", "account", "me"],
       icon: User,
       onSelect: buildNavigate(onNavigate, "settings", "profile"),
     },
-    ...(canManageUsers
+    ...(canManageUserAccounts
       ? [{
           id: "settings-security",
-          label: t("settings.security"),
+          label: `${t("nav.group.system")} / ${t("settings.security")}`,
           description: t("settings.security"),
           keywords: ["settings", "security", "auth", "login", "password"],
           icon: Shield,
           onSelect: buildNavigate(onNavigate, "settings", "security"),
-        } satisfies RouteCommand, {
+        } satisfies RouteCommand]
+      : []),
+    ...(canManageUserAccess
+      ? [{
           id: "settings-users",
-          label: t("settings.users"),
+          label: `${t("nav.group.system")} / ${t("nav.usersAccess")}`,
           description: t("settings.users"),
-          keywords: ["settings", "users", "accounts", "management"],
+          keywords: ["settings", "users", "access", "accounts", "management"],
           icon: Users,
           onSelect: buildNavigate(onNavigate, "settings", "users"),
         } satisfies RouteCommand]
@@ -300,42 +321,42 @@ export function buildRouteCommands({
     ...(canManageCatalogSettings
       ? [{
           id: "settings-quality-profiles",
-          label: t("settings.qualityProfiles"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.qualityProfiles")}`,
           description: t("settings.qualityProfiles"),
           keywords: ["settings", "quality", "profiles", "metadata", "rules"],
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "qualityProfiles"),
         } satisfies RouteCommand, {
           id: "settings-delay-profiles",
-          label: t("settings.delayProfiles"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.delayProfiles")}`,
           description: t("settings.delayProfiles"),
           keywords: ["settings", "delay", "profiles", "pending", "wait"],
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "delayProfiles"),
         } satisfies RouteCommand, {
           id: "settings-rules",
-          label: t("settings.rules"),
+          label: `${t("nav.group.automation")} / ${t("settings.rules")}`,
           description: t("settings.rules"),
           keywords: ["settings", "rules", "rego", "opa", "scoring", "custom"],
-          icon: Settings,
+          icon: SlidersHorizontal,
           onSelect: buildNavigate(onNavigate, "settings", "rules"),
         } satisfies RouteCommand, {
           id: "settings-acquisition",
-          label: t("settings.acquisition"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.acquisition")}`,
           description: t("settings.acquisition"),
           keywords: ["settings", "acquisition", "search", "grab", "release"],
           icon: Search,
           onSelect: buildNavigate(onNavigate, "settings", "acquisition"),
         } satisfies RouteCommand, {
           id: "settings-post-processing",
-          label: t("settings.postProcessing"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.postProcessing")}`,
           description: t("settings.postProcessing"),
           keywords: ["settings", "post", "processing", "import", "rename", "move"],
           icon: FolderCog,
           onSelect: buildNavigate(onNavigate, "settings", "post-processing"),
         } satisfies RouteCommand, {
           id: "settings-subtitles",
-          label: t("settings.subtitles"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.subtitles")}`,
           description: t("settings.subtitles"),
           keywords: ["settings", "subtitles", "captions", "srt", "opensubtitles"],
           icon: Captions,
@@ -345,28 +366,35 @@ export function buildRouteCommands({
     ...(canManageSystemSettings
       ? [{
           id: "settings-download-clients",
-          label: t("settings.downloadClients"),
+          label: `${t("nav.group.integrations")} / ${t("settings.downloadClients")}`,
           description: t("settings.downloadClients"),
           keywords: ["settings", "download", "clients", "indexers"],
-          icon: Settings,
+          icon: Download,
           onSelect: buildNavigate(onNavigate, "settings", "downloadClients"),
         } satisfies RouteCommand, {
           id: "settings-indexers",
-          label: t("settings.indexers"),
+          label: `${t("nav.group.integrations")} / ${t("settings.indexers")}`,
           description: t("settings.indexers"),
           keywords: ["settings", "indexers", "feeds", "search", "sources"],
-          icon: Settings,
+          icon: Database,
           onSelect: buildNavigate(onNavigate, "settings", "indexers"),
         } satisfies RouteCommand, {
+          id: "settings-media-servers",
+          label: `${t("nav.group.integrations")} / ${t("settings.mediaServers")}`,
+          description: t("settings.mediaServers"),
+          keywords: ["settings", "media", "servers", "plex", "jellyfin", "integrations"],
+          icon: Server,
+          onSelect: buildNavigate(onNavigate, "settings", "mediaServers"),
+        } satisfies RouteCommand, {
           id: "settings-notifications",
-          label: t("settings.notifications"),
+          label: `${t("nav.group.integrations")} / ${t("settings.notifications")}`,
           description: t("settings.notifications"),
           keywords: ["settings", "notifications", "alerts", "discord", "webhook"],
           icon: Bell,
           onSelect: buildNavigate(onNavigate, "settings", "notifications"),
         } satisfies RouteCommand, {
           id: "settings-plugins",
-          label: t("settings.plugins"),
+          label: `${t("settings.navGroup.integrations")} / ${t("settings.plugins")}`,
           description: t("settings.plugins"),
           keywords: ["settings", "plugins", "wasm", "extensions"],
           icon: Puzzle,
@@ -376,7 +404,7 @@ export function buildRouteCommands({
     ...(canManageSystemSettings || canManageTitle
       ? [{
           id: "settings-recycle-bin",
-          label: t("settings.recycleBin"),
+          label: `${t("settings.navGroup.catalogs")} / ${t("settings.recycleBin")}`,
           description: t("settings.recycleBin"),
           keywords: ["settings", "recycle", "bin", "trash", "deleted"],
           icon: Trash2,
@@ -385,25 +413,11 @@ export function buildRouteCommands({
       : []),
     ...(canManageSystemSettings
       ? [{
-          id: "system",
-          label: t("nav.system"),
-          description: t("nav.system"),
-          keywords: ["system", "health", "status", "database", "worker"],
-          icon: MonitorCog,
-          onSelect: buildNavigate(onNavigate, "system"),
-        } satisfies RouteCommand, {
-          id: "system-jobs",
-          label: t("system.jobsTitle"),
-          description: t("system.jobsTitle"),
-          keywords: ["system", "jobs", "scheduler", "background", "rss", "library"],
-          icon: MonitorCog,
-          onSelect: buildNavigate(onNavigate, "system", undefined, undefined, "jobs"),
-        } satisfies RouteCommand, {
           id: "system-audit",
-          label: t("system.auditTitle"),
-          description: t("system.auditTitle"),
-          keywords: ["system", "audit", "events", "log", "history", "delete"],
-          icon: ClipboardList,
+          label: t("nav.logs"),
+          description: t("nav.logs"),
+          keywords: ["audit", "events", "logs", "log", "history", "delete"],
+          icon: FileText,
           onSelect: buildNavigate(onNavigate, "system", undefined, undefined, "audit"),
         } satisfies RouteCommand]
       : []),

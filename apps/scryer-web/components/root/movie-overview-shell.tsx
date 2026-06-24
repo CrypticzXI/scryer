@@ -28,7 +28,7 @@ const MovieOverviewContainer = lazy(() =>
 );
 
 // Minimal nav items — same sidebar as the main shell so navigation feels consistent.
-const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "activity", "calendar", "wanted", "history", "settings", "system"];
+const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "activity", "calendar", "wanted", "settings", "system"];
 
 const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   movies: Film,
@@ -121,8 +121,8 @@ export function MovieOverviewShell() {
   const routeCommandPalette = useMemo(() => {
     return buildRouteCommands({
       t,
-      pendingImportCounts: null,
       user: permissionUser,
+      activeFacet: "movie",
       activityImportCount: 0,
       onNavigate: navigateTo,
     });
@@ -150,13 +150,8 @@ export function MovieOverviewShell() {
             queueFacet="movie"
             uiLanguage={uiLanguage}
           >
-            <div className="min-h-screen bg-background text-foreground">
-              <RootHeader
-                routeCommandPalette={routeCommandPaletteConfig}
-                onOpenOverview={handleOpenOverview}
-              />
-
-              <div className="mx-auto w-full max-w-[1480px] px-3 pb-10 pt-4">
+            <div className="flex min-h-screen flex-col bg-background text-foreground">
+              <div className="flex min-h-0 w-full flex-1">
                 <RootSidebar
                   topNav={topNav}
                   view="movies"
@@ -171,6 +166,12 @@ export function MovieOverviewShell() {
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}
                   scryerVersion={null}
+                  header={
+                    <RootHeader
+                      routeCommandPalette={routeCommandPaletteConfig}
+                      onOpenOverview={handleOpenOverview}
+                    />
+                  }
                   onNavigate={navigateTo}
                 >
                   <main className="min-h-[70vh]">

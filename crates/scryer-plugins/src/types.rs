@@ -62,6 +62,7 @@ pub(crate) fn indexer_capabilities_to_domain(
         season_param: capabilities.season_param.clone(),
         episode_param: capabilities.episode_param.clone(),
         query_param: capabilities.query_param.clone(),
+        supported_query_facets: capabilities.supported_query_facets.clone(),
         search: capabilities.search,
         imdb_search: capabilities.imdb_search,
         tvdb_search: capabilities.tvdb_search,

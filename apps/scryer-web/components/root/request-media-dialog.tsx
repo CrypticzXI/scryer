@@ -280,7 +280,7 @@ export function RequestMediaDialog({
               !qualityProfileId ||
               (canRequestMonitorType && !monitorType)
             }
-            className="bg-emerald-600 text-foreground hover:bg-emerald-500"
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
             {isSubmitting ? (
               <Loader2 className="h-4 w-4 animate-spin" />

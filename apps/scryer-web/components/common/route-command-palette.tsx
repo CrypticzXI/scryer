@@ -9,7 +9,6 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Loader2 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -21,24 +20,10 @@ import type { Facet, TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
 import { useClient } from "urql";
-
-export type RouteCommandItem = {
-  id: string;
-  label: string;
-  description: string;
-  icon?: LucideIcon;
-  keywords?: string[];
-  onSelect: () => void;
-};
-
-export type RouteCommandPaletteConfig = {
-  title: string;
-  description: string;
-  placeholder: string;
-  noResultsText: string;
-  groupLabel: string;
-  items: RouteCommandItem[];
-};
+import {
+  filterRouteCommandItems,
+  type RouteCommandPaletteConfig,
+} from "@/components/common/route-command-types";
 
 type RouteCommandPaletteProps = {
   config?: RouteCommandPaletteConfig;
@@ -129,13 +114,6 @@ export function RouteCommandPalette({
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      // Cmd+K / Ctrl+K
-      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        setOpen((prev) => !prev);
-        return;
-      }
-
       // Double-Shift
       if (event.key !== "Shift" || event.repeat || isTextInput(event.target)) {
         return;
@@ -215,6 +193,12 @@ export function RouteCommandPalette({
       window.clearTimeout(timer);
     };
   }, [client, open, searchValue]);
+
+  const routeCommandItems = config?.items;
+  const routeCommandResults = React.useMemo(
+    () => filterRouteCommandItems(routeCommandItems ?? [], searchValue),
+    [routeCommandItems, searchValue],
+  );
 
   if (!config || config.items.length === 0) {
     return null;
@@ -306,11 +290,11 @@ export function RouteCommandPalette({
         <CommandEmpty>{config.noResultsText}</CommandEmpty>
         {showCatalogBeforeNavigation ? catalogCommandGroup : null}
         <CommandGroup heading={config.groupLabel}>
-          {config.items.map((item) => (
+          {routeCommandResults.map((item) => (
             <CommandItem
               key={item.id}
               value={item.id}
-              keywords={item.keywords}
+              keywords={[item.label, item.description, ...(item.keywords ?? [])]}
               onSelect={() => handleCommandNavigate(item.onSelect)}
             >
               <div className="flex flex-1 items-center gap-2">
