@@ -919,7 +919,7 @@ jobs:
             exit $LASTEXITCODE
           }
           $manifest = Get-Content embedded-manifest.xml -Raw
-          if ($manifest -notmatch '<longPathAware[^>]*>true</') {
+          if ($manifest -notmatch '<[^>]*longPathAware\b[^>]*>\s*true\s*</[^>]*longPathAware>') {
             throw "embedded manifest does not contain longPathAware=true"
           }
 
