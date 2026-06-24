@@ -198,7 +198,7 @@ jobs:
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
-            release_profile: release-lean
+            release_profile: release
             install_nasm: false
             extra_rustflags: ""
           - arch: x86_64
@@ -322,7 +322,7 @@ jobs:
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
-            release_profile: release-windows-portable
+            release_profile: release
             install_nasm: true
             use_clang_cl: false
             use_lld_link: true
@@ -333,7 +333,7 @@ jobs:
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
-            release_profile: release-lean
+            release_profile: release
             install_nasm: false
             use_clang_cl: true
             use_lld_link: true
