@@ -1,12 +1,12 @@
 
 import * as React from "react";
-import { Eye, EyeOff, LayoutGrid, LayoutList, Pencil, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, LayoutGrid, LayoutList, Pencil, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/components/root/types";
+import type { ContentSettingsSection, OverviewTitleTarget, Translate, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
@@ -35,6 +35,7 @@ import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
 import {
   TitleTableActionButton,
+  bytesToReadable,
   type TitleTableSortDirection,
   type TitleTableSortKey,
 } from "./media-content/title-table-shared";
@@ -102,6 +103,16 @@ function CompactTableIcon() {
       <path d="M2 6.5h12M2 10h12M6 2.5v11" />
     </svg>
   );
+}
+
+function mediaTitleLabel(view: ViewId, t: Translate): string {
+  if (view === "movies") {
+    return t("title.manageMovies");
+  }
+  if (view === "anime") {
+    return t("nav.anime");
+  }
+  return t("nav.series");
 }
 
 function isMediaSettingsSection(section: ContentSettingsSection): boolean {
@@ -711,6 +722,18 @@ export function MediaContentView({
     },
     [deleteCatalogTitle],
   );
+  const mediaTitle = mediaTitleLabel(view, t);
+  const visibleTitleCount = deferredMonitoredTitles.length;
+  const libraryCount = libraries.length;
+  const totalManagedBytes = React.useMemo(
+    () =>
+      deferredMonitoredTitles.reduce(
+        (total, title) => total + Math.max(0, title.sizeBytes ?? 0),
+        0,
+      ),
+    [deferredMonitoredTitles],
+  );
+  const mediaSummary = `${visibleTitleCount.toLocaleString()} shown${catalogHasMoreTitles ? "+" : ""} / ${libraryCount.toLocaleString()} ${libraryCount === 1 ? "library" : "libraries"} / ${bytesToReadable(totalManagedBytes)} managed`;
 
   return (
     <div className="space-y-4">
@@ -839,150 +862,168 @@ export function MediaContentView({
         />
       ) : (
         view === "movies" || view === "series" || view === "anime" ? (
-          <Card id={`media-overview-${view}`}>
-            <CardHeader>
-              <CardTitle>{view === "movies" ? t("title.manageMovies") : view === "anime" ? t("nav.anime") : t("nav.series")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Input
-                  placeholder={t("title.filterPlaceholder")}
-                  value={titleFilterInputValue}
-                  onChange={handleTitleFilterChange}
-                  className="w-full sm:flex-1"
-                />
-                <LibraryMultiSelect
-                  libraries={libraries}
-                  selectedLibraryIds={selectedLibraryIds}
-                  onSelectedLibraryIdsChange={setSelectedLibraryIds}
-                  disabled={librariesLoading || libraries.length === 0}
-                  triggerClassName="w-full sm:w-[180px]"
-                />
-                {!isMobile ? (
-                  <ToggleGroup
-                    type="single"
-                    value={viewMode}
-                    onValueChange={(v) => {
-                      if (
-                        v === "compact" ||
-                        v === "poster-table" ||
-                        v === "poster"
-                      ) {
-                        setViewMode(v);
-                      }
-                    }}
-                    size="sm"
-                    aria-label={t("title.viewModeToggle")}
-                  >
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "compact")}
-                      value="compact"
-                      size="sm"
-                      aria-label={t("title.viewModeCompact")}
-                      title={t("title.viewModeCompact")}
-                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
+          <Card
+            id={`media-overview-${view}`}
+            className="overflow-hidden rounded-2xl border-border/80 bg-card/75 p-0 shadow-[0_18px_44px_rgba(2,6,23,0.22)]"
+          >
+            <CardContent className="space-y-0 p-0">
+              <div className="border-b border-border/80 px-5 pb-0 pt-4 sm:px-6">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="min-w-0">
+                    <h1 className="text-[22px] font-bold leading-tight tracking-normal text-foreground">
+                      {mediaTitle}
+                    </h1>
+                    <p className="mt-1 text-[12.5px] text-muted-foreground">
+                      {mediaSummary}
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:items-center xl:max-w-[760px] xl:justify-end">
+                    <div className="relative min-w-[220px] flex-1 xl:max-w-[520px]">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder={t("title.filterPlaceholder")}
+                        value={titleFilterInputValue}
+                        onChange={handleTitleFilterChange}
+                        className="h-10 w-full rounded-[10px] border-border/90 bg-field/70 pl-9 text-[13px] shadow-none"
+                      />
+                    </div>
+                    <LibraryMultiSelect
+                      libraries={libraries}
+                      selectedLibraryIds={selectedLibraryIds}
+                      onSelectedLibraryIdsChange={setSelectedLibraryIds}
+                      disabled={librariesLoading || libraries.length === 0}
+                      triggerClassName="h-10 w-full rounded-[10px] bg-background/80 text-[13px] lg:w-[180px]"
+                    />
+                    {!isMobile ? (
+                      <ToggleGroup
+                        type="single"
+                        value={viewMode}
+                        onValueChange={(v) => {
+                          if (
+                            v === "compact" ||
+                            v === "poster-table" ||
+                            v === "poster"
+                          ) {
+                            setViewMode(v);
+                          }
+                        }}
+                        size="sm"
+                        aria-label={t("title.viewModeToggle")}
+                        className="h-10 shrink-0 rounded-[10px] bg-background/80 p-1"
+                      >
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "compact")}
+                          value="compact"
+                          size="sm"
+                          aria-label={t("title.viewModeCompact")}
+                          title={t("title.viewModeCompact")}
+                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <CompactTableIcon />
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "poster-table")}
+                          value="poster-table"
+                          size="sm"
+                          aria-label={t("title.viewModePosterTable")}
+                          title={t("title.viewModePosterTable")}
+                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <LayoutList className="h-4 w-4" />
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          id={titleOverviewViewModeId(view, "poster")}
+                          value="poster"
+                          size="sm"
+                          aria-label={t("title.viewModePoster")}
+                          title={t("title.viewModePoster")}
+                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                        >
+                          <LayoutGrid className="h-4 w-4" />
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                    ) : null}
+                    <Button
+                      id={`title-overview-refresh-${view === "movies" ? "movie" : view === "series" ? "series" : "anime"}`}
+                      className="h-10 w-full rounded-[10px] px-3 text-[13px] lg:w-auto"
+                      variant="primary"
+                      onClick={handleRefreshTitles}
+                      disabled={titleLoading}
                     >
-                      <CompactTableIcon />
-                    </ToggleGroupItem>
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "poster-table")}
-                      value="poster-table"
-                      size="sm"
-                      aria-label={t("title.viewModePosterTable")}
-                      title={t("title.viewModePosterTable")}
-                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
-                    >
-                      <LayoutList className="h-4 w-4" />
-                    </ToggleGroupItem>
-                    <ToggleGroupItem
-                      id={titleOverviewViewModeId(view, "poster")}
-                      value="poster"
-                      size="sm"
-                      aria-label={t("title.viewModePoster")}
-                      title={t("title.viewModePoster")}
-                      className="data-[state=on]:!border-purple-900/80 data-[state=on]:!shadow-[0_0_0_2px_rgba(88,28,135,0.55)]"
-                    >
-                      <LayoutGrid className="h-4 w-4" />
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                ) : null}
-                <Button
-                  id={`title-overview-refresh-${view === "movies" ? "movie" : view === "series" ? "series" : "anime"}`}
-                  className="w-full sm:w-auto"
-                  variant="primary"
-                  onClick={handleRefreshTitles}
-                  disabled={titleLoading}
-                >
-                  {t("label.refresh")}
-                </Button>
+                      <RefreshCw className={titleLoading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                      <span>{t("label.refresh")}</span>
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <TitleQuickFilterBar
+                    view={view}
+                    filters={titleQuickFilters}
+                    onToggleMonitoring={toggleTitleQuickMonitoringFilter}
+                    onToggleStatus={toggleTitleQuickStatusFilter}
+                    onClear={clearTitleQuickFilters}
+                    trailingContent={
+                      effectiveViewMode === "compact" || effectiveViewMode === "poster-table" ? (
+                        compactSelectedVisibleCount > 0 ? (
+                          <div className="flex h-12 w-full items-center justify-end gap-2 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 sm:w-[20rem]">
+                            <span className="mr-1 text-sm text-muted-foreground whitespace-nowrap">
+                              {t("title.bulkSelectionCount", { count: compactSelectedVisibleCount })}
+                            </span>
+                            <TitleTableActionButton
+                              tone="enabled"
+                              label={t("title.monitorAction")}
+                              onClick={() => void bulkMonitorTitles(true)}
+                              disabled={bulkActionBusy}
+                              className="rounded-md"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </TitleTableActionButton>
+                            <TitleTableActionButton
+                              tone="disabled"
+                              label={t("title.unmonitorAction")}
+                              onClick={() => void bulkMonitorTitles(false)}
+                              disabled={bulkActionBusy}
+                              className="rounded-md"
+                            >
+                              <EyeOff className="h-4 w-4" />
+                            </TitleTableActionButton>
+                            <TitleTableActionButton
+                              tone="edit"
+                              label={t("label.edit")}
+                              onClick={openBulkTitleEdit}
+                              disabled={bulkActionBusy}
+                              className="rounded-md"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </TitleTableActionButton>
+                            <TitleTableActionButton
+                              tone="delete"
+                              label={t("label.delete")}
+                              onClick={openBulkTitleDelete}
+                              disabled={bulkActionBusy}
+                              className="rounded-md"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </TitleTableActionButton>
+                            <TitleTableActionButton
+                              tone="neutral"
+                              label={t("label.clear")}
+                              onClick={clearSelectedTitles}
+                              disabled={bulkActionBusy}
+                              className="rounded-md"
+                            >
+                              <X className="h-4 w-4" />
+                            </TitleTableActionButton>
+                          </div>
+                        ) : (
+                          <div className="h-12 w-full sm:w-[20rem]" aria-hidden="true" />
+                        )
+                      ) : null
+                    }
+                  />
+                </div>
               </div>
-              <div className="mb-3">
-                <TitleQuickFilterBar
-                  view={view}
-                  filters={titleQuickFilters}
-                  onToggleMonitoring={toggleTitleQuickMonitoringFilter}
-                  onToggleStatus={toggleTitleQuickStatusFilter}
-                  onClear={clearTitleQuickFilters}
-                  trailingContent={
-                    effectiveViewMode === "compact" || effectiveViewMode === "poster-table" ? (
-                      compactSelectedVisibleCount > 0 ? (
-                        <div className="flex h-12 w-full items-center justify-end gap-2 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 sm:w-[20rem]">
-                          <span className="mr-1 text-sm text-muted-foreground whitespace-nowrap">
-                            {t("title.bulkSelectionCount", { count: compactSelectedVisibleCount })}
-                          </span>
-                          <TitleTableActionButton
-                            tone="enabled"
-                            label={t("title.monitorAction")}
-                            onClick={() => void bulkMonitorTitles(true)}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="disabled"
-                            label={t("title.unmonitorAction")}
-                            onClick={() => void bulkMonitorTitles(false)}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <EyeOff className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="edit"
-                            label={t("label.edit")}
-                            onClick={openBulkTitleEdit}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="delete"
-                            label={t("label.delete")}
-                            onClick={openBulkTitleDelete}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="neutral"
-                            label={t("label.clear")}
-                            onClick={clearSelectedTitles}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <X className="h-4 w-4" />
-                          </TitleTableActionButton>
-                        </div>
-                      ) : (
-                        <div className="h-12 w-full sm:w-[20rem]" aria-hidden="true" />
-                      )
-                    ) : null
-                  }
-                />
-              </div>
+              <div className="p-4 sm:p-5">
               {(() => {
                 const isMovieView = view === "movies";
                 const overviewTargetView = isMovieView ? "movies" as const : view === "anime" ? "anime" as const : "series" as const;
@@ -1100,6 +1141,7 @@ export function MediaContentView({
                   />
                 );
               })()}
+              </div>
             </CardContent>
           </Card>
         ) : (

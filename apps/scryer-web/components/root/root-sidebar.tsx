@@ -18,6 +18,8 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
@@ -27,7 +29,6 @@ import {
   SidebarMenuSubItem,
   SidebarInset,
   SidebarProvider,
-  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
@@ -42,12 +43,31 @@ import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
 import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
 import { selectorId } from "@/lib/utils/dom-ids";
+import ScryerLogo from "@/components/scryer-logo";
 
 type NavItem = {
   id: ViewId;
   label: string;
   icon: LucideIcon;
 };
+
+type TopNavGroupDefinition = {
+  id: string;
+  labelKey: string;
+  itemIds: ViewId[];
+};
+
+type TopNavGroup = {
+  id: string;
+  label: string;
+  items: NavItem[];
+};
+
+const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
+  { id: "catalogs", labelKey: "nav.group.catalogs", itemIds: ["movies", "series", "anime"] },
+  { id: "automation", labelKey: "nav.group.automation", itemIds: ["wanted", "calendar", "activity"] },
+  { id: "configuration", labelKey: "nav.group.configuration", itemIds: ["settings", "system"] },
+];
 
 type RootSidebarProps = {
   topNav: NavItem[];
@@ -341,6 +361,26 @@ function RootSidebarContent({
       ),
     [canManageSystemSettings, canManageTitle, canResolveImports, isMobile, topNav],
   );
+  const groupedTopNav = React.useMemo<TopNavGroup[]>(() => {
+    const itemsById = new Map(visibleTopNav.map((item) => [item.id, item]));
+    const groupedIds = new Set<ViewId>();
+    const groups = TOP_NAV_GROUPS.map((group) => {
+      const items = group.itemIds.flatMap((id) => {
+        const item = itemsById.get(id);
+        if (!item) {
+          return [];
+        }
+        groupedIds.add(id);
+        return [item];
+      });
+      return { id: group.id, label: t(group.labelKey), items };
+    }).filter((group) => group.items.length > 0);
+    const ungroupedItems = visibleTopNav.filter((item) => !groupedIds.has(item.id));
+
+    return ungroupedItems.length > 0
+      ? [...groups, { id: "more", label: t("nav.group.more"), items: ungroupedItems }]
+      : groups;
+  }, [t, visibleTopNav]);
 
   const hasImportsForView = React.useCallback(
     (viewId: ViewId) => hasImportItemsForView(pendingImportCounts, viewId),
@@ -475,66 +515,76 @@ function RootSidebarContent({
       <Sidebar
         variant="floating"
         collapsible={isMobile ? "offcanvas" : "none"}
-        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:sticky md:self-start md:top-[calc(var(--root-header-height,0px)+1rem)] md:max-h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
+        className="overflow-hidden rounded-none border-0 md:-ml-4 md:sticky md:self-start md:top-[calc(var(--root-header-height,0px)+1rem)] md:max-h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
       >
-        <SidebarContent className="overflow-y-auto rounded-lg bg-background">
-          <SidebarGroup>
-            <SidebarMenu className="space-y-1">
-              {visibleTopNav.map((item, index) => {
-                const Icon = item.icon;
-                const isMediaSection = ["movies", "series", "anime"].includes(item.id);
-                const isSettingsTop = item.id === "settings";
-                const isSystemTop = item.id === "system";
-                const isActivityTop = item.id === "activity";
-                const isWantedTop = item.id === "wanted";
-                const isActiveMediaSection = isMediaSection && view === item.id;
-                const isActiveSettingsSection = isSettingsTop && view === "settings";
-                const isActiveSystemSection = isSystemTop && view === "system";
-                const isActiveActivitySection = isActivityTop && view === "activity";
-                const isActiveWantedSection = isWantedTop && view === "wanted";
-                const mediaFacetImportBadgeCount = isMediaSection
-                  ? pendingImportCountForNavView(item.id)
-                  : 0;
-                const mediaFacetRequestBadgeCount = isMediaSection
-                  ? pendingMediaRequestCountForNavView(item.id)
-                  : 0;
-                const shouldShowChildren =
-                  isActiveMediaSection ||
-                  isActiveSettingsSection ||
-                  isActiveSystemSection ||
-                  (isActiveActivitySection && hasVisibleActivitySubnav) ||
-                  isActiveWantedSection;
-                const showSeparator = index < visibleTopNav.length - 1;
-                if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
-                  return (
-                    <React.Fragment key={item.id}>
-                      <SidebarMenuItem>
-                        <SidebarMenuButton
-                          id={selectorId("root-sidebar-nav", item.id)}
-                          isActive={view === item.id}
-                          onClick={(event) => {
-                            handleNavigate(event, item.id);
-                          }}
-                        >
-                          <Icon className="h-4 w-4" />
-                          {item.label}
-                        </SidebarMenuButton>
-                        {item.id === "activity" && hasActivityImportBadge ? (
-                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
-                            {activityImportBadgeCount}
-                          </SidebarMenuBadge>
-                        ) : null}
-                        {item.id === "settings" && pluginUpdateCount > 0 ? (
-                          <SidebarMenuBadge className="bg-red-600 text-white dark:bg-red-500 dark:text-white">
-                            {pluginUpdateCount}
-                          </SidebarMenuBadge>
-                        ) : null}
-                      </SidebarMenuItem>
-
-                      {showSeparator ? <SidebarSeparator /> : null}
-                    </React.Fragment>
-                  );
-                }
+        <SidebarHeader className="px-3 pb-3 pt-3">
+          <div className="flex items-center gap-3">
+            <ScryerLogo className="h-10! w-10! drop-shadow-[0_10px_18px_rgba(var(--scry-accent-rgb),0.22)]" />
+            <span data-slot="brand-wordmark" className="text-[21px] font-bold leading-none text-foreground">
+              Scryer
+            </span>
+          </div>
+        </SidebarHeader>
+        <SidebarContent className="overflow-y-auto px-2 pb-2">
+          {groupedTopNav.map((group) => (
+            <SidebarGroup key={group.id} className="px-0 py-1 first:pt-0">
+              <SidebarGroupLabel className="h-6 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/45">
+                {group.label}
+              </SidebarGroupLabel>
+              <SidebarMenu className="space-y-0.5">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const isMediaSection = ["movies", "series", "anime"].includes(item.id);
+                  const isSettingsTop = item.id === "settings";
+                  const isSystemTop = item.id === "system";
+                  const isActivityTop = item.id === "activity";
+                  const isWantedTop = item.id === "wanted";
+                  const isActiveMediaSection = isMediaSection && view === item.id;
+                  const isActiveSettingsSection = isSettingsTop && view === "settings";
+                  const isActiveSystemSection = isSystemTop && view === "system";
+                  const isActiveActivitySection = isActivityTop && view === "activity";
+                  const isActiveWantedSection = isWantedTop && view === "wanted";
+                  const mediaFacetImportBadgeCount = isMediaSection
+                    ? pendingImportCountForNavView(item.id)
+                    : 0;
+                  const mediaFacetRequestBadgeCount = isMediaSection
+                    ? pendingMediaRequestCountForNavView(item.id)
+                    : 0;
+                  const shouldShowChildren =
+                    isActiveMediaSection ||
+                    isActiveSettingsSection ||
+                    isActiveSystemSection ||
+                    (isActiveActivitySection && hasVisibleActivitySubnav) ||
+                    isActiveWantedSection;
+                  if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
+                    return (
+                      <React.Fragment key={item.id}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId("root-sidebar-nav", item.id)}
+                            isActive={view === item.id}
+                            className="h-9 rounded-[10px] px-2.5 text-[13px] font-medium"
+                            onClick={(event) => {
+                              handleNavigate(event, item.id);
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                          {item.id === "activity" && hasActivityImportBadge ? (
+                            <SidebarMenuBadge className="bg-primary text-primary-foreground">
+                              {activityImportBadgeCount}
+                            </SidebarMenuBadge>
+                          ) : null}
+                          {item.id === "settings" && pluginUpdateCount > 0 ? (
+                            <SidebarMenuBadge className="bg-red-600 text-white dark:bg-red-500 dark:text-white">
+                              {pluginUpdateCount}
+                            </SidebarMenuBadge>
+                          ) : null}
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
 
                 return (
                     <React.Fragment key={item.id}>
@@ -542,6 +592,7 @@ function RootSidebarContent({
                         <SidebarMenuButton
                           id={selectorId("root-sidebar-nav", item.id)}
                           isActive={view === item.id}
+                          className="h-9 rounded-[10px] px-2.5 text-[13px] font-medium"
                           onClick={(event) => {
                             if (isSettingsTop) {
                               handleNavigate(event, "settings", settingsSection);
@@ -613,6 +664,7 @@ function RootSidebarContent({
                                   <SidebarMenuSubButton
                                     id={selectorId("root-sidebar-settings", entry.id)}
                                     isActive={settingsSection === entry.id}
+                                    className="rounded-[9px] text-[12px]"
                                     onClick={(event) => {
                                       handleNavigate(event, "settings", entry.id);
                                     }}
@@ -630,6 +682,7 @@ function RootSidebarContent({
                                   <SidebarMenuSubButton
                                     id={selectorId("root-sidebar-system", entry.id)}
                                     isActive={systemSection === entry.id}
+                                    className="rounded-[9px] text-[12px]"
                                     onClick={(event) => {
                                       handleNavigate(event, "system", undefined, undefined, entry.id);
                                     }}
@@ -644,6 +697,7 @@ function RootSidebarContent({
                                   <SidebarMenuSubButton
                                     id={selectorId("root-sidebar-activity", entry.id)}
                                     isActive={activitySection === entry.id}
+                                    className="rounded-[9px] text-[12px]"
                                     onClick={(event) => {
                                       handleNavigate(
                                         event,
@@ -669,6 +723,7 @@ function RootSidebarContent({
                                   <SidebarMenuSubButton
                                     id={selectorId("root-sidebar-wanted", entry.id)}
                                     isActive={wantedSection === entry.id}
+                                    className="rounded-[9px] text-[12px]"
                                     onClick={(event) => {
                                       handleNavigate(
                                         event,
@@ -691,6 +746,7 @@ function RootSidebarContent({
                                     <SidebarMenuSubButton
                                       id={selectorId("root-sidebar-media", item.id, "overview")}
                                       isActive={contentSettingsSection === "overview"}
+                                      className="rounded-[9px] text-[12px]"
                                       onClick={(event) => {
                                         handleNavigate(event, item.id, undefined, "overview");
                                       }}
@@ -704,6 +760,7 @@ function RootSidebarContent({
                                     <SidebarMenuSubButton
                                       id={selectorId("root-sidebar-media", item.id, "import")}
                                       isActive={contentSettingsSection === "import"}
+                                      className="rounded-[9px] text-[12px]"
                                       onClick={(event) => {
                                         handleNavigate(event, item.id, undefined, "import");
                                       }}
@@ -720,6 +777,7 @@ function RootSidebarContent({
                                     <SidebarMenuSubButton
                                       id={selectorId("root-sidebar-media", item.id, "requests")}
                                       isActive={contentSettingsSection === "requests"}
+                                      className="rounded-[9px] text-[12px]"
                                       onClick={(event) => {
                                         handleNavigate(event, item.id, undefined, "requests");
                                       }}
@@ -740,6 +798,7 @@ function RootSidebarContent({
                                       <SidebarMenuSubButton
                                         id={selectorId("root-sidebar-media", item.id, "settings")}
                                         isActive={isSettingsSubPage(contentSettingsSection)}
+                                        className="rounded-[9px] text-[12px]"
                                         onClick={(event) => {
                                           handleNavigate(event, item.id, undefined, "library");
                                         }}
@@ -754,6 +813,7 @@ function RootSidebarContent({
                                               <SidebarMenuSubButton
                                                 id={selectorId("root-sidebar-media", item.id, subPage.id)}
                                                 isActive={contentSettingsSection === subPage.id}
+                                                className="rounded-[9px] text-[12px]"
                                                 onClick={(event) => {
                                                   handleNavigate(event, item.id, undefined, subPage.id);
                                                 }}
@@ -772,15 +832,14 @@ function RootSidebarContent({
                         </SidebarMenuSub>
                       </SidebarGroupContent>
                     ) : null}
-
-                    {showSeparator ? <SidebarSeparator /> : null}
                   </React.Fragment>
                 );
               })}
             </SidebarMenu>
           </SidebarGroup>
+          ))}
         </SidebarContent>
-        <SidebarFooter className="px-2 py-1.5">
+        <SidebarFooter className="border-t border-border/70 px-3 py-2">
           <div className="flex items-center justify-between gap-2">
             {themeMounted ? (
               <button

@@ -1,9 +1,7 @@
 
 import * as React from "react";
 import { ChevronDown, Loader2, LogOut, Plus, Search, Send, User, UserRound, X } from "lucide-react";
-import { useTheme } from "next-themes";
 import { useNavigate } from "react-router-dom";
-import ScryerLogo from "@/components/scryer-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -90,7 +88,6 @@ export const RootHeader = React.memo(function RootHeader({
   } = searchState;
   const t = useTranslate();
   const isMobile = useIsMobile();
-  const { theme } = useTheme();
   const navigate = useNavigate();
   const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
   const headerRef = React.useRef<HTMLElement>(null);
@@ -548,24 +545,13 @@ export const RootHeader = React.memo(function RootHeader({
           config={routeCommandPalette}
           onOpenOverview={onOpenOverview}
         />
-        <div className="mx-auto flex w-full max-w-[1480px] items-center gap-3 px-3 py-3 pr-14 sm:gap-4 sm:pr-3">
-          <div
-            className="shrink-0"
-            style={{ fontFamily: "var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif" }}
-          >
-            <div className="flex flex-col items-center">
-              <ScryerLogo />
-              <span data-slot="brand-wordmark" className="hidden text-3xl font-bold tracking-tight text-foreground sm:block">
-                Scryer
-              </span>
-            </div>
-          </div>
+        <div className="mx-auto flex w-full max-w-[1720px] items-center gap-3 px-4 py-2.5 pr-14 sm:gap-4 sm:pr-4">
           <form
-            className="relative ml-auto flex min-w-0 flex-1 items-center gap-3"
+            className="relative flex min-w-0 flex-1 items-center justify-center gap-3"
             onSubmit={handleSearchSubmit}
           >
-            <div ref={searchShellRef} className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground sm:h-7 sm:w-7" />
+            <div ref={searchShellRef} className="relative w-full max-w-[560px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="global-search-input"
                 ref={globalSearchInputRef}
@@ -574,10 +560,7 @@ export const RootHeader = React.memo(function RootHeader({
                 onFocus={handleSearchFocus}
                 onKeyDown={handleSearchEscape}
                 data-ui="global-search"
-                className={cn(
-                  "h-12 w-full pl-10 pr-3 text-base placeholder:text-base sm:h-14 sm:pl-12 sm:text-xl sm:placeholder:text-xl placeholder-heading-font",
-                  theme !== "pride" && "border-emerald-500/70 focus-visible:border-emerald-400 focus-visible:ring-emerald-400/45",
-                )}
+                className="h-10 w-full rounded-xl border-border/80 bg-field/80 pl-9 pr-3 text-sm shadow-none placeholder:text-sm focus-visible:border-primary/70 focus-visible:ring-primary/25"
                 placeholder={t("search.globalPlaceholder")}
                 aria-label={t("search.globalPlaceholder")}
               />

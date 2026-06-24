@@ -117,7 +117,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3.5">
       {titles.map((title) => (
         <PosterCard
           key={title.id}
@@ -168,7 +168,7 @@ const PosterCard = React.memo(function PosterCard({
 
   return (
     <div className="cv-auto-poster group">
-      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[0_10px_24px_rgba(2,6,23,0.18)]">
         <div className="relative">
           <button
             type="button"

@@ -82,6 +82,10 @@ const en: LocaleDictionary = {
   "nav.import": "Import",
   "nav.system": "System",
   "nav.group": "Navigation",
+  "nav.group.catalogs": "Catalogs",
+  "nav.group.automation": "Automation",
+  "nav.group.configuration": "Configuration",
+  "nav.group.more": "More",
 
   "command.paletteTitle": "Go to",
   "command.paletteDescription":

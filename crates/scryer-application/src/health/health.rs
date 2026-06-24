@@ -344,8 +344,6 @@ impl AppUseCase {
     }
 
     async fn check_disk_space_health(&self) -> Vec<HealthCheckResult> {
-        let mut seen = HashSet::new();
-        let mut results = Vec::new();
         let root_folders = match self.health_library_roots().await {
             Ok(root_folders) => root_folders,
             Err(error) => {
@@ -357,45 +355,56 @@ impl AppUseCase {
             }
         };
 
-        for root in root_folders {
-            if !seen.insert(root.normalized_path.clone()) {
-                continue;
-            }
-            let label = health_library_root_label(&root);
-
-            #[cfg(unix)]
-            if let Some(stat) = statvfs_path(&root.path) {
-                let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
-                let mb_100 = 100 * 1024 * 1024;
-                let mb_500 = 500 * 1024 * 1024;
-
-                if free < mb_100 {
-                    results.push(HealthCheckResult {
-                        source: "DiskSpace".into(),
-                        status: HealthCheckStatus::Error,
-                        message: format!(
-                            "{} disk space critically low: {} MB free at {}",
-                            label,
-                            free / (1024 * 1024),
-                            root.path
-                        ),
-                    });
-                } else if free < mb_500 {
-                    results.push(HealthCheckResult {
-                        source: "DiskSpace".into(),
-                        status: HealthCheckStatus::Warning,
-                        message: format!(
-                            "{} disk space low: {} MB free at {}",
-                            label,
-                            free / (1024 * 1024),
-                            root.path
-                        ),
-                    });
-                }
-            }
+        #[cfg(not(unix))]
+        {
+            let _ = root_folders;
+            Vec::new()
         }
 
-        results
+        #[cfg(unix)]
+        {
+            let mut seen = HashSet::new();
+            let mut results = Vec::new();
+
+            for root in root_folders {
+                if !seen.insert(root.normalized_path.clone()) {
+                    continue;
+                }
+                let label = health_library_root_label(&root);
+
+                if let Some(stat) = statvfs_path(&root.path) {
+                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                    let mb_100 = 100 * 1024 * 1024;
+                    let mb_500 = 500 * 1024 * 1024;
+
+                    if free < mb_100 {
+                        results.push(HealthCheckResult {
+                            source: "DiskSpace".into(),
+                            status: HealthCheckStatus::Error,
+                            message: format!(
+                                "{} disk space critically low: {} MB free at {}",
+                                label,
+                                free / (1024 * 1024),
+                                root.path
+                            ),
+                        });
+                    } else if free < mb_500 {
+                        results.push(HealthCheckResult {
+                            source: "DiskSpace".into(),
+                            status: HealthCheckStatus::Warning,
+                            message: format!(
+                                "{} disk space low: {} MB free at {}",
+                                label,
+                                free / (1024 * 1024),
+                                root.path
+                            ),
+                        });
+                    }
+                }
+            }
+
+            results
+        }
     }
 }
 

@@ -1635,7 +1635,7 @@ function AuthenticatedHomePage({
                         </DialogContent>
                       </Dialog>
 
-                      <div className="mx-auto flex w-full max-w-[1480px] flex-1 min-h-0 px-3 pb-10 pt-4">
+                      <div className="mx-auto flex w-full max-w-[1720px] flex-1 min-h-0 px-4 pb-10 pt-4">
                         <RootSidebar
                           topNav={topNav}
                           view={view}
