@@ -1380,6 +1380,12 @@ const en: LocaleDictionary = {
     "Media facet being evaluated, typically movie, series, or anime",
   "settings.refCtxCategory":
     "Category hint used for scoring and rule evaluation",
+  "settings.refCtxOriginalLanguage":
+    "Normalized original title language, when metadata provides one",
+  "settings.refCtxOriginalCountry":
+    "Normalized original title country, when metadata provides one",
+  "settings.refCtxInferredOriginalAudioLanguage":
+    "Normalized original audio language inferred for unlabeled releases",
   "settings.refCtxTags": "User-defined tags on the title",
   "settings.refCtxHasExisting":
     "True when a file already exists for this title",

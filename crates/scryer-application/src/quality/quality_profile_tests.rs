@@ -571,7 +571,9 @@ fn required_audio_language_match_accepts_canonical_lowercase_codes() {
     profile.criteria.required_audio_languages = vec!["eng".to_string()];
     let w = balanced_weights();
     let mut release = parse_release_metadata("Movie.2024.1080p.WEB-DL.English.H.265");
-    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let title_context = crate::title_audio_language_context(None, None, Some("movie"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(d.allowed);
     assert!(
@@ -590,13 +592,73 @@ fn dual_audio_release_satisfies_required_english() {
     profile.criteria.required_audio_languages = vec!["eng".to_string()];
     let w = balanced_weights();
     let mut release = parse_release_metadata("Anime.Show.S01E01.1080p.WEB-DL.DUAL.H.265");
-    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let title_context = crate::title_audio_language_context(None, None, Some("anime"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(d.allowed);
     assert!(
         d.scoring_log
             .iter()
             .any(|e| e.code == "required_audio_languages_match")
+    );
+}
+
+#[test]
+fn french_origin_unlabeled_release_blocks_required_english() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Film.2024.1080p.WEB-DL.H.265");
+    let title_context =
+        crate::title_audio_language_context(None, Some("France"), Some("movie"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(!d.allowed);
+    assert!(
+        d.block_codes
+            .contains(&"required_audio_language_missing".to_string())
+    );
+}
+
+#[test]
+fn unknown_non_anime_unlabeled_release_satisfies_required_english() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Movie.2024.1080p.WEB-DL.H.265");
+    let title_context = crate::title_audio_language_context(None, None, Some("movie"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(d.allowed);
+}
+
+#[test]
+fn non_anime_dual_audio_does_not_satisfy_required_english_by_itself() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["eng".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Movie.2024.1080p.WEB-DL.DUAL.H.265");
+    let title_context =
+        crate::title_audio_language_context(None, Some("France"), Some("movie"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(!d.allowed);
+    assert!(
+        d.block_codes
+            .contains(&"required_audio_language_missing".to_string())
     );
 }
 
@@ -609,7 +671,9 @@ fn japanese_only_release_still_blocks_required_english() {
     profile.criteria.required_audio_languages = vec!["eng".to_string()];
     let w = balanced_weights();
     let mut release = parse_release_metadata("Anime.Show.S01E01.1080p.WEB-DL.JAPANESE.H.265");
-    release.languages_audio = crate::release_audio_language_hints(&release, None);
+    let title_context = crate::title_audio_language_context(None, None, Some("anime"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(!d.allowed);
     assert!(

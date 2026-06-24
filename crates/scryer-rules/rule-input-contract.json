@@ -338,6 +338,21 @@
           "descKey": "settings.refCtxCategory"
         },
         {
+          "field": "original_language",
+          "type": "string?",
+          "descKey": "settings.refCtxOriginalLanguage"
+        },
+        {
+          "field": "original_country",
+          "type": "string?",
+          "descKey": "settings.refCtxOriginalCountry"
+        },
+        {
+          "field": "inferred_original_audio_language",
+          "type": "string",
+          "descKey": "settings.refCtxInferredOriginalAudioLanguage"
+        },
+        {
           "field": "tags",
           "type": "string[]",
           "descKey": "settings.refCtxTags"
