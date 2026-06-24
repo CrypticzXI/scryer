@@ -34,6 +34,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { handleFixTitleMatchComplete as applyFixTitleMatchCompletion } from "@/lib/fix-title-match";
 import { useTitleDownloadQueue } from "@/lib/hooks/use-title-download-queue";
 import { useTitleOverviewReactiveRefresh } from "@/lib/hooks/use-title-overview-reactive-refresh";
+import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh-kinds";
 import {
   createEmptyTitleOverviewDownloadFeedbackSnapshot,
   fetchTitleOverviewDownloadFeedbackSnapshot,
@@ -1159,24 +1160,12 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     await refreshTitleDetail();
   }, [refreshTitleDetail]);
 
-  const IMPORT_KINDS = React.useMemo(
-    () =>
-      new Set([
-        "movie_downloaded",
-        "series_episode_imported",
-        "file_analyzed",
-        "file_upgraded",
-        "subtitle_downloaded",
-      ]),
-    [],
-  );
-
   useTitleOverviewReactiveRefresh({
     titleId,
     blocklistLimit: 300,
     applyNativeSnapshot: applyNativeTitleDetailSnapshot,
     applyDownloadFeedbackSnapshot,
-    importKinds: IMPORT_KINDS,
+    importKinds: TITLE_OVERVIEW_REFRESH_KINDS,
     downloadFeedbackEnabled: hasDownloadClients,
     pause: !titleId,
     onHydrationStarted() {

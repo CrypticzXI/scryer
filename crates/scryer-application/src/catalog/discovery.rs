@@ -531,6 +531,30 @@ impl AppUseCase {
         resolved_profile.criteria.required_audio_languages = required_audio_languages;
         resolved_profile.criteria.scoring_persona = resolved_persona.clone();
         resolved_profile.criteria.facet_persona_overrides.clear();
+        let title_language_metadata = match self.services.catalog.titles.get_by_id(title_id).await {
+            Ok(Some(title)) => Some((title.language, title.country)),
+            Ok(None) => None,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = title_id,
+                    "failed to resolve title language metadata for release scoring"
+                );
+                None
+            }
+        };
+        let title_original_language = title_language_metadata
+            .as_ref()
+            .and_then(|(language, _)| language.as_deref());
+        let title_original_country = title_language_metadata
+            .as_ref()
+            .and_then(|(_, country)| country.as_deref());
+        let title_language_context = crate::title_audio_language_context(
+            title_original_language,
+            title_original_country,
+            category,
+            title_tags,
+        );
         let library_name = match library_id {
             Some(library_id) => match self.services.catalog.libraries.get_by_id(library_id).await {
                 Ok(Some(library)) => Some(library.name),
@@ -579,9 +603,14 @@ impl AppUseCase {
             let parsed_release_metadata =
                 parse_release_metadata_for_target(&result.title, parse_context);
             let mut scored_release_metadata = parsed_release_metadata.clone();
-            scored_release_metadata.languages_audio = crate::release_audio_language_hints(
+            scored_release_metadata.languages_audio = crate::release_audio_language_hints_for_title(
                 &parsed_release_metadata,
                 result.indexer_languages.as_deref(),
+                Some(&title_language_context),
+                !resolved_profile
+                    .criteria
+                    .required_audio_languages
+                    .is_empty(),
             );
 
             let release_coverage = crate::acquisition_coverage::resolve_release_coverage(
@@ -669,6 +698,8 @@ impl AppUseCase {
                     crate::user_rule_input::SearchRuleInputContext {
                         category,
                         library_name: library_name.as_deref(),
+                        original_language: title_language_context.original_language.as_deref(),
+                        original_country: title_language_context.original_country.as_deref(),
                         title_tags,
                         runtime_minutes: candidate_runtime_minutes,
                     },

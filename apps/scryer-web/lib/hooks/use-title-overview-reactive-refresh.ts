@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
-import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
   TitleOverviewNativeSnapshot,
@@ -161,6 +160,4 @@ export function useTitleOverviewReactiveRefresh<
       }
     },
   });
-
-  useImportHistorySubscription(queueRefresh, { pause });
 }

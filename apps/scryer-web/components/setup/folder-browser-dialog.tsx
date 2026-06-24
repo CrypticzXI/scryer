@@ -10,6 +10,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { browsePathQuery } from "@/lib/graphql/queries";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -38,12 +39,10 @@ export function FolderBrowserDialog({
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browsedPath, setBrowsedPath] = useState<string | null>(null);
 
   const browse = useCallback(
-    async (
-      path: string,
-      options?: { fallbackToRootOnError?: boolean },
-    ) => {
+    async (path: string) => {
       const nextPath = path.trim() || "/";
       setCurrentPath(nextPath);
       setLoading(true);
@@ -53,27 +52,27 @@ export function FolderBrowserDialog({
         .toPromise();
       setLoading(false);
       if (gqlError) {
-        if (options?.fallbackToRootOnError && nextPath !== "/") {
-          await browse("/", { fallbackToRootOnError: false });
-          return;
-        }
-        setError(gqlError.message);
+        setEntries([]);
+        setBrowsedPath(null);
+        setError(userFacingGraphQlErrorMessage(gqlError, "Unable to browse folder."));
         return;
       }
       setEntries(data?.browsePath ?? []);
+      setBrowsedPath(nextPath);
     },
     [client],
   );
 
   useEffect(() => {
     if (open) {
-      browse(initialPath || "/", { fallbackToRootOnError: true });
+      browse(initialPath || "/");
     }
   }, [open, initialPath, browse]);
 
   const parentPath = currentPath === "/" ? null : currentPath.replace(/\/[^/]+\/?$/, "") || "/";
 
   const pathSegments = currentPath.split("/").filter(Boolean);
+  const canSelect = !loading && error === null && browsedPath === currentPath;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -118,7 +117,12 @@ export function FolderBrowserDialog({
           <Input
             id="folder-browser-path-input"
             value={currentPath}
-            onChange={(e) => setCurrentPath(e.target.value)}
+            onChange={(e) => {
+              setCurrentPath(e.target.value);
+              setEntries([]);
+              setError(null);
+              setBrowsedPath(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") browse(currentPath);
             }}
@@ -141,8 +145,19 @@ export function FolderBrowserDialog({
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
           ) : error ? (
-            <div className="flex h-full items-center justify-center px-4 text-center text-sm text-destructive">
-              {error}
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm">
+              <p className="text-destructive">{error}</p>
+              {currentPath !== "/" ? (
+                <Button
+                  id="folder-browser-root-recovery"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => browse("/")}
+                >
+                  Browse /
+                </Button>
+              ) : null}
             </div>
           ) : (
             <div className="divide-y divide-border">
@@ -184,6 +199,7 @@ export function FolderBrowserDialog({
           </Button>
           <Button
             id="folder-browser-select"
+            disabled={!canSelect}
             onClick={() => {
               onSelect(currentPath);
               onOpenChange(false);

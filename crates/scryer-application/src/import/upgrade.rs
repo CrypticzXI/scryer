@@ -1281,16 +1281,7 @@ async fn rollback_old_file_disposition(
     match disposition {
         OldFileDisposition::Noop => Ok(()),
         OldFileDisposition::PendingRecycle(result) => {
-            tokio::fs::rename(&result.recycled_path, original_path)
-                .await
-                .map_err(|error| {
-                    AppError::Repository(format!(
-                        "failed to restore pending recycle entry after upgrade DB failure: {} -> {}: {}",
-                        result.recycled_path.display(),
-                        original_path.display(),
-                        error
-                    ))
-                })?;
+            recycle_bin::restore_recycled_file_exact(&result.recycled_path, original_path).await?;
             if let Err(error) =
                 crate::fs_safety::remove_dir_all_safely_if_exists(&result.entry_dir).await
             {

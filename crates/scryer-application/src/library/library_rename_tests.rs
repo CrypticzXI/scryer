@@ -2,6 +2,7 @@ use super::*;
 use chrono::Utc;
 use scryer_domain::{Collection, CollectionType, ExternalId, MediaFacet, Title};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 fn tokens(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -74,10 +75,20 @@ fn render_rename_template_removes_token_spaces() {
 }
 
 #[test]
-fn render_rename_template_preserves_space_filter_in_literal_braces() {
+fn render_rename_template_sanitizes_space_filter_in_literal_braces() {
     let t = tokens(&[("ext", "mkv")]);
     let result = render_rename_template("{{title|space:_}}.{ext}", &t);
-    assert_eq!(result, "{title|space:_}.mkv");
+    assert_eq!(result, "{title space _}.mkv");
+}
+
+#[test]
+fn render_rename_template_sanitizes_escaped_literal_illegal_chars() {
+    let t = tokens(&[("ext", "mkv")]);
+    let result = render_rename_template("{{title|space:_}} {{bad:literal}}.{ext}", &t);
+
+    assert!(!result.contains('|'));
+    assert!(!result.contains(':'));
+    assert_eq!(result, "{title space _} {bad literal}.mkv");
 }
 
 #[test]
@@ -268,6 +279,15 @@ fn sanitize_replaces_question_and_asterisk() {
 }
 
 #[test]
+fn sanitize_replaces_ascii_control_chars() {
+    let result = sanitize_filesystem_component("Bad\u{0000}Name\u{001f}: Cut");
+    assert!(!result.contains('\u{0000}'));
+    assert!(!result.contains('\u{001f}'));
+    assert!(!result.contains(':'));
+    assert_eq!(result, "Bad Name Cut");
+}
+
+#[test]
 fn sanitize_preserves_valid_chars() {
     let result = sanitize_filesystem_component("Movie Title (2024) - 1080p.mkv");
     assert_eq!(result, "Movie Title (2024) - 1080p.mkv");
@@ -310,6 +330,88 @@ fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
     for value in ["Conan", "Comedy", "COM10", "LPT10", "Auxiliary"] {
         assert_eq!(sanitize_filesystem_component(value), value);
     }
+}
+
+#[test]
+fn truncate_generated_filename_preserves_extension_and_byte_budget() {
+    let long_stem = "長".repeat(120);
+    let filename = format!("{long_stem}.mkv");
+    let result = truncate_generated_filename_component(&filename);
+
+    assert!(result.ends_with(".mkv"));
+    assert!(
+        result.len() <= GENERATED_COMPONENT_MAX_BYTES - GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES,
+        "truncated filename exceeded budget: {} bytes",
+        result.len()
+    );
+    assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+}
+
+#[test]
+fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
+    let result = finalize_generated_filename_component("../Unsafe\\Title:Name.mkv");
+
+    assert!(!result.contains('/'));
+    assert!(!result.contains('\\'));
+    assert!(!result.contains(':'));
+    assert_eq!(result, "Unsafe Title Name.mkv");
+}
+
+#[test]
+fn configured_title_folder_path_truncates_generated_folder_component() {
+    let title = test_movie_title(&"Long ".repeat(100));
+    let path = configured_title_folder_path("/library", &title, "{title}", None);
+    let folder = path.file_name().unwrap().to_string_lossy();
+
+    assert!(
+        folder.len() <= GENERATED_COMPONENT_MAX_BYTES - GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES,
+        "truncated folder exceeded budget: {} bytes",
+        folder.len()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn infer_title_folder_path_after_rename_decodes_stored_paths() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let existing_root = PathBuf::from(std::ffi::OsString::from_vec(
+        b"/library/old-\xFF-root".to_vec(),
+    ));
+    let current_path = existing_root.join("Season 01").join("Episode.mkv");
+    let final_path = PathBuf::from("/library/new-root/Season 01/Episode.mkv");
+    let mut title = test_movie_title("Encoded Root");
+    title.folder_path = Some(path_to_stored_string(&existing_root));
+
+    let inferred = infer_title_folder_path_after_rename(
+        &title,
+        &path_to_stored_string(&current_path),
+        &path_to_stored_string(&final_path),
+    )
+    .expect("infer folder path");
+
+    assert_eq!(
+        stored_path_to_path_buf(&inferred),
+        PathBuf::from("/library/new-root")
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn rename_planning_path_key_preserves_case_on_non_windows() {
+    assert_ne!(
+        rename_planning_path_key("/media/Movie.mkv"),
+        rename_planning_path_key("/media/movie.mkv")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn rename_planning_path_key_folds_case_and_separators_on_windows() {
+    assert_eq!(
+        rename_planning_path_key(r"C:\Media\Movie.mkv"),
+        rename_planning_path_key("C:/media/movie.mkv")
+    );
 }
 
 // ── collapse_separators ───────────────────────────────────────────────────

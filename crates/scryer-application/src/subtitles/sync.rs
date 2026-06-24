@@ -554,7 +554,7 @@ fn write_subtitle_atomic(subtitle_path: &Path, bytes: &[u8]) -> AppResult<()> {
         .filter(|path| !path.as_os_str().is_empty());
     let mut temp = match parent {
         Some(parent) => tempfile::NamedTempFile::new_in(parent),
-        None => tempfile::NamedTempFile::new(),
+        None => tempfile::NamedTempFile::new_in("."),
     }
     .map_err(|e| AppError::Repository(format!("cannot create subtitle temp file: {e}")))?;
     temp.write_all(bytes)

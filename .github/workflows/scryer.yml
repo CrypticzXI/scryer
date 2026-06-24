@@ -633,7 +633,7 @@ jobs:
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
-            release_profile: release-lean
+            release_profile: release
             install_nasm: false
             extra_rustflags: ""
           - arch: x86_64
@@ -797,7 +797,7 @@ jobs:
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
-            release_profile: release-windows-portable
+            release_profile: release
             install_nasm: true
             use_clang_cl: false
             use_lld_link: true
@@ -808,7 +808,7 @@ jobs:
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
-            release_profile: release-lean
+            release_profile: release
             install_nasm: false
             use_clang_cl: true
             use_lld_link: true
@@ -900,6 +900,29 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Verify embedded Windows manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "target\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe"
+          $mt = (Get-Command mt.exe -ErrorAction SilentlyContinue).Source
+          if (-not $mt) {
+            $mt = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter mt.exe |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $mt) {
+            throw "mt.exe was not found; cannot verify embedded Windows manifest"
+          }
+          & $mt -nologo "-inputresource:$exe;#1" "-out:embedded-manifest.xml"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $manifest = Get-Content embedded-manifest.xml -Raw
+          if ($manifest -notmatch '<[^>]*longPathAware\b[^>]*>\s*true\s*</[^>]*longPathAware>') {
+            throw "embedded manifest does not contain longPathAware=true"
+          }
+
       - name: Create README.txt
         shell: pwsh
         run: |
@@ -925,6 +948,12 @@ jobs:
 
           To override the key (advanced), set the environment variable
           SCRYER_ENCRYPTION_KEY before starting scryer.
+
+          Long Paths
+          ----------
+          scryer.exe is long-path-aware. Windows must also have long paths
+          enabled system-wide (LongPathsEnabled=1) for paths beyond the
+          legacy 260-character limit to work reliably.
 
           Running as a Windows Service (NSSM)
           ------------------------------------

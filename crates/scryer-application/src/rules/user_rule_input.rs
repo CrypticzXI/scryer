@@ -16,6 +16,8 @@ pub(crate) struct RuleContextInfo<'a> {
     pub title_id: Option<&'a str>,
     pub library_name: Option<&'a str>,
     pub category: Option<&'a str>,
+    pub original_language: Option<&'a str>,
+    pub original_country: Option<&'a str>,
     pub title_tags: &'a [String],
     pub has_existing_file: bool,
     pub existing_score: Option<i32>,
@@ -35,11 +37,13 @@ pub(crate) fn build_rule_input(
     use scryer_rules::*;
 
     let category = context.category.unwrap_or("unknown");
-    let is_anime = context
-        .title_tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case("anime"))
-        || category.eq_ignore_ascii_case("anime");
+    let title_language_context = crate::title_audio_language_context(
+        context.original_language,
+        context.original_country,
+        context.category,
+        context.title_tags,
+    );
+    let is_anime = title_language_context.is_anime;
     let has_release_group = parsed
         .release_group
         .as_ref()
@@ -48,8 +52,12 @@ pub(crate) fn build_rule_input(
     let is_retagged = is_retagged_release(parsed);
     let (episode_release_type, is_season_pack, is_multi_episode) = release_type_details(parsed);
 
-    let languages_audio =
-        crate::release_audio_language_hints(parsed, release_runtime.indexer_languages);
+    let languages_audio = crate::release_audio_language_hints_for_title(
+        parsed,
+        release_runtime.indexer_languages,
+        Some(&title_language_context),
+        !profile.criteria.required_audio_languages.is_empty(),
+    );
 
     UserRuleInput {
         release: ReleaseDoc {
@@ -159,6 +167,10 @@ pub(crate) fn build_rule_input(
             library_name: context.library_name.map(str::to_owned),
             media_type: category.to_string(),
             category: category.to_string(),
+            original_language: title_language_context.original_language,
+            original_country: title_language_context.original_country,
+            inferred_original_audio_language: title_language_context
+                .inferred_original_audio_language,
             tags: context.title_tags.to_vec(),
             has_existing_file: context.has_existing_file,
             existing_score: context.existing_score,
@@ -228,6 +240,8 @@ fn is_retagged_release(parsed: &ParsedReleaseMetadata) -> bool {
 pub(crate) struct SearchRuleInputContext<'a> {
     pub(crate) category: Option<&'a str>,
     pub(crate) library_name: Option<&'a str>,
+    pub(crate) original_language: Option<&'a str>,
+    pub(crate) original_country: Option<&'a str>,
     pub(crate) title_tags: &'a [String],
     pub(crate) runtime_minutes: Option<i32>,
 }
@@ -262,6 +276,8 @@ pub(crate) fn build_search_rule_input(
             title_id: None,
             library_name: context.library_name,
             category: context.category,
+            original_language: context.original_language,
+            original_country: context.original_country,
             title_tags: context.title_tags,
             has_existing_file: false,
             existing_score: None,
@@ -425,6 +441,8 @@ mod tests {
             SearchRuleInputContext {
                 category: Some("movie"),
                 library_name: Some("Movies"),
+                original_language: Some("fr-FR"),
+                original_country: Some("France"),
                 title_tags: &["anime".to_string()],
                 runtime_minutes: Some(120),
             },
@@ -433,6 +451,9 @@ mod tests {
         let value = serde_json::to_value(input).unwrap();
         assert!(value["file"].is_null());
         assert_eq!(value["context"]["library_name"], "Movies");
+        assert_eq!(value["context"]["original_language"], "fra");
+        assert_eq!(value["context"]["original_country"], "FR");
+        assert_eq!(value["context"]["inferred_original_audio_language"], "fra");
         assert_eq!(value["release"]["extra"]["indexer"], "test");
         assert_eq!(value["release"]["is_password_protected"], true);
     }
@@ -481,6 +502,8 @@ mod tests {
                 SearchRuleInputContext {
                     category: Some("movie"),
                     library_name: Some("Movies"),
+                    original_language: None,
+                    original_country: None,
                     title_tags: &[],
                     runtime_minutes: Some(120),
                 },
@@ -539,6 +562,8 @@ mod tests {
             SearchRuleInputContext {
                 category: Some("movie"),
                 library_name: Some("Movies"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 runtime_minutes: Some(120),
             },
@@ -578,6 +603,8 @@ mod tests {
                 title_id: Some("title-1"),
                 library_name: Some("Movies"),
                 category: Some("movie"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: true,
                 existing_score: Some(900),
@@ -617,6 +644,8 @@ mod tests {
                 title_id: None,
                 library_name: None,
                 category: Some("movie"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: false,
                 existing_score: None,
@@ -659,6 +688,8 @@ mod tests {
                 title_id: None,
                 library_name: None,
                 category: Some("movie"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: false,
                 existing_score: None,
@@ -700,6 +731,8 @@ mod tests {
                 title_id: None,
                 library_name: None,
                 category: Some("movie"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: false,
                 existing_score: None,
@@ -734,6 +767,8 @@ mod tests {
                 title_id: Some("series-1"),
                 library_name: Some("Series"),
                 category: Some("series"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: false,
                 existing_score: None,
@@ -773,6 +808,8 @@ mod tests {
                 title_id: None,
                 library_name: None,
                 category: Some("movie"),
+                original_language: None,
+                original_country: None,
                 title_tags: &[],
                 has_existing_file: false,
                 existing_score: None,

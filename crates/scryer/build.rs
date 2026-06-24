@@ -8,6 +8,7 @@ use scryer_runtime_info::{determine_build_lane, validate_build_lane_assertion};
 
 fn main() {
     let compiled_build_lane = compiled_build_lane();
+    compile_windows_resources();
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is not set");
     let output_path = Path::new(&out_dir).join("embedded_ui_assets.rs");
     let mut output = String::new();
@@ -132,6 +133,19 @@ fn main() {
         compiled_build_lane.as_str()
     );
     println!("cargo:rerun-if-env-changed=SCRYER_BUILD_LANE");
+}
+
+fn compile_windows_resources() {
+    println!("cargo:rerun-if-changed=resources/windows/scryer.rc");
+    println!("cargo:rerun-if-changed=resources/windows/scryer.exe.manifest");
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    embed_resource::compile("resources/windows/scryer.rc", embed_resource::NONE)
+        .manifest_required()
+        .unwrap_or_else(|error| panic!("failed to embed Windows application manifest: {error}"));
 }
 
 fn compiled_build_lane() -> scryer_runtime_info::BinaryLane {
