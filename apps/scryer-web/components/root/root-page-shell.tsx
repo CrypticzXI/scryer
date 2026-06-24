@@ -93,6 +93,7 @@ import {
   isMediaSettingsSection,
   isProtectedSettingsRoute,
 } from "@/lib/utils/routes";
+import { cn } from "@/lib/utils";
 import {
   FACET_REGISTRY,
   isMediaView,
@@ -303,30 +304,36 @@ function SmgUpgradeBanner({
 
   return (
     <div
-      className={
-        isDeprecated
-          ? "border-b border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-900 dark:bg-amber-950/70 dark:text-amber-100"
-          : "border-b border-red-300 bg-red-100 text-red-950 dark:border-red-900 dark:bg-red-950/70 dark:text-red-100"
-      }
+      data-slot="root-shell-notice"
+      className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] text-[var(--scry-body)] shadow-[0_8px_28px_rgba(2,6,23,0.14)] backdrop-blur"
     >
       <div className="mx-auto flex w-full max-w-[1480px] items-start gap-3 px-4 py-3">
-        <Icon className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
+        <span
+          className={cn(
+            "mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-[10px] border shadow-[0_8px_20px_rgba(2,6,23,0.10)]",
+            isDeprecated
+              ? "border-[rgba(var(--scry-accent-rgb),0.28)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-ring)]"
+              : "border-destructive/30 bg-destructive/10 text-destructive",
+          )}
+        >
+          <Icon className="h-4 w-4" aria-hidden="true" />
+        </span>
         <div className="min-w-0">
-          <div className="font-semibold">
+          <div className="font-semibold text-[var(--scry-ink2)]">
             {isDeprecated
               ? t("smgUpgrade.deprecatedTitle")
               : t("smgUpgrade.blockedTitle")}
           </div>
-          <div className="mt-0.5 text-sm">
+          <div className="mt-0.5 text-sm text-[var(--scry-muted)]">
             {isDeprecated
               ? t("smgUpgrade.deprecatedBody")
               : t("smgUpgrade.blockedBody")}
           </div>
           {serverMessage ? (
-            <div className="mt-1 text-sm opacity-90">{serverMessage}</div>
+            <div className="mt-1 text-sm text-[var(--scry-body)]">{serverMessage}</div>
           ) : null}
           {details.length > 0 ? (
-            <div className="mt-1 text-xs font-medium uppercase tracking-wide opacity-80">
+            <div className="mt-1 text-xs font-medium uppercase tracking-wide text-[var(--scry-muted2)]">
               {details.join(" • ")}
             </div>
           ) : null}
@@ -350,15 +357,18 @@ function SmgScryerUpdateBanner({
   const releaseUrl = notice.releaseUrl?.trim() || null;
 
   return (
-    <div className="border-b border-sky-200/80 bg-sky-50/90 text-sky-950 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-100">
+    <div
+      data-slot="root-shell-notice"
+      className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] text-[var(--scry-body)] shadow-[0_8px_28px_rgba(var(--scry-accent-rgb),0.10)] backdrop-blur"
+    >
       <div className="mx-auto flex w-full max-w-[1480px] items-center gap-3 px-4 py-2 text-sm">
         <CircleFadingArrowUp
-          className="h-4 w-4 flex-none text-sky-600 dark:text-sky-300"
+          className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1 truncate">
-          <span className="font-medium">{t("smgUpdate.title")}</span>
-          <span className="ml-2 text-sky-800/80 dark:text-sky-100/75">
+          <span className="font-medium text-[var(--scry-ink2)]">{t("smgUpdate.title")}</span>
+          <span className="ml-2 text-[var(--scry-muted)]">
             {t("smgUpdate.body", {
               current: currentVersion || t("label.unknown"),
               latest: latestVersion || t("label.unknown"),
@@ -370,7 +380,7 @@ function SmgScryerUpdateBanner({
             href={releaseUrl}
             target="_blank"
             rel="noreferrer"
-            className="flex-none rounded-md border border-sky-300/80 px-2.5 py-1 text-xs font-medium text-sky-800 transition hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700 dark:text-sky-100 dark:hover:bg-sky-900"
+            className="flex-none rounded-[8px] border border-[var(--scry-border2)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2.5 py-1 text-xs font-medium text-[var(--scry-accent-text)] transition hover:border-[var(--scry-bhover2)] hover:bg-[rgba(var(--scry-accent-rgb),0.18)]"
           >
             {t("smgUpdate.releaseNotes")}
           </a>
@@ -378,7 +388,7 @@ function SmgScryerUpdateBanner({
         <button
           type="button"
           onClick={onDismiss}
-          className="flex-none rounded-md p-1 text-sky-700 transition hover:bg-sky-100 hover:text-sky-950 dark:text-sky-200 dark:hover:bg-sky-900 dark:hover:text-white"
+          className="flex-none rounded-[8px] p-1 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
           aria-label={t("label.dismiss")}
         >
           <X className="h-4 w-4" />
@@ -489,6 +499,7 @@ function MainContent({
   wantedSection,
   handleOpenOverview,
   handleImportRouteEmpty,
+  canViewCatalog,
   canAccessActivity,
   canAccessRecycleBin,
   canResolveImports,
@@ -523,6 +534,7 @@ function MainContent({
     episodeId?: string,
   ) => void;
   handleImportRouteEmpty: () => void;
+  canViewCatalog: boolean;
   canAccessActivity: boolean;
   canAccessRecycleBin: boolean;
   canResolveImports: boolean;
@@ -581,7 +593,7 @@ function MainContent({
     return <WantedHistoryContainer key="history" />;
   }
   if (view === "system") {
-    if (!canManageConfig) {
+    if (!canManageSystemSettings) {
       return <ViewLoadingFallback />;
     }
     return (
@@ -603,6 +615,13 @@ function MainContent({
         onNavigateBackToOverview={handleImportRouteEmpty}
       />
     );
+  }
+  if (
+    isMediaView(view) &&
+    contentSettingsSection === "overview" &&
+    !canViewCatalog
+  ) {
+    return <ViewLoadingFallback />;
   }
   if (
     isMediaView(view) &&
@@ -740,8 +759,11 @@ export default function HomePage() {
 
   if (authLoading || (!setupChecked && user)) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      <div
+        data-slot="root-app-frame"
+        className="flex min-h-dvh items-center justify-center text-[var(--scry-body)]"
+      >
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--scry-accent-ring)]" />
       </div>
     );
   }
@@ -749,8 +771,11 @@ export default function HomePage() {
   if (!user) {
     if (effectiveFormLoginEnabled !== true) {
       return (
-        <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        <div
+          data-slot="root-app-frame"
+          className="flex min-h-dvh items-center justify-center text-[var(--scry-body)]"
+        >
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--scry-accent-ring)]" />
         </div>
       );
     }
@@ -1488,27 +1513,47 @@ function AuthenticatedHomePage({
   }, [canViewCatalog, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
-    if (view !== "system" || canManageConfig) {
+    if (view !== "system" || canManageSystemSettings) {
       return;
     }
 
     navigateToAccessibleDefault();
-  }, [canManageConfig, navigateToAccessibleDefault, view]);
+  }, [canManageSystemSettings, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
     if (
-      isMediaView(view) &&
-      contentSettingsSection === "overview" &&
-      !canViewCatalog &&
-      canRequestMedia
+      !isMediaView(view) ||
+      contentSettingsSection !== "overview" ||
+      canViewCatalog
     ) {
-      navigateTo(view, undefined, "requests", undefined, undefined);
+      return;
     }
+
+    if (canRequestMedia) {
+      navigateTo(view, undefined, "requests", undefined, undefined);
+      return;
+    }
+
+    if (canResolveImports) {
+      navigateTo(view, undefined, "import", undefined, undefined);
+      return;
+    }
+
+    if (canManageLibrarySettings && !canManageConfig) {
+      navigateTo(view, undefined, "library", undefined, undefined);
+      return;
+    }
+
+    navigateToAccessibleDefault();
   }, [
+    canManageConfig,
+    canManageLibrarySettings,
     canRequestMedia,
+    canResolveImports,
     canViewCatalog,
     contentSettingsSection,
     navigateTo,
+    navigateToAccessibleDefault,
     view,
   ]);
 
@@ -1642,7 +1687,10 @@ function AuthenticatedHomePage({
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <div className="flex min-h-screen flex-col text-foreground">
+          <div
+            data-slot="root-app-frame"
+            className="flex min-h-dvh flex-col overflow-x-hidden text-[var(--scry-body)]"
+          >
             {serviceRestarting && <BackendRestartOverlay />}
             <Suspense fallback={<ViewLoadingFallback />}>
               <LibraryScanProgressProvider>
@@ -1670,16 +1718,22 @@ function AuthenticatedHomePage({
                       ) : null}
 
                       {!isOnline ? (
-                        <div className="flex items-center justify-center gap-2 bg-amber-900/80 px-4 py-2 text-sm text-amber-100">
-                          <WifiOff className="h-4 w-4 flex-none" />
-                          <span>{t("pwa.offline")}</span>
+                        <div
+                          data-slot="root-shell-notice"
+                          className="flex items-center justify-center gap-2 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] px-4 py-2 text-sm font-medium text-[var(--scry-body)] shadow-[0_8px_28px_rgba(2,6,23,0.14)] backdrop-blur"
+                        >
+                          <WifiOff className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]" />
+                          <span className="text-[var(--scry-ink2)]">{t("pwa.offline")}</span>
                         </div>
                       ) : null}
 
                       {showInstallBanner ? (
-                        <div className="flex items-center justify-center gap-3 bg-emerald-100 dark:bg-emerald-900/60 px-4 py-2 text-sm text-emerald-800 dark:text-emerald-100">
-                          <Download className="h-4 w-4 flex-none" />
-                          <span>
+                        <div
+                          data-slot="root-shell-notice"
+                          className="flex items-center justify-center gap-3 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] px-4 py-2 text-sm text-[var(--scry-body)] shadow-[0_8px_28px_rgba(var(--scry-accent-rgb),0.10)] backdrop-blur"
+                        >
+                          <Download className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]" />
+                          <span className="text-[var(--scry-muted)]">
                             {isIosSafari
                               ? t("pwa.iosInstallHint")
                               : t("pwa.installApp")}
@@ -1688,7 +1742,7 @@ function AuthenticatedHomePage({
                             <button
                               type="button"
                               onClick={() => void promptInstall()}
-                              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-foreground hover:bg-emerald-500"
+                              className="rounded-[8px] border border-[var(--scry-border2)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-3 py-1 text-xs font-semibold text-[var(--scry-accent-text)] transition hover:border-[var(--scry-bhover2)] hover:bg-[rgba(var(--scry-accent-rgb),0.18)]"
                             >
                               {t("pwa.installApp")}
                             </button>
@@ -1696,7 +1750,7 @@ function AuthenticatedHomePage({
                           <button
                             type="button"
                             onClick={dismissInstallBanner}
-                            className="ml-auto text-emerald-700 dark:text-emerald-300 hover:text-foreground"
+                            className="ml-auto rounded-[8px] p-1 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
                             aria-label={t("label.dismiss")}
                           >
                             <X className="h-4 w-4" />
@@ -1754,7 +1808,8 @@ function AuthenticatedHomePage({
 
                       <div
                         ref={shellFrameRef}
-                        className="flex w-full flex-1 min-h-0"
+                        data-slot="root-shell-frame"
+                        className="flex min-h-0 w-full flex-1 min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
                         style={
                           {
                             "--root-shell-top-offset": `${shellTopOffset}px`,
@@ -1784,26 +1839,22 @@ function AuthenticatedHomePage({
                           onNavigate={navigateTo}
                         >
                           <main
-                            className={
-                              view === "wanted" ||
-                              view === "calendar" ||
-                              (isMediaView(view) &&
-                                contentSettingsSection === "requests")
-                                ? "flex min-h-0 flex-1 flex-col"
-                                : "min-h-[70vh]"
-                            }
+                            data-slot="root-main-scroll"
+                            className="flex min-h-[70vh] flex-1 flex-col min-[981px]:min-h-0 min-[981px]:overflow-y-auto"
                           >
                             <Suspense fallback={<ViewLoadingFallback />}>
                               {settingsStepUpPolicyLoadFailed ? (
-                                <div className="mx-auto flex min-h-[360px] max-w-md flex-col items-center justify-center gap-3 text-center">
-                                  <AlertTriangle
-                                    className="h-8 w-8 text-amber-500"
-                                    aria-hidden="true"
-                                  />
-                                  <h2 className="text-lg font-semibold">
+                                <div className="mx-auto flex min-h-[360px] w-full max-w-md flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+                                  <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] text-amber-500 shadow-[0_12px_28px_rgba(2,6,23,0.12)]">
+                                    <AlertTriangle
+                                      className="h-6 w-6"
+                                      aria-hidden="true"
+                                    />
+                                  </div>
+                                  <h2 className="text-lg font-bold text-[var(--scry-ink2)]">
                                     {t("settings.mfaStepUpPolicyLoadFailed")}
                                   </h2>
-                                  <p className="text-sm text-muted-foreground">
+                                  <p className="text-sm leading-6 text-[var(--scry-muted3)]">
                                     {t(
                                       "settings.mfaStepUpPolicyLoadFailedDescription",
                                     )}
@@ -1811,7 +1862,7 @@ function AuthenticatedHomePage({
                                   <button
                                     id="settings-mfa-step-up-policy-retry"
                                     type="button"
-                                    className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+                                    className="rounded-[10px] bg-[var(--scry-accent-grad)] px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(var(--scry-accent-rgb),0.24)] transition hover:brightness-110"
                                     onClick={() =>
                                       void refreshConfigStepUpPolicy()
                                     }
@@ -1848,6 +1899,7 @@ function AuthenticatedHomePage({
                                   wantedSection={wantedSection}
                                   handleOpenOverview={handleOpenOverview}
                                   handleImportRouteEmpty={handleBackToList}
+                                  canViewCatalog={canViewCatalog}
                                   canAccessActivity={canAccessActivity}
                                   canAccessRecycleBin={canAccessRecycleBin}
                                   canResolveImports={canResolveImports}

@@ -96,7 +96,7 @@ pub use import::completed_download as completed_download_handler;
 pub use ports::{
     EpisodeImageUrlUpdate, MediaRequestResolution, MediaRequestResolutionResult,
     MediaRequestSubmissionResult, MediaRequestUpdateResult, SubtitleSyncClient, SubtitleSyncJob,
-    TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
+    TitleArtworkUrlUpdate, TitleDeletePreviewInfo, UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
@@ -445,10 +445,11 @@ pub use types::{
     TitleQualitySummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
     TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
     TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UpdateRecycleBinSettings,
-    UserAuthFactorStatus, WantedCompleteTransition, WantedGrabTransition, WantedItem,
-    WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
-    WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
-    WebauthnCredentialRecord,
+    UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate,
+    UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme, UserAuthFactorStatus,
+    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
+    WantedSearchTransition, WantedStatus, WantedStatusCount, WebauthnChallengeRecord,
+    WebauthnChallengeStart, WebauthnChallengeType, WebauthnCredentialRecord,
 };
 pub use types::{
     ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,

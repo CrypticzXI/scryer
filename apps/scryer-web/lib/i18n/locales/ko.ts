@@ -81,7 +81,7 @@ const ko: LocaleDictionary = {
   "nav.mobileDescription": "기본 Scryer 내비게이션",
   "nav.mobileTrigger": "내비게이션 열기",
   "nav.group.catalogs": "카탈로그",
-  "nav.group.discover": "탐색",
+  "nav.group.requests": "요청",
   "nav.group.automation": "자동화",
   "nav.group.configuration": "구성",
   "nav.group.integrations": "연동",
@@ -556,13 +556,19 @@ const ko: LocaleDictionary = {
   "theme.system": "시스템",
   "theme.switchLabel": "테마 전환 (현재: {{theme}})",
   "search.globalPlaceholder": "영화, 시리즈, 애니메이션, 설정 검색…",
+  "search.globalPlaceholderNoLibrary":
+    "영화, 시리즈, 애니메이션, 설정, 작업 검색…",
   "search.overlayPlaceholder":
     "영화, 시리즈, 애니메이션, 라이브러리, 내비게이션 검색…",
+  "search.overlayPlaceholderNoLibrary":
+    "영화, 시리즈, 애니메이션, 설정, 작업 검색…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Ctrl+K",
   "search.title": "전역 검색",
   "search.subtitle":
     "영화, 시리즈, 애니메이션, 라이브러리, 내비게이션을 검색합니다.",
+  "search.subtitleNoLibrary":
+    "영화, 시리즈, 애니메이션, 설정, 작업을 검색합니다.",
   "search.subtitleWithQuery": "“{{query}}” 결과",
   "search.statusLoading": "“{{query}}” 검색 중…",
   "search.statusResultOne": "“{{query}}” 결과 1개",
@@ -590,16 +596,24 @@ const ko: LocaleDictionary = {
   "search.searchTips": "검색 팁",
   "search.tipTitles":
     "영화, 시리즈, 애니메이션 제목, 카탈로그, 설정 섹션, 작업 이름으로 검색하세요.",
+  "search.tipTitlesNoLibrary":
+    "영화, 시리즈, 애니메이션 제목, 설정 섹션, 작업 이름으로 검색하세요.",
   "search.tipTabs":
     "탭을 사용해 라이브러리, 내비게이션 또는 카탈로그 유형으로 결과를 좁히세요.",
+  "search.tipTabsNoLibrary":
+    "탭을 사용해 내비게이션 또는 카탈로그 유형으로 결과를 좁히세요.",
   "search.tipIndexers":
     "메타데이터 결과에 없는 제목은 인덱서를 확인하기 전에 더 넓은 검색어를 사용하세요.",
   "search.noMatchesFor": "“{{query}}”에 대한 일치 항목 없음",
   "search.emptyHint":
     "다른 영화, 시리즈, 애니메이션, 카탈로그 이름, 설정 섹션 또는 작업을 시도하세요.",
+  "search.emptyHintNoLibrary":
+    "다른 영화, 시리즈, 애니메이션, 설정 섹션 또는 작업을 시도하세요.",
   "search.minimumQueryTitle": "계속 입력",
   "search.minimumQueryHint":
     "라이브러리와 메타데이터를 검색하려면 2자 이상 입력하세요.",
+  "search.minimumQueryHintNoLibrary":
+    "메타데이터를 검색하려면 2자 이상 입력하세요.",
   "search.noCatalogMatches": "관리 중인 카탈로그 매치가 아직 없습니다.",
   "search.noMetadataMatches": "이 섹션에서 아직 메타데이터 매치가 없습니다.",
   "search.alreadyCataloged": "이미 카탈로그에 있음",

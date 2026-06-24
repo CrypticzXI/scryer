@@ -117,9 +117,9 @@ export const SettingsContainer = memo(function SettingsContainer({
   );
 
   return (
-    <Card className="bg-card border-border">
-      <CardHeader className="flex items-center justify-between gap-3">
-        <CardTitle>
+    <Card className="mx-auto w-full max-w-[1280px] overflow-hidden rounded-[22px] border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-surfD),var(--scry-bg))] shadow-[0_20px_60px_rgba(2,6,23,0.12)]">
+      <CardHeader className="flex items-center justify-between gap-3 border-b border-[var(--scry-border3)] px-6 py-5">
+        <CardTitle className="text-[22px] font-bold tracking-normal text-[var(--scry-ink2)]">
           {t("settings.sectionTitle", {
             section:
               settingsSection === "profile"
@@ -163,7 +163,7 @@ export const SettingsContainer = memo(function SettingsContainer({
           </Button>
         ) : null}
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-6 py-6">
         <Suspense fallback={<div className="py-6 text-sm text-muted-foreground">{t("label.loading")}</div>}>
           {settingsSection === "profile" ? (
             <SettingsProfileContainer

@@ -1083,6 +1083,7 @@ pub struct AppCatalogServices {
 #[derive(Clone)]
 pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
+    pub(crate) ui_settings: Arc<dyn UserUiSettingsRepository>,
     pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
     pub(crate) totp: Arc<dyn TotpRepository>,
@@ -1326,6 +1327,7 @@ impl AppServices {
             },
             identity: AppIdentityServices {
                 users,
+                ui_settings: Arc::new(null_repositories::NullUserUiSettingsRepository),
                 external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
                 totp: Arc::new(null_repositories::NullTotpRepository),
@@ -1601,6 +1603,11 @@ impl AppServicesBuilder {
         Arc<dyn WebauthnRepository>
     );
     app_services_builder_setter!(with_totp_store, identity.totp, Arc<dyn TotpRepository>);
+    app_services_builder_setter!(
+        with_user_ui_settings_store,
+        identity.ui_settings,
+        Arc<dyn UserUiSettingsRepository>
+    );
     app_services_builder_setter!(
         with_external_account_store,
         identity.external_accounts,

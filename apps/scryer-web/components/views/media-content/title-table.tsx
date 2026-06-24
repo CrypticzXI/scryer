@@ -38,6 +38,7 @@ import {
   TitleTableLoadingState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
+  useTitleTableVirtualizerRebuild,
 } from "./title-table-shared";
 
 type TitleTableProps = {
@@ -139,6 +140,12 @@ export function TitleTable({
     initialOffset: initialScrollOffset,
     overscan: 5,
   });
+  const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
+    itemCount: sortedTitles.length,
+    loading: titleLoading,
+    scrollRef: titleTableScrollRef,
+    titleVirtualizer,
+  });
   const restoreTitleTableScroll = React.useCallback(
     (nextTop: number) => {
       titleVirtualizer.scrollToOffset(nextTop);
@@ -150,6 +157,7 @@ export function TitleTable({
     ready: !titleLoading && titles.length > 0,
     storageKeySuffix: "poster-table",
     scrollRef: titleTableScrollRef,
+    getMaxScrollTop: getTitleTableMaxScrollTop,
     restoreScrollTop: restoreTitleTableScroll,
   });
 
@@ -514,7 +522,7 @@ export function TitleTable({
       <table data-ui="title-table" data-view={view} className="w-full table-fixed caption-bottom text-sm">
         {titleTableColGroup}
         {titleTableHeader}
-        {virtualItems.length > 0 ? (
+        {sortedTitles.length > 0 ? (
           <TableBody className="[&_tr:last-child]:border-0">
             {topSpacerHeight > 0 ? (
               <tr aria-hidden>
@@ -523,6 +531,9 @@ export function TitleTable({
             ) : null}
             {virtualItems.map((virtualRow) => {
               const item = sortedTitles[virtualRow.index];
+              if (!item) {
+                return null;
+              }
               return <React.Fragment key={virtualRow.key}>{renderTitleRow(item)}</React.Fragment>;
             })}
             {bottomSpacerHeight > 0 ? (

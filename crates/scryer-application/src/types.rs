@@ -1832,6 +1832,235 @@ pub struct HousekeepingReport {
     pub ran_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiTheme {
+    Light,
+    #[default]
+    Dark,
+    Pride,
+    System,
+}
+
+impl UiTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Pride => "pride",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            "pride" => Some(Self::Pride),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDensity {
+    Compact,
+    #[default]
+    Comfortable,
+}
+
+impl UiDensity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Comfortable => "comfortable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "compact" => Some(Self::Compact),
+            "comfortable" => Some(Self::Comfortable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiSidebarMode {
+    Collapsed,
+    #[default]
+    Expanded,
+}
+
+impl UiSidebarMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Collapsed => "collapsed",
+            Self::Expanded => "expanded",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "collapsed" => Some(Self::Collapsed),
+            "expanded" => Some(Self::Expanded),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDefaultLandingView {
+    #[default]
+    Movies,
+    Series,
+    Anime,
+    Activity,
+    Calendar,
+    Wanted,
+    History,
+    Settings,
+    System,
+}
+
+impl UiDefaultLandingView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Movies => "movies",
+            Self::Series => "series",
+            Self::Anime => "anime",
+            Self::Activity => "activity",
+            Self::Calendar => "calendar",
+            Self::Wanted => "wanted",
+            Self::History => "history",
+            Self::Settings => "settings",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "movies" => Some(Self::Movies),
+            "series" => Some(Self::Series),
+            "anime" => Some(Self::Anime),
+            "activity" => Some(Self::Activity),
+            "calendar" => Some(Self::Calendar),
+            "wanted" => Some(Self::Wanted),
+            "history" => Some(Self::History),
+            "settings" => Some(Self::Settings),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiSettingsFacet {
+    Movies,
+    Series,
+    Anime,
+}
+
+impl UiSettingsFacet {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Movies => "movies",
+            Self::Series => "series",
+            Self::Anime => "anime",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "movies" | "movie" => Some(Self::Movies),
+            "series" => Some(Self::Series),
+            "anime" => Some(Self::Anime),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiTableViewMode {
+    Compact,
+    PosterTable,
+}
+
+impl UiTableViewMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::PosterTable => "poster-table",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "compact" => Some(Self::Compact),
+            "poster-table" => Some(Self::PosterTable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiTableColumnSetting {
+    pub facet: UiSettingsFacet,
+    pub table_view_mode: UiTableViewMode,
+    pub column_id: String,
+    pub column_order: i32,
+    pub visible: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiSettings {
+    pub user_id: String,
+    pub theme: UiTheme,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub density: UiDensity,
+    pub sidebar_mode: UiSidebarMode,
+    pub default_landing_view: UiDefaultLandingView,
+    pub table_columns: Vec<UiTableColumnSetting>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiSettingsUpdate {
+    pub theme: UiTheme,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub density: UiDensity,
+    pub sidebar_mode: UiSidebarMode,
+    pub default_landing_view: UiDefaultLandingView,
+    pub table_columns: Vec<UiTableColumnSetting>,
+}
+
+impl UiSettings {
+    pub fn defaults_for_user(user_id: impl Into<String>) -> Self {
+        Self {
+            user_id: user_id.into(),
+            theme: UiTheme::default(),
+            highlight_color: None,
+            secondary_color: None,
+            high_contrast_mode: false,
+            reduce_motion: false,
+            density: UiDensity::default(),
+            sidebar_mode: UiSidebarMode::default(),
+            default_landing_view: UiDefaultLandingView::default(),
+            table_columns: Vec::new(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

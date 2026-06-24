@@ -81,7 +81,7 @@ const es: LocaleDictionary = {
   "nav.mobileDescription": "Navegación principal de Scryer",
   "nav.mobileTrigger": "Abrir navegación",
   "nav.group.catalogs": "Catálogos",
-  "nav.group.discover": "Descubrir",
+  "nav.group.requests": "Solicitudes",
   "nav.group.automation": "Automatización",
   "nav.group.configuration": "Configuración",
   "nav.group.integrations": "Integraciones",
@@ -586,13 +586,19 @@ const es: LocaleDictionary = {
   "theme.system": "Sistema",
   "theme.switchLabel": "Cambiar tema (actual: {{theme}})",
   "search.globalPlaceholder": "Busca películas, series, anime y ajustes…",
+  "search.globalPlaceholderNoLibrary":
+    "Busca películas, series, anime, ajustes y acciones…",
   "search.overlayPlaceholder":
     "Busca películas, series, anime, tu biblioteca y navegación…",
+  "search.overlayPlaceholderNoLibrary":
+    "Busca películas, series, anime, ajustes y acciones…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Ctrl+K",
   "search.title": "Búsqueda global",
   "search.subtitle":
     "Busca películas, series, anime, tu biblioteca y navegación.",
+  "search.subtitleNoLibrary":
+    "Busca películas, series, anime, ajustes y acciones.",
   "search.subtitleWithQuery": "Resultados para “{{query}}”",
   "search.statusLoading": "Buscando “{{query}}”…",
   "search.statusResultOne": "1 resultado para “{{query}}”",
@@ -620,16 +626,24 @@ const es: LocaleDictionary = {
   "search.searchTips": "Consejos de búsqueda",
   "search.tipTitles":
     "Busca por película, serie, anime, catálogo, sección de ajustes o acción.",
+  "search.tipTitlesNoLibrary":
+    "Busca por película, serie, anime, sección de ajustes o acción.",
   "search.tipTabs":
     "Usa las pestañas para limitar resultados a tu biblioteca, navegación o un tipo de catálogo.",
+  "search.tipTabsNoLibrary":
+    "Usa las pestañas para limitar resultados a navegación o un tipo de catálogo.",
   "search.tipIndexers":
     "Usa un término más amplio antes de revisar indexadores para títulos que no aparecen en metadatos.",
   "search.noMatchesFor": "Sin coincidencias para “{{query}}”",
   "search.emptyHint":
     "Prueba otra película, serie, anime, catálogo, sección de ajustes o acción.",
+  "search.emptyHintNoLibrary":
+    "Prueba otra película, serie, anime, sección de ajustes o acción.",
   "search.minimumQueryTitle": "Sigue escribiendo",
   "search.minimumQueryHint":
     "Escribe al menos 2 caracteres para buscar en tu biblioteca y metadatos.",
+  "search.minimumQueryHintNoLibrary":
+    "Escribe al menos 2 caracteres para buscar metadatos.",
   "search.noCatalogMatches": "Aún no hay coincidencias en el catálogo.",
   "search.noMetadataMatches":
     "Aún no hay coincidencias de metadatos en esta sección.",

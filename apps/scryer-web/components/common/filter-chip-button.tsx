@@ -26,9 +26,10 @@ export function FilterChipButton({
       onClick={onClick}
       title={title}
       className={cn(
-        "gap-1.5 text-xs",
-        !selected &&
-          "border-input bg-field text-foreground hover:bg-field/90 hover:text-foreground",
+        "gap-1.5 text-xs font-semibold transition",
+        selected
+          ? "!border-transparent !bg-[var(--scry-accent-grad)] !text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.22)]"
+          : "!border-[var(--scry-border2)] !bg-[var(--scry-inset)] !text-[var(--scry-muted)] hover:!bg-[var(--scry-hover)] hover:!text-[var(--scry-ink2)]",
         className,
       )}
     >

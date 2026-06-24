@@ -81,7 +81,7 @@ const de: LocaleDictionary = {
   "nav.mobileDescription": "Primäre Scryer-Navigation",
   "nav.mobileTrigger": "Navigation öffnen",
   "nav.group.catalogs": "Kataloge",
-  "nav.group.discover": "Entdecken",
+  "nav.group.requests": "Anfragen",
   "nav.group.automation": "Automatisierung",
   "nav.group.configuration": "Konfiguration",
   "nav.group.integrations": "Integrationen",
@@ -577,13 +577,19 @@ const de: LocaleDictionary = {
   "theme.system": "System",
   "theme.switchLabel": "Theme wechseln (aktuell: {{theme}})",
   "search.globalPlaceholder": "Filme, Serien, Anime, Einstellungen suchen…",
+  "search.globalPlaceholderNoLibrary":
+    "Filme, Serien, Anime, Einstellungen und Aktionen suchen…",
   "search.overlayPlaceholder":
     "Filme, Serien, Anime, deine Bibliothek und Navigation suchen…",
+  "search.overlayPlaceholderNoLibrary":
+    "Filme, Serien, Anime, Einstellungen und Aktionen suchen…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Strg+K",
   "search.title": "Globale Suche",
   "search.subtitle":
     "Filme, Serien, Anime, deine Bibliothek und Navigation durchsuchen.",
+  "search.subtitleNoLibrary":
+    "Filme, Serien, Anime, Einstellungen und Aktionen durchsuchen.",
   "search.subtitleWithQuery": "Ergebnisse für „{{query}}“",
   "search.statusLoading": "Suche nach „{{query}}“…",
   "search.statusResultOne": "1 Ergebnis für „{{query}}“",
@@ -611,16 +617,24 @@ const de: LocaleDictionary = {
   "search.searchTips": "Suchtipps",
   "search.tipTitles":
     "Suche nach Film-, Serien- oder Anime-Titel, Katalog, Einstellungsbereich oder Aktionsname.",
+  "search.tipTitlesNoLibrary":
+    "Suche nach Film-, Serien- oder Anime-Titel, Einstellungsbereich oder Aktionsname.",
   "search.tipTabs":
     "Nutze Tabs, um Ergebnisse auf Bibliothek, Navigation oder einen Katalogtyp einzugrenzen.",
+  "search.tipTabsNoLibrary":
+    "Nutze Tabs, um Ergebnisse auf Navigation oder einen Katalogtyp einzugrenzen.",
   "search.tipIndexers":
     "Nutze einen breiteren Begriff, bevor du Indexer für Titel prüfst, die nicht in den Metadaten erscheinen.",
   "search.noMatchesFor": "Keine Treffer für „{{query}}“",
   "search.emptyHint":
     "Versuche einen anderen Film, eine Serie, einen Anime, Katalognamen, Einstellungsbereich oder eine Aktion.",
+  "search.emptyHintNoLibrary":
+    "Versuche einen anderen Film, eine Serie, einen Anime, Einstellungsbereich oder eine Aktion.",
   "search.minimumQueryTitle": "Weitertippen",
   "search.minimumQueryHint":
     "Gib mindestens 2 Zeichen ein, um Bibliothek und Metadaten zu durchsuchen.",
+  "search.minimumQueryHintNoLibrary":
+    "Gib mindestens 2 Zeichen ein, um Metadaten zu durchsuchen.",
   "search.noCatalogMatches": "Noch keine Treffer im verwalteten Katalog.",
   "search.noMetadataMatches": "Noch keine Metadaten-Treffer in diesem Bereich.",
   "search.alreadyCataloged": "Bereits im Katalog",

@@ -81,7 +81,7 @@ const pt_BR: LocaleDictionary = {
   "nav.mobileDescription": "Navegação principal do Scryer",
   "nav.mobileTrigger": "Abrir navegação",
   "nav.group.catalogs": "Catálogos",
-  "nav.group.discover": "Descobrir",
+  "nav.group.requests": "Solicitações",
   "nav.group.automation": "Automação",
   "nav.group.configuration": "Configuração",
   "nav.group.integrations": "Integrações",
@@ -580,13 +580,19 @@ const pt_BR: LocaleDictionary = {
   "theme.system": "Sistema",
   "theme.switchLabel": "Alternar tema (atual: {{theme}})",
   "search.globalPlaceholder": "Buscar filmes, séries, anime e configurações…",
+  "search.globalPlaceholderNoLibrary":
+    "Buscar filmes, séries, anime, configurações e ações…",
   "search.overlayPlaceholder":
     "Buscar filmes, séries, anime, sua biblioteca e navegação…",
+  "search.overlayPlaceholderNoLibrary":
+    "Buscar filmes, séries, anime, configurações e ações…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Ctrl+K",
   "search.title": "Busca global",
   "search.subtitle":
     "Buscar filmes, séries, anime, sua biblioteca e navegação.",
+  "search.subtitleNoLibrary":
+    "Buscar filmes, séries, anime, configurações e ações.",
   "search.subtitleWithQuery": "Resultados para “{{query}}”",
   "search.statusLoading": "Buscando “{{query}}”…",
   "search.statusResultOne": "1 resultado para “{{query}}”",
@@ -614,16 +620,24 @@ const pt_BR: LocaleDictionary = {
   "search.searchTips": "Dicas de busca",
   "search.tipTitles":
     "Busque por filme, série, anime, catálogo, seção de configurações ou ação.",
+  "search.tipTitlesNoLibrary":
+    "Busque por filme, série, anime, seção de configurações ou ação.",
   "search.tipTabs":
     "Use abas para limitar resultados à biblioteca, navegação ou um tipo de catálogo.",
+  "search.tipTabsNoLibrary":
+    "Use abas para limitar resultados à navegação ou a um tipo de catálogo.",
   "search.tipIndexers":
     "Use um termo mais amplo antes de verificar indexadores para títulos ausentes dos metadados.",
   "search.noMatchesFor": "Nenhuma correspondência para “{{query}}”",
   "search.emptyHint":
     "Tente outro filme, série, anime, catálogo, seção de configurações ou ação.",
+  "search.emptyHintNoLibrary":
+    "Tente outro filme, série, anime, seção de configurações ou ação.",
   "search.minimumQueryTitle": "Continue digitando",
   "search.minimumQueryHint":
     "Digite pelo menos 2 caracteres para buscar na sua biblioteca e metadados.",
+  "search.minimumQueryHintNoLibrary":
+    "Digite pelo menos 2 caracteres para buscar metadados.",
   "search.noCatalogMatches": "Nenhuma correspondência no catálogo ainda.",
   "search.noMetadataMatches":
     "Nenhuma correspondência de metadados nesta seção ainda.",

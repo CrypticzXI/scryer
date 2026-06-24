@@ -35,6 +35,7 @@ import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import {
   Archive,
   Bell,
+  Captions,
   ChevronRight,
   Database,
   Download,
@@ -42,11 +43,15 @@ import {
   Inbox,
   Monitor,
   Moon,
+  Puzzle,
   Rainbow,
   Server,
+  Settings2,
   Shield,
   SlidersHorizontal,
   Sun,
+  Timer,
+  User,
   Users,
 } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -120,8 +125,8 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     ],
   },
   {
-    id: "discover",
-    labelKey: "nav.group.discover",
+    id: "requests",
+    labelKey: "nav.group.requests",
     items: [{ kind: "requests", icon: Inbox }],
   },
   {
@@ -164,10 +169,11 @@ const PROMOTED_SETTINGS_SHORTCUT_IDS = new Set<SettingsSection>(
 );
 const DEFAULT_SETTINGS_SECTION_ORDER: SettingsSection[] = [
   "general",
-  "qualityProfiles",
-  "security",
-  "users",
   "profile",
+  "qualityProfiles",
+  "delayProfiles",
+  "plugins",
+  "subtitles",
 ];
 const MEDIA_NAV_VIEW_IDS: ViewId[] = ["movies", "series", "anime"];
 
@@ -200,16 +206,19 @@ type RootSidebarProps = {
 const settingsEntries: Array<{
   id: SettingsSection;
   label: (t: Translate) => string;
+  icon?: LucideIcon;
   requiredAnyAppPermission?: AppPermission[];
   requiredAnyLibraryPermission?: LibraryPermission[];
 }> = [
   {
     id: "profile",
     label: (t) => t("settings.profile"),
+    icon: User,
   },
   {
     id: "general",
     label: (t) => t("settings.general"),
+    icon: Settings2,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
@@ -235,11 +244,13 @@ const settingsEntries: Array<{
   {
     id: "qualityProfiles",
     label: (t) => t("settings.qualityProfiles"),
+    icon: SlidersHorizontal,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "delayProfiles",
     label: (t) => t("settings.delayProfiles"),
+    icon: Timer,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
@@ -265,6 +276,7 @@ const settingsEntries: Array<{
   {
     id: "plugins",
     label: (t) => t("settings.plugins"),
+    icon: Puzzle,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
@@ -280,6 +292,7 @@ const settingsEntries: Array<{
   {
     id: "subtitles",
     label: (t) => t("settings.subtitles"),
+    icon: Captions,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
@@ -296,38 +309,16 @@ const SETTINGS_NAV_GROUPS: Array<{
   itemIds: SettingsSection[];
 }> = [
   {
-    id: "account",
-    labelKey: "settings.navGroup.account",
-    itemIds: ["profile", "general"],
-  },
-  {
-    id: "catalogs",
-    labelKey: "settings.navGroup.catalogs",
+    id: "settings",
+    labelKey: "nav.settings",
     itemIds: [
+      "general",
+      "profile",
       "qualityProfiles",
       "delayProfiles",
-      "rules",
-      "acquisition",
-      "post-processing",
-      "subtitles",
-      "recycleBin",
-    ],
-  },
-  {
-    id: "integrations",
-    labelKey: "settings.navGroup.integrations",
-    itemIds: [
-      "mediaServers",
-      "downloadClients",
-      "indexers",
-      "notifications",
       "plugins",
+      "subtitles",
     ],
-  },
-  {
-    id: "system",
-    labelKey: "settings.navGroup.system",
-    itemIds: ["users", "security", "backups"],
   },
 ];
 
@@ -362,10 +353,13 @@ const LEAF_NAV_BADGE_BASE_CLASS =
   "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md px-1 text-[10px] font-medium leading-none tabular-nums";
 
 const TOP_NAV_BUTTON_CLASS =
-  "h-9 rounded-[10px] px-2.5 text-[13px] font-medium transition-colors data-[active=true]:bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.30),rgba(var(--scry-accent-rgb),0.10))] data-[active=true]:font-semibold data-[active=true]:text-foreground data-[active=true]:shadow-[inset_2px_0_0_rgb(var(--scry-accent-rgb)),0_8px_18px_rgba(var(--scry-accent-rgb),0.16)] data-[active=true]:[&>svg]:text-primary";
+  "h-9 rounded-[10px] px-2.5 text-[13px] font-medium transition-colors hover:!bg-[var(--scry-hover)] hover:text-sidebar-accent-foreground data-[active=true]:bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.30),rgba(var(--scry-accent-rgb),0.10))] data-[active=true]:font-semibold data-[active=true]:text-foreground data-[active=true]:shadow-[inset_2px_0_0_rgb(var(--scry-accent-rgb)),0_8px_18px_rgba(var(--scry-accent-rgb),0.16)] data-[active=true]:hover:!bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.30),rgba(var(--scry-accent-rgb),0.10))] data-[active=true]:[&>svg]:text-primary";
 
 const SUB_NAV_BUTTON_CLASS =
-  "rounded-[9px] text-[12px] transition-colors data-[active=true]:!bg-[rgba(var(--scry-accent-rgb),0.14)] data-[active=true]:!bg-none data-[active=true]:text-foreground data-[active=true]:shadow-[inset_2px_0_0_rgb(var(--scry-accent-rgb))]";
+  "min-h-[30px] rounded-[8px] px-[11px] text-[12.5px] font-medium !text-[var(--scry-muted)] transition-colors hover:!bg-[var(--scry-hover)] hover:!text-[var(--scry-body)] data-[active=true]:!bg-[var(--scry-hover)] data-[active=true]:!bg-none data-[active=true]:font-semibold data-[active=true]:!text-[var(--scry-text2)]";
+
+const SUB_NAV_MENU_CLASS =
+  "mx-0 mb-0.5 ml-[17px] mt-0.5 gap-0.5 border-[var(--scry-border2)] px-0 py-0 pl-[11px]";
 
 const TOP_NAV_BADGE_GROUP_CLASS =
   "pointer-events-none absolute right-1 flex items-center gap-1 select-none peer-data-[size=sm]/menu-button:top-1 peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 group-data-[collapsible=icon]:hidden";
@@ -432,6 +426,25 @@ function LeafNavBadge({
     >
       {count}
     </span>
+  );
+}
+
+function TopNavExpansionChevron({
+  open,
+  reserveForBadges = false,
+}: {
+  open: boolean;
+  reserveForBadges?: boolean;
+}) {
+  return (
+    <ChevronRight
+      aria-hidden="true"
+      className={cn(
+        "ml-auto h-3.5 w-3.5 shrink-0 text-sidebar-foreground/45 transition-transform",
+        open && "rotate-90 text-primary",
+        reserveForBadges && "mr-11",
+      )}
+    />
   );
 }
 
@@ -759,7 +772,7 @@ function RootSidebarContent({
     <SidebarTrigger
       id="root-sidebar-mobile-trigger"
       aria-label={t("nav.mobileTrigger")}
-      className="size-10 rounded-xl border border-border bg-background/80 text-foreground shadow-none min-[981px]:hidden"
+      className="size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-muted2)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:ring-primary/25 min-[981px]:hidden"
     />
   );
   const canInjectMobileNavigation =
@@ -776,14 +789,14 @@ function RootSidebarContent({
         collapsible={isMobile ? "offcanvas" : "none"}
         mobileTitle={t("nav.mobileTitle")}
         mobileDescription={t("nav.mobileDescription")}
-        className="overflow-hidden border-r border-sidebar-border/80 bg-sidebar/95 shadow-[12px_0_40px_rgba(2,6,23,0.22)] backdrop-blur min-[981px]:sticky min-[981px]:top-0 min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
+        className="overflow-hidden border-r border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-side1),var(--scry-side2))] shadow-[12px_0_40px_rgba(2,6,23,0.22)] backdrop-blur min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
           <div className="flex items-center gap-3">
             <ScryerLogo className="h-[38px]! w-[38px]! drop-shadow-[0_10px_18px_rgba(var(--scry-accent-rgb),0.28)]" />
             <span
               data-slot="brand-wordmark"
-              className="text-[21px] font-bold leading-none text-foreground"
+              className="text-[21px] font-bold leading-none text-[var(--scry-ink2)]"
               style={{
                 fontFamily:
                   "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
@@ -793,10 +806,10 @@ function RootSidebarContent({
             </span>
           </div>
         </SidebarHeader>
-        <SidebarContent className="overflow-y-auto px-3 pb-3">
+        <SidebarContent className="overflow-y-auto px-3 pb-3 [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content">
           {groupedTopNav.map((group) => (
             <SidebarGroup key={group.id} className="px-0 py-1 first:pt-0">
-              <SidebarGroupLabel className="h-6 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/45">
+              <SidebarGroupLabel className="h-6 px-2 text-[10.5px] font-bold uppercase tracking-[0.13em] text-[var(--scry-faint3)]">
                 {group.label}
               </SidebarGroupLabel>
               <SidebarMenu className="space-y-0.5">
@@ -891,6 +904,17 @@ function RootSidebarContent({
                     isActiveSystemSection ||
                     (isActiveActivitySection && hasVisibleActivitySubnav) ||
                     isActiveWantedSection;
+                  const hasExpandableChildren =
+                    isMediaSection ||
+                    isSettingsTop ||
+                    isSystemTop ||
+                    (isActivityTop && hasVisibleActivitySubnav) ||
+                    isWantedTop;
+                  const reserveChevronForBadges =
+                    (isMediaSection &&
+                      (mediaFacetImportBadgeCount > 0 || mediaFacetRequestBadgeCount > 0)) ||
+                    (item.id === "activity" && hasActivityImportBadge) ||
+                    (item.id === "settings" && pluginUpdateCount > 0);
                   if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
                     return (
                       <React.Fragment key={item.id}>
@@ -936,6 +960,7 @@ function RootSidebarContent({
                                   : view === item.id
                           }
                           className={TOP_NAV_BUTTON_CLASS}
+                          aria-expanded={hasExpandableChildren ? shouldShowChildren : undefined}
                           onClick={(event) => {
                             if (isSettingsTop) {
                               handleNavigate(
@@ -983,7 +1008,13 @@ function RootSidebarContent({
                           }}
                         >
                           <Icon className="h-4 w-4" />
-                          {item.label}
+                          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                          {hasExpandableChildren ? (
+                            <TopNavExpansionChevron
+                              open={shouldShowChildren}
+                              reserveForBadges={reserveChevronForBadges}
+                            />
+                          ) : null}
                         </SidebarMenuButton>
                         {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
@@ -1000,15 +1031,17 @@ function RootSidebarContent({
 
                     {shouldShowChildren ? (
                       <SidebarGroupContent>
-                        <SidebarMenuSub>
+                        <SidebarMenuSub className={SUB_NAV_MENU_CLASS}>
                           {isSettingsTop
                             ? groupedSettingsEntries.map((group) => (
                               <React.Fragment key={group.id}>
-                                <SidebarMenuSubItem>
-                                  <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-sidebar-foreground/40">
-                                    {t(group.labelKey)}
-                                  </div>
-                                </SidebarMenuSubItem>
+                                {groupedSettingsEntries.length > 1 ? (
+                                  <SidebarMenuSubItem>
+                                    <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-sidebar-foreground/40">
+                                      {t(group.labelKey)}
+                                    </div>
+                                  </SidebarMenuSubItem>
+                                ) : null}
                                 {group.entries.map((entry) => (
                                   <SidebarMenuSubItem key={entry.id}>
                                     <SidebarMenuSubButton
@@ -1019,7 +1052,10 @@ function RootSidebarContent({
                                         handleNavigate(event, "settings", entry.id);
                                       }}
                                     >
-                                      {entry.label(t)}
+                                      {entry.icon ? (
+                                        <entry.icon className="h-3.5 w-3.5 shrink-0" />
+                                      ) : null}
+                                      <span className="min-w-0 flex-1 truncate">{entry.label(t)}</span>
                                       {entry.id === "plugins" && pluginUpdateCount > 0 ? (
                                         <LeafNavBadge count={pluginUpdateCount} tone="danger" />
                                       ) : null}
@@ -1139,7 +1175,7 @@ function RootSidebarContent({
                                         <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${isSettingsSubPage(contentSettingsSection) ? "rotate-90" : ""}`} />
                                       </SidebarMenuSubButton>
                                       <CollapsibleContent>
-                                        <SidebarMenuSub>
+                                        <SidebarMenuSub className={SUB_NAV_MENU_CLASS}>
                                           {visibleMediaSettingsSubPages.map((subPage) => (
                                             <SidebarMenuSubItem key={subPage.id}>
                                               <SidebarMenuSubButton
@@ -1171,14 +1207,14 @@ function RootSidebarContent({
           </SidebarGroup>
           ))}
         </SidebarContent>
-        <SidebarFooter className="border-t border-sidebar-border/80 px-4 py-3">
+        <SidebarFooter className="border-t border-[var(--scry-border3)] px-[18px] py-[13px]">
           <div className="flex items-center justify-between gap-3">
             {scryerVersion ? (
-              <span className="shrink-0 text-[11px] text-sidebar-foreground/45 group-data-[collapsible=icon]:hidden">
+              <span className="shrink-0 text-[11.5px] text-[var(--scry-faint)] group-data-[collapsible=icon]:hidden">
                 Scryer v{scryerVersion}
               </span>
             ) : (
-              <span className="shrink-0 text-[11px] text-sidebar-foreground/45 group-data-[collapsible=icon]:hidden">
+              <span className="shrink-0 text-[11.5px] text-[var(--scry-faint)] group-data-[collapsible=icon]:hidden">
                 Scryer
               </span>
             )}
@@ -1189,7 +1225,7 @@ function RootSidebarContent({
                 onClick={cycleTheme}
                 aria-label={t("theme.switchLabel", { theme: themeLabel })}
                 className={cn(
-                  "flex min-w-0 shrink-0 items-center gap-1.5 rounded-lg border border-sidebar-border/70 bg-sidebar-accent/55 px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-primary/35 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  "flex min-w-0 shrink-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-xs font-medium text-[var(--scry-muted)] transition hover:border-[var(--scry-border2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
                   theme === "pride" && "text-pink-200 hover:text-pink-100",
                 )}
               >
@@ -1208,10 +1244,13 @@ function RootSidebarContent({
           </div>
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset className="relative min-w-0 bg-transparent">
+      <SidebarInset
+        data-slot="root-content-panel"
+        className="relative min-w-0 bg-transparent min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
+      >
         {headerWithMobileNavigation}
         {canInjectMobileNavigation ? null : (
-          <div className="mx-3 mb-3 mt-3 flex items-center gap-3 rounded-xl border border-border bg-card/80 px-3 py-2 min-[981px]:hidden">
+          <div className="mx-3 mb-3 mt-3 flex items-center gap-3 rounded-xl border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] px-3 py-2 shadow-[0_12px_28px_rgba(2,6,23,0.16)] min-[981px]:hidden">
             {mobileNavigationTrigger}
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">{currentTopLevelLabel}</p>
@@ -1230,7 +1269,7 @@ function RootSidebarContent({
 export const RootSidebar = React.memo(function RootSidebar(props: RootSidebarProps) {
   return (
     <SidebarProvider
-      className="h-full bg-[radial-gradient(circle_at_14%_10%,rgba(var(--scry-accent-rgb),0.10),transparent_26rem),radial-gradient(circle_at_86%_14%,rgba(56,189,248,0.06),transparent_28rem),radial-gradient(circle_at_60%_92%,rgba(16,185,129,0.05),transparent_34rem),linear-gradient(180deg,var(--background)_0%,color-mix(in_srgb,var(--muted)_38%,transparent)_46%,var(--background)_100%)] bg-fixed"
+      className="h-full"
       style={
         {
           "--sidebar-width": "236px",

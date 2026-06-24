@@ -6,7 +6,12 @@
 //! 3. Delegates media analysis, timing, and rewriting to the optional enhanced sync plugin.
 //! 4. Atomically applies the rewritten subtitle bytes returned by the plugin.
 
-use std::{fmt, io::Write, path::Path, sync::Arc};
+use std::{
+    fmt,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     AppError, AppResult,
@@ -211,6 +216,15 @@ pub async fn sync_subtitle(
     .await
 }
 
+struct PreparedSubtitleSyncJob {
+    subtitle_content: Vec<u8>,
+    subtitle_format: SubtitleTimingFormat,
+    subtitle_file_name: Option<String>,
+    subtitle_encoding_hint: Option<String>,
+    reference_subtitle: Option<SubtitleSyncReferenceSubtitle>,
+    expected_codec: Option<SubtitleSyncAudioCodec>,
+}
+
 pub async fn sync_subtitle_with_plugin_sync(
     video_path: &Path,
     subtitle_path: &Path,
@@ -219,9 +233,14 @@ pub async fn sync_subtitle_with_plugin_sync(
     plugin_installed: bool,
     reference_subtitle_path: Option<&Path>,
 ) -> AppResult<SyncResult> {
-    let subtitle_content = std::fs::read(subtitle_path)
-        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
-    let Some(subtitle_format) = detect_subtitle_format(subtitle_path, &subtitle_content) else {
+    let prepared = prepare_subtitle_sync_job_blocking(
+        video_path.to_path_buf(),
+        subtitle_path.to_path_buf(),
+        reference_subtitle_path.map(Path::to_path_buf),
+    )
+    .await?;
+
+    let Some(prepared) = prepared else {
         tracing::debug!(
             path = %subtitle_path.display(),
             "subtitle sync skipped: unsupported subtitle format"
@@ -236,6 +255,7 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
+    let subtitle_format = prepared.subtitle_format;
     let Some(subtitle_sync_client) = subtitle_sync_client else {
         tracing::warn!(
             path = %video_path.display(),
@@ -257,24 +277,17 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
-    let subtitle_file_name = subtitle_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string);
-    let subtitle_encoding_hint = subtitle_encoding_hint(&subtitle_content);
-    let reference_subtitle = reference_subtitle_from_path(reference_subtitle_path, subtitle_path);
-
     let response = match subtitle_sync_client
         .align_subtitle(SubtitleSyncJob {
             input_path: video_path.to_path_buf(),
-            subtitle_content,
+            subtitle_content: prepared.subtitle_content,
             subtitle_format: subtitle_format.sdk_format(subtitle_path).to_string(),
-            subtitle_file_name,
-            subtitle_encoding_hint,
-            reference_subtitle,
+            subtitle_file_name: prepared.subtitle_file_name,
+            subtitle_encoding_hint: prepared.subtitle_encoding_hint,
+            reference_subtitle: prepared.reference_subtitle,
             max_offset_seconds,
             sync_options: SubtitleSyncOptions::default(),
-            expected_codec: targeted_audio_codec_for_path(video_path),
+            expected_codec: prepared.expected_codec,
         })
         .await
     {
@@ -343,6 +356,48 @@ pub async fn sync_subtitle_with_plugin_sync(
         split_score: response.split_score,
         skipped_reason: None,
     })
+}
+
+async fn prepare_subtitle_sync_job_blocking(
+    video_path: PathBuf,
+    subtitle_path: PathBuf,
+    reference_subtitle_path: Option<PathBuf>,
+) -> AppResult<Option<PreparedSubtitleSyncJob>> {
+    tokio::task::spawn_blocking(move || {
+        prepare_subtitle_sync_job(
+            &video_path,
+            &subtitle_path,
+            reference_subtitle_path.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!("subtitle sync preparation task failed: {error}"))
+    })?
+}
+
+fn prepare_subtitle_sync_job(
+    video_path: &Path,
+    subtitle_path: &Path,
+    reference_subtitle_path: Option<&Path>,
+) -> AppResult<Option<PreparedSubtitleSyncJob>> {
+    let subtitle_content = std::fs::read(subtitle_path)
+        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
+    let Some(subtitle_format) = detect_subtitle_format(subtitle_path, &subtitle_content) else {
+        return Ok(None);
+    };
+
+    Ok(Some(PreparedSubtitleSyncJob {
+        subtitle_file_name: subtitle_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string),
+        subtitle_encoding_hint: subtitle_encoding_hint(&subtitle_content),
+        reference_subtitle: reference_subtitle_from_path(reference_subtitle_path, subtitle_path),
+        expected_codec: targeted_audio_codec_for_path(video_path),
+        subtitle_content,
+        subtitle_format,
+    }))
 }
 
 fn missing_enhanced_sync_install_hint() -> String {

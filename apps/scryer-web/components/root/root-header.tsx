@@ -27,6 +27,8 @@ import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
 import {
   filterRouteCommandItems,
+  groupRouteCommandItems,
+  routeCommandDisplayLabel,
   type RouteCommandItem,
   type RouteCommandPaletteConfig,
 } from "@/components/common/route-command-types";
@@ -78,9 +80,11 @@ function catalogFacetFromString(facet: string): Facet {
 
 function SearchSectionLoading({ label }: { label: string }) {
   return (
-    <div className="flex min-h-24 items-center gap-3 rounded-lg border border-dashed border-border/80 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-      <Loader2 className="h-4 w-4 animate-spin text-primary" />
-      <span>{label}</span>
+    <div className="flex min-h-24 items-center justify-center gap-3 rounded-[12px] border border-dashed border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-surfC),var(--scry-surfF))] px-4 py-3 text-sm text-[var(--scry-muted3)]">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-[var(--scry-chip)] text-[var(--scry-accent-ring)]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </span>
+      <span className="font-medium">{label}</span>
     </div>
   );
 }
@@ -121,6 +125,30 @@ export const RootHeader = React.memo(function RootHeader({
   const isMobile = useIsMobile(ROOT_SHELL_MOBILE_BREAKPOINT);
   const navigate = useNavigate();
   const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
+  const canViewCatalog = user
+    ? hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view)
+    : false;
+  const searchTriggerPlaceholder = canViewCatalog
+    ? t("search.globalPlaceholder")
+    : t("search.globalPlaceholderNoLibrary");
+  const searchOverlayPlaceholder = canViewCatalog
+    ? t("search.overlayPlaceholder")
+    : t("search.overlayPlaceholderNoLibrary");
+  const searchSubtitle = canViewCatalog
+    ? t("search.subtitle")
+    : t("search.subtitleNoLibrary");
+  const searchMinimumQueryHint = canViewCatalog
+    ? t("search.minimumQueryHint")
+    : t("search.minimumQueryHintNoLibrary");
+  const searchEmptyHint = canViewCatalog
+    ? t("search.emptyHint")
+    : t("search.emptyHintNoLibrary");
+  const searchTipTitles = canViewCatalog
+    ? t("search.tipTitles")
+    : t("search.tipTitlesNoLibrary");
+  const searchTipTabs = canViewCatalog
+    ? t("search.tipTabs")
+    : t("search.tipTabsNoLibrary");
   const trimmedGlobalSearch = globalSearch.trim();
   const hasMinimumGlobalSearchQuery = trimmedGlobalSearch.length >= 2;
   const searchShortcutHint = React.useMemo(() => {
@@ -192,13 +220,15 @@ export const RootHeader = React.memo(function RootHeader({
     (total, f) => total + metadataResultCounts[f.id],
     0,
   );
-  const visibleCatalogFacets = React.useMemo(
-    () =>
-      desktopSearchTab === "all" || desktopSearchTab === "library"
-        ? FACET_REGISTRY
-        : FACET_REGISTRY.filter((f) => f.id === desktopSearchTab),
-    [desktopSearchTab],
-  );
+  const visibleCatalogFacets = React.useMemo(() => {
+    if (!canViewCatalog || desktopSearchTab === "navigate") {
+      return [];
+    }
+
+    return desktopSearchTab === "all" || desktopSearchTab === "library"
+      ? FACET_REGISTRY
+      : FACET_REGISTRY.filter((f) => f.id === desktopSearchTab);
+  }, [canViewCatalog, desktopSearchTab]);
   const visibleMetadataFacets = React.useMemo(
     () =>
       desktopSearchTab === "library" || desktopSearchTab === "navigate"
@@ -219,9 +249,12 @@ export const RootHeader = React.memo(function RootHeader({
     (total, f) => total + (catalogSearchSections[f.id]?.length ?? 0),
     0,
   );
+  const visibleCatalogResultCount = canViewCatalog
+    ? catalogSearchResults.length
+    : 0;
   const visibleCatalogResults = React.useMemo(() => {
     const picked: Array<{ facet: Facet; title: import("@/lib/types").TitleRecord }> = [];
-    if (desktopSearchTab === "navigate") {
+    if (!canViewCatalog || desktopSearchTab === "navigate") {
       return picked;
     }
 
@@ -249,7 +282,7 @@ export const RootHeader = React.memo(function RootHeader({
       if (!added) break;
     }
     return picked;
-  }, [catalogSearchSections, desktopSearchTab, visibleCatalogFacets]);
+  }, [canViewCatalog, catalogSearchSections, desktopSearchTab, visibleCatalogFacets]);
   const hiddenCatalogResultCount = Math.max(
     visibleCatalogCount - visibleCatalogResults.length,
     0,
@@ -273,6 +306,7 @@ export const RootHeader = React.memo(function RootHeader({
     0,
   );
   const showCatalogSection =
+    canViewCatalog &&
     desktopSearchTab !== "navigate" &&
     (catalogSearchLoading ||
       visibleCatalogCount > 0 ||
@@ -286,19 +320,21 @@ export const RootHeader = React.memo(function RootHeader({
       {
         key: "all" as SearchTabKey,
         label: t("search.tabAll"),
-        count: catalogSearchResults.length + metadataResultCount + routeCommandResults.length,
+        count: visibleCatalogResultCount + metadataResultCount + routeCommandResults.length,
       },
-      {
-        key: "library" as SearchTabKey,
-        label: t("search.tabLibrary"),
-        count: catalogSearchResults.length,
-      },
+      ...(canViewCatalog
+        ? [{
+            key: "library" as SearchTabKey,
+            label: t("search.tabLibrary"),
+            count: visibleCatalogResultCount,
+          }]
+        : []),
       ...FACET_REGISTRY.map((f) => ({
         key: f.id as SearchTabKey,
         label: t(f.navLabelKey),
-        count: (catalogSearchSections[f.id]?.length ?? 0) + metadataResultCounts[f.id],
+        count: (canViewCatalog ? (catalogSearchSections[f.id]?.length ?? 0) : 0) + metadataResultCounts[f.id],
       })),
-      ...(routeCommandPalette && routeCommandResults.length > 0
+      ...(routeCommandPalette && (routeCommandResults.length > 0 || desktopSearchTab === "navigate")
         ? [{
             key: "navigate" as SearchTabKey,
             label: routeCommandPalette.groupLabel,
@@ -307,28 +343,33 @@ export const RootHeader = React.memo(function RootHeader({
         : []),
     ],
     [
-      catalogSearchResults.length,
+      canViewCatalog,
       catalogSearchSections,
+      desktopSearchTab,
       metadataResultCount,
       metadataResultCounts,
       routeCommandPalette,
       routeCommandResults.length,
       t,
+      visibleCatalogResultCount,
     ],
   );
   const searchStatusLabel = React.useMemo(() => {
-    const isLoading = searching || catalogSearchLoading || metadataSearchLoading;
+    const isLoading =
+      searching ||
+      (canViewCatalog && catalogSearchLoading) ||
+      metadataSearchLoading;
     if (!trimmedGlobalSearch) {
-      return t("search.subtitle");
+      return searchSubtitle;
     }
     if (!hasMinimumGlobalSearchQuery && routeCommandResults.length === 0) {
-      return t("search.minimumQueryHint");
+      return searchMinimumQueryHint;
     }
     if (isLoading) {
       return t("search.statusLoading", { query: trimmedGlobalSearch });
     }
 
-    const resultCount = catalogSearchResults.length + metadataResultCount + routeCommandResults.length;
+    const resultCount = visibleCatalogResultCount + metadataResultCount + routeCommandResults.length;
     if (resultCount === 0) {
       return t("search.statusNoResults", { query: trimmedGlobalSearch });
     }
@@ -336,15 +377,18 @@ export const RootHeader = React.memo(function RootHeader({
       ? t("search.statusResultOne", { query: trimmedGlobalSearch })
       : t("search.statusResultOther", { count: String(resultCount), query: trimmedGlobalSearch });
   }, [
+    canViewCatalog,
     catalogSearchLoading,
-    catalogSearchResults.length,
     hasMinimumGlobalSearchQuery,
     metadataResultCount,
     metadataSearchLoading,
     routeCommandResults.length,
+    searchMinimumQueryHint,
+    searchSubtitle,
     searching,
     t,
     trimmedGlobalSearch,
+    visibleCatalogResultCount,
   ]);
   const [addDialogTarget, setAddDialogTarget] = React.useState<{
     result: MetadataTvdbSearchItem;
@@ -621,19 +665,6 @@ export const RootHeader = React.memo(function RootHeader({
     );
   }, []);
 
-  const focusFirstRouteCommandResult = React.useCallback(() => {
-    const resultRoot = searchResultsRef.current;
-    if (!resultRoot) {
-      return false;
-    }
-
-    const commandButton = resultRoot.querySelector<HTMLButtonElement>(
-      "[data-global-search-command-result='true']:not(:disabled)",
-    );
-    commandButton?.focus();
-    return Boolean(commandButton);
-  }, []);
-
   const focusSearchResult = React.useCallback(
     (position: "first" | "last") => {
       const buttons = getSearchResultButtons();
@@ -679,7 +710,7 @@ export const RootHeader = React.memo(function RootHeader({
           return;
         }
         event.preventDefault();
-        if (focusFirstRouteCommandResult()) {
+        if (focusSearchResult("first")) {
           return;
         }
         void forceSearchGlobal();
@@ -693,7 +724,7 @@ export const RootHeader = React.memo(function RootHeader({
         }
       }
     },
-    [focusFirstRouteCommandResult, focusSearchResult, forceSearchGlobal, handleSearchEscape],
+    [focusSearchResult, forceSearchGlobal, handleSearchEscape],
   );
 
   const handleSearchResultKeyDown = React.useCallback(
@@ -943,11 +974,11 @@ export const RootHeader = React.memo(function RootHeader({
             }}
             data-global-search-result="true"
             onKeyDown={handleSearchResultKeyDown}
-            className="group flex w-full items-center gap-3 rounded-xl border border-border bg-[var(--scry-surfA)] p-2.5 text-left shadow-sm transition hover:border-[var(--scry-bhover)] hover:bg-[color-mix(in_srgb,var(--card)_80%,var(--primary)_12%)]"
+            className="group flex w-full items-center gap-[13px] rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] p-2.5 text-left shadow-[0_8px_20px_rgba(0,0,0,0.20)] transition hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
             aria-label={viewTitleLabel}
             title={viewTitleLabel}
           >
-            <div className="relative h-16 w-11 flex-none overflow-hidden rounded-lg border border-border/80 bg-muted">
+            <div className="relative h-16 w-11 flex-none overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-muted">
               <TitlePosterSlot
                 src={posterUrl}
                 sourceSrc={title.posterSourceUrl}
@@ -977,7 +1008,7 @@ export const RootHeader = React.memo(function RootHeader({
                 </span>
               </div>
             </div>
-            <span className="hidden h-8 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--scry-bhover2)] bg-[var(--scry-soft3)] px-3 text-xs font-semibold text-muted-foreground transition group-hover:border-primary/40 group-hover:text-foreground sm:inline-flex">
+            <span className="hidden h-[34px] shrink-0 items-center gap-1.5 rounded-[9px] border border-[var(--scry-bhover2)] bg-[var(--scry-soft3)] px-3.5 text-[12.5px] font-semibold text-[var(--scry-body)] transition group-hover:border-primary/40 group-hover:text-foreground sm:inline-flex">
               <Eye className="h-3.5 w-3.5" />
               {t("search.view")}
             </span>
@@ -1052,7 +1083,10 @@ export const RootHeader = React.memo(function RootHeader({
     (items: MetadataTvdbSearchItem[], facet: Facet, _section: string) => {
       return items.map((result) => {
         const isInCatalog = isMetadataSearchResultInCatalog(facet, result);
-        const canAdd = librariesByFacet[facet].length > 0;
+        const hasCatalogAddConfig =
+          catalogQualityProfileOptions.length > 0 &&
+          librariesByFacet[facet].length > 0;
+        const canAdd = hasCatalogAddConfig;
         const canRequest = requestableLibrariesByFacet[facet].length > 0;
         const opensRequestDialog = !canAdd && canRequest;
         const isUnavailable = !isInCatalog && !canAdd && !canRequest;
@@ -1093,7 +1127,7 @@ export const RootHeader = React.memo(function RootHeader({
             id={globalSearchMetadataResultId(facet, result)}
             key={`${facet}-${result.tvdbId}-${result.name}`}
             type="button"
-            className="group w-32 flex-none rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
+            className="group w-32 flex-none rounded-[12px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
             data-global-search-result="true"
             onClick={handleMetadataAction}
             onKeyDown={handleSearchResultKeyDown}
@@ -1101,7 +1135,7 @@ export const RootHeader = React.memo(function RootHeader({
             aria-label={actionTitle}
             title={actionTitle}
           >
-            <div className="group relative mb-2 aspect-[2/3] overflow-hidden rounded-xl border border-border/80 bg-muted shadow-[0_10px_24px_rgba(2,6,23,0.28)] transition hover:border-primary/50">
+            <div className="group relative mb-2 aspect-[2/3] overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] shadow-[0_10px_24px_rgba(2,6,23,0.28)] transition group-hover:border-[var(--scry-bhover)] group-hover:bg-[var(--scry-hover)]">
               <TitlePosterSlot
                 src={posterUrl}
                 alt={t("media.posterAlt", { name: result.name })}
@@ -1168,6 +1202,7 @@ export const RootHeader = React.memo(function RootHeader({
       handleOpenRequestDialog,
       handleSearchResultKeyDown,
       isMetadataSearchResultInCatalog,
+      catalogQualityProfileOptions.length,
       librariesByFacet,
       requestableLibrariesByFacet,
       t,
@@ -1175,39 +1210,64 @@ export const RootHeader = React.memo(function RootHeader({
   );
   const renderRouteCommandSection = React.useCallback(
     (items: RouteCommandItem[]) =>
-      items.map((item) => {
-        const Icon = item.icon;
-        const description = item.description.trim();
-        const showDescription = description.length > 0 && description !== item.label.trim();
-        const commandLabel = showDescription ? `${item.label}: ${description}` : item.label;
-        return (
-          <button
-            key={item.id}
-            type="button"
-            data-global-search-result="true"
-            data-global-search-command-result="true"
-            className="group flex min-w-0 items-center gap-3 rounded-xl border border-border bg-[var(--scry-surfA)] p-3 text-left shadow-sm transition hover:border-[var(--scry-bhover)] hover:bg-[color-mix(in_srgb,var(--card)_80%,var(--primary)_12%)]"
-            onClick={() => handleRouteCommandSelect(item)}
-            onKeyDown={handleSearchResultKeyDown}
-            aria-label={commandLabel}
-            title={commandLabel}
-          >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-              {Icon ? <Icon className="h-4 w-4" /> : <Search className="h-4 w-4" />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-foreground">{item.label}</span>
-              {showDescription ? (
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                  {description}
-                </span>
-              ) : null}
-            </span>
-            <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:text-foreground" />
-          </button>
-        );
-      }),
-    [handleRouteCommandSelect, handleSearchResultKeyDown],
+      groupRouteCommandItems(items).map((group) => (
+        <div key={group.groupLabel ?? "route-command-ungrouped"} className="space-y-2.5">
+          {group.groupLabel ? (
+            <div className="flex items-center justify-between gap-3 rounded-[9px] border border-[var(--scry-border)] bg-[var(--scry-surfC)] px-2.5 py-1.5">
+              <span className="truncate text-[10.5px] font-bold uppercase tracking-[0.13em] text-[var(--scry-muted2)]">
+                {group.groupLabel}
+              </span>
+              <span className="shrink-0 rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]">
+                {group.items.length === 1
+                  ? t("search.resultCountOne")
+                  : t("search.resultCountOther", { count: String(group.items.length) })}
+              </span>
+            </div>
+          ) : null}
+          <div className="grid gap-3 md:grid-cols-2">
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              const description = item.description.trim();
+              const groupLabel = item.groupLabel?.trim() || null;
+              const displayLabel = routeCommandDisplayLabel(item);
+              const showDescription = description.length > 0 && description !== displayLabel.trim();
+              const commandLabel = [displayLabel, showDescription ? description : null, groupLabel]
+                .filter(Boolean)
+                .join(": ");
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-global-search-result="true"
+                  data-global-search-command-result="true"
+                  className="group relative flex min-w-0 items-center gap-3 overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[linear-gradient(180deg,var(--scry-surfB),var(--scry-surfA))] p-3 text-left shadow-[0_8px_20px_rgba(0,0,0,0.16)] transition hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                  onClick={() => handleRouteCommandSelect(item)}
+                  onKeyDown={handleSearchResultKeyDown}
+                  aria-label={commandLabel}
+                  title={commandLabel}
+                >
+                  <span aria-hidden="true" className="absolute inset-y-3 left-0 w-0.5 rounded-r-full bg-[var(--scry-accent-ring)] opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100" />
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border border-[rgba(var(--scry-accent-rgb),0.22)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition group-hover:border-[rgba(var(--scry-accent-rgb),0.36)]">
+                    {Icon ? <Icon className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-[var(--scry-ink2)]">{displayLabel}</span>
+                    {showDescription ? (
+                      <span className="mt-0.5 block truncate text-xs text-[var(--scry-muted3)]">
+                        {description}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[var(--scry-faint2)] transition group-hover:bg-[var(--scry-chip)] group-hover:text-[var(--scry-ink2)]">
+                    <ArrowRight className="h-4 w-4" />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )),
+    [handleRouteCommandSelect, handleSearchResultKeyDown, t],
   );
   const accountInitial = (user?.username.trim().charAt(0) || "?").toUpperCase();
   const isOperatorAccount = user
@@ -1233,12 +1293,12 @@ export const RootHeader = React.memo(function RootHeader({
         ref={headerRef}
         data-slot="root-header"
         className={cn(
-          "relative z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur transition-transform duration-200 ease-out",
+          "relative z-50 border-b border-[var(--scry-border3)] bg-[var(--scry-bg)] pt-safe-comfort px-safe backdrop-blur transition-transform duration-200 ease-out",
           isMobile ? "fixed inset-x-0 top-[var(--root-shell-top-offset,0px)]" : "sticky top-0",
           isMobile ? (!isMobileHeaderVisible ? "-translate-y-full" : "translate-y-0") : null,
         )}
       >
-        <div className="flex w-full items-center gap-3 px-4 py-3 sm:gap-4 sm:px-6">
+        <div className="flex w-full items-center gap-3 px-[15px] py-[11px] sm:gap-[18px] sm:px-[26px] sm:py-3.5">
           {mobileNavigation ? (
             <div className="shrink-0 min-[981px]:hidden">{mobileNavigation}</div>
           ) : null}
@@ -1249,7 +1309,7 @@ export const RootHeader = React.memo(function RootHeader({
                   id="global-search-mobile-trigger"
                   ref={searchTriggerRef}
                   type="button"
-                  className="flex h-10 w-full items-center gap-3 rounded-xl border border-[var(--scry-bhover2)] bg-[var(--scry-surfA)] px-3 text-left text-sm text-muted-foreground shadow-none transition active:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                  className="relative flex h-10 w-full items-center gap-3 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-0 pl-10 pr-3 text-left text-[13.5px] text-[var(--scry-faint)] shadow-none transition active:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
                   onClick={() => openGlobalSearchPanel(true)}
                   aria-label={t("search.title")}
                   aria-haspopup="dialog"
@@ -1257,9 +1317,9 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="mobile-global-search-panel"
                   aria-keyshortcuts="Meta+K Control+K /"
                 >
-                  <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <Search className="absolute left-3.5 top-1/2 h-[17px] w-[17px] -translate-y-1/2 shrink-0 text-[var(--scry-faint2)]" />
                   <span className="min-w-0 flex-1 truncate">
-                    {globalSearch.trim() || t("search.globalPlaceholder")}
+                    {globalSearch.trim() || searchTriggerPlaceholder}
                   </span>
                 </button>
               ) : (
@@ -1267,7 +1327,12 @@ export const RootHeader = React.memo(function RootHeader({
                   id="global-search-trigger"
                   ref={searchTriggerRef}
                   type="button"
-                  className="flex h-10 w-full items-center gap-3 rounded-xl border border-[var(--scry-bhover2)] bg-[var(--scry-surfA)] px-3 text-left text-sm text-muted-foreground shadow-none transition hover:border-[var(--scry-bhover)] hover:bg-[color-mix(in_srgb,var(--card)_80%,var(--primary)_12%)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                  className={cn(
+                    "relative flex h-10 w-full items-center gap-3 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-0 pl-10 pr-3 text-left text-[13.5px] text-[var(--scry-faint)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:text-[var(--scry-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+                    isGlobalSearchPanelOpen
+                      ? "border-[var(--scry-baccent)] bg-[var(--scry-hover)] text-[var(--scry-muted)] shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.10),0_10px_24px_rgba(0,0,0,0.18)]"
+                      : null,
+                  )}
                   onClick={() => openGlobalSearchPanel(true)}
                   aria-label={t("search.title")}
                   aria-haspopup="dialog"
@@ -1275,11 +1340,11 @@ export const RootHeader = React.memo(function RootHeader({
                   aria-controls="global-search-panel"
                   aria-keyshortcuts="Meta+K Control+K /"
                 >
-                  <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <Search className="absolute left-3.5 top-1/2 h-[17px] w-[17px] -translate-y-1/2 shrink-0 text-[var(--scry-faint2)]" />
                   <span className="min-w-0 flex-1 truncate">
-                    {globalSearch.trim() || t("search.globalPlaceholder")}
+                    {globalSearch.trim() || searchTriggerPlaceholder}
                   </span>
-                  <kbd className="rounded-md border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  <kbd className="rounded-md border border-[var(--scry-kbdbd)] bg-[var(--scry-kbdbg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-muted)]">
                     {searchShortcutHint}
                   </kbd>
                 </button>
@@ -1288,9 +1353,9 @@ export const RootHeader = React.memo(function RootHeader({
                 ? createPortal(
                     <div
                       data-slot="global-search-overlay"
-                      className="fixed inset-0 z-[60] flex flex-col items-center bg-background/70 px-4 pb-6 pt-[max(4rem,calc(var(--root-header-height,0px)+0.75rem))] backdrop-blur-sm motion-safe:animate-in motion-safe:fade-in-0"
+                      className="fixed inset-0 z-[60] flex flex-col items-center bg-[rgba(2,4,10,0.66)] px-5 pb-7 pt-[max(4rem,calc(var(--root-header-height,0px)+0.75rem))] backdrop-blur-md motion-safe:animate-in motion-safe:fade-in-0"
                       onMouseDown={handleSearchPanelBackdropMouseDown}
-                    >
+                  >
                   <div
                     ref={searchPanelRef}
                     id="global-search-panel"
@@ -1300,12 +1365,12 @@ export const RootHeader = React.memo(function RootHeader({
                     aria-label={t("search.title")}
                     aria-describedby="global-search-description"
                     tabIndex={-1}
-                    className="flex max-h-full w-[min(920px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-[linear-gradient(180deg,color-mix(in_srgb,var(--card)_92%,var(--primary)_8%),var(--card))] shadow-[0_40px_120px_rgba(2,6,23,0.64)] motion-safe:animate-in motion-safe:slide-in-from-top-3"
+                    className="flex max-h-[calc(100dvh-7rem)] w-[min(920px,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] shadow-[0_40px_120px_rgba(0,0,0,0.7)] outline-none motion-safe:animate-in motion-safe:slide-in-from-top-3"
                     onMouseDown={(event) => event.stopPropagation()}
                     onKeyDown={handleSearchPanelKeyDown}
                   >
-                  <div className="flex items-center gap-3 border-b border-border px-5 py-4">
-                    <Search className="h-5 w-5 shrink-0 text-primary" />
+                  <div className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[18px] py-4">
+                    <Search className="h-[21px] w-[21px] shrink-0 text-[var(--scry-accent-ring)]" />
                     <div className="min-w-0 flex-1">
                       <Input
                         id="global-search-input"
@@ -1315,16 +1380,16 @@ export const RootHeader = React.memo(function RootHeader({
                         onChange={handleSearchChange}
                         onKeyDown={handleDesktopSearchKeyDown}
                         data-ui="global-search"
-                        className="h-9 border-0 bg-transparent px-0 text-base shadow-none placeholder:text-base focus-visible:ring-0"
-                        placeholder={t("search.overlayPlaceholder")}
-                        aria-label={t("search.overlayPlaceholder")}
+                        className="h-8 border-0 bg-transparent px-0 text-[17px] text-[var(--scry-ink2)] shadow-none placeholder:text-[17px] focus-visible:ring-0"
+                        placeholder={searchOverlayPlaceholder}
+                        aria-label={searchOverlayPlaceholder}
                         aria-controls="global-search-results-panel"
                         aria-describedby="global-search-description global-search-status"
                       />
                       <p id="global-search-description" className="truncate text-xs text-muted-foreground">
                         {globalSearch.trim()
                           ? t("search.subtitleWithQuery", { query: globalSearch.trim() })
-                          : t("search.subtitle")}
+                          : searchSubtitle}
                       </p>
                       <p id="global-search-status" className="sr-only" role="status" aria-live="polite" aria-atomic="true">
                         {searchStatusLabel}
@@ -1334,19 +1399,19 @@ export const RootHeader = React.memo(function RootHeader({
                       <button
                         id="global-search-clear"
                         type="button"
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-muted-foreground transition hover:text-foreground"
+                        className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition hover:text-foreground"
                         onClick={handleClearSearch}
                         aria-label={t("label.clear")}
                       >
-                        <Eraser className="h-4 w-4" />
+                        <Eraser className="h-3.5 w-3.5" />
                       </button>
                     ) : null}
-                    <kbd className="rounded-md border border-border bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                    <kbd className="rounded-[7px] border border-[var(--scry-kbdbd)] bg-transparent px-2 py-1 text-[11px] font-medium text-[var(--scry-faint2)]">
                       ESC
                     </kbd>
                     <button
                       type="button"
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-muted-foreground transition hover:text-foreground"
+                      className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition hover:text-foreground"
                       onClick={handleCloseGlobalSearchPanel}
                       aria-label={t("label.close")}
                     >
@@ -1354,7 +1419,7 @@ export const RootHeader = React.memo(function RootHeader({
                     </button>
                   </div>
                   <div
-                    className="flex gap-2 overflow-x-auto border-b border-border px-5 py-3"
+                    className="flex gap-2 overflow-x-auto border-b border-[var(--scry-border)] px-[18px] py-[13px] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                     role="tablist"
                     aria-label={t("search.title")}
                   >
@@ -1371,10 +1436,10 @@ export const RootHeader = React.memo(function RootHeader({
                         aria-controls="global-search-results-panel"
                         tabIndex={desktopSearchTab === tab.key ? 0 : -1}
                         className={cn(
-                          "inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
+                          "inline-flex h-8 shrink-0 items-center gap-2 rounded-[9px] border px-3 text-[12.5px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
                           desktopSearchTab === tab.key
                             ? "border-transparent bg-[var(--scry-accent-grad)] text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.26)]"
-                            : "border-border bg-muted/60 text-muted-foreground hover:text-foreground",
+                            : "border-[var(--scry-border2)] bg-[var(--scry-surfA)] text-[var(--scry-muted)] hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-foreground",
                         )}
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => setDesktopSearchTab(tab.key)}
@@ -1383,7 +1448,7 @@ export const RootHeader = React.memo(function RootHeader({
                         {tab.label}
                         <span className={cn(
                           "font-medium tabular-nums",
-                          desktopSearchTab === tab.key ? "text-primary-foreground/80" : "text-muted-foreground",
+                          desktopSearchTab === tab.key ? "text-primary-foreground/80" : "text-[var(--scry-muted2)]",
                         )}>
                           {tab.count}
                         </span>
@@ -1396,7 +1461,7 @@ export const RootHeader = React.memo(function RootHeader({
                     data-slot="global-search-results"
                     role="tabpanel"
                     aria-labelledby={`global-search-tab-${desktopSearchTab}`}
-                    className="min-h-0 flex-1 overflow-y-auto p-5"
+                    className="min-h-0 flex-1 overflow-y-auto p-[18px] [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content"
                   >
                     {showSectionResults ? (
                       <div className="space-y-6">
@@ -1404,14 +1469,14 @@ export const RootHeader = React.memo(function RootHeader({
                           <section id="global-search-catalog-section" className="space-y-3">
                             <div className="flex items-baseline justify-between gap-3">
                               <div className="flex items-baseline gap-2">
-                                <h3 className="text-[15px] font-bold text-foreground">{t("search.inLibrary")}</h3>
-                                <span className="text-xs text-muted-foreground">{t("search.alreadyInCollection")}</span>
+                                <h3 className="text-[15px] font-bold text-[var(--scry-ink2)]">{t("search.inLibrary")}</h3>
+                                <span className="text-xs text-[var(--scry-muted3)]">{t("search.alreadyInCollection")}</span>
                               </div>
                               <div className="flex shrink-0 items-center gap-3">
                                 {!catalogSearchLoading && desktopSearchTab !== "library" && hiddenCatalogResultCount > 0 ? (
                                   <button
                                     type="button"
-                                    className="text-xs font-medium text-primary transition hover:text-primary/80"
+                                    className="text-xs font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)]"
                                     onMouseDown={(event) => event.preventDefault()}
                                     onClick={() => focusDesktopSearchTab("library")}
                                     aria-label={`${t("search.viewAll")} ${t("search.inLibrary")}`}
@@ -1419,7 +1484,7 @@ export const RootHeader = React.memo(function RootHeader({
                                     {t("search.viewAll")}
                                   </button>
                                 ) : null}
-                                <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                                <span className="text-xs font-medium tabular-nums text-[var(--scry-muted3)]">
                                   {visibleCatalogCount === 1
                                     ? t("search.resultCountOne")
                                     : t("search.resultCountOther", { count: String(visibleCatalogCount) })}
@@ -1429,9 +1494,9 @@ export const RootHeader = React.memo(function RootHeader({
                             {catalogSearchLoading ? (
                               <SearchSectionLoading label={t("label.loading")} />
                             ) : visibleCatalogResults.length === 0 ? (
-                              <p className="rounded-xl border border-dashed border-border bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+                              <p className="rounded-[12px] border border-dashed border-[var(--scry-border2)] bg-[var(--scry-surfC)] px-4 py-5 text-sm text-[var(--scry-muted3)]">
                                 {!hasMinimumGlobalSearchQuery
-                                  ? t("search.minimumQueryHint")
+                                  ? searchMinimumQueryHint
                                   : t("search.noCatalogMatches")}
                               </p>
                             ) : (
@@ -1462,10 +1527,10 @@ export const RootHeader = React.memo(function RootHeader({
                                 >
                                   <div className="flex items-baseline justify-between gap-3">
                                     <div className="flex min-w-0 items-baseline gap-2">
-                                      <h3 className="truncate text-[15px] font-bold text-foreground">
+                                      <h3 className="truncate text-[15px] font-bold text-[var(--scry-ink2)]">
                                         {facetLabel}
                                       </h3>
-                                      <span className="shrink-0 text-xs text-muted-foreground">
+                                      <span className="shrink-0 text-xs text-[var(--scry-muted3)]">
                                         {metadataSearchLoading ? t("search.metadataSearch") : resultCountLabel}
                                       </span>
                                     </div>
@@ -1473,7 +1538,7 @@ export const RootHeader = React.memo(function RootHeader({
                                       {desktopSearchTab === "all" && hiddenItemCount > 0 ? (
                                         <button
                                           type="button"
-                                          className="text-xs font-medium normal-case text-primary transition hover:text-primary/80"
+                                          className="text-xs font-medium normal-case text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)]"
                                           onMouseDown={(event) => event.preventDefault()}
                                           onClick={() => focusDesktopSearchTab(f.id)}
                                           aria-label={viewAllFacetLabel}
@@ -1486,7 +1551,7 @@ export const RootHeader = React.memo(function RootHeader({
                                   {metadataSearchLoading ? (
                                     <SearchSectionLoading label={t("label.loading")} />
                                   ) : items.length === 0 ? (
-                                    <p className="rounded-xl border border-dashed border-border bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
+                                    <p className="rounded-[12px] border border-dashed border-[var(--scry-border2)] bg-[var(--scry-surfC)] px-4 py-5 text-sm text-[var(--scry-muted3)]">
                                       {t("search.noMetadataMatches")}
                                     </p>
                                   ) : (
@@ -1503,16 +1568,16 @@ export const RootHeader = React.memo(function RootHeader({
                           <section id="global-search-route-section" className="space-y-3">
                             <div className="flex items-baseline justify-between gap-3">
                               <div className="flex items-baseline gap-2">
-                                <h3 className="text-[15px] font-bold text-foreground">
+                                <h3 className="text-[15px] font-bold text-[var(--scry-ink2)]">
                                   {routeCommandPalette?.groupLabel ?? t("command.paletteGroup")}
                                 </h3>
-                                <span className="text-xs text-muted-foreground">{t("search.goToHint")}</span>
+                                <span className="text-xs text-[var(--scry-muted3)]">{t("search.goToHint")}</span>
                               </div>
                               <div className="flex shrink-0 items-center gap-3">
                                 {desktopSearchTab !== "navigate" && hiddenRouteCommandResultCount > 0 ? (
                                   <button
                                     type="button"
-                                    className="text-xs font-medium text-primary transition hover:text-primary/80"
+                                    className="text-xs font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)]"
                                     onMouseDown={(event) => event.preventDefault()}
                                     onClick={() => focusDesktopSearchTab("navigate")}
                                     aria-label={`${t("search.viewAll")} ${routeCommandPalette?.groupLabel ?? t("command.paletteGroup")}`}
@@ -1520,80 +1585,87 @@ export const RootHeader = React.memo(function RootHeader({
                                     {t("search.viewAll")}
                                   </button>
                                 ) : null}
-                                <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                                <span className="text-xs font-medium tabular-nums text-[var(--scry-muted3)]">
                                   {routeCommandResults.length === 1
                                     ? t("search.resultCountOne")
                                     : t("search.resultCountOther", { count: String(routeCommandResults.length) })}
                                 </span>
                               </div>
                             </div>
-                            <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-4">
                               {renderRouteCommandSection(visibleRouteCommandResults)}
                             </div>
                           </section>
                         ) : null}
-                        <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-xs text-muted-foreground">
-                          <Info className="h-3.5 w-3.5" />
+                        <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-xs text-[var(--scry-muted3)]">
+                          <Info className="h-3.5 w-3.5 text-[var(--scry-faint2)]" />
                           <span>{t("search.footerTip")}</span>
                           <Popover>
                             <PopoverTrigger asChild>
                               <button
                                 type="button"
-                                className="font-medium text-primary transition hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                                className="font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                               >
                                 {t("search.searchTips")}
                               </button>
                             </PopoverTrigger>
-                            <PopoverContent align="center" sideOffset={8} className="z-[70] w-72 p-3 text-xs">
-                              <div className="space-y-2 text-muted-foreground">
-                                <p>{t("search.tipTitles")}</p>
-                                <p>{t("search.tipTabs")}</p>
-                                <p>{t("search.tipIndexers")}</p>
+                            <PopoverContent
+                              align="center"
+                              sideOffset={8}
+                              className="z-[70] w-72 border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.32)]"
+                            >
+                              <div className="space-y-2 text-[var(--scry-muted3)]">
+                                <p>{searchTipTitles}</p>
+                                <p>{searchTipTabs}</p>
+                                {canViewCatalog ? <p>{t("search.tipIndexers")}</p> : null}
                               </div>
                             </PopoverContent>
                           </Popover>
                         </div>
                       </div>
                     ) : searching ? (
-                      <div className="flex items-center justify-center gap-3 py-12">
-                        <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                        <p className="text-sm text-muted-foreground">{t("label.searching")}</p>
+                      <div className="py-12">
+                        <SearchSectionLoading label={t("label.searching")} />
                       </div>
                     ) : (
                       <div className="flex flex-col items-center justify-center py-14 text-center">
-                        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-muted text-muted-foreground">
+                        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-[15px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-faint2)]">
                           {hasMinimumGlobalSearchQuery ? (
                             <SearchX className="h-6 w-6" />
                           ) : (
                             <Search className="h-6 w-6" />
                           )}
                         </div>
-                        <p className="text-sm font-semibold text-foreground">
+                        <p className="text-[17px] font-bold text-[var(--scry-ink2)]">
                           {hasMinimumGlobalSearchQuery
                             ? t("search.noMatchesFor", { query: trimmedGlobalSearch })
                             : trimmedGlobalSearch
                               ? t("search.minimumQueryTitle")
-                              : t("search.overlayPlaceholder")}
+                              : searchOverlayPlaceholder}
                         </p>
-                        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                        <p className="mt-1 max-w-sm text-sm leading-6 text-[var(--scry-muted3)]">
                           {trimmedGlobalSearch && !hasMinimumGlobalSearchQuery
-                            ? t("search.minimumQueryHint")
-                            : t("search.emptyHint")}
+                            ? searchMinimumQueryHint
+                            : searchEmptyHint}
                         </p>
                         <Popover>
                           <PopoverTrigger asChild>
                             <button
                               type="button"
-                              className="mt-3 text-xs font-medium text-primary transition hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                              className="mt-3 text-xs font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                             >
                               {t("search.searchTips")}
                             </button>
                           </PopoverTrigger>
-                          <PopoverContent align="center" sideOffset={8} className="z-[70] w-72 p-3 text-xs">
-                            <div className="space-y-2 text-muted-foreground">
-                              <p>{t("search.tipTitles")}</p>
-                              <p>{t("search.tipTabs")}</p>
-                              <p>{t("search.tipIndexers")}</p>
+                          <PopoverContent
+                            align="center"
+                            sideOffset={8}
+                            className="z-[70] w-72 border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.32)]"
+                          >
+                            <div className="space-y-2 text-[var(--scry-muted3)]">
+                              <p>{searchTipTitles}</p>
+                              <p>{searchTipTabs}</p>
+                              {canViewCatalog ? <p>{t("search.tipIndexers")}</p> : null}
                             </div>
                           </PopoverContent>
                         </Popover>
@@ -1614,39 +1686,42 @@ export const RootHeader = React.memo(function RootHeader({
                   id="account-menu-trigger"
                   type="button"
                   variant="ghost"
-                  className="h-11 shrink-0 gap-2 rounded-xl border border-border bg-background/70 px-1.5 pr-2.5 text-foreground shadow-none transition hover:border-primary/35 hover:bg-accent/70 sm:h-10"
+                  className={cn(
+                    "h-10 shrink-0 gap-2 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] p-[5px] pr-2 text-[var(--scry-body)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:h-10",
+                    accountMenuOpen ? "border-[var(--scry-baccent)] bg-[var(--scry-hover)] text-[var(--scry-ink2)]" : null,
+                  )}
                   aria-label={t("profile.accountInfo")}
                   aria-haspopup="dialog"
                   aria-controls="account-menu-content"
                   aria-expanded={accountMenuOpen}
                 >
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.25)]">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-[var(--scry-accent-grad)] text-[13px] font-bold text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.25)]">
                     {accountInitial}
                   </span>
                   <span className="hidden min-w-0 flex-col items-start leading-tight sm:flex">
-                    <span className="max-w-32 truncate text-xs font-semibold text-foreground">
+                    <span className="max-w-32 truncate text-[12.5px] font-semibold text-[var(--scry-ink2)]">
                       {user.username}
                     </span>
-                    <span className="text-[10px] font-medium text-muted-foreground">
+                    <span className="text-[10.5px] font-medium text-[var(--scry-faint)]">
                       {accountRoleLabel}
                     </span>
                   </span>
-                  <ChevronsUpDown className="h-4 w-4 text-muted-foreground" />
+                  <ChevronsUpDown className="h-4 w-4 text-[var(--scry-faint)]" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent
                 id="account-menu-content"
                 align="end"
                 sideOffset={8}
-                className="w-[min(18rem,calc(100vw-1rem))] p-2 sm:w-56"
+                className="w-[min(18rem,calc(100vw-1rem))] border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-2 shadow-[0_18px_48px_rgba(0,0,0,0.36)] sm:w-56"
               >
-                <div className="border-b border-border/70 px-3 pb-2 pt-1.5">
+                <div className="border-b border-[var(--scry-border)] px-3 pb-2 pt-1.5">
                   <p className="truncate text-sm font-medium text-foreground">{user.username}</p>
                   <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="rounded-md bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                    <span className="rounded-md bg-[rgba(var(--scry-accent-rgb),0.16)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--scry-accent-text)]">
                       {accountRoleLabel}
                     </span>
-                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    <span className="rounded-md bg-[var(--scry-kbdbg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-muted)]">
                       {accountKindLabel}
                     </span>
                   </div>
@@ -1656,10 +1731,10 @@ export const RootHeader = React.memo(function RootHeader({
                     id="account-menu-profile"
                     type="button"
                     variant="ghost"
-                    className="h-11 w-full justify-start px-3 text-sm"
+                    className="h-11 w-full justify-start rounded-[9px] px-3 text-sm font-medium text-[var(--scry-body)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:ring-primary/25"
                     onClick={handleOpenProfile}
                   >
-                    <User className="mr-2 h-4 w-4" />
+                    <User className="mr-2 h-4 w-4 text-[var(--scry-accent-ring)]" />
                     {t("settings.profile")}
                   </Button>
                   {token && effectiveFormLoginEnabled !== false ? (
@@ -1667,7 +1742,7 @@ export const RootHeader = React.memo(function RootHeader({
                       id="account-menu-logout"
                       type="button"
                       variant="ghost"
-                      className="h-11 w-full justify-start px-3 text-sm text-destructive hover:text-destructive"
+                      className="h-11 w-full justify-start rounded-[9px] px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/25"
                       onClick={handleLogout}
                     >
                       <LogOut className="mr-2 h-4 w-4" />
@@ -1689,6 +1764,7 @@ export const RootHeader = React.memo(function RootHeader({
       ) : null}
       {isGlobalSearchPanelOpen && isMobile ? (
         <MobileSearchOverlay
+          canViewCatalog={canViewCatalog}
           onClose={handleCloseGlobalSearchPanel}
           onOpenOverview={onOpenOverview}
           routeCommandPalette={routeCommandPalette}

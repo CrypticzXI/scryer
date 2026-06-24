@@ -41,9 +41,10 @@ use crate::{
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
-    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
-    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UiSettings, UiSettingsUpdate,
+    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity, WantedItem,
+    WantedItemRepository, WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository,
+    WorkflowOperationInfo,
     WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
     ports::TotpRepository, types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
     types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
@@ -1942,6 +1943,30 @@ impl UserExternalAccountRepository for NullUserExternalAccountRepository {
 
     async fn delete(&self, _: &str) -> AppResult<()> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullUserUiSettingsRepository;
+
+#[async_trait]
+impl UserUiSettingsRepository for NullUserUiSettingsRepository {
+    async fn get_by_user_id(&self, user_id: &str) -> AppResult<Option<UiSettings>> {
+        Ok(Some(UiSettings::defaults_for_user(user_id.to_string())))
+    }
+
+    async fn upsert(&self, user_id: &str, settings: UiSettingsUpdate) -> AppResult<UiSettings> {
+        let mut current = UiSettings::defaults_for_user(user_id.to_string());
+        current.theme = settings.theme;
+        current.highlight_color = settings.highlight_color;
+        current.secondary_color = settings.secondary_color;
+        current.high_contrast_mode = settings.high_contrast_mode;
+        current.reduce_motion = settings.reduce_motion;
+        current.density = settings.density;
+        current.sidebar_mode = settings.sidebar_mode;
+        current.default_landing_view = settings.default_landing_view;
+        current.table_columns = settings.table_columns;
+        Ok(current)
     }
 }
 

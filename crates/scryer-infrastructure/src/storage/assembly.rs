@@ -10,7 +10,7 @@ use scryer_application::{
     PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
     SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
     TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, WebauthnRepository,
+    UserRepository, UserUiSettingsRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
@@ -1229,6 +1229,7 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let ui_settings: Arc<dyn UserUiSettingsRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
@@ -1251,6 +1252,7 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
+                .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
@@ -1320,6 +1322,7 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let ui_settings: Arc<dyn UserUiSettingsRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
@@ -1342,6 +1345,7 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
+                .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))

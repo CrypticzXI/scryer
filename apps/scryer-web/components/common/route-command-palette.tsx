@@ -8,7 +8,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Loader2 } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -19,9 +19,16 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type { Facet, TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
+import { useAuth } from "@/lib/hooks/use-auth";
+import {
+  LIBRARY_PERMISSIONS,
+  hasAnyLibraryPermission,
+} from "@/lib/utils/permissions";
 import { useClient } from "urql";
 import {
   filterRouteCommandItems,
+  groupRouteCommandItems,
+  routeCommandDisplayLabel,
   type RouteCommandPaletteConfig,
 } from "@/components/common/route-command-types";
 
@@ -63,6 +70,10 @@ export function RouteCommandPalette({
   const client = useClient();
   const navigate = useNavigate();
   const t = useTranslate();
+  const { user } = useAuth();
+  const canViewCatalog = user
+    ? hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view)
+    : false;
 
   const handleCommandNavigate = React.useCallback((callback: () => void) => {
     setOpen(false);
@@ -151,7 +162,8 @@ export function RouteCommandPalette({
 
   React.useEffect(() => {
     const query = searchValue.trim();
-    if (!open || query.length < CATALOG_COMMAND_MIN_QUERY_LENGTH) {
+    if (!open || !canViewCatalog || query.length < CATALOG_COMMAND_MIN_QUERY_LENGTH) {
+      catalogRequestSeqRef.current += 1;
       setCatalogResults([]);
       setCatalogLoading(false);
       return;
@@ -192,7 +204,7 @@ export function RouteCommandPalette({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [client, open, searchValue]);
+  }, [canViewCatalog, client, open, searchValue]);
 
   const routeCommandItems = config?.items;
   const routeCommandResults = React.useMemo(
@@ -205,6 +217,7 @@ export function RouteCommandPalette({
   }
 
   const showCatalogBeforeNavigation =
+    canViewCatalog &&
     searchValue.trim().length >= CATALOG_COMMAND_MIN_QUERY_LENGTH &&
     (catalogLoading || catalogResults.length > 0);
 
@@ -212,9 +225,11 @@ export function RouteCommandPalette({
     <CommandGroup heading={t("search.catalog")}>
       {catalogLoading ? (
         <CommandItem disabled value={`catalog-loading ${searchValue}`}>
-          <div className="flex flex-1 items-center gap-2 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>{t("label.loading")}</span>
+          <div className="flex min-h-10 flex-1 items-center gap-3 text-[var(--scry-muted3)]">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-[var(--scry-chip)] text-[var(--scry-accent-ring)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </span>
+            <span className="text-sm font-medium">{t("label.loading")}</span>
           </div>
         </CommandItem>
       ) : null}
@@ -239,7 +254,7 @@ export function RouteCommandPalette({
             onSelect={() => handleCatalogTitleSelect(title)}
           >
             <div className="flex min-w-0 flex-1 items-center gap-3">
-              <div className="h-10 w-7 flex-none overflow-hidden rounded-sm border border-border bg-muted">
+              <div className="h-12 w-8 flex-none overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-chip)]">
                 {hasPoster ? (
                   <TitlePosterSlot
                     src={posterUrl}
@@ -248,20 +263,27 @@ export function RouteCommandPalette({
                     createdAt={title.createdAt}
                     alt={t("media.posterAlt", { name: title.name })}
                     className="h-full w-full object-cover"
-                    placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                    placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-[var(--scry-faint2)]"
                     emptyLabel=""
                     loading="lazy"
                   />
                 ) : Icon ? (
-                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                  <div className="flex h-full w-full items-center justify-center text-[var(--scry-faint2)]">
                     <Icon className="h-3.5 w-3.5" />
                   </div>
                 ) : null}
               </div>
-              <span className="truncate">{title.name}</span>
-              <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                {sectionLabelForFacet(t, facet)}
-                {year}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-[var(--scry-ink2)]">
+                  {title.name}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-[var(--scry-muted3)]">
+                  {sectionLabelForFacet(t, facet)}
+                  {year}
+                </span>
+              </span>
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--scry-faint2)]">
+                <ArrowRight className="h-3.5 w-3.5" />
               </span>
             </div>
           </CommandItem>
@@ -289,23 +311,51 @@ export function RouteCommandPalette({
       <CommandList>
         <CommandEmpty>{config.noResultsText}</CommandEmpty>
         {showCatalogBeforeNavigation ? catalogCommandGroup : null}
-        <CommandGroup heading={config.groupLabel}>
-          {routeCommandResults.map((item) => (
-            <CommandItem
-              key={item.id}
-              value={item.id}
-              keywords={[item.label, item.description, ...(item.keywords ?? [])]}
-              onSelect={() => handleCommandNavigate(item.onSelect)}
-            >
-              <div className="flex flex-1 items-center gap-2">
-                {item.icon ? <item.icon className="h-4 w-4" /> : null}
-                <span className="truncate">{item.label}</span>
-                <span className="ml-auto text-xs text-muted-foreground">{item.description}</span>
-              </div>
-            </CommandItem>
-          ))}
-        </CommandGroup>
-        {!showCatalogBeforeNavigation ? catalogCommandGroup : null}
+        {groupRouteCommandItems(routeCommandResults).map((group) => (
+          <CommandGroup
+            key={group.groupLabel ?? "route-command-ungrouped"}
+            heading={group.groupLabel ?? config.groupLabel}
+          >
+            {group.items.map((item) => {
+              const displayLabel = routeCommandDisplayLabel(item);
+              return (
+                <CommandItem
+                  key={item.id}
+                  value={item.id}
+                  keywords={[
+                    item.label,
+                    displayLabel,
+                    item.description,
+                    item.groupLabel ?? "",
+                    ...(item.keywords ?? []),
+                  ]}
+                  onSelect={() => handleCommandNavigate(item.onSelect)}
+                >
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    {item.icon ? (
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border border-[rgba(var(--scry-accent-rgb),0.18)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)]">
+                        <item.icon className="h-4 w-4" />
+                      </span>
+                    ) : null}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-[var(--scry-ink2)]">
+                        {displayLabel}
+                      </span>
+                      {item.description ? (
+                        <span className="mt-0.5 block truncate text-xs text-[var(--scry-muted3)]">
+                          {item.description}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--scry-faint2)]">
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </span>
+                  </div>
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        ))}
       </CommandList>
     </CommandDialog>
   );

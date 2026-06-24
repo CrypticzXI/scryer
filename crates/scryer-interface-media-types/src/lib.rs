@@ -2145,6 +2145,105 @@ pub struct SecuritySettingsPayload {
     pub env_override_description: Option<String>,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum UiThemeValue {
+    Light,
+    Dark,
+    Pride,
+    System,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum UiDensityValue {
+    Compact,
+    Comfortable,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum UiSidebarModeValue {
+    Collapsed,
+    Expanded,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum UiDefaultLandingViewValue {
+    Movies,
+    Series,
+    Anime,
+    Activity,
+    Calendar,
+    Wanted,
+    History,
+    Settings,
+    System,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum UiSettingsFacetValue {
+    Movies,
+    Series,
+    Anime,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "kebab-case")]
+pub enum UiTableViewModeValue {
+    Compact,
+    PosterTable,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UiTableColumnSettingPayload {
+    pub facet: UiSettingsFacetValue,
+    pub table_view_mode: UiTableViewModeValue,
+    pub column_id: String,
+    pub column_order: i32,
+    pub visible: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UiSettingsPayload {
+    pub user_id: ID,
+    pub theme: UiThemeValue,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub density: UiDensityValue,
+    pub sidebar_mode: UiSidebarModeValue,
+    pub default_landing_view: UiDefaultLandingViewValue,
+    pub table_columns: Vec<UiTableColumnSettingPayload>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UiTableColumnSettingInput {
+    pub facet: UiSettingsFacetValue,
+    pub table_view_mode: UiTableViewModeValue,
+    pub column_id: String,
+    pub column_order: i32,
+    pub visible: bool,
+}
+
+#[derive(InputObject, Clone)]
+pub struct SetMyUiSettingsInput {
+    pub theme: UiThemeValue,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub density: UiDensityValue,
+    pub sidebar_mode: UiSidebarModeValue,
+    pub default_landing_view: UiDefaultLandingViewValue,
+    pub table_columns: Vec<UiTableColumnSettingInput>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct AuthRuntimeStatePayload {
     pub effective_form_login_enabled: bool,

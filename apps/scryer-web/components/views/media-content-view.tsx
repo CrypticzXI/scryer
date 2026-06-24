@@ -736,7 +736,7 @@ export function MediaContentView({
   const mediaSummary = `${visibleTitleCount.toLocaleString()} shown${catalogHasMoreTitles ? "+" : ""} / ${libraryCount.toLocaleString()} ${libraryCount === 1 ? "library" : "libraries"} / ${bytesToReadable(totalManagedBytes)} managed`;
 
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-0 flex-col gap-4">
       {effectiveContentSettingsSection === "quality" ? (
         <QualitySettingsPanel
           contentSettingsLabel={contentSettingsLabel}
@@ -864,27 +864,27 @@ export function MediaContentView({
         view === "movies" || view === "series" || view === "anime" ? (
           <Card
             id={`media-overview-${view}`}
-            className="overflow-hidden rounded-2xl border-border/80 bg-card/75 p-0 shadow-[0_18px_44px_rgba(2,6,23,0.22)]"
+            className="min-h-0 overflow-hidden rounded-[22px] border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-surfB),var(--scry-surfE))] p-0 shadow-[0_24px_70px_rgba(2,6,23,0.20)]"
           >
             <CardContent className="space-y-0 p-0">
-              <div className="border-b border-border/80 px-5 pb-0 pt-4 sm:px-6">
+              <div className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-4 sm:px-5 lg:px-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                   <div className="min-w-0">
-                    <h1 className="text-[22px] font-bold leading-tight tracking-normal text-foreground">
+                    <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
                       {mediaTitle}
                     </h1>
-                    <p className="mt-1 text-[12.5px] text-muted-foreground">
+                    <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
                       {mediaSummary}
                     </p>
                   </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:items-center xl:max-w-[760px] xl:justify-end">
+                  <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:items-center xl:max-w-[800px] xl:justify-end">
                     <div className="relative min-w-[220px] flex-1 xl:max-w-[520px]">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
                       <Input
                         placeholder={t("title.filterPlaceholder")}
                         value={titleFilterInputValue}
                         onChange={handleTitleFilterChange}
-                        className="h-10 w-full rounded-[10px] border-border/90 bg-field/70 pl-9 text-[13px] shadow-none"
+                        className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-primary/35"
                       />
                     </div>
                     <LibraryMultiSelect
@@ -892,7 +892,7 @@ export function MediaContentView({
                       selectedLibraryIds={selectedLibraryIds}
                       onSelectedLibraryIdsChange={setSelectedLibraryIds}
                       disabled={librariesLoading || libraries.length === 0}
-                      triggerClassName="h-10 w-full rounded-[10px] bg-background/80 text-[13px] lg:w-[180px]"
+                      triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none lg:w-[180px]"
                     />
                     {!isMobile ? (
                       <ToggleGroup
@@ -909,7 +909,7 @@ export function MediaContentView({
                         }}
                         size="sm"
                         aria-label={t("title.viewModeToggle")}
-                        className="h-10 shrink-0 rounded-[10px] bg-background/80 p-1"
+                        className="h-10 shrink-0 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
                       >
                         <ToggleGroupItem
                           id={titleOverviewViewModeId(view, "compact")}
@@ -917,7 +917,7 @@ export function MediaContentView({
                           size="sm"
                           aria-label={t("title.viewModeCompact")}
                           title={t("title.viewModeCompact")}
-                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
                         >
                           <CompactTableIcon />
                         </ToggleGroupItem>
@@ -927,7 +927,7 @@ export function MediaContentView({
                           size="sm"
                           aria-label={t("title.viewModePosterTable")}
                           title={t("title.viewModePosterTable")}
-                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
                         >
                           <LayoutList className="h-4 w-4" />
                         </ToggleGroupItem>
@@ -937,7 +937,7 @@ export function MediaContentView({
                           size="sm"
                           aria-label={t("title.viewModePoster")}
                           title={t("title.viewModePoster")}
-                          className="h-8 w-8 rounded-lg px-0 data-[state=on]:!border-primary/70 data-[state=on]:!bg-primary data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+                          className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
                         >
                           <LayoutGrid className="h-4 w-4" />
                         </ToggleGroupItem>
@@ -945,7 +945,7 @@ export function MediaContentView({
                     ) : null}
                     <Button
                       id={`title-overview-refresh-${view === "movies" ? "movie" : view === "series" ? "series" : "anime"}`}
-                      className="h-10 w-full rounded-[10px] px-3 text-[13px] lg:w-auto"
+                      className="h-10 w-full rounded-[10px] px-3 text-[13px] shadow-[0_10px_24px_rgba(var(--scry-accent-rgb),0.22)] lg:w-auto"
                       variant="primary"
                       onClick={handleRefreshTitles}
                       disabled={titleLoading}
@@ -965,8 +965,8 @@ export function MediaContentView({
                     trailingContent={
                       effectiveViewMode === "compact" || effectiveViewMode === "poster-table" ? (
                         compactSelectedVisibleCount > 0 ? (
-                          <div className="flex h-12 w-full items-center justify-end gap-2 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 sm:w-[20rem]">
-                            <span className="mr-1 text-sm text-muted-foreground whitespace-nowrap">
+                          <div className="flex h-12 w-full items-center justify-end gap-2 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:w-[20rem]">
+                            <span className="mr-1 whitespace-nowrap text-sm text-[var(--scry-muted3)]">
                               {t("title.bulkSelectionCount", { count: compactSelectedVisibleCount })}
                             </span>
                             <TitleTableActionButton
@@ -1023,7 +1023,7 @@ export function MediaContentView({
                   />
                 </div>
               </div>
-              <div className="p-4 sm:p-5">
+              <div className="bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-3 sm:p-4 lg:p-5">
               {(() => {
                 const isMovieView = view === "movies";
                 const overviewTargetView = isMovieView ? "movies" as const : view === "anime" ? "anime" as const : "series" as const;
@@ -1041,6 +1041,7 @@ export function MediaContentView({
                 if (effectiveViewMode === "poster") {
                   return (
                     <PosterGrid
+                      key={`${view}-poster-grid`}
                       titles={deferredMonitoredTitles}
                       catalogInitialLoadComplete={catalogInitialLoadComplete}
                       isMovieView={isMovieView}
@@ -1069,6 +1070,7 @@ export function MediaContentView({
                 if (effectiveViewMode === "compact") {
                   return (
                     <CompactTitleTable
+                      key={`${view}-compact-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}
@@ -1110,6 +1112,7 @@ export function MediaContentView({
 
                 return (
                   <TitleTable
+                    key={`${view}-poster-title-table`}
                     view={view}
                     titles={deferredMonitoredTitles}
                     titleLoading={titleLoading || catalogBootstrapLoading}

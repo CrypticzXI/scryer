@@ -4,6 +4,7 @@ export type RouteCommandItem = {
   id: string;
   label: string;
   description: string;
+  groupLabel?: string;
   icon?: LucideIcon;
   keywords?: string[];
   onSelect: () => void;
@@ -18,6 +19,11 @@ export type RouteCommandPaletteConfig = {
   items: RouteCommandItem[];
 };
 
+export type RouteCommandGroup = {
+  groupLabel: string | null;
+  items: RouteCommandItem[];
+};
+
 function normalizeRouteCommandSearchText(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -29,10 +35,11 @@ function routeCommandSearchRank(
 ): number | null {
   const label = normalizeRouteCommandSearchText(item.label);
   const description = normalizeRouteCommandSearchText(item.description);
+  const groupLabel = normalizeRouteCommandSearchText(item.groupLabel ?? "");
   const keywords = (item.keywords ?? [])
     .map(normalizeRouteCommandSearchText)
     .filter(Boolean);
-  const searchableValues = [label, description, ...keywords].filter(Boolean);
+  const searchableValues = [label, description, groupLabel, ...keywords].filter(Boolean);
   const searchable = searchableValues.join(" ");
 
   if (!terms.every((term) => searchable.includes(term))) {
@@ -45,6 +52,8 @@ function routeCommandSearchRank(
   if (keywords.some((keyword) => keyword.startsWith(query))) return 3;
   if (description === query) return 4;
   if (description.startsWith(query)) return 5;
+  if (groupLabel === query) return 6;
+  if (groupLabel.startsWith(query)) return 7;
 
   if (terms.every((term) => label.includes(term))) {
     return 10 + Math.min(...terms.map((term) => label.indexOf(term)));
@@ -77,4 +86,31 @@ export function filterRouteCommandItems(
     .filter((match): match is { item: RouteCommandItem; index: number; rank: number } => match.rank !== null)
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((match) => match.item);
+}
+
+export function groupRouteCommandItems(items: RouteCommandItem[]): RouteCommandGroup[] {
+  const groups: RouteCommandGroup[] = [];
+  const groupIndices = new Map<string, number>();
+
+  for (const item of items) {
+    const groupLabel = item.groupLabel?.trim() || null;
+    const groupKey = groupLabel ?? "";
+    let groupIndex = groupIndices.get(groupKey);
+    if (groupIndex === undefined) {
+      groupIndex = groups.length;
+      groupIndices.set(groupKey, groupIndex);
+      groups.push({ groupLabel, items: [] });
+    }
+    groups[groupIndex]?.items.push(item);
+  }
+
+  return groups;
+}
+
+export function routeCommandDisplayLabel(item: RouteCommandItem): string {
+  const groupLabel = item.groupLabel?.trim();
+  if (groupLabel && item.label.startsWith(`${groupLabel} / `)) {
+    return item.label.slice(groupLabel.length + 3).trim();
+  }
+  return item.label;
 }

@@ -652,6 +652,12 @@ pub trait UserRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait UserUiSettingsRepository: Send + Sync {
+    async fn get_by_user_id(&self, user_id: &str) -> AppResult<Option<UiSettings>>;
+    async fn upsert(&self, user_id: &str, settings: UiSettingsUpdate) -> AppResult<UiSettings>;
+}
+
+#[async_trait]
 pub trait OAuthRepository: Send + Sync {
     async fn create_authorization_code(
         &self,

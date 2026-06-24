@@ -801,10 +801,22 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   useOverviewWindowScrollRestoration({
-    enabled: shouldLoadCatalogTitles,
+    enabled: shouldLoadCatalogTitles && effectiveViewMode === "poster",
     ready: !titleLoading && visibleTitles.length > 0,
     storageKeySuffix: "window",
   });
+
+  React.useLayoutEffect(() => {
+    if (
+      !shouldLoadCatalogTitles
+      || effectiveViewMode === "poster"
+      || typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [effectiveViewMode, shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
     if (!shouldLoadCatalogTitles) {

@@ -81,7 +81,7 @@ const fr: LocaleDictionary = {
   "nav.mobileDescription": "Navigation principale de Scryer",
   "nav.mobileTrigger": "Ouvrir la navigation",
   "nav.group.catalogs": "Catalogues",
-  "nav.group.discover": "Découvrir",
+  "nav.group.requests": "Demandes",
   "nav.group.automation": "Automatisation",
   "nav.group.configuration": "Configuration",
   "nav.group.integrations": "Intégrations",
@@ -585,13 +585,19 @@ const fr: LocaleDictionary = {
   "theme.system": "Système",
   "theme.switchLabel": "Changer de thème (actuel : {{theme}})",
   "search.globalPlaceholder": "Rechercher films, séries, anime et réglages…",
+  "search.globalPlaceholderNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions…",
   "search.overlayPlaceholder":
     "Rechercher films, séries, anime, votre bibliothèque et la navigation…",
+  "search.overlayPlaceholderNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Ctrl+K",
   "search.title": "Recherche globale",
   "search.subtitle":
     "Rechercher films, séries, anime, votre bibliothèque et la navigation.",
+  "search.subtitleNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions.",
   "search.subtitleWithQuery": "Résultats pour « {{query}} »",
   "search.statusLoading": "Recherche de « {{query}} »…",
   "search.statusResultOne": "1 résultat pour « {{query}} »",
@@ -619,16 +625,24 @@ const fr: LocaleDictionary = {
   "search.searchTips": "Conseils de recherche",
   "search.tipTitles":
     "Recherchez par film, série, anime, catalogue, section de paramètres ou action.",
+  "search.tipTitlesNoLibrary":
+    "Recherchez par film, série, anime, section de paramètres ou action.",
   "search.tipTabs":
     "Utilisez les onglets pour limiter les résultats à votre bibliothèque, à la navigation ou à un type de catalogue.",
+  "search.tipTabsNoLibrary":
+    "Utilisez les onglets pour limiter les résultats à la navigation ou à un type de catalogue.",
   "search.tipIndexers":
     "Utilisez un terme plus large avant de vérifier les indexeurs pour les titres absents des métadonnées.",
   "search.noMatchesFor": "Aucun résultat pour « {{query}} »",
   "search.emptyHint":
     "Essayez un autre film, une série, un anime, un catalogue, une section de paramètres ou une action.",
+  "search.emptyHintNoLibrary":
+    "Essayez un autre film, une série, un anime, une section de paramètres ou une action.",
   "search.minimumQueryTitle": "Continuez à saisir",
   "search.minimumQueryHint":
     "Saisissez au moins 2 caractères pour rechercher dans votre bibliothèque et les métadonnées.",
+  "search.minimumQueryHintNoLibrary":
+    "Saisissez au moins 2 caractères pour rechercher les métadonnées.",
   "search.noCatalogMatches": "Aucune correspondance dans le catalogue géré.",
   "search.noMetadataMatches":
     "Aucune correspondance de métadonnées dans cette section.",

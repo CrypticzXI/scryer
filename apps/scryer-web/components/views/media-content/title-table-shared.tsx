@@ -31,6 +31,87 @@ export type TitleTableSortKey =
   | "size";
 export type TitleTableSortDirection = "asc" | "desc";
 
+type TitleTableVirtualizer = {
+  getTotalSize: () => number;
+  measure: () => void;
+  scrollOffset?: number | null;
+  scrollToOffset: (offset: number) => void;
+};
+
+export function useTitleTableVirtualizerRebuild<TElement extends HTMLElement>({
+  itemCount,
+  loading,
+  scrollRef,
+  titleVirtualizer,
+}: {
+  itemCount: number;
+  loading: boolean;
+  scrollRef: React.RefObject<TElement | null>;
+  titleVirtualizer: TitleTableVirtualizer;
+}) {
+  const getMaxScrollTop = React.useCallback(
+    (element: HTMLElement) => {
+      const totalSize = titleVirtualizer.getTotalSize();
+      if (totalSize <= 0 || element.clientHeight <= 0) {
+        return Math.max(0, element.scrollHeight - element.clientHeight);
+      }
+
+      return Math.max(totalSize - element.clientHeight, 0);
+    },
+    [titleVirtualizer],
+  );
+
+  React.useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let secondFrameId: number | undefined;
+    const rebuildVirtualTable = () => {
+      titleVirtualizer.measure();
+
+      const element = scrollRef.current;
+      if (!element) {
+        return;
+      }
+
+      const maxScrollTop = getMaxScrollTop(element);
+      const virtualOffset = titleVirtualizer.scrollOffset;
+      const currentOffset =
+        typeof virtualOffset === "number" ? virtualOffset : element.scrollTop;
+      if (currentOffset > maxScrollTop || element.scrollTop > maxScrollTop) {
+        titleVirtualizer.scrollToOffset(maxScrollTop);
+      }
+    };
+    rebuildVirtualTable();
+    const firstFrameId = window.requestAnimationFrame(() => {
+      rebuildVirtualTable();
+      secondFrameId = window.requestAnimationFrame(rebuildVirtualTable);
+    });
+    const timeoutId = window.setTimeout(rebuildVirtualTable, 80);
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(rebuildVirtualTable)
+        : null;
+
+    const element = scrollRef.current;
+    if (element) {
+      resizeObserver?.observe(element);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(firstFrameId);
+      if (secondFrameId !== undefined) {
+        window.cancelAnimationFrame(secondFrameId);
+      }
+      window.clearTimeout(timeoutId);
+      resizeObserver?.disconnect();
+    };
+  }, [getMaxScrollTop, itemCount, loading, scrollRef, titleVirtualizer]);
+
+  return getMaxScrollTop;
+}
+
 export function resolveOverviewTargetView(view: string): ViewId {
   if (view === "movies") {
     return "movies";

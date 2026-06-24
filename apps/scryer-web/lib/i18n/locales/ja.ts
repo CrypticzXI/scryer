@@ -81,7 +81,7 @@ const ja: LocaleDictionary = {
   "nav.mobileDescription": "Scryerのメインナビゲーション",
   "nav.mobileTrigger": "ナビゲーションを開く",
   "nav.group.catalogs": "カタログ",
-  "nav.group.discover": "探索",
+  "nav.group.requests": "リクエスト",
   "nav.group.automation": "自動化",
   "nav.group.configuration": "設定",
   "nav.group.integrations": "連携",
@@ -566,13 +566,19 @@ const ja: LocaleDictionary = {
   "theme.system": "システム",
   "theme.switchLabel": "テーマを切り替え（現在: {{theme}}）",
   "search.globalPlaceholder": "映画、シリーズ、アニメ、設定を検索…",
+  "search.globalPlaceholderNoLibrary":
+    "映画、シリーズ、アニメ、設定、アクションを検索…",
   "search.overlayPlaceholder":
     "映画、シリーズ、アニメ、ライブラリ、ナビゲーションを検索…",
+  "search.overlayPlaceholderNoLibrary":
+    "映画、シリーズ、アニメ、設定、アクションを検索…",
   "search.shortcutHint": "⌘K",
   "search.shortcutHintControl": "Ctrl+K",
   "search.title": "グローバル検索",
   "search.subtitle":
     "映画、シリーズ、アニメ、ライブラリ、ナビゲーションを検索します。",
+  "search.subtitleNoLibrary":
+    "映画、シリーズ、アニメ、設定、アクションを検索します。",
   "search.subtitleWithQuery": "「{{query}}」の結果",
   "search.statusLoading": "「{{query}}」を検索中…",
   "search.statusResultOne": "「{{query}}」の結果 1 件",
@@ -600,16 +606,24 @@ const ja: LocaleDictionary = {
   "search.searchTips": "検索のヒント",
   "search.tipTitles":
     "映画、シリーズ、アニメ、カタログ、設定セクション、アクション名で検索します。",
+  "search.tipTitlesNoLibrary":
+    "映画、シリーズ、アニメ、設定セクション、アクション名で検索します。",
   "search.tipTabs":
     "タブでライブラリ、ナビゲーション、カタログ種別に絞り込めます。",
+  "search.tipTabsNoLibrary":
+    "タブでナビゲーションまたはカタログ種別に絞り込めます。",
   "search.tipIndexers":
     "メタデータ結果にないタイトルをインデクサーで探す前に、広めの語句を試してください。",
   "search.noMatchesFor": "「{{query}}」に一致するものはありません",
   "search.emptyHint":
     "別の映画、シリーズ、アニメ、カタログ名、設定セクション、アクションを試してください。",
+  "search.emptyHintNoLibrary":
+    "別の映画、シリーズ、アニメ、設定セクション、アクションを試してください。",
   "search.minimumQueryTitle": "続けて入力",
   "search.minimumQueryHint":
     "ライブラリとメタデータを検索するには2文字以上入力してください。",
+  "search.minimumQueryHintNoLibrary":
+    "メタデータを検索するには2文字以上入力してください。",
   "search.noCatalogMatches": "管理対象のカタログマッチはまだありません。",
   "search.noMetadataMatches":
     "このセクションにメタデータマッチはまだありません。",
