@@ -1,4 +1,5 @@
 const ACQUISITION_SCAN_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE: usize = 12;
 const ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE: usize = 10;
 const ACQUISITION_SLICE_YIELD_INTERVAL: usize = 10;
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {

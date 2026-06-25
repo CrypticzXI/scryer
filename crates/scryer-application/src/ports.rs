@@ -1014,6 +1014,12 @@ pub trait DomainEventRepository: Send + Sync {
     async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerSystemBackoff {
+    pub disabled_until: chrono::DateTime<chrono::Utc>,
+    pub escalation_level: usize,
+}
+
 #[async_trait]
 pub trait IndexerConfigRepository: Send + Sync {
     async fn list(&self, provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>>;
@@ -1021,6 +1027,17 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
     async fn touch_last_error(&self, id: &str) -> AppResult<()>;
     async fn clear_last_error(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+    async fn list_system_backoffs(
+        &self,
+    ) -> AppResult<std::collections::HashMap<String, IndexerSystemBackoff>> {
+        Ok(std::collections::HashMap::new())
+    }
+    async fn set_system_backoff(&self, _id: &str, _backoff: IndexerSystemBackoff) -> AppResult<()> {
+        Ok(())
+    }
+    async fn clear_system_backoff(&self, _id: &str) -> AppResult<()> {
         Ok(())
     }
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;

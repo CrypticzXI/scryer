@@ -1,1 +1,30 @@
 1 24 "resources/windows/scryer.exe.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION SCRYER_VERSION_MAJOR,SCRYER_VERSION_MINOR,SCRYER_VERSION_PATCH,0
+ PRODUCTVERSION SCRYER_VERSION_MAJOR,SCRYER_VERSION_MINOR,SCRYER_VERSION_PATCH,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x00040004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Scryer Media"
+            VALUE "FileDescription", "Scryer"
+            VALUE "FileVersion", SCRYER_VERSION_STR
+            VALUE "InternalName", "scryer"
+            VALUE "LegalCopyright", "Copyright (c) Scryer Media"
+            VALUE "OriginalFilename", "scryer.exe"
+            VALUE "ProductName", "Scryer"
+            VALUE "ProductVersion", SCRYER_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

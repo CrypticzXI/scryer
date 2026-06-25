@@ -5,14 +5,14 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
     IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
-    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
+    IndexerSystemBackoff, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
-    NabTransportKind,
+    IndexerSearchInputCapability, NabTransportKind,
 };
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, info, warn};
 
 /// A single search strategy dispatched as an independent parallel task.
@@ -35,6 +35,7 @@ struct StrategyExecutionOutcome {
     title_guard_mode: TitleGuardMode,
     response: AppResult<IndexerSearchResponse>,
     elapsed: std::time::Duration,
+    retry_after: Option<std::time::Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +63,8 @@ enum IdDispatchMode {
 struct ResolvedSearchCapabilities {
     caps: IndexerProviderCapabilities,
     id_dispatch_mode: IdDispatchMode,
+    facet_text_search: bool,
+    generic_text_fallback: bool,
     query_only_reason: Option<&'static str>,
     transport_kind: Option<NabTransportKind>,
     caps_source: &'static str,
@@ -96,6 +99,7 @@ impl SearchLane {
 struct StrategyBatchHealth {
     any_success: bool,
     any_error: bool,
+    retry_after: Option<std::time::Duration>,
 }
 
 impl StrategyBatchHealth {
@@ -103,23 +107,50 @@ impl StrategyBatchHealth {
         self.any_success = true;
     }
 
-    fn mark_error(&mut self) {
+    fn mark_error(&mut self, retry_after: Option<std::time::Duration>) {
         self.any_error = true;
+        if let Some(retry_after) = retry_after
+            && self
+                .retry_after
+                .map_or(true, |current| retry_after > current)
+        {
+            self.retry_after = Some(retry_after);
+        }
     }
 
     async fn apply(
         self,
         backoff_tracker: &IndexerBackoffTracker,
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
         indexer_id: &str,
         indexer_name: &str,
+        had_persisted_system_backoff: bool,
     ) {
         if self.any_success {
-            backoff_tracker.record_success(indexer_id).await;
+            let had_in_memory_backoff = backoff_tracker.record_success(indexer_id).await;
+            if had_in_memory_backoff || had_persisted_system_backoff {
+                MultiIndexerSearchClient::clear_indexer_system_backoff(
+                    indexer_configs,
+                    indexer_id,
+                    indexer_name,
+                )
+                .await;
+            }
         } else if self.any_error {
-            let until = backoff_tracker.record_failure(indexer_id).await;
+            let backoff = backoff_tracker
+                .record_failure(indexer_id, self.retry_after)
+                .await;
+            MultiIndexerSearchClient::record_indexer_system_backoff(
+                indexer_configs,
+                indexer_id,
+                indexer_name,
+                backoff.clone(),
+            )
+            .await;
             warn!(
                 indexer = indexer_name,
-                disabled_until = %until,
+                disabled_until = %backoff.disabled_until,
+                escalation_level = backoff.escalation_level,
                 "indexer backoff escalated"
             );
         }
@@ -127,6 +158,8 @@ impl StrategyBatchHealth {
 }
 
 const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 12;
+const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
+const INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 24;
 
 fn log_indexer_skip(
     mode: SearchMode,
@@ -169,6 +202,23 @@ fn should_run_fallback_tier(
     fallback_strategies: &[SearchStrategy],
 ) -> bool {
     collected_results.is_empty() && primary_attempted && !fallback_strategies.is_empty()
+}
+
+fn retry_after_from_error(error: &AppError) -> Option<std::time::Duration> {
+    parse_retry_after_seconds(&error.to_string())
+}
+
+fn parse_retry_after_seconds(message: &str) -> Option<std::time::Duration> {
+    let marker = "retry_after_seconds=";
+    let (_, rest) = message.split_once(marker)?;
+    let digits = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(std::time::Duration::from_secs(digits.parse::<u64>().ok()?))
 }
 
 /// Records transport metrics per outbound indexer request.
@@ -388,17 +438,15 @@ impl IndexerRateLimiter {
     }
 }
 
-/// Exponential backoff periods (in seconds), matching Sonarr's EscalationBackOff.Periods[].
+/// Short escalating system backoff periods. Provider `Retry-After` handling can
+/// choose longer when explicitly supplied, but generic storm containment caps at
+/// one hour to avoid stranding every indexer after one transient burst.
 const BACKOFF_PERIODS_SECS: &[u64] = &[
-    5 * 60,       // 5 minutes
-    10 * 60,      // 10 minutes
-    15 * 60,      // 15 minutes
-    30 * 60,      // 30 minutes
-    60 * 60,      // 1 hour
-    2 * 60 * 60,  // 2 hours
-    4 * 60 * 60,  // 4 hours
-    8 * 60 * 60,  // 8 hours
-    24 * 60 * 60, // 24 hours
+    5 * 60,  // 5 minutes
+    10 * 60, // 10 minutes
+    15 * 60, // 15 minutes
+    30 * 60, // 30 minutes
+    60 * 60, // 1 hour
 ];
 
 #[derive(Clone, Debug)]
@@ -407,8 +455,8 @@ struct IndexerBackoffState {
     disabled_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// In-memory indexer backoff tracker. Resets on restart, providing a natural
-/// 15-minute startup grace period (matching Sonarr's behavior).
+/// In-memory indexer backoff tracker. Persistent system backoffs seed this
+/// state on startup/search so escalation survives process restarts.
 #[derive(Clone)]
 struct IndexerBackoffTracker {
     state: Arc<Mutex<HashMap<String, IndexerBackoffState>>>,
@@ -421,8 +469,30 @@ impl IndexerBackoffTracker {
         }
     }
 
-    /// Record a failure and escalate the backoff level. Returns the new disabled_until.
-    async fn record_failure(&self, indexer_id: &str) -> chrono::DateTime<chrono::Utc> {
+    async fn seed_persisted(&self, indexer_id: &str, backoff: &IndexerSystemBackoff) {
+        let mut map = self.state.lock().await;
+        let state = map
+            .entry(indexer_id.to_string())
+            .or_insert(IndexerBackoffState {
+                escalation_level: 0,
+                disabled_until: None,
+            });
+        state.escalation_level = state.escalation_level.max(backoff.escalation_level);
+        if backoff.disabled_until > chrono::Utc::now()
+            && state
+                .disabled_until
+                .map_or(true, |current| backoff.disabled_until > current)
+        {
+            state.disabled_until = Some(backoff.disabled_until);
+        }
+    }
+
+    /// Record a failure and escalate the backoff level. Returns the persisted row.
+    async fn record_failure(
+        &self,
+        indexer_id: &str,
+        retry_after: Option<std::time::Duration>,
+    ) -> IndexerSystemBackoff {
         let mut map = self.state.lock().await;
         let state = map
             .entry(indexer_id.to_string())
@@ -434,27 +504,40 @@ impl IndexerBackoffTracker {
         if let Some(until) = state.disabled_until
             && until > chrono::Utc::now()
         {
-            return until;
+            return IndexerSystemBackoff {
+                disabled_until: until,
+                escalation_level: state.escalation_level,
+            };
         }
 
         let period_index = state.escalation_level.min(BACKOFF_PERIODS_SECS.len() - 1);
-        let backoff_secs = BACKOFF_PERIODS_SECS[period_index];
-        let until = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
+        let backoff_secs = retry_after
+            .map(|duration| duration.as_secs())
+            .unwrap_or(BACKOFF_PERIODS_SECS[period_index]);
+        let backoff_secs = backoff_secs.min(i64::MAX as u64) as i64;
+        let until = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs);
 
         state.escalation_level = (state.escalation_level + 1).min(BACKOFF_PERIODS_SECS.len());
         state.disabled_until = Some(until);
 
-        until
+        IndexerSystemBackoff {
+            disabled_until: until,
+            escalation_level: state.escalation_level,
+        }
     }
 
-    /// Record a success and de-escalate by one level.
-    async fn record_success(&self, indexer_id: &str) {
+    /// Record a success and de-escalate by one level. Returns true when local
+    /// backoff state existed and may need persistent cleanup.
+    async fn record_success(&self, indexer_id: &str) -> bool {
         let mut map = self.state.lock().await;
         if let Some(state) = map.get_mut(indexer_id) {
             state.escalation_level = state.escalation_level.saturating_sub(1);
             if state.escalation_level == 0 {
                 state.disabled_until = None;
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -480,6 +563,8 @@ pub struct MultiIndexerSearchClient {
     rate_limiter: IndexerRateLimiter,
     backoff_tracker: IndexerBackoffTracker,
     rss_feed_cache: RssFeedCache,
+    background_search_limit: Arc<Semaphore>,
+    interactive_search_limit: Arc<Semaphore>,
 }
 
 impl MultiIndexerSearchClient {
@@ -495,6 +580,20 @@ impl MultiIndexerSearchClient {
             rate_limiter: IndexerRateLimiter::new(),
             backoff_tracker: IndexerBackoffTracker::new(),
             rss_feed_cache: Arc::new(Mutex::new(HashMap::new())),
+            background_search_limit: Arc::new(Semaphore::new(
+                BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
+            )),
+            interactive_search_limit: Arc::new(Semaphore::new(
+                INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
+            )),
+        }
+    }
+
+    fn search_limit_for_mode(&self, mode: SearchMode) -> Arc<Semaphore> {
+        if matches!(mode, SearchMode::Interactive) {
+            self.interactive_search_limit.clone()
+        } else {
+            self.background_search_limit.clone()
         }
     }
 
@@ -537,6 +636,38 @@ impl MultiIndexerSearchClient {
                 indexer = indexer_name,
                 error = %error,
                 "failed to clear indexer last_error_at"
+            );
+        }
+    }
+
+    async fn record_indexer_system_backoff(
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
+        indexer_id: &str,
+        indexer_name: &str,
+        backoff: IndexerSystemBackoff,
+    ) {
+        if let Err(error) = indexer_configs
+            .set_system_backoff(indexer_id, backoff)
+            .await
+        {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to persist indexer system backoff"
+            );
+        }
+    }
+
+    async fn clear_indexer_system_backoff(
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
+        indexer_id: &str,
+        indexer_name: &str,
+    ) {
+        if let Err(error) = indexer_configs.clear_system_backoff(indexer_id).await {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to clear indexer system backoff"
             );
         }
     }
@@ -587,6 +718,8 @@ impl MultiIndexerSearchClient {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                facet_text_search: false,
+                generic_text_fallback: false,
                 query_only_reason: None,
                 transport_kind: None,
                 caps_source: "static",
@@ -599,6 +732,8 @@ impl MultiIndexerSearchClient {
                 return ResolvedSearchCapabilities {
                     caps: static_caps.clone(),
                     id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                    facet_text_search: false,
+                    generic_text_fallback: false,
                     query_only_reason: None,
                     transport_kind,
                     caps_source: "legacy_static",
@@ -614,6 +749,8 @@ impl MultiIndexerSearchClient {
                         ..static_caps.clone()
                     },
                     id_dispatch_mode: IdDispatchMode::QueryOnly,
+                    facet_text_search: false,
+                    generic_text_fallback: true,
                     query_only_reason: Some("caps snapshot unavailable"),
                     transport_kind,
                     caps_source: "query_only_fallback",
@@ -626,16 +763,19 @@ impl MultiIndexerSearchClient {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                facet_text_search: false,
+                generic_text_fallback: false,
                 query_only_reason: None,
                 transport_kind,
                 caps_source: "static",
             };
         };
 
+        let has_facet_query = caps_snapshot_has_facet_query(snapshot, query_facet);
+        let has_basic_query = caps_snapshot_has_basic_query(snapshot);
         let mut caps = static_caps.clone();
         caps.supported_ids = supported_ids_from_caps_snapshot(snapshot);
-        caps.query_param =
-            caps_snapshot_has_query(snapshot, query_facet).then_some("q".to_string());
+        caps.query_param = (has_facet_query || has_basic_query).then_some("q".to_string());
         caps.search_inputs = caps_search_inputs(snapshot, query_facet);
         caps.supported_external_ids = supported_external_ids_from_caps_snapshot(snapshot);
         caps.season_param = node_supports_param(snapshot.tv_search.as_ref(), "season")
@@ -654,6 +794,8 @@ impl MultiIndexerSearchClient {
         ResolvedSearchCapabilities {
             caps,
             id_dispatch_mode,
+            facet_text_search: has_facet_query,
+            generic_text_fallback: !has_facet_query && has_basic_query,
             query_only_reason,
             transport_kind,
             caps_source: "snapshot",
@@ -710,6 +852,10 @@ impl MultiIndexerSearchClient {
 
     async fn execute_strategy_tier(
         client: Arc<dyn IndexerClient>,
+        search_limit: Arc<Semaphore>,
+        rate_limiter: IndexerRateLimiter,
+        indexer_id: String,
+        rate_limit_seconds: Option<i64>,
         category: Option<String>,
         per_indexer_categories: Option<Vec<String>>,
         mode: SearchMode,
@@ -724,6 +870,9 @@ impl MultiIndexerSearchClient {
             let per_indexer_categories = per_indexer_categories.clone();
             let tagged_aliases = tagged_aliases.clone();
             let strategy_label = strategy.label.clone();
+            let search_limit = search_limit.clone();
+            let rate_limiter = rate_limiter.clone();
+            let indexer_id = indexer_id.clone();
             let title_guard_mode =
                 if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
                     TitleGuardMode::SkipTitleMatch
@@ -732,56 +881,79 @@ impl MultiIndexerSearchClient {
                 };
 
             set.spawn(async move {
-                let start = std::time::Instant::now();
-                let response = tokio::time::timeout(
-                    std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
-                    client.search(
-                        strategy.request_query,
-                        strategy.ids,
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            category
-                        },
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            Some(strategy.request_facet)
-                        },
-                        None,
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            per_indexer_categories
-                        },
-                        None,
-                        mode,
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            strategy.season
-                        },
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            strategy.episode
-                        },
-                        if strategy.generic_query_only {
-                            None
-                        } else {
-                            strategy.absolute_episode
-                        },
-                        tagged_aliases,
-                    ),
-                )
-                .await
-                .unwrap_or_else(|_| Err(AppError::Repository("indexer search timed out".into())));
+                let permit = search_limit.acquire_owned().await;
+                let response = match permit {
+                    Ok(_permit) => {
+                        rate_limiter
+                            .acquire(&indexer_id, rate_limit_seconds, mode)
+                            .await;
+                        let start = std::time::Instant::now();
+                        let response = tokio::time::timeout(
+                            std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
+                            client.search(
+                                strategy.request_query,
+                                strategy.ids,
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    category
+                                },
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    Some(strategy.request_facet)
+                                },
+                                None,
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    per_indexer_categories
+                                },
+                                None,
+                                mode,
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    strategy.season
+                                },
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    strategy.episode
+                                },
+                                if strategy.generic_query_only {
+                                    None
+                                } else {
+                                    strategy.absolute_episode
+                                },
+                                tagged_aliases,
+                            ),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(AppError::Repository("indexer search timed out".into()))
+                        });
+                        let retry_after = response.as_ref().err().and_then(retry_after_from_error);
+
+                        return StrategyExecutionOutcome {
+                            label: strategy_label,
+                            title_guard_mode,
+                            response,
+                            elapsed: start.elapsed(),
+                            retry_after,
+                        };
+                    }
+                    Err(error) => Err(AppError::Repository(format!(
+                        "indexer search limiter closed: {error}"
+                    ))),
+                };
 
                 StrategyExecutionOutcome {
                     label: strategy_label,
                     title_guard_mode,
                     response,
-                    elapsed: start.elapsed(),
+                    elapsed: std::time::Duration::ZERO,
+                    retry_after: None,
                 }
             });
         }
@@ -797,6 +969,7 @@ impl MultiIndexerSearchClient {
                         "indexer search task panicked: {error}"
                     ))),
                     elapsed: std::time::Duration::ZERO,
+                    retry_after: None,
                 }),
             }
         }
@@ -839,9 +1012,17 @@ impl IndexerClient for MultiIndexerSearchClient {
         });
 
         let now = chrono::Utc::now();
+        let system_backoffs = self
+            .indexer_configs
+            .list_system_backoffs()
+            .await
+            .unwrap_or_else(|err| {
+                warn!(error = %err, "failed to load persisted indexer system backoffs");
+                HashMap::new()
+            });
 
         // Filter by is_enabled, search mode flag, disabled_until (config), and backoff state
-        let mut enabled: Vec<&IndexerConfig> = Vec::new();
+        let mut enabled: Vec<(&IndexerConfig, bool)> = Vec::new();
         for c in &configs {
             if !c.is_enabled {
                 log_indexer_skip(mode, c.name.as_str(), "disabled", None);
@@ -856,6 +1037,22 @@ impl IndexerClient for MultiIndexerSearchClient {
                     c.name.as_str(),
                     "temporarily disabled (config)",
                     Some(until),
+                );
+                continue;
+            }
+            let persisted_system_backoff = system_backoffs.get(&c.id).cloned();
+            if let Some(backoff) = persisted_system_backoff.as_ref() {
+                self.backoff_tracker.seed_persisted(&c.id, backoff).await;
+            }
+            let had_persisted_system_backoff = persisted_system_backoff.is_some();
+            if let Some(backoff) = persisted_system_backoff.as_ref()
+                && backoff.disabled_until > now
+            {
+                log_indexer_skip(
+                    mode,
+                    c.name.as_str(),
+                    "temporarily disabled (system backoff)",
+                    Some(backoff.disabled_until),
                 );
                 continue;
             }
@@ -874,7 +1071,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 SearchMode::Auto => Self::auto_mode_enabled(c, is_rss_request),
             };
             if mode_ok {
-                enabled.push(c);
+                enabled.push((c, had_persisted_system_backoff));
             } else {
                 log_indexer_skip(mode, c.name.as_str(), "disabled for search mode", None);
             }
@@ -894,7 +1091,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         debug!(
             mode = ?mode,
             count = enabled.len(),
-            indexers = ?enabled.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            indexers = ?enabled.iter().map(|(c, _)| c.name.as_str()).collect::<Vec<_>>(),
             "dispatching search to indexers"
         );
 
@@ -947,7 +1144,8 @@ impl IndexerClient for MultiIndexerSearchClient {
         // broad freetext query if that indexer returned no releases.
         let mut set =
             tokio::task::JoinSet::<(String, String, AppResult<IndexerSearchResponse>)>::new();
-        for config in enabled {
+        let search_limit = self.search_limit_for_mode(mode);
+        for (config, had_persisted_system_backoff) in enabled {
             // Apply per-indexer facet scoping: if routing is configured and this
             // indexer is disabled for the current scope, skip it entirely.
             let routing_entry = indexer_routing
@@ -995,7 +1193,6 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 vec![per_indexer_categories.clone()]
             };
-            let pre_acquired_rss_categories = is_rss_request && rss_category_requests.len() > 1;
 
             // Skip indexers at or near their API quota for auto searches.
             if mode == SearchMode::Auto && self.stats_tracker.is_at_quota(&config.id) {
@@ -1038,14 +1235,20 @@ impl IndexerClient for MultiIndexerSearchClient {
             let has_facet_entry = caps.has_facet(&facet);
             let has_id_facet_entry = caps.has_facet(&id_search_facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
-            let skip_no_facet = !has_facet_entry
-                && !has_id_facet_entry
-                && has_declared_facets
-                && !matches!(resolved_caps.id_dispatch_mode, IdDispatchMode::QueryOnly);
-            let skip_no_matching_id = has_id_facet_entry && caps.deduplicates_aliases && {
-                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet))
-                    .is_empty()
-            };
+            let has_eligible_ids =
+                !filter_ids_for_types(&available_ids, caps.id_types_for_facet(&id_search_facet))
+                    .is_empty();
+            let has_text_search = caps.query_param.is_some()
+                && (!has_declared_facets
+                    || has_facet_entry
+                    || resolved_caps.facet_text_search
+                    || resolved_caps.generic_text_fallback);
+            let skip_no_facet =
+                !has_facet_entry && !has_id_facet_entry && has_declared_facets && !has_text_search;
+            let skip_no_matching_id = has_id_facet_entry
+                && caps.deduplicates_aliases
+                && !has_eligible_ids
+                && !has_text_search;
             if !is_rss_request && (skip_no_facet || skip_no_matching_id) {
                 info!(
                     indexer = config.name.as_str(),
@@ -1104,12 +1307,6 @@ impl IndexerClient for MultiIndexerSearchClient {
             // regardless of query — the caller matches results downstream.
             let is_rss_only = !caps.supports_any_search() && caps.rss;
             if is_rss_only {
-                if pre_acquired_rss_categories {
-                    self.rate_limiter
-                        .acquire(&config.id, config.rate_limit_seconds, mode)
-                        .await;
-                }
-
                 for rss_category_request in rss_category_requests {
                     let cell = {
                         let mut cache = self.rss_feed_cache.lock().await;
@@ -1133,40 +1330,61 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let backoff_tracker = self.backoff_tracker.clone();
                     let indexer_configs = self.indexer_configs.clone();
                     let facet = facet.clone();
-                    let should_rate_limit = !pre_acquired_rss_categories;
+                    let search_limit = search_limit.clone();
+                    let had_persisted_system_backoff = had_persisted_system_backoff;
 
                     set.spawn(async move {
                         let results = cell
                             .get_or_init(|| async {
-                                if should_rate_limit {
-                                    rate_limiter
-                                        .acquire(&indexer_id, rate_limit_seconds, mode)
+                                let permit = search_limit.acquire_owned().await;
+                                let search_result = match permit {
+                                    Ok(_permit) => {
+                                        rate_limiter
+                                            .acquire(&indexer_id, rate_limit_seconds, mode)
+                                            .await;
+                                        let start = std::time::Instant::now();
+                                        let response = tokio::time::timeout(
+                                            std::time::Duration::from_secs(
+                                                INDEXER_SEARCH_TIMEOUT_SECS,
+                                            ),
+                                            client.search(
+                                                query,
+                                                HashMap::new(),
+                                                category,
+                                                Some(facet),
+                                                None,
+                                                rss_category_request.clone(),
+                                                None,
+                                                mode,
+                                                season,
+                                                episode,
+                                                absolute_episode,
+                                                tagged_aliases,
+                                            ),
+                                        )
                                         .await;
-                                }
-                                let start = std::time::Instant::now();
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
-                                    client.search(
-                                        query,
-                                        HashMap::new(),
-                                        category,
-                                        Some(facet),
-                                        None,
-                                        rss_category_request.clone(),
-                                        None,
-                                        mode,
-                                        season,
-                                        episode,
-                                        absolute_episode,
-                                        tagged_aliases,
-                                    ),
-                                )
-                                .await
-                                {
+                                        (response, start.elapsed())
+                                    }
+                                    Err(error) => {
+                                        warn!(indexer = indexer_name.as_str(), error = %error, "RSS feed search limiter closed");
+                                        return vec![];
+                                    }
+                                };
+                                let (search_response, elapsed) = search_result;
+
+                                match search_response {
                                     Ok(Ok(response)) => {
                                         info!(indexer = indexer_name.as_str(), count = response.results.len(), "RSS feed cached");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, true);
-                                        backoff_tracker.record_success(&indexer_id).await;
+                                        let had_in_memory_backoff = backoff_tracker.record_success(&indexer_id).await;
+                                        if had_in_memory_backoff || had_persisted_system_backoff {
+                                            Self::clear_indexer_system_backoff(
+                                                &indexer_configs,
+                                                &indexer_id,
+                                                &indexer_name,
+                                            )
+                                            .await;
+                                        }
                                         Self::clear_indexer_last_error(
                                             &indexer_configs,
                                             &indexer_id,
@@ -1174,12 +1392,25 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         )
                                         .await;
                                         metrics::counter!("scryer_indexer_queries_total", "indexer" => indexer_name.clone(), "status" => "success", "mode" => "rss_cached").increment(1);
-                                        metrics::histogram!("scryer_indexer_query_duration_seconds", "indexer" => indexer_name.clone(), "mode" => "rss_cached").record(start.elapsed().as_secs_f64());
+                                        metrics::histogram!("scryer_indexer_query_duration_seconds", "indexer" => indexer_name.clone(), "mode" => "rss_cached").record(elapsed.as_secs_f64());
                                         response.results
                                     }
                                     Ok(Err(err)) => {
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        let backoff = backoff_tracker
+                                            .record_failure(
+                                                &indexer_id,
+                                                retry_after_from_error(&err),
+                                            )
+                                            .await;
+                                        Self::record_indexer_system_backoff(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                            backoff,
+                                        )
+                                        .await;
                                         Self::record_indexer_last_error(
                                             &indexer_configs,
                                             &indexer_id,
@@ -1191,6 +1422,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     Err(_) => {
                                         warn!(indexer = indexer_name.as_str(), "RSS feed fetch timed out");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        let backoff =
+                                            backoff_tracker.record_failure(&indexer_id, None).await;
+                                        Self::record_indexer_system_backoff(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                            backoff,
+                                        )
+                                        .await;
                                         Self::record_indexer_last_error(
                                             &indexer_configs,
                                             &indexer_id,
@@ -1226,6 +1466,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 absolute_episode,
                 caps: &caps,
                 id_dispatch_mode: resolved_caps.id_dispatch_mode,
+                facet_text_search: resolved_caps.facet_text_search,
+                generic_text_fallback: resolved_caps.generic_text_fallback,
                 is_alias_query: false,
             });
 
@@ -1242,6 +1484,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                     absolute_episode,
                     caps: &caps,
                     id_dispatch_mode: resolved_caps.id_dispatch_mode,
+                    facet_text_search: resolved_caps.facet_text_search,
+                    generic_text_fallback: resolved_caps.generic_text_fallback,
                     is_alias_query: true,
                 });
 
@@ -1262,19 +1506,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             let (primary_strategies, fallback_strategies) =
                 split_strategy_tiers(&facet, strategies);
 
-            if pre_acquired_rss_categories {
-                self.rate_limiter
-                    .acquire(&config.id, config.rate_limit_seconds, mode)
-                    .await;
-            }
-
             for rss_category_request in rss_category_requests {
-                if !pre_acquired_rss_categories {
-                    self.rate_limiter
-                        .acquire(&config.id, config.rate_limit_seconds, mode)
-                        .await;
-                }
-
                 let indexer_id = config.id.clone();
                 let indexer_name = config.name.clone();
                 let facet = facet.clone();
@@ -1287,6 +1519,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let client = client.clone();
                 let primary_strategies = primary_strategies.clone();
                 let fallback_strategies = fallback_strategies.clone();
+                let search_limit = search_limit.clone();
+                let rate_limiter = self.rate_limiter.clone();
+                let rate_limit_seconds = config.rate_limit_seconds;
+                let had_persisted_system_backoff = had_persisted_system_backoff;
 
                 set.spawn(async move {
                     let mut collected_results = Vec::new();
@@ -1295,6 +1531,10 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                     let primary_outcomes = Self::execute_strategy_tier(
                         client.clone(),
+                        search_limit.clone(),
+                        rate_limiter.clone(),
+                        indexer_id.clone(),
+                        rate_limit_seconds,
                         category_for_indexer.clone(),
                         rss_category_request.clone(),
                         mode,
@@ -1346,7 +1586,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 collected_results.append(&mut response.results);
                             }
                             Err(err) => {
-                                batch_health.mark_error();
+                                batch_health.mark_error(outcome.retry_after);
                                 debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
@@ -1387,6 +1627,10 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                         let fallback_outcomes = Self::execute_strategy_tier(
                             client,
+                            search_limit,
+                            rate_limiter,
+                            indexer_id.clone(),
+                            rate_limit_seconds,
                             category_for_indexer,
                             rss_category_request,
                             mode,
@@ -1437,7 +1681,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     collected_results.append(&mut response.results);
                                 }
                                 Err(err) => {
-                                    batch_health.mark_error();
+                                    batch_health.mark_error(outcome.retry_after);
                                     debug!(
                                         indexer = indexer_name.as_str(),
                                         strategy = outcome.label.as_str(),
@@ -1467,7 +1711,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let batch_had_success = batch_health.any_success;
                     let batch_had_error = batch_health.any_error;
                     batch_health
-                        .apply(&backoff_tracker, &indexer_id, &indexer_name)
+                        .apply(
+                            &backoff_tracker,
+                            &indexer_configs,
+                            &indexer_id,
+                            &indexer_name,
+                            had_persisted_system_backoff,
+                        )
                         .await;
                     if batch_had_success {
                         Self::clear_indexer_last_error(
@@ -1606,6 +1856,8 @@ struct StrategyParams<'a> {
     absolute_episode: Option<u32>,
     caps: &'a scryer_domain::IndexerProviderCapabilities,
     id_dispatch_mode: IdDispatchMode,
+    facet_text_search: bool,
+    generic_text_fallback: bool,
     is_alias_query: bool,
 }
 
@@ -1621,7 +1873,16 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     let absolute_episode = p.absolute_episode;
     let caps = p.caps;
     let id_dispatch_mode = p.id_dispatch_mode;
+    let facet_text_search = p.facet_text_search;
+    let generic_text_fallback = p.generic_text_fallback;
     let is_alias_query = p.is_alias_query;
+    let structured_season = season.filter(|_| caps.season_param.is_some());
+    let structured_episode = episode.filter(|_| caps.episode_param.is_some());
+    let supports_absolute_episode = caps.episode_param.is_some()
+        || caps
+            .search_inputs
+            .contains(&IndexerSearchInputCapability::AbsoluteEpisode);
+    let structured_absolute_episode = absolute_episode.filter(|_| supports_absolute_episode);
     // Alias queries skip indexers that deduplicate aliases internally
     if is_alias_query && caps.deduplicates_aliases {
         return vec![];
@@ -1637,11 +1898,12 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             .map(|(id_type, value)| (id_type.clone(), value.clone()))
             .collect::<HashMap<_, _>>();
         let selected_ids = match id_dispatch_mode {
-            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => full_ids,
+            IdDispatchMode::LegacyAggregate => full_ids,
+            IdDispatchMode::Aggregate => eligible_ids.clone(),
             IdDispatchMode::QueryOnly => HashMap::new(),
         };
         if id_facet == "anime" && !selected_ids.is_empty() {
-            if let Some(absolute_episode) = absolute_episode {
+            if let Some(absolute_episode) = structured_absolute_episode {
                 strategies.push(SearchStrategy {
                     request_query: String::new(),
                     request_facet: id_facet.to_string(),
@@ -1654,13 +1916,13 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                 });
             }
 
-            if episode.is_some() {
+            if structured_episode.is_some() {
                 strategies.push(SearchStrategy {
                     request_query: String::new(),
                     request_facet: id_facet.to_string(),
                     ids: selected_ids.clone(),
-                    season,
-                    episode,
+                    season: structured_season,
+                    episode: structured_episode,
                     absolute_episode: None,
                     generic_query_only: false,
                     label: "ids_sxex".into(),
@@ -1673,9 +1935,9 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                 request_query: String::new(),
                 request_facet: id_facet.to_string(),
                 ids: selected_ids,
-                season,
-                episode,
-                absolute_episode,
+                season: structured_season,
+                episode: structured_episode,
+                absolute_episode: structured_absolute_episode,
                 generic_query_only: false,
                 label: "ids".into(),
             });
@@ -1686,15 +1948,18 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     // An indexer that only declares "anime" should not get freetext for "series" searches.
     // For alias queries, indexers with deduplicates_aliases skip freetext (handled at top).
     let has_facet_entry = caps.has_facet(query_facet);
-    let skip_no_facet = !has_facet_entry && !caps.supported_ids.is_empty();
-    let generic_query_only = id_dispatch_mode == IdDispatchMode::QueryOnly;
+    let skip_no_facet = !has_facet_entry
+        && !facet_text_search
+        && !generic_text_fallback
+        && !caps.supported_ids.is_empty();
+    let generic_query_only = generic_text_fallback;
     if caps.query_param.is_some() && !query.is_empty() && !skip_no_facet {
         strategies.push(SearchStrategy {
             request_query: query.to_string(),
             request_facet: query_facet.to_string(),
             ids: HashMap::new(),
-            season,
-            episode,
+            season: structured_season,
+            episode: structured_episode,
             absolute_episode: None,
             generic_query_only,
             label: if is_alias_query {
@@ -1711,8 +1976,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             request_query: query.to_string(),
             request_facet: query_facet.to_string(),
             ids: HashMap::new(),
-            season,
-            episode,
+            season: structured_season,
+            episode: structured_episode,
             absolute_episode: None,
             generic_query_only,
             label: "fallback".into(),
@@ -1815,13 +2080,20 @@ fn node_supports_param(node: Option<&IndexerCapsSearchNode>, param: &str) -> boo
     })
 }
 
-fn caps_snapshot_has_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+fn caps_snapshot_has_basic_query(snapshot: &IndexerCapsSnapshot) -> bool {
     node_supports_param(snapshot.search.as_ref(), "q")
-        || match facet {
-            "movie" => node_supports_param(snapshot.movie_search.as_ref(), "q"),
-            "series" | "anime" => node_supports_param(snapshot.tv_search.as_ref(), "q"),
-            _ => false,
-        }
+}
+
+fn caps_snapshot_has_facet_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+    match facet {
+        "movie" => node_supports_param(snapshot.movie_search.as_ref(), "q"),
+        "series" | "anime" => node_supports_param(snapshot.tv_search.as_ref(), "q"),
+        _ => false,
+    }
+}
+
+fn caps_snapshot_has_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+    caps_snapshot_has_basic_query(snapshot) || caps_snapshot_has_facet_query(snapshot, facet)
 }
 
 fn caps_search_inputs(
@@ -2021,7 +2293,7 @@ fn filter_strategy_results(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
     use async_trait::async_trait;
@@ -2382,6 +2654,185 @@ mod tests {
         (multi, calls)
     }
 
+    #[derive(Default)]
+    struct SearchConcurrencyProbe {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        started: AtomicUsize,
+        released: AtomicBool,
+        release: tokio::sync::Notify,
+    }
+
+    impl SearchConcurrencyProbe {
+        fn mark_started(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.started.fetch_add(1, Ordering::SeqCst);
+
+            let mut max_active = self.max_active.load(Ordering::SeqCst);
+            while active > max_active {
+                match self.max_active.compare_exchange(
+                    max_active,
+                    active,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => max_active = observed,
+                }
+            }
+        }
+
+        async fn wait_until_released(&self) {
+            while !self.released.load(Ordering::SeqCst) {
+                self.release.notified().await;
+            }
+        }
+
+        fn mark_finished(&self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn release_all(&self) {
+            self.released.store(true, Ordering::SeqCst);
+            self.release.notify_waiters();
+        }
+    }
+
+    struct BlockingIndexerClient {
+        probe: StdArc<SearchConcurrencyProbe>,
+    }
+
+    #[async_trait]
+    impl IndexerClient for BlockingIndexerClient {
+        async fn search(
+            &self,
+            _query: String,
+            _ids: HashMap<String, String>,
+            _category: Option<String>,
+            _facet: Option<String>,
+            _id_search_facet: Option<String>,
+            _newznab_categories: Option<Vec<String>>,
+            _indexer_routing: Option<IndexerRoutingPlan>,
+            _mode: SearchMode,
+            _season: Option<u32>,
+            _episode: Option<u32>,
+            _absolute_episode: Option<u32>,
+            _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        ) -> AppResult<IndexerSearchResponse> {
+            self.probe.mark_started();
+            self.probe.wait_until_released().await;
+            self.probe.mark_finished();
+            Ok(IndexerSearchResponse {
+                results: vec![],
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            })
+        }
+    }
+
+    async fn wait_for_started(probe: &SearchConcurrencyProbe, expected: usize) {
+        for _ in 0..100 {
+            if probe.started.load(Ordering::SeqCst) >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "timed out waiting for {expected} searches to start; saw {}",
+            probe.started.load(Ordering::SeqCst)
+        );
+    }
+
+    fn indexed_mock_configs(count: usize) -> Vec<IndexerConfig> {
+        (0..count)
+            .map(|idx| {
+                let mut config = mock_indexer_config();
+                config.id = format!("idx-{idx}");
+                config.name = format!("Mock Indexer {idx}");
+                config
+            })
+            .collect()
+    }
+
+    async fn assert_leaf_search_limit_shared_across_clones(mode: SearchMode, limit: usize) {
+        let config_count = limit + 4;
+        let probe = StdArc::new(SearchConcurrencyProbe::default());
+        let client = Arc::new(BlockingIndexerClient {
+            probe: probe.clone(),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: indexed_mock_configs(config_count),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let first = multi.clone();
+        let second = multi.clone();
+        let first_search = tokio::spawn(async move {
+            first
+                .search(
+                    "Search Limit".to_string(),
+                    HashMap::new(),
+                    None,
+                    Some("movie".to_string()),
+                    None,
+                    None,
+                    None,
+                    mode,
+                    None,
+                    None,
+                    None,
+                    vec![],
+                )
+                .await
+        });
+        let second_search = tokio::spawn(async move {
+            second
+                .search(
+                    "Search Limit".to_string(),
+                    HashMap::new(),
+                    None,
+                    Some("movie".to_string()),
+                    None,
+                    None,
+                    None,
+                    mode,
+                    None,
+                    None,
+                    None,
+                    vec![],
+                )
+                .await
+        });
+
+        wait_for_started(&probe, limit).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(probe.max_active.load(Ordering::SeqCst), limit);
+        assert_eq!(probe.started.load(Ordering::SeqCst), limit);
+
+        probe.release_all();
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_search)
+            .await
+            .expect("first search should finish")
+            .expect("first search task should join")
+            .expect("first search should succeed");
+        tokio::time::timeout(std::time::Duration::from_secs(2), second_search)
+            .await
+            .expect("second search should finish")
+            .expect("second search task should join")
+            .expect("second search should succeed");
+
+        assert_eq!(probe.started.load(Ordering::SeqCst), config_count * 2);
+        assert!(probe.max_active.load(Ordering::SeqCst) <= limit);
+    }
+
     async fn backoff_state(
         client: &MultiIndexerSearchClient,
         indexer_id: &str,
@@ -2483,6 +2934,24 @@ mod tests {
             anidb_search: true,
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn auto_search_leaf_concurrency_is_shared_across_cloned_clients() {
+        assert_leaf_search_limit_shared_across_clones(
+            SearchMode::Auto,
+            BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn interactive_search_leaf_concurrency_is_shared_across_cloned_clients() {
+        assert_leaf_search_limit_shared_across_clones(
+            SearchMode::Interactive,
+            INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
+        )
+        .await;
     }
 
     fn prowlarr_caps_snapshot(movie_params: &[&str], tv_params: &[&str]) -> IndexerCapsSnapshot {
@@ -2810,7 +3279,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_prowlarr_movie_caps_carry_full_id_envelope_when_any_id_is_eligible() {
+    async fn managed_prowlarr_movie_caps_send_only_advertised_ids() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
         config.managed_parent_config_id = Some("parent".into());
@@ -2860,10 +3329,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([
-                ("imdb_id".to_string(), "tt12004567".to_string()),
-                ("tmdb_id".to_string(), "120045".to_string()),
-            ])
+            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
         );
     }
 
@@ -3042,6 +3508,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_prowlarr_series_caps_drop_unadvertised_ids() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Storm.Signal.S01E02.2026"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: series_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Storm Signal".to_string(),
+                HashMap::from([
+                    ("tvdb_id".to_string(), "424242".to_string()),
+                    ("imdb_id".to_string(), "tt42424242".to_string()),
+                    ("tmdb_id".to_string(), "424242".to_string()),
+                ]),
+                Some("series".to_string()),
+                Some("series".to_string()),
+                None,
+                Some(vec!["5000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                Some(1),
+                Some(2),
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([("tvdb_id".to_string(), "424242".to_string())])
+        );
+        assert_eq!(recorded[0].season, Some(1));
+        assert_eq!(recorded[0].episode, Some(2));
+    }
+
+    #[tokio::test]
     async fn managed_prowlarr_without_caps_snapshot_falls_back_to_query_only() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
@@ -3204,6 +3728,78 @@ mod tests {
         assert_eq!(recorded[0].query, "12 Lanterns of Winter");
         assert_eq!(recorded[0].facet, None);
         assert!(recorded[0].categories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_caps_basic_query_fallback_strips_facet_params_when_tvsearch_lacks_q() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid"], &["season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|call| {
+                if call.ids.is_empty() {
+                    response_with_titles(&["Storm.Signal.S01E02.2026"])
+                } else {
+                    Ok(IndexerSearchResponse {
+                        results: vec![],
+                        api_current: None,
+                        api_max: None,
+                        grab_current: None,
+                        grab_max: None,
+                    })
+                }
+            }),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Storm Signal".to_string(),
+                HashMap::from([("tvdb_id".to_string(), "424242".to_string())]),
+                Some("series".to_string()),
+                Some("series".to_string()),
+                None,
+                Some(vec!["5000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                Some(1),
+                Some(2),
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 2);
+
+        assert_eq!(recorded[0].ids.get("tvdb_id"), Some(&"424242".to_string()));
+        assert_eq!(recorded[0].facet, Some("series".to_string()));
+        assert_eq!(recorded[0].categories, vec!["5000".to_string()]);
+        assert_eq!(recorded[0].season, Some(1));
+        assert_eq!(recorded[0].episode, Some(2));
+
+        assert!(recorded[1].ids.is_empty());
+        assert_eq!(recorded[1].query, "Storm Signal");
+        assert_eq!(recorded[1].facet, None);
+        assert!(recorded[1].categories.is_empty());
+        assert_eq!(recorded[1].season, None);
+        assert_eq!(recorded[1].episode, None);
     }
 
     #[tokio::test]
@@ -3669,6 +4265,8 @@ mod tests {
             absolute_episode: None,
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            facet_text_search: false,
+            generic_text_fallback: false,
             is_alias_query: false,
         });
 
@@ -3988,8 +4586,9 @@ mod tests {
             },
         );
 
-        let returned = tracker.record_failure("idx-1").await;
-        assert_eq!(returned, disabled_until);
+        let returned = tracker.record_failure("idx-1", None).await;
+        assert_eq!(returned.disabled_until, disabled_until);
+        assert_eq!(returned.escalation_level, 3);
 
         let state = tracker
             .state
@@ -4000,6 +4599,51 @@ mod tests {
             .expect("backoff state should remain present");
         assert_eq!(state.escalation_level, 3);
         assert_eq!(state.disabled_until, Some(disabled_until));
+    }
+
+    #[test]
+    fn retry_after_parser_extracts_seconds_from_plugin_error_text() {
+        let retry_after =
+            parse_retry_after_seconds("HTTP 429: rate limited; retry_after_seconds=900")
+                .expect("retry after should parse");
+        assert_eq!(retry_after, std::time::Duration::from_secs(900));
+        assert!(parse_retry_after_seconds("HTTP 429: rate limited").is_none());
+    }
+
+    #[tokio::test]
+    async fn record_failure_uses_retry_after_override() {
+        let tracker = IndexerBackoffTracker::new();
+        let before = chrono::Utc::now();
+        let backoff = tracker
+            .record_failure("idx-1", Some(std::time::Duration::from_secs(900)))
+            .await;
+        let after = chrono::Utc::now();
+
+        assert_eq!(backoff.escalation_level, 1);
+        assert!(backoff.disabled_until >= before + chrono::Duration::seconds(900));
+        assert!(backoff.disabled_until <= after + chrono::Duration::seconds(901));
+    }
+
+    #[tokio::test]
+    async fn persisted_backoff_seeds_next_escalation_after_restart() {
+        let tracker = IndexerBackoffTracker::new();
+        tracker
+            .seed_persisted(
+                "idx-1",
+                &IndexerSystemBackoff {
+                    disabled_until: chrono::Utc::now() - chrono::Duration::minutes(1),
+                    escalation_level: 3,
+                },
+            )
+            .await;
+
+        let before = chrono::Utc::now();
+        let backoff = tracker.record_failure("idx-1", None).await;
+        let after = chrono::Utc::now();
+
+        assert_eq!(backoff.escalation_level, 4);
+        assert!(backoff.disabled_until >= before + chrono::Duration::minutes(30));
+        assert!(backoff.disabled_until <= after + chrono::Duration::minutes(31));
     }
 
     #[tokio::test]
@@ -4154,6 +4798,8 @@ mod tests {
             absolute_episode: Some(33),
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            facet_text_search: false,
+            generic_text_fallback: false,
             is_alias_query: false,
         });
 
@@ -4173,6 +4819,47 @@ mod tests {
         assert_eq!(strategies[2].season, Some(2));
         assert_eq!(strategies[2].episode, Some(5));
         assert_eq!(strategies[2].absolute_episode, None);
+    }
+
+    #[test]
+    fn anime_strategies_strip_absolute_episode_when_not_supported() {
+        let caps = IndexerProviderCapabilities {
+            rss: false,
+            supported_ids: HashMap::from([("anime".into(), vec!["anidb_id".into()])]),
+            deduplicates_aliases: false,
+            season_param: Some("s".into()),
+            episode_param: None,
+            query_param: Some("q".into()),
+            search: true,
+            imdb_search: false,
+            tvdb_search: false,
+            anidb_search: true,
+            ..Default::default()
+        };
+
+        let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
+        let strategies = build_strategies(&StrategyParams {
+            query: "Silver Horizon: Beyond Journey's End S02E05",
+            query_facet: "anime",
+            id_facet: "anime",
+            ids: &ids,
+            season: Some(2),
+            episode: Some(5),
+            absolute_episode: Some(33),
+            caps: &caps,
+            id_dispatch_mode: IdDispatchMode::Aggregate,
+            facet_text_search: false,
+            generic_text_fallback: false,
+            is_alias_query: false,
+        });
+
+        assert_eq!(strategies.len(), 2);
+        assert_eq!(strategies[0].label, "ids");
+        assert_eq!(strategies[0].absolute_episode, None);
+        assert_eq!(strategies[0].episode, None);
+        assert_eq!(strategies[1].label, "freetext");
+        assert_eq!(strategies[1].absolute_episode, None);
+        assert_eq!(strategies[1].episode, None);
     }
 
     #[test]
@@ -4274,6 +4961,8 @@ mod tests {
             absolute_episode: Some(33),
             caps: &caps,
             id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+            facet_text_search: false,
+            generic_text_fallback: false,
             is_alias_query: true,
         });
 

@@ -68,7 +68,7 @@ pub(crate) fn domain_event_types_for_class(
         .collect()
 }
 
-pub(crate) fn user_facing_domain_event_types() -> Vec<DomainEventType> {
+pub fn user_facing_domain_event_types() -> Vec<DomainEventType> {
     domain_event_types_for_class(DomainEventRetentionClass::UserFacingHistory)
 }
 
