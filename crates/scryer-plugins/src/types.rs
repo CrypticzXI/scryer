@@ -11,6 +11,8 @@ pub(crate) fn config_field_to_domain(field: &ConfigFieldDef) -> scryer_domain::C
             ConfigFieldType::Bool => scryer_domain::ConfigFieldType::Bool,
             ConfigFieldType::Select => scryer_domain::ConfigFieldType::Select,
             ConfigFieldType::Number => scryer_domain::ConfigFieldType::Number,
+            ConfigFieldType::Path => scryer_domain::ConfigFieldType::Path,
+            ConfigFieldType::Tag => scryer_domain::ConfigFieldType::Tag,
         },
         required: field.required,
         default_value: field.default_value.clone(),

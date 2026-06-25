@@ -467,6 +467,10 @@ fn build_plugin_add_request(
             title_id: Some(request.title.id.clone()),
             title_name: request.title.name.clone(),
             media_facet: request.title.facet.as_str().to_string(),
+            title_slug: request.title.slug.clone(),
+            year: request.title.year,
+            language: request.title.language.clone(),
+            network: request.title.network.clone(),
             tags: request.title.tags.clone(),
         },
         routing: PluginDownloadRouting {

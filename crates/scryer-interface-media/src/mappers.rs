@@ -1041,6 +1041,8 @@ fn looks_like_secret_config_key(key: &str) -> bool {
     normalized.contains("password")
         || normalized.contains("secret")
         || normalized.contains("token")
+        || normalized == "username"
+        || normalized == "user_name"
         || normalized == "api_key"
         || normalized == "apikey"
         || normalized.contains("api_key")
@@ -2772,6 +2774,7 @@ mod tests {
             Some(
                 r#"{
                   "api_key": "super-secret",
+                  "username": "operator",
                   "base_url": "https://example.test",
                   "enabled": true,
                   "retries": 3,
@@ -2801,6 +2804,9 @@ mod tests {
         assert_eq!(api_key.bool_value, None);
         assert_eq!(api_key.int_value, None);
         assert_eq!(api_key.float_value, None);
+        let username = field("username");
+        assert!(username.secret_stored);
+        assert_eq!(username.string_value, None);
 
         let base_url = field("base_url");
         assert_eq!(

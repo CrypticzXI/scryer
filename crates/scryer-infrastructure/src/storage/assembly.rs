@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
+    AppError, AppResult, AppServices, AppServicesBuilder, DiscoveryRepository, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
     LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
     MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
@@ -15,6 +15,7 @@ use scryer_application::{
 
 #[cfg(feature = "image-processing")]
 use crate::HttpTitleImageProcessor;
+use crate::discovery::store::DiscoveryStore;
 use crate::external_identity::HttpExternalIdentityVerifier;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
@@ -648,6 +649,7 @@ enum DatastoreStores {
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
+        discovery_store: Arc<DiscoveryStore>,
         backup_exporter: Arc<SqliteLogicalBackupExporter>,
     },
     Postgres {
@@ -687,6 +689,7 @@ enum DatastoreStores {
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
+        discovery_store: Arc<DiscoveryStore>,
         backup_exporter: Arc<PostgresLogicalBackupExporter>,
     },
 }
@@ -770,6 +773,7 @@ impl DatastoreAssembly {
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
+        let discovery_store = Arc::new(DiscoveryStore::new(datastore.clone()));
         let backup_exporter = Arc::new(SqliteLogicalBackupExporter::new(
             config.database_url.clone(),
         ));
@@ -811,6 +815,7 @@ impl DatastoreAssembly {
             external_import_monitor_store,
             download_queue_command_store,
             workflow_operation_store,
+            discovery_store,
             backup_exporter,
         };
 
@@ -888,6 +893,7 @@ impl DatastoreAssembly {
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
+        let discovery_store = Arc::new(DiscoveryStore::new(datastore.clone()));
         let backup_exporter = Arc::new(PostgresLogicalBackupExporter::new(&db));
 
         let stores = DatastoreStores::Postgres {
@@ -927,6 +933,7 @@ impl DatastoreAssembly {
             external_import_monitor_store,
             download_queue_command_store,
             workflow_operation_store,
+            discovery_store,
             backup_exporter,
         };
 
@@ -1222,6 +1229,7 @@ impl DatastoreAssembly {
                 external_import_monitor_store,
                 download_queue_command_store,
                 workflow_operation_store,
+                discovery_store,
                 notification_store,
                 settings_store,
                 ..
@@ -1279,6 +1287,7 @@ impl DatastoreAssembly {
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())
+                .with_discovery_store(discovery_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
@@ -1317,6 +1326,7 @@ impl DatastoreAssembly {
                 external_import_monitor_store,
                 download_queue_command_store,
                 workflow_operation_store,
+                discovery_store,
                 ..
             } => {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
@@ -1372,6 +1382,7 @@ impl DatastoreAssembly {
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())
+                .with_discovery_store(discovery_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())

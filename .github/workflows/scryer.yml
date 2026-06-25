@@ -59,6 +59,33 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  winget-xtask-build:
+    name: winget-xtask-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.96.0"
+
+      - name: Build WinGet xtask binary
+        run: cargo build --locked -p xtask-release
+
+      - name: Upload WinGet xtask binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: winget-xtask-release-${{ github.run_id }}
+          path: target/debug/xtask-release
+          if-no-files-found: error
+          retention-days: 14
+
   rust-clippy:
     name: rust-clippy
     runs-on: ubuntu-24.04
@@ -1444,7 +1471,7 @@ jobs:
     name: winget-prep
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [release]
+    needs: [release, winget-xtask-build]
     permissions:
       contents: read
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
@@ -1453,9 +1480,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@v1
+      - name: Download WinGet xtask binary
+        uses: actions/download-artifact@v8
         with:
-          toolchain: "1.96.0"
+          name: winget-xtask-release-${{ github.run_id }}
+          path: winget-tools
+
+      - name: Prepare WinGet xtask binary
+        run: chmod +x winget-tools/xtask-release
 
       - name: Download Windows release artifacts
         uses: actions/download-artifact@v8
@@ -1477,7 +1509,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo xtask ci winget \
+          ./winget-tools/xtask-release ci winget \
             --version "${{ steps.winget_meta.outputs.version }}" \
             --tag "${{ github.ref_name }}" \
             --repository "${{ github.repository }}" \

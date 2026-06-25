@@ -5,24 +5,14 @@ import type {
   TitleCollection,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate } from "@/lib/utils/date-format";
 
-export function formatDate(iso: string | null | undefined) {
-  if (!iso) {
-    return "—";
-  }
-  try {
-    const locale =
-      typeof document !== "undefined"
-        ? document.documentElement.lang || undefined
-        : undefined;
-    return new Date(iso).toLocaleDateString(locale, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+export function formatDate(
+  iso: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+) {
+  return formatUiDate(iso, dateTimeFormat, { fallback: "—" });
 }
 
 export function formatRuntimeFromMinutes(runtimeMinutes: number | null | undefined) {

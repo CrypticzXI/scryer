@@ -1,6 +1,7 @@
 import type { TitleReleaseBlocklistEntry } from "@/components/containers/series-overview-container";
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { Loader2 } from "lucide-react";
 import { formatDate } from "./helpers";
 
@@ -16,6 +17,7 @@ export function EpisodeBlocklistPanel({
   onClear?: (entryId: string) => Promise<void> | void;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   if (entries.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -37,7 +39,9 @@ export function EpisodeBlocklistPanel({
                 {entry.sourceTitle || t("episode.untitledRelease")}
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
+                <span className="text-muted-foreground/60">
+                  {formatDate(entry.attemptedAt, dateTimeFormat)}
+                </span>
                 {entry.errorMessage ? (
                   <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
                     {entry.errorMessage}

@@ -7,6 +7,7 @@ import { useClient } from "urql";
 import type { Release } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
@@ -228,6 +229,7 @@ export function SeriesOverviewView({
   const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const client = useClient();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
@@ -854,7 +856,9 @@ export function SeriesOverviewView({
                   </>
                 ) : null}
                 <span className="ml-auto text-xs text-muted-foreground/60">
-                  {t("title.addedAt", { date: formatDate(title.createdAt) })}
+                  {t("title.addedAt", {
+                    date: formatDate(title.createdAt, dateTimeFormat),
+                  })}
                 </span>
               </div>
             </div>
@@ -1049,7 +1053,9 @@ export function SeriesOverviewView({
                         {entry.sourceTitle || t("episode.untitledRelease")}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
+                        <span className="text-muted-foreground/60">
+                          {formatDate(entry.attemptedAt, dateTimeFormat)}
+                        </span>
                         {entry.errorMessage ? (
                           <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
                             {entry.errorMessage}

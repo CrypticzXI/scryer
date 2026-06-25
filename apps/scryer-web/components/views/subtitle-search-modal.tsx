@@ -29,12 +29,14 @@ import {
 } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type {
   ExternalSubtitleBlocklistEntryRecord,
   ExternalSubtitleRecord,
 } from "@/lib/types/subtitles";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
@@ -55,6 +57,7 @@ export function SubtitleSearchModal({
   onChanged,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [language, setLanguage] = React.useState("eng");
@@ -371,7 +374,7 @@ export function SubtitleSearchModal({
                             {entry.provider}
                           </span>
                           <span className="text-[11px] text-muted-foreground">
-                            {new Date(entry.createdAt).toLocaleString()}
+                            {formatUiDateTime(entry.createdAt, dateTimeFormat)}
                           </span>
                         </div>
                         <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">

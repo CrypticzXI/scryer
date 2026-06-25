@@ -1,17 +1,9 @@
 import * as React from "react";
 import {
-  ArrowRight,
   ChevronsUpDown,
-  CircleCheck,
   Eraser,
-  Eye,
-  Info,
-  Loader2,
   LogOut,
-  Plus,
   Search,
-  SearchX,
-  Send,
   User,
   X,
 } from "lucide-react";
@@ -30,6 +22,15 @@ import {
   routeCommandDisplayLabel,
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
+import {
+  SearchCatalogResultButton,
+  SearchEmptyState,
+  SearchFooterTip,
+  SearchMetadataPosterButton,
+  SearchRouteCommandButton,
+  SearchSectionLoading,
+  SearchTabButton,
+} from "@/components/root/global-search-parts";
 import {
   buildCatalogSearchSections,
   buildGlobalSearchTabs,
@@ -69,7 +70,6 @@ import {
   viewFromFacet,
 } from "@/lib/facets/helpers";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
 import { buildViewPath } from "@/lib/utils/routing";
@@ -99,17 +99,6 @@ type RootHeaderProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
 };
-
-function SearchSectionLoading({ label }: { label: string }) {
-  return (
-    <div className="flex min-h-24 items-center justify-center gap-3 rounded-[12px] border border-dashed border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-surfC),var(--scry-surfF))] px-4 py-3 text-sm text-[var(--scry-muted3)]">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-[var(--scry-chip)] text-[var(--scry-accent-ring)]">
-        <Loader2 className="h-4 w-4 animate-spin" />
-      </span>
-      <span className="font-medium">{label}</span>
-    </div>
-  );
-}
 
 export const RootHeader = React.memo(function RootHeader({
   mobileNavigation,
@@ -968,37 +957,18 @@ export const RootHeader = React.memo(function RootHeader({
         .join(": ");
 
       return (
-        <button
+        <SearchRouteCommandButton
           key={item.id}
-          type="button"
-          data-global-search-result="true"
-          className="group relative flex min-w-0 items-center gap-3 overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] p-3 text-left transition hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+          Icon={Icon}
+          ariaLabel={commandLabel}
+          description={description}
+          displayLabel={displayLabel}
           onClick={() => handleRouteCommandSelect(item)}
           onKeyDown={handleSearchResultKeyDown}
-          aria-label={commandLabel}
-          title={commandLabel}
-        >
-          <span
-            aria-hidden="true"
-            className="absolute inset-y-3 left-0 w-0.5 rounded-r-full bg-[var(--scry-accent-ring)] opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100"
-          />
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border border-[rgba(var(--scry-accent-rgb),0.22)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-text)]">
-            <Icon className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold text-[var(--scry-ink2)]">
-              {displayLabel}
-            </span>
-            {showDescription ? (
-              <span className="mt-0.5 block truncate text-xs text-[var(--scry-muted3)]">
-                {description}
-              </span>
-            ) : null}
-          </span>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[var(--scry-faint2)] transition group-hover:bg-[var(--scry-chip)] group-hover:text-[var(--scry-ink2)]">
-            <ArrowRight className="h-4 w-4" />
-          </span>
-        </button>
+          resultAttribute="data-global-search-result"
+          showDescription={showDescription}
+          surface="desktop"
+        />
       );
     },
     [handleRouteCommandSelect, handleSearchResultKeyDown],
@@ -1025,10 +995,9 @@ export const RootHeader = React.memo(function RootHeader({
         ].filter(Boolean);
         const viewTitleLabel = `${t("search.view")}: ${title.name}`;
         return (
-          <button
+          <SearchCatalogResultButton
             id={selectorId("global-search-catalog-result", facet, title.id)}
             key={title.id}
-            type="button"
             onClick={() => {
               resetGlobalSearch();
               globalSearchInputRef.current?.blur();
@@ -1039,55 +1008,26 @@ export const RootHeader = React.memo(function RootHeader({
                 librarySlug: title.librarySlug ?? null,
               });
             }}
-            data-global-search-result="true"
             onKeyDown={handleSearchResultKeyDown}
-            className="group flex w-full items-center gap-[13px] rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] p-2.5 text-left transition hover:border-[var(--scry-bhover)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-            aria-label={viewTitleLabel}
-            title={viewTitleLabel}
-          >
-            <div className="relative h-16 w-11 flex-none overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-muted">
-              <TitlePosterSlot
-                src={posterUrl}
-                sourceSrc={title.posterSourceUrl}
-                metadataFetchedAt={title.metadataFetchedAt}
-                createdAt={title.createdAt}
-                alt={t("media.posterAlt", { name: title.name })}
-                className="h-full w-full object-cover"
-                placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
-                emptyLabel={t("label.noArt")}
-                loading="lazy"
-              />
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/70 to-transparent" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-[var(--scry-ink2)]">
-                {title.name}
-              </p>
-              <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-muted)]">
-                {title.monitored
-                  ? t("search.monitored")
-                  : t("search.unmonitored")}
-                {secondaryParts.length > 0 ? (
-                  <> · {secondaryParts.join(" · ")}</>
-                ) : null}
-              </p>
-              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                <span className="max-w-[9rem] truncate rounded-md bg-[rgba(var(--scry-accent-rgb),0.16)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--scry-accent-text)]">
-                  {facetLabel}
-                </span>
-                <span className="inline-flex min-w-0 max-w-[9rem] items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-300">
-                  <CircleCheck className="h-3 w-3 shrink-0" />
-                  <span className="truncate">
-                    {qualityLabel ?? t("search.inLibrary")}
-                  </span>
-                </span>
-              </div>
-            </div>
-            <span className="hidden h-[34px] shrink-0 items-center gap-1.5 rounded-[9px] border border-[var(--scry-bhover2)] bg-[var(--scry-soft3)] px-3.5 text-[12.5px] font-semibold text-[var(--scry-body)] transition group-hover:border-primary/40 group-hover:text-[var(--scry-ink2)] sm:inline-flex">
-              <Eye className="h-3.5 w-3.5" />
-              {t("search.view")}
-            </span>
-          </button>
+            ariaLabel={viewTitleLabel}
+            createdAt={title.createdAt}
+            emptyLabel={t("label.noArt")}
+            facetLabel={facetLabel}
+            inLibraryLabel={t("search.inLibrary")}
+            metadataFetchedAt={title.metadataFetchedAt}
+            monitoredLabel={
+              title.monitored ? t("search.monitored") : t("search.unmonitored")
+            }
+            posterAlt={t("media.posterAlt", { name: title.name })}
+            posterSourceUrl={title.posterSourceUrl}
+            posterUrl={posterUrl}
+            qualityLabel={qualityLabel}
+            resultAttribute="data-global-search-result"
+            secondaryParts={secondaryParts}
+            surface="desktop"
+            titleName={title.name}
+            viewLabel={t("search.view")}
+          />
         );
       });
     },
@@ -1204,61 +1144,32 @@ export const RootHeader = React.memo(function RootHeader({
 
           handleOpenAddDialog(result, facet);
         };
+        const actionKind = isInCatalog
+          ? "inCatalog"
+          : isUnavailable
+            ? "unavailable"
+            : opensRequestDialog
+              ? "request"
+              : "add";
         return (
-          <button
+          <SearchMetadataPosterButton
             id={globalSearchMetadataResultId(facet, result)}
             key={`${facet}-${result.tvdbId}-${result.name}`}
-            type="button"
-            className="group w-[124px] flex-none rounded-[12px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
-            data-global-search-result="true"
             onClick={handleMetadataAction}
             onKeyDown={handleSearchResultKeyDown}
             disabled={disabled}
-            aria-label={actionTitle}
-            title={actionTitle}
-          >
-            <div className="relative mb-2 h-[184px] overflow-hidden rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-surfA)] shadow-[0_8px_20px_rgba(0,0,0,0.40)] transition group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_12px_26px_rgba(0,0,0,0.50)]">
-              <TitlePosterSlot
-                src={posterUrl}
-                alt={t("media.posterAlt", { name: result.name })}
-                className="h-full w-full object-cover"
-                placeholderClassName="flex h-full w-full items-center justify-center text-xs text-muted-foreground"
-                emptyLabel={t("label.noArt")}
-                loading="lazy"
-              />
-              <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_50%,rgba(4,6,12,0.90))]" />
-              <p className="pointer-events-none absolute inset-x-2.5 bottom-2 line-clamp-2 text-[13px] font-bold leading-[1.06] text-white shadow-black drop-shadow">
-                {result.name}
-              </p>
-            </div>
-            <div className="min-w-0 px-0.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[11px] text-[var(--scry-muted)]">
-                  {result.year ? result.year : t("label.yearUnknown")}
-                </span>
-                <span
-                  id={actionId}
-                  className={cn(
-                    "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold transition",
-                    disabled
-                      ? "text-[var(--scry-muted3)]"
-                      : "text-[var(--scry-accent-text)] group-hover:text-primary",
-                  )}
-                >
-                  {isInCatalog ? (
-                    <CircleCheck className="h-3 w-3 shrink-0" />
-                  ) : isUnavailable ? (
-                    <SearchX className="h-3 w-3 shrink-0" />
-                  ) : opensRequestDialog ? (
-                    <Send className="h-3 w-3 shrink-0" />
-                  ) : (
-                    <Plus className="h-3 w-3 shrink-0" />
-                  )}
-                  <span className="truncate">{inlineActionLabel}</span>
-                </span>
-              </div>
-            </div>
-          </button>
+            actionId={actionId}
+            actionKind={actionKind}
+            actionLabel={inlineActionLabel}
+            actionTitle={actionTitle}
+            emptyLabel={t("label.noArt")}
+            name={result.name}
+            posterAlt={t("media.posterAlt", { name: result.name })}
+            posterUrl={posterUrl}
+            resultAttribute="data-global-search-result"
+            surface="desktop"
+            yearLabel={result.year ? result.year : t("label.yearUnknown")}
+          />
         );
       });
     },
@@ -1451,41 +1362,21 @@ export const RootHeader = React.memo(function RootHeader({
                           aria-label={t("search.title")}
                         >
                           {desktopSearchTabs.map((tab) => (
-                            <button
+                            <SearchTabButton
                               id={`global-search-tab-${tab.key}`}
                               key={tab.key}
                               ref={(node) => {
                                 desktopSearchTabRefs.current[tab.key] = node;
                               }}
-                              type="button"
-                              role="tab"
-                              aria-selected={desktopSearchTab === tab.key}
-                              aria-controls="global-search-results-panel"
-                              tabIndex={desktopSearchTab === tab.key ? 0 : -1}
-                              className={cn(
-                                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[9px] border px-[13px] text-[12.5px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
-                                desktopSearchTab === tab.key
-                                  ? "border-transparent bg-[var(--scry-accent-grad)] text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.26)]"
-                                  : "border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-muted2)] hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
-                              )}
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => setDesktopSearchTab(tab.key)}
+                              active={desktopSearchTab === tab.key}
+                              controlsId="global-search-results-panel"
+                              onSelect={() => setDesktopSearchTab(tab.key)}
                               onKeyDown={(event) =>
                                 handleDesktopSearchTabKeyDown(event, tab.key)
                               }
-                            >
-                              {tab.label}
-                              <span
-                                className={cn(
-                                  "font-medium tabular-nums",
-                                  desktopSearchTab === tab.key
-                                    ? "text-primary-foreground/80"
-                                    : "text-[var(--scry-muted2)]",
-                                )}
-                              >
-                                {tab.count}
-                              </span>
-                            </button>
+                              surface="desktop"
+                              tab={tab}
+                            />
                           ))}
                         </div>
                         <div
@@ -1703,33 +1594,15 @@ export const RootHeader = React.memo(function RootHeader({
                                   </div>
                                 </section>
                               ) : null}
-                              <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-xs text-[var(--scry-muted3)]">
-                                <Info className="h-3.5 w-3.5 text-[var(--scry-faint2)]" />
-                                <span>{t("search.footerTip")}</span>
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
-                                    >
-                                      {t("search.searchTips")}
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent
-                                    align="center"
-                                    sideOffset={8}
-                                    className="z-[70] w-72 border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.32)]"
-                                  >
-                                    <div className="space-y-2 text-[var(--scry-muted3)]">
-                                      <p>{searchTipTitles}</p>
-                                      <p>{searchTipTabs}</p>
-                                      {canViewCatalog ? (
-                                        <p>{t("search.tipIndexers")}</p>
-                                      ) : null}
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </div>
+                              <SearchFooterTip
+                                canViewCatalog={canViewCatalog}
+                                footerTip={t("search.footerTip")}
+                                searchTipsLabel={t("search.searchTips")}
+                                surface="desktop"
+                                tipIndexers={t("search.tipIndexers")}
+                                tipTabs={searchTipTabs}
+                                tipTitles={searchTipTitles}
+                              />
                             </div>
                           ) : searching ? (
                             <div className="py-12">
@@ -1738,30 +1611,29 @@ export const RootHeader = React.memo(function RootHeader({
                               />
                             </div>
                           ) : (
-                            <div className="flex flex-col items-center justify-center py-14 text-center">
-                              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-[15px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-faint2)]">
-                                {hasMinimumGlobalSearchQuery ? (
-                                  <SearchX className="h-6 w-6" />
-                                ) : (
-                                  <Search className="h-6 w-6" />
-                                )}
-                              </div>
-                              <p className="text-[17px] font-bold text-[var(--scry-ink2)]">
-                                {hasMinimumGlobalSearchQuery
+                            <SearchEmptyState
+                              className="py-14"
+                              description={
+                                trimmedGlobalSearch &&
+                                !hasMinimumGlobalSearchQuery
+                                  ? searchMinimumQueryHint
+                                  : searchEmptyHint
+                              }
+                              icon={
+                                hasMinimumGlobalSearchQuery
+                                  ? "searchX"
+                                  : "search"
+                              }
+                              title={
+                                hasMinimumGlobalSearchQuery
                                   ? t("search.noMatchesFor", {
                                       query: trimmedGlobalSearch,
                                     })
                                   : trimmedGlobalSearch
                                     ? t("search.minimumQueryTitle")
-                                    : searchOverlayPlaceholder}
-                              </p>
-                              <p className="mt-1 max-w-sm text-sm leading-6 text-[var(--scry-muted3)]">
-                                {trimmedGlobalSearch &&
-                                !hasMinimumGlobalSearchQuery
-                                  ? searchMinimumQueryHint
-                                  : searchEmptyHint}
-                              </p>
-                            </div>
+                                    : searchOverlayPlaceholder
+                              }
+                            />
                           )}
                         </div>
                       </div>

@@ -1,0 +1,56 @@
+query CollectionCompletions($input: DiscoveryCollectionCompletionInput!) {
+  collectionCompletions(input: $input) {
+    subject_keys
+    generated_at
+    results {
+      ...DiscoveryCollectionCompletionTitleFields
+    }
+  }
+}
+
+fragment DiscoveryCollectionCompletionTitleFields on DiscoveryCollectionCompletionTitle {
+  target_key
+  target_kind
+  resolved
+  resolved_title_id
+  display_title
+  original_title
+  year
+  poster_path
+  poster_url
+  overview
+  content_type
+  genres
+  rating
+  rating_sources
+  status_tags
+  background_url
+  source_tags {
+    source
+    category
+    key
+    name
+    rank
+    weight
+    is_adult
+    is_spoiler
+  }
+  sources
+  relation_types
+  relation_subtypes
+  rank_components {
+    name
+    value
+  }
+  source_count
+  edge_count
+  relation_count
+  source_subject_count
+  rank_score
+  best_source
+  matched_subject_keys
+  matched_subject_titles
+  matched_subject_count
+  tmdb_collection_id
+  tmdb_collection_name
+}

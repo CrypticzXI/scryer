@@ -12,3 +12,7 @@ for registry validation, fixture tooling, and non-Rust plugin authors.
 
 SDK 3.1 adds `supported_query_facets` on indexer capabilities so providers can
 advertise facet-scoped title/freetext search separately from ID search support.
+
+SDK 3.2 adds first-class `path` and `tag` config field types and extends
+download-client add requests with optional title slug, year, language, and
+network metadata.

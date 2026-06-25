@@ -7,20 +7,19 @@ import { DeletePreviewSummary } from "@/components/common/delete-preview-summary
 import { Button } from "@/components/ui/button";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import {
   blocklistExternalSubtitleMutation,
   deleteExternalSubtitleMutation,
 } from "@/lib/graphql/mutations";
 import { deleteExternalSubtitlePreviewQuery } from "@/lib/graphql/queries";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
-function formatDateTime(value: string) {
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
+function formatDateTime(value: string, dateTimeFormat: UiDateTimeFormat) {
+  return formatUiDateTime(value, dateTimeFormat, { fallback: value });
 }
 
 function canBlocklistSubtitle(subtitle: ExternalSubtitleRecord) {
@@ -64,6 +63,7 @@ export function ExternalSubtitleSection({
   allowBlocklist?: boolean;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [pendingAction, setPendingAction] = React.useState<PendingSubtitleAction>(null);
@@ -269,7 +269,7 @@ export function ExternalSubtitleSection({
                   {download.filePath}
                 </p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-                  <span>{formatDateTime(download.downloadedAt)}</span>
+                  <span>{formatDateTime(download.downloadedAt, dateTimeFormat)}</span>
                 </div>
               </div>
             );

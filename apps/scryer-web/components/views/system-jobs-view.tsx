@@ -13,7 +13,10 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Facet, JobDefinition, JobKey, JobRun, LibraryScanStatus } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate, formatUiDateTime, formatUiTime } from "@/lib/utils/date-format";
 import { isTerminalJobRunStatus } from "@/lib/utils/job-runs";
 import { cn } from "@/lib/utils";
 
@@ -54,31 +57,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function formatDate(
   value: string | null | undefined,
   t: ReturnType<typeof useTranslate>,
+  dateTimeFormat: UiDateTimeFormat,
 ): string {
   if (!value) {
     return t("jobs.never");
   }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatUiDateTime(value, dateTimeFormat, { fallback: value });
 }
 
 function renderTableDateTime(
   value: string | null | undefined,
   t: ReturnType<typeof useTranslate>,
+  dateTimeFormat: UiDateTimeFormat,
 ) {
   if (!value) {
     return t("jobs.never");
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
   return (
     <div className="space-y-0.5 leading-tight">
-      <div>{date.toLocaleDateString()}</div>
-      <div>{date.toLocaleTimeString()}</div>
+      <div>{formatUiDate(value, dateTimeFormat, { fallback: value })}</div>
+      <div>{formatUiTime(value, dateTimeFormat, { fallback: "" })}</div>
     </div>
   );
 }
@@ -318,6 +317,7 @@ function isStaleActiveRun(
 
 export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const { getActiveSession } = useLibraryScanProgress();
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
@@ -487,10 +487,14 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           {job.schedule.description}
         </TableCell>
         <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
-          {renderTableDateTime(job.schedule.nextRunAt, t)}
+          {renderTableDateTime(job.schedule.nextRunAt, t, dateTimeFormat)}
         </TableCell>
         <TableCell className="w-[10.5rem] min-w-[10.5rem] text-muted-foreground">
-          {renderTableDateTime(lastRun?.completedAt ?? lastRun?.startedAt ?? null, t)}
+          {renderTableDateTime(
+            lastRun?.completedAt ?? lastRun?.startedAt ?? null,
+            t,
+            dateTimeFormat,
+          )}
         </TableCell>
         <TableCell>
           <span className={runStatusTone(status)}>{runStatusLabel(status, t)}</span>
@@ -557,14 +561,20 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 {t("jobs.column.nextRun")}
               </p>
-              <p className="text-sm text-foreground/85">{formatDate(job.schedule.nextRunAt, t)}</p>
+              <p className="text-sm text-foreground/85">
+                {formatDate(job.schedule.nextRunAt, t, dateTimeFormat)}
+              </p>
             </div>
             <div className="space-y-1">
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 {t("jobs.column.lastRun")}
               </p>
               <p className="text-sm text-foreground/85">
-                {formatDate(lastRun?.completedAt ?? lastRun?.startedAt ?? null, t)}
+                {formatDate(
+                  lastRun?.completedAt ?? lastRun?.startedAt ?? null,
+                  t,
+                  dateTimeFormat,
+                )}
               </p>
             </div>
           </div>
@@ -681,7 +691,7 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                   <p className="mt-1 text-sm text-foreground">{selectedJob.schedule.description}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t("jobs.nextRunPrefix", {
-                      value: formatDate(selectedJob.schedule.nextRunAt, t),
+                      value: formatDate(selectedJob.schedule.nextRunAt, t, dateTimeFormat),
                     })}
                   </p>
                 </div>
@@ -739,10 +749,14 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                                   {runStatusLabel(run.status, t)}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {t("jobs.startedAt", { value: formatDate(run.startedAt, t) })}
+                                  {t("jobs.startedAt", {
+                                    value: formatDate(run.startedAt, t, dateTimeFormat),
+                                  })}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {t("jobs.completedAt", { value: formatDate(run.completedAt, t) })}
+                                  {t("jobs.completedAt", {
+                                    value: formatDate(run.completedAt, t, dateTimeFormat),
+                                  })}
                                 </p>
                                 {run.summaryText ? (
                                   <p className="text-sm text-foreground">{run.summaryText}</p>

@@ -113,12 +113,14 @@ function QuickFilterTab({
   icon,
   label,
   count,
+  tone = "neutral",
 }: {
   selected: boolean;
   onClick: () => void;
   icon?: ReactNode;
   label: string;
   count?: number;
+  tone?: "neutral" | "success" | "danger" | "muted";
 }) {
   return (
     <button
@@ -126,21 +128,38 @@ function QuickFilterTab({
       aria-pressed={selected}
       onClick={onClick}
       className={cn(
-        "flex h-10 items-center gap-2 border-b-2 px-0.5 text-[13px] font-semibold transition-colors",
+        "inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[12.5px] font-semibold tracking-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
         selected
-          ? "border-primary text-[var(--scry-ink2)]"
-          : "border-transparent text-[var(--scry-muted3)] hover:text-[var(--scry-ink2)]",
+          ? "bg-[var(--scry-accent-grad)] text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.22)]"
+          : "text-[var(--scry-muted3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
       )}
     >
-      {icon}
+      {icon ? (
+        <span
+          className={cn(
+            "shrink-0",
+            selected
+              ? "text-primary-foreground"
+              : tone === "success"
+                ? "text-emerald-500"
+                : tone === "danger"
+                  ? "text-rose-500"
+                  : tone === "muted"
+                    ? "text-zinc-400"
+                    : "text-[var(--scry-muted2)]",
+          )}
+        >
+          {icon}
+        </span>
+      ) : null}
       <span className="whitespace-nowrap">{label}</span>
       {typeof count === "number" ? (
         <span
           className={cn(
-            "rounded-md px-1.5 py-0.5 text-[11px] font-bold leading-none",
+            "rounded-md px-1.5 py-0.5 text-[10.5px] font-bold leading-none",
             selected
-              ? "bg-primary/15 text-primary"
-              : "bg-[var(--scry-inset)] text-[var(--scry-muted2)]",
+              ? "bg-white/20 text-primary-foreground"
+              : "bg-[var(--scry-soft)] text-[var(--scry-muted2)]",
           )}
         >
           {count.toLocaleString()}
@@ -173,7 +192,7 @@ export function TitleQuickFilterBar({
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-6 gap-y-1">
+      <div className="flex min-w-0 max-w-full flex-1 gap-1 overflow-x-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
         <QuickFilterTab
           selected={allSelected}
           onClick={onClear}
@@ -183,32 +202,36 @@ export function TitleQuickFilterBar({
         <QuickFilterTab
           selected={filters.monitored}
           onClick={() => onToggleMonitoring("monitored")}
-          icon={<Eye className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+          icon={<Eye className="h-3.5 w-3.5" />}
           label={t("title.monitored")}
           count={counts?.monitored}
+          tone="success"
         />
         <QuickFilterTab
           selected={filters.unmonitored}
           onClick={() => onToggleMonitoring("unmonitored")}
-          icon={<EyeOff className="h-3.5 w-3.5 shrink-0 text-rose-500" />}
+          icon={<EyeOff className="h-3.5 w-3.5" />}
           label={t("search.monitorType.unmonitored")}
           count={counts?.unmonitored}
+          tone="danger"
         />
         {showStatusFilters ? (
           <>
             <QuickFilterTab
               selected={filters.continuing}
               onClick={() => onToggleStatus("continuing")}
-              icon={<Play className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+              icon={<Play className="h-3.5 w-3.5" />}
               label={t("title.continuing")}
               count={counts?.continuing}
+              tone="success"
             />
             <QuickFilterTab
               selected={filters.ended}
               onClick={() => onToggleStatus("ended")}
-              icon={<Square className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
+              icon={<Square className="h-3.5 w-3.5" />}
               label={t("title.ended")}
               count={counts?.ended}
+              tone="muted"
             />
           </>
         ) : null}

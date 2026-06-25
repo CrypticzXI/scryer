@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,6 +18,7 @@ import { serviceLogsQuery, serviceLogLinesSubscription } from "@/lib/graphql/que
 import { CODE_FONT } from "@/lib/fonts";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
 type SystemViewState = {
   systemHealth: SystemHealth | null;
@@ -557,6 +559,7 @@ export function SystemView({
   state: SystemViewState;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const { systemHealth, systemLoading, refreshSystem } = state;
 
   return (
@@ -654,7 +657,7 @@ export function SystemView({
                     {stat.lastQueryAt && (
                       <p>
                         <span className="text-muted-foreground">Last query:</span>{" "}
-                        {new Date(stat.lastQueryAt).toLocaleString()}
+                        {formatUiDateTime(stat.lastQueryAt, dateTimeFormat)}
                       </p>
                     )}
                   </div>

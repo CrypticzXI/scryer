@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -87,6 +88,285 @@ pub struct MultiMetadataSearchResult {
     pub movies: Vec<RichMetadataSearchItem>,
     pub series: Vec<RichMetadataSearchItem>,
     pub anime: Vec<RichMetadataSearchItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryExternalIdInput {
+    pub source: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverySubjectInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tvdb_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmdb_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mal_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anidb_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_ids: Vec<DiscoveryExternalIdInput>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryPublicFeedInput {
+    pub region: String,
+    pub language: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_types: Vec<String>,
+    pub limit_per_section: i32,
+    pub include_unresolved: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCollectionCompletionInput {
+    #[serde(default)]
+    pub library_subjects: Vec<DiscoverySubjectInput>,
+    pub limit: i32,
+    pub include_future: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryContextSnapshotSubmitInput {
+    #[serde(default)]
+    pub subjects: Vec<DiscoverySubjectInput>,
+    pub region: String,
+    pub language: String,
+    pub max_items: i32,
+    pub include_owned: bool,
+    pub include_unresolved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DiscoveryContextChangeType {
+    Added,
+    Updated,
+    Removed,
+    Rematched,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryContextChangedSubjectInput {
+    pub subject: DiscoverySubjectInput,
+    pub change_type: DiscoveryContextChangeType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_subject: Option<DiscoverySubjectInput>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryContextChangesInput {
+    #[serde(default)]
+    pub context_subject_keys: Vec<String>,
+    #[serde(default)]
+    pub changed_subjects: Vec<DiscoveryContextChangedSubjectInput>,
+    pub region: String,
+    pub language: String,
+    pub max_items: i32,
+    pub include_owned: bool,
+    pub include_unresolved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_context_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryDashboardResult {
+    #[serde(default)]
+    pub subject_keys: Vec<String>,
+    pub generated_at: String,
+    #[serde(default)]
+    pub sections: Vec<DiscoveryDashboardSection>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryDashboardSection {
+    pub section_id: String,
+    pub section_type: String,
+    pub title: String,
+    #[serde(default)]
+    pub source_signals: Vec<String>,
+    #[serde(default)]
+    pub facets: Vec<DiscoveryFacet>,
+    #[serde(default)]
+    pub items: Vec<DiscoveryTitle>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryFacet {
+    pub name: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoverySnapshotFacetGroup {
+    pub name: String,
+    #[serde(default)]
+    pub values: Vec<DiscoverySnapshotFacetValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoverySnapshotFacetValue {
+    pub value: String,
+    pub count: i32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryCollectionCompletionResult {
+    #[serde(default)]
+    pub subject_keys: Vec<String>,
+    pub generated_at: String,
+    #[serde(default)]
+    pub results: Vec<DiscoveryTitle>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryContextSnapshotSubmitResult {
+    pub request_id: Option<String>,
+    pub status: String,
+    pub subject_count: i32,
+    pub retry_after_seconds: i32,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryContextSnapshotStatusResult {
+    pub request_id: String,
+    pub status: String,
+    pub phase: String,
+    pub subject_count: i32,
+    pub item_count: i32,
+    pub page_count: i32,
+    pub facet_count: i32,
+    pub lazy_hydration_queued_count: i32,
+    #[serde(default)]
+    pub lazy_hydration_sources: Vec<String>,
+    pub discovery_index_watermark: String,
+    pub retry_after_seconds: i32,
+    pub created_at: String,
+    pub started_at: String,
+    pub completed_at: String,
+    pub expires_at: String,
+    pub last_error: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryContextSnapshotPageResult {
+    pub request_id: String,
+    pub page: i32,
+    pub page_count: i32,
+    pub generated_at: String,
+    pub discovery_index_watermark: String,
+    #[serde(default)]
+    pub facets: Vec<DiscoverySnapshotFacetGroup>,
+    #[serde(default)]
+    pub items: Vec<DiscoveryTitle>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryContextSnapshotAckResult {
+    pub request_id: String,
+    pub status: String,
+    pub acknowledged_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryContextChangesResult {
+    pub status: String,
+    pub retry_after_seconds: i32,
+    pub generated_at: String,
+    pub context_fingerprint: String,
+    pub previous_context_fingerprint: String,
+    pub discovery_index_watermark: String,
+    pub context_subject_count: i32,
+    pub changed_subject_count: i32,
+    #[serde(default)]
+    pub resolved_changed_subject_keys: Vec<String>,
+    #[serde(default)]
+    pub removed_subject_keys: Vec<String>,
+    #[serde(default)]
+    pub affected_target_keys: Vec<String>,
+    #[serde(default)]
+    pub items: Vec<DiscoveryTitle>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveryTitle {
+    pub target_key: String,
+    pub target_kind: String,
+    pub resolved: bool,
+    pub resolved_title_id: String,
+    pub display_title: String,
+    pub original_title: String,
+    pub year: Option<i32>,
+    pub poster_path: String,
+    pub poster_url: String,
+    pub overview: String,
+    pub content_type: String,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    pub rating: Option<f64>,
+    #[serde(default)]
+    pub rating_sources: Vec<String>,
+    #[serde(default)]
+    pub status_tags: Vec<String>,
+    pub background_url: String,
+    #[serde(default)]
+    pub source_tags: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub relation_types: Vec<String>,
+    #[serde(default)]
+    pub relation_subtypes: Vec<String>,
+    #[serde(default)]
+    pub chart_signals: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub provider_signals: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub rank_components: Vec<serde_json::Value>,
+    pub source_count: i32,
+    pub edge_count: i32,
+    pub relation_count: i32,
+    pub source_subject_count: i32,
+    pub rank_score: f64,
+    pub best_source: String,
+    #[serde(default)]
+    pub matched_subject_keys: Vec<String>,
+    #[serde(default)]
+    pub matched_subject_titles: Vec<String>,
+    pub matched_subject_count: i32,
+    pub tmdb_collection_id: Option<i32>,
+    pub tmdb_collection_name: String,
+    #[serde(default)]
+    pub owned_in_input: bool,
+    #[serde(default)]
+    pub facet_terms: Vec<String>,
+    #[serde(default)]
+    pub context_terms: Vec<String>,
+    #[serde(default)]
+    pub change_subject_keys: Vec<String>,
+    #[serde(default)]
+    pub removed_subject_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -257,6 +537,77 @@ pub trait MetadataGateway: Send + Sync {
         series_tvdb_ids: &[i64],
         language: &str,
     ) -> AppResult<BulkMetadataResult>;
+
+    async fn discover_public_feed(
+        &self,
+        input: &DiscoveryPublicFeedInput,
+    ) -> AppResult<DiscoveryDashboardResult> {
+        let _ = input;
+        Err(AppError::Repository(
+            "metadata gateway discoverPublicFeed is not implemented".into(),
+        ))
+    }
+
+    async fn collection_completions(
+        &self,
+        input: &DiscoveryCollectionCompletionInput,
+    ) -> AppResult<DiscoveryCollectionCompletionResult> {
+        let _ = input;
+        Err(AppError::Repository(
+            "metadata gateway collectionCompletions is not implemented".into(),
+        ))
+    }
+
+    async fn submit_discovery_context_snapshot(
+        &self,
+        input: &DiscoveryContextSnapshotSubmitInput,
+    ) -> AppResult<DiscoveryContextSnapshotSubmitResult> {
+        let _ = input;
+        Err(AppError::Repository(
+            "metadata gateway submitDiscoveryContextSnapshot is not implemented".into(),
+        ))
+    }
+
+    async fn discovery_context_snapshot_status(
+        &self,
+        request_id: &str,
+    ) -> AppResult<DiscoveryContextSnapshotStatusResult> {
+        let _ = request_id;
+        Err(AppError::Repository(
+            "metadata gateway discoveryContextSnapshotStatus is not implemented".into(),
+        ))
+    }
+
+    async fn discovery_context_snapshot_page(
+        &self,
+        request_id: &str,
+        page: i32,
+    ) -> AppResult<DiscoveryContextSnapshotPageResult> {
+        let _ = (request_id, page);
+        Err(AppError::Repository(
+            "metadata gateway discoveryContextSnapshotPage is not implemented".into(),
+        ))
+    }
+
+    async fn discovery_context_changes(
+        &self,
+        input: &DiscoveryContextChangesInput,
+    ) -> AppResult<DiscoveryContextChangesResult> {
+        let _ = input;
+        Err(AppError::Repository(
+            "metadata gateway discoveryContextChanges is not implemented".into(),
+        ))
+    }
+
+    async fn acknowledge_discovery_context_snapshot(
+        &self,
+        request_id: &str,
+    ) -> AppResult<DiscoveryContextSnapshotAckResult> {
+        let _ = request_id;
+        Err(AppError::Repository(
+            "metadata gateway acknowledgeDiscoveryContextSnapshot is not implemented".into(),
+        ))
+    }
 
     async fn get_artwork_urls_bulk(
         &self,

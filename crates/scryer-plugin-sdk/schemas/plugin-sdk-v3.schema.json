@@ -690,7 +690,9 @@
         "multiline",
         "bool",
         "select",
-        "number"
+        "number",
+        "path",
+        "tag"
       ]
     },
     "ConfigFieldValueSource": {
@@ -2964,6 +2966,31 @@
         },
         "media_facet": {
           "type": "string"
+        },
+        "title_slug": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tags": {
           "type": "array",

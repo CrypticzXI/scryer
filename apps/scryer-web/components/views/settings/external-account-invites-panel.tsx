@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type {
   ExternalAccountProvider,
   ExternalAuthRuntimeConnection,
@@ -38,7 +39,9 @@ import type {
   LinkedAccount,
   MediaServerUser,
   MediaServerUserGroup,
+  UiDateTimeFormat,
 } from "@/lib/types/settings";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 export type ExternalInviteDraft = {
@@ -120,17 +123,11 @@ function inviteConnectionLabel(
     : invite.connectionId;
 }
 
-function formatTimestamp(value: string | null | undefined): string {
-  if (!value) {
-    return "-";
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString();
+function formatTimestamp(
+  value: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+): string {
+  return formatUiDateTime(value, dateTimeFormat, { fallback: "-" });
 }
 
 function providerIdentityLabel(account: LinkedAccount): string {
@@ -423,6 +420,7 @@ export function ExternalAccountInvitesPanel({
   createExternalAccountInvite,
 }: ExternalAccountInvitesPanelProps) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const inviteUnavailable =
     users.length === 0 ||
     (!loading &&
@@ -666,10 +664,10 @@ export function ExternalAccountInvitesPanel({
                           </span>
                         </TableCell>
                         <TableCell>
-                          {formatTimestamp(invite.createdAt)}
+                          {formatTimestamp(invite.createdAt, dateTimeFormat)}
                         </TableCell>
                         <TableCell>
-                          {formatTimestamp(invite.lastLoginAt)}
+                          {formatTimestamp(invite.lastLoginAt, dateTimeFormat)}
                         </TableCell>
                       </TableRow>
                     );

@@ -33,6 +33,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
         mutation SetMyUiSettings($input: SetMyUiSettingsInput!) {
           setMyUiSettings(input: $input) {
             theme
+            dateTimeFormat
             highlightColor
             secondaryColor
             highContrastMode
@@ -53,6 +54,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
         json!({
             "input": {
                 "theme": "pride",
+                "dateTimeFormat": "iso24h",
                 "highlightColor": "#ff3366",
                 "secondaryColor": "#2277aa",
                 "highContrastMode": true,
@@ -88,6 +90,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
         query MyUiSettings {
           myUiSettings {
             theme
+            dateTimeFormat
             highlightColor
             secondaryColor
             highContrastMode
@@ -112,6 +115,7 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
 
     let settings = &read["data"]["myUiSettings"];
     assert_eq!(settings["theme"], json!("pride"));
+    assert_eq!(settings["dateTimeFormat"], json!("iso24h"));
     assert_eq!(settings["highlightColor"], json!("#ff3366"));
     assert_eq!(settings["secondaryColor"], json!("#2277aa"));
     assert_eq!(settings["highContrastMode"], json!(true));
@@ -138,6 +142,37 @@ async fn graphql_anonymous_ui_settings_round_trip_is_shared() {
             }
         ])
     );
+
+    let old_client_update = gql(
+        &ctx,
+        r#"
+        mutation SetMyUiSettings($input: SetMyUiSettingsInput!) {
+          setMyUiSettings(input: $input) {
+            theme
+            dateTimeFormat
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "theme": "dark",
+                "highlightColor": "#ff3366",
+                "secondaryColor": "#2277aa",
+                "highContrastMode": true,
+                "reduceMotion": true,
+                "density": "compact",
+                "sidebarMode": "collapsed",
+                "defaultLandingView": "calendar",
+                "tableColumns": []
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&old_client_update);
+    assert_eq!(
+        old_client_update["data"]["setMyUiSettings"]["dateTimeFormat"],
+        json!("iso24h")
+    );
 }
 
 #[tokio::test]
@@ -152,6 +187,7 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
         mutation SetMyUiSettings {
           setMyUiSettings(input: {
             theme: system
+            dateTimeFormat: iso24h
             highlightColor: "#112233"
             secondaryColor: "#445566"
             highContrastMode: false
@@ -170,6 +206,7 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
             ]
           }) {
             theme
+            dateTimeFormat
             tableColumns { facet tableViewMode columnId columnOrder visible }
           }
         }
@@ -185,6 +222,7 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
         query MyUiSettings {
           myUiSettings {
             theme
+            dateTimeFormat
             density
             sidebarMode
             defaultLandingView
@@ -197,6 +235,10 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
     .await;
     assert_no_errors(&read_a);
     assert_eq!(read_a["data"]["myUiSettings"]["theme"], json!("system"));
+    assert_eq!(
+        read_a["data"]["myUiSettings"]["dateTimeFormat"],
+        json!("iso24h")
+    );
     assert_eq!(
         read_a["data"]["myUiSettings"]["tableColumns"],
         json!([
@@ -216,6 +258,7 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
         query MyUiSettings {
           myUiSettings {
             theme
+            dateTimeFormat
             density
             sidebarMode
             defaultLandingView
@@ -228,6 +271,10 @@ async fn graphql_ui_settings_are_isolated_per_logged_in_user() {
     .await;
     assert_no_errors(&read_b);
     assert_eq!(read_b["data"]["myUiSettings"]["theme"], json!("dark"));
+    assert_eq!(
+        read_b["data"]["myUiSettings"]["dateTimeFormat"],
+        json!("locale")
+    );
     assert_eq!(
         read_b["data"]["myUiSettings"]["density"],
         json!("comfortable")
@@ -259,6 +306,7 @@ async fn graphql_ui_settings_reject_invalid_table_column() {
         json!({
             "input": {
                 "theme": "dark",
+                "dateTimeFormat": "locale",
                 "highlightColor": null,
                 "secondaryColor": null,
                 "highContrastMode": false,

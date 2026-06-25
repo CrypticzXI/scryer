@@ -239,6 +239,22 @@ fn to_app_ui_theme(theme: UiThemeValue) -> scryer_application::UiTheme {
     }
 }
 
+fn from_ui_date_time_format(format: scryer_application::UiDateTimeFormat) -> UiDateTimeFormatValue {
+    match format {
+        scryer_application::UiDateTimeFormat::Locale => UiDateTimeFormatValue::Locale,
+        scryer_application::UiDateTimeFormat::Iso24h => UiDateTimeFormatValue::Iso24h,
+    }
+}
+
+fn to_app_ui_date_time_format(
+    format: UiDateTimeFormatValue,
+) -> scryer_application::UiDateTimeFormat {
+    match format {
+        UiDateTimeFormatValue::Locale => scryer_application::UiDateTimeFormat::Locale,
+        UiDateTimeFormatValue::Iso24h => scryer_application::UiDateTimeFormat::Iso24h,
+    }
+}
+
 fn from_ui_density(density: scryer_application::UiDensity) -> UiDensityValue {
     match density {
         scryer_application::UiDensity::Compact => UiDensityValue::Compact,
@@ -333,6 +349,7 @@ pub(crate) fn from_ui_settings(settings: scryer_application::UiSettings) -> UiSe
     UiSettingsPayload {
         user_id: settings.user_id.into(),
         theme: from_ui_theme(settings.theme),
+        date_time_format: from_ui_date_time_format(settings.date_time_format),
         highlight_color: settings.highlight_color,
         secondary_color: settings.secondary_color,
         high_contrast_mode: settings.high_contrast_mode,
@@ -358,9 +375,14 @@ pub(crate) fn from_ui_settings(settings: scryer_application::UiSettings) -> UiSe
 
 pub(crate) fn ui_settings_update_from_input(
     input: SetMyUiSettingsInput,
+    current_date_time_format: scryer_application::UiDateTimeFormat,
 ) -> scryer_application::UiSettingsUpdate {
     scryer_application::UiSettingsUpdate {
         theme: to_app_ui_theme(input.theme),
+        date_time_format: input
+            .date_time_format
+            .map(to_app_ui_date_time_format)
+            .unwrap_or(current_date_time_format),
         highlight_color: input.highlight_color,
         secondary_color: input.secondary_color,
         high_contrast_mode: input.high_contrast_mode,

@@ -46,7 +46,9 @@ export type ConfigFieldTypeValue =
   | "multiline"
   | "bool"
   | "select"
-  | "number";
+  | "number"
+  | "path"
+  | "tag";
 
 export type ConfigFieldValueSourceValue = "user" | "host_binding";
 export type ConfigFieldRoleValue = "connection_url";

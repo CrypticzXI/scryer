@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS user_ui_settings (
     user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     theme TEXT NOT NULL DEFAULT 'dark',
+    date_time_format TEXT NOT NULL DEFAULT 'locale',
     highlight_color TEXT,
     secondary_color TEXT,
     high_contrast_mode INTEGER NOT NULL DEFAULT 0,

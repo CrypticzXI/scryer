@@ -1,0 +1,7 @@
+mutation AcknowledgeDiscoveryContextSnapshot($requestId: String!) {
+  acknowledgeDiscoveryContextSnapshot(requestId: $requestId) {
+    request_id
+    status
+    acknowledged_at
+  }
+}

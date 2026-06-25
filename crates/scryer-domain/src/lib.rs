@@ -3592,6 +3592,8 @@ pub enum ConfigFieldType {
     Bool,
     Select,
     Number,
+    Path,
+    Tag,
 }
 
 impl ConfigFieldType {
@@ -3603,6 +3605,8 @@ impl ConfigFieldType {
             Self::Bool => "bool",
             Self::Select => "select",
             Self::Number => "number",
+            Self::Path => "path",
+            Self::Tag => "tag",
         }
     }
 
@@ -3614,6 +3618,8 @@ impl ConfigFieldType {
             "bool" => Some(Self::Bool),
             "select" => Some(Self::Select),
             "number" => Some(Self::Number),
+            "path" => Some(Self::Path),
+            "tag" => Some(Self::Tag),
             _ => None,
         }
     }

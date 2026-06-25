@@ -715,6 +715,11 @@ const en: LocaleDictionary = {
   "settings.generalText": "General application settings.",
   "settings.generalPlaceholder":
     "Configure language and other global preferences.",
+  "settings.dateTimeFormatLabel": "Date and time format",
+  "settings.dateTimeFormatLocale": "Regional default",
+  "settings.dateTimeFormatIso24h": "YYYY-MM-DD, 24-hour time",
+  "settings.dateTimeFormatHelp":
+    "Controls how dates and times are shown in the interface.",
   "settings.historyRetentionTitle": "History retention",
   "settings.historyRetentionHelp":
     "This preserves Scryer’s user-facing history and audit trail. Changes take effect on the next housekeeping run.",
@@ -726,6 +731,7 @@ const en: LocaleDictionary = {
   "settings.historyRetentionDaysLabel": "Retain history for N days",
   "settings.historyRetentionSaved": "History retention settings saved.",
   "settings.generalSaved": "General settings saved.",
+  "settings.uiSaved": "Display settings saved.",
   "settings.historyRetentionValidation":
     "History retention days must be at least 1 unless history is kept forever.",
   "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
@@ -918,11 +924,17 @@ const en: LocaleDictionary = {
   "title.hideTitleList": "Hide list",
   "title.contextEmptyTitle": "No title selected",
   "title.contextEmptyBody": "There are no preview details to show.",
-  "title.contextForYouTitle": "Recommended from your library",
-  "title.contextForYouSubtitle": "A few familiar paths back into this catalog.",
+  "title.contextForYouTitle": "For You",
+  "title.contextForYouSubtitle": "Recommended from your library",
+  "title.contextForYouBody":
+    "Open a title workspace or explore picks tailored to what is already in your collection.",
   "title.contextForYouTop": "Top",
   "title.contextForYouGenre": "Because you like {{genre}}",
   "title.contextForYouRecent": "Recently added",
+  "title.contextForYouReasonTop": "High-signal library match",
+  "title.contextForYouReasonGenre": "Matches your {{genre}} shelf",
+  "title.contextForYouReasonRecent": "Fresh from your library",
+  "title.contextForYouMatch": "{{match}} match",
   "title.contextForYouEmptyTitle": "No recommendations yet",
   "title.contextForYouEmptyBody":
     "Add or scan titles to build this library view.",

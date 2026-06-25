@@ -36,10 +36,266 @@ pub struct HousekeepingMediaFileRootRow {
     pub root_paths: Vec<String>,
 }
 
+pub const DISCOVERY_DEFAULT_SCOPE_KEY: &str = "default";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverySyncStateRecord {
+    pub scope_key: String,
+    pub last_success_generation_id: Option<String>,
+    pub last_public_feed_generation_id: Option<String>,
+    pub last_subject_fingerprint: Option<String>,
+    pub last_context_snapshot_completed_at: Option<DateTime<Utc>>,
+    pub last_incremental_reload_completed_at: Option<DateTime<Utc>>,
+    pub last_public_feed_completed_at: Option<DateTime<Utc>>,
+    pub dirty_since: Option<DateTime<Utc>>,
+    pub dirty_reason_mask: i64,
+    pub bootstrap_started_at: Option<DateTime<Utc>>,
+    pub bootstrap_quiet_until: Option<DateTime<Utc>>,
+    pub next_context_snapshot_eligible_at: Option<DateTime<Utc>>,
+    pub next_incremental_reload_eligible_at: Option<DateTime<Utc>>,
+    pub next_public_feed_eligible_at: Option<DateTime<Utc>>,
+    pub backoff_until: Option<DateTime<Utc>>,
+    pub startup_jitter_seconds: i64,
+    pub context_jitter_seconds: i64,
+    pub incremental_reload_jitter_seconds: i64,
+    pub public_feed_jitter_seconds: i64,
+    pub last_seen_domain_event_sequence: Option<i64>,
+    pub inflight_subject_fingerprint: Option<String>,
+    pub inflight_domain_event_sequence: Option<i64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Default for DiscoverySyncStateRecord {
+    fn default() -> Self {
+        Self {
+            scope_key: DISCOVERY_DEFAULT_SCOPE_KEY.to_string(),
+            last_success_generation_id: None,
+            last_public_feed_generation_id: None,
+            last_subject_fingerprint: None,
+            last_context_snapshot_completed_at: None,
+            last_incremental_reload_completed_at: None,
+            last_public_feed_completed_at: None,
+            dirty_since: None,
+            dirty_reason_mask: 0,
+            bootstrap_started_at: None,
+            bootstrap_quiet_until: None,
+            next_context_snapshot_eligible_at: None,
+            next_incremental_reload_eligible_at: None,
+            next_public_feed_eligible_at: None,
+            backoff_until: None,
+            startup_jitter_seconds: 0,
+            context_jitter_seconds: 0,
+            incremental_reload_jitter_seconds: 0,
+            public_feed_jitter_seconds: 0,
+            last_seen_domain_event_sequence: None,
+            inflight_subject_fingerprint: None,
+            inflight_domain_event_sequence: None,
+            updated_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverySyncRunRecord {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub trigger_source: String,
+    pub region: String,
+    pub language: String,
+    pub subject_count: i64,
+    pub subject_fingerprint: Option<String>,
+    pub previous_subject_fingerprint: Option<String>,
+    pub base_generation_id: Option<String>,
+    pub changed_subject_count: i64,
+    pub affected_target_count: i64,
+    pub smg_request_id: Option<String>,
+    pub smg_status: Option<String>,
+    pub discovery_index_watermark: Option<String>,
+    pub page_count: Option<i32>,
+    pub item_count: Option<i64>,
+    pub facet_count: Option<i64>,
+    pub raw_submit_json: Option<String>,
+    pub raw_changes_json: Option<String>,
+    pub raw_final_status_json: Option<String>,
+    pub raw_ack_json: Option<String>,
+    pub error_text: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryRawPageRecord {
+    pub run_id: String,
+    pub payload_kind: String,
+    pub page_number: i32,
+    pub compression: String,
+    pub raw_payload: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverySubmittedSubjectRecord {
+    pub run_id: String,
+    pub subject_key: String,
+    pub title_id: Option<String>,
+    pub library_facet: Option<String>,
+    pub title_kind: Option<String>,
+    pub display_title: Option<String>,
+    pub external_ids_json: String,
+    pub raw_subject_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryPendingContextChangeRecord {
+    pub id: String,
+    pub scope_key: String,
+    pub subject_key: Option<String>,
+    pub previous_subject_key: Option<String>,
+    pub change_type: String,
+    pub title_id: Option<String>,
+    pub previous_title_id: Option<String>,
+    pub library_facet: Option<String>,
+    pub raw_subject_json: Option<String>,
+    pub raw_previous_subject_json: Option<String>,
+    pub first_seen_sequence: Option<i64>,
+    pub last_seen_sequence: Option<i64>,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoverySectionRecord {
+    pub id: String,
+    pub run_id: String,
+    pub section_id: String,
+    pub section_type: String,
+    pub surface: String,
+    pub title: String,
+    pub source_signals_json: String,
+    pub facets_json: String,
+    pub sort_index: i32,
+    pub raw_json: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryItemRecord {
+    pub id: String,
+    pub run_id: String,
+    pub base_generation_id: Option<String>,
+    pub source_run_kind: String,
+    pub section_id: Option<String>,
+    pub target_key: String,
+    pub target_kind: String,
+    pub resolved: bool,
+    pub resolved_title_id: Option<String>,
+    pub display_title: String,
+    pub original_title: Option<String>,
+    pub sort_title: Option<String>,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub overview: Option<String>,
+    pub content_type: Option<String>,
+    pub genres_json: String,
+    pub rating: Option<f64>,
+    pub rating_sources_json: String,
+    pub status_tags_json: String,
+    pub source_tags_json: String,
+    pub sources_json: String,
+    pub best_source: Option<String>,
+    pub relation_types_json: String,
+    pub relation_subtypes_json: String,
+    pub chart_signals_json: String,
+    pub provider_signals_json: String,
+    pub rank_components_json: String,
+    pub source_count: Option<i32>,
+    pub edge_count: Option<i32>,
+    pub relation_count: Option<i32>,
+    pub source_subject_count: Option<i32>,
+    pub rank_score: Option<f64>,
+    pub matched_subject_keys_json: String,
+    pub matched_subject_titles_json: String,
+    pub matched_subject_count: i32,
+    pub tmdb_collection_id: Option<String>,
+    pub tmdb_collection_name: Option<String>,
+    pub owned_in_input: bool,
+    pub facet_terms_json: String,
+    pub context_terms_json: String,
+    pub change_subject_keys_json: String,
+    pub removed_subject_keys_json: String,
+    pub tombstoned_by_run_id: Option<String>,
+    pub tombstoned_at: Option<DateTime<Utc>>,
+    pub raw_json: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryFacetRecord {
+    pub run_id: String,
+    pub facet_name: String,
+    pub facet_value: String,
+    pub smg_count: Option<i64>,
+    pub local_count: Option<i64>,
+    pub raw_json: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct EpisodeImageUrlUpdate {
     pub episode_id: String,
     pub image_url: Option<String>,
+}
+
+#[async_trait]
+pub trait DiscoveryRepository: Send + Sync {
+    async fn get_discovery_sync_state(
+        &self,
+        scope_key: &str,
+    ) -> AppResult<Option<DiscoverySyncStateRecord>>;
+    async fn upsert_discovery_sync_state(&self, state: &DiscoverySyncStateRecord) -> AppResult<()>;
+    async fn get_discovery_sync_run(&self, id: &str) -> AppResult<Option<DiscoverySyncRunRecord>>;
+    async fn upsert_discovery_sync_run(&self, run: &DiscoverySyncRunRecord) -> AppResult<()>;
+    async fn insert_discovery_raw_page(&self, page: &DiscoveryRawPageRecord) -> AppResult<()>;
+    async fn replace_discovery_submitted_subjects(
+        &self,
+        run_id: &str,
+        subjects: &[DiscoverySubmittedSubjectRecord],
+    ) -> AppResult<()>;
+    async fn upsert_pending_discovery_context_change(
+        &self,
+        change: &DiscoveryPendingContextChangeRecord,
+    ) -> AppResult<()>;
+    async fn list_pending_discovery_context_changes(
+        &self,
+        scope_key: &str,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>>;
+    async fn clear_pending_discovery_context_changes_through_sequence(
+        &self,
+        scope_key: &str,
+        last_seen_sequence: i64,
+    ) -> AppResult<u64>;
+    async fn replace_discovery_sections(
+        &self,
+        run_id: &str,
+        sections: &[DiscoverySectionRecord],
+    ) -> AppResult<()>;
+    async fn replace_discovery_items(
+        &self,
+        run_id: &str,
+        items: &[DiscoveryItemRecord],
+    ) -> AppResult<()>;
+    async fn replace_discovery_facets(
+        &self,
+        run_id: &str,
+        facets: &[DiscoveryFacetRecord],
+    ) -> AppResult<()>;
 }
 
 #[async_trait]

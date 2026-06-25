@@ -78,6 +78,7 @@ type NavItem = {
 type TopNavGroupDefinition = {
   id: string;
   labelKey: string;
+  label?: string;
   items: TopNavGroupItemDefinition[];
 };
 
@@ -134,7 +135,8 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
     ],
   },
   {
-    id: "requests",
+    id: "discover",
+    label: "Discover",
     labelKey: "nav.group.requests",
     items: [{ kind: "requests", icon: Inbox }],
   },
@@ -671,7 +673,7 @@ function RootSidebarContent({
         groupedIds.add(definition.id);
         return [{ kind: "view", ...item }];
       });
-      return { id: group.id, label: t(group.labelKey), items };
+      return { id: group.id, label: group.label ?? t(group.labelKey), items };
     }).filter((group) => group.items.length > 0);
     const ungroupedItems = visibleTopNav
       .filter((item) => !groupedIds.has(item.id))

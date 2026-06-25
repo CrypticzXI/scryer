@@ -40,6 +40,7 @@ import {
 import { TimePicker } from "@/components/ui/time-picker";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { selectorId } from "@/lib/utils/dom-ids";
 import {
   createBackupMutation,
@@ -53,11 +54,16 @@ import { scryerFetch } from "@/lib/graphql/urql-client";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
-import type { AutoBackupSettings, BackupSettings } from "@/lib/types/settings";
+import type {
+  AutoBackupSettings,
+  BackupSettings,
+  UiDateTimeFormat,
+} from "@/lib/types/settings";
 
 type BackupRowCount = {
   table: string;
@@ -263,12 +269,12 @@ function formatBytes(sizeBytes: number): string {
   return `${current.toFixed(current >= 100 ? 0 : current >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string, dateTimeFormat: UiDateTimeFormat): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) {
     return value;
   }
-  return new Date(timestamp).toLocaleString();
+  return formatUiDateTime(value, dateTimeFormat, { fallback: value });
 }
 
 function statusTone(status: BackupInfoRecord["status"]): string {
@@ -307,6 +313,7 @@ function BackupStatusBadge({
 export function SettingsBackupsContainer() {
   const client = useClient();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const setGlobalStatus = useGlobalStatus();
 
   const [backups, setBackups] = React.useState<BackupInfoRecord[]>([]);
@@ -367,7 +374,7 @@ export function SettingsBackupsContainer() {
   const pageLoading = loading || autoBackupLoading || backupSettingsLoading;
   const autoBackupNextRunLabel =
     autoBackupSettings.enabled && autoBackupSettings.nextRunAt
-      ? formatDateTime(autoBackupSettings.nextRunAt)
+      ? formatDateTime(autoBackupSettings.nextRunAt, dateTimeFormat)
       : t("label.disabled");
   const autoBackupKeyPlaceholder = clearAutoBackupKey
     ? ""
@@ -1003,7 +1010,7 @@ export function SettingsBackupsContainer() {
                       </div>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">
-                      {formatDateTime(backup.createdAt)}
+                      {formatDateTime(backup.createdAt, dateTimeFormat)}
                     </TableCell>
                     <TableCell>
                       <BackupStatusBadge

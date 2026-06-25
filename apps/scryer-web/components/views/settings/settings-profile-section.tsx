@@ -21,6 +21,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { TotpQrCode } from "@/components/common/totp-qr-code";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type {
   ExternalAccountProvider,
   ExternalAuthRuntimeConnection,
@@ -29,7 +30,9 @@ import type {
   PasskeySummary,
   TotpEnrollmentStart,
   TotpStatus,
+  UiDateTimeFormat,
 } from "@/lib/types/settings";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 const TOTP_CODE_LENGTH = 6;
@@ -96,17 +99,11 @@ type Props = {
   onUnlinkExternalAccount: (id: string) => void;
 };
 
-function formatTimestamp(value: string | null | undefined): string {
-  if (!value) {
-    return "—";
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString();
+function formatTimestamp(
+  value: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+): string {
+  return formatUiDateTime(value, dateTimeFormat, { fallback: "—" });
 }
 
 function providerLabel(provider: LinkedAccount["provider"]): string {
@@ -211,6 +208,7 @@ export function SettingsProfileSection({
   onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [pendingTotpAction, setPendingTotpAction] =
     useState<TotpProfileAction>(null);
   const [submittedTotpAction, setSubmittedTotpAction] = useState(false);
@@ -406,12 +404,12 @@ export function SettingsProfileSection({
                       </div>
                       <div className={PROFILE_MUTED_TEXT_CLASS}>
                         {t("profile.passkeyCreatedAt")}:{" "}
-                        {formatTimestamp(passkey.createdAt)}
+                        {formatTimestamp(passkey.createdAt, dateTimeFormat)}
                       </div>
                       <div className={PROFILE_MUTED_TEXT_CLASS}>
                         {t("profile.passkeyLastUsedAt")}:{" "}
                         {passkey.lastUsedAt
-                          ? formatTimestamp(passkey.lastUsedAt)
+                          ? formatTimestamp(passkey.lastUsedAt, dateTimeFormat)
                           : t("profile.passkeyNeverUsed")}
                       </div>
                     </div>
@@ -476,7 +474,7 @@ export function SettingsProfileSection({
                     )}
                     className={PROFILE_MUTED_TEXT_CLASS}
                   >
-                    Authorized: {formatTimestamp(app.authorizedAt)}
+                    Authorized: {formatTimestamp(app.authorizedAt, dateTimeFormat)}
                   </div>
                   <div
                     id={selectorId(
@@ -485,7 +483,7 @@ export function SettingsProfileSection({
                     )}
                     className={PROFILE_MUTED_TEXT_CLASS}
                   >
-                    Last used: {formatTimestamp(app.lastUsedAt)}
+                    Last used: {formatTimestamp(app.lastUsedAt, dateTimeFormat)}
                   </div>
                 </div>
                 <Button
@@ -529,13 +527,13 @@ export function SettingsProfileSection({
                 <span className="text-[var(--scry-ink2)]">
                   {t("profile.totpEnabledAt")}:{" "}
                 </span>
-                {formatTimestamp(totpStatus.createdAt)}
+                {formatTimestamp(totpStatus.createdAt, dateTimeFormat)}
               </div>
               <div>
                 <span className="text-[var(--scry-ink2)]">
                   {t("profile.totpLastUsedAt")}:{" "}
                 </span>
-                {formatTimestamp(totpStatus.lastUsedAt)}
+                {formatTimestamp(totpStatus.lastUsedAt, dateTimeFormat)}
               </div>
               <div>
                 <span className="text-[var(--scry-ink2)]">

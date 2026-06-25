@@ -5,7 +5,6 @@ import { Eye, EyeOff } from "lucide-react";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import type { TitleRecord } from "@/lib/types";
-import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { cn } from "@/lib/utils";
@@ -14,52 +13,9 @@ import {
   TitleCollectionLoadingState,
 } from "./title-table-shared";
 
-const QP_TAG_PREFIX = "scryer:quality-profile:";
-
-function formatProfileLabel(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (trimmed.toLowerCase() === "4k") {
-    return "4K";
-  }
-  if (/^\d{3,4}p$/i.test(trimmed)) {
-    return trimmed.toUpperCase();
-  }
-  return trimmed;
-}
-
-function resolveTitleProfileName(
-  title: TitleRecord,
-  qualityProfiles: ParsedQualityProfile[],
-  resolvedProfileName: string | null,
-) {
-  const tag = title.tags?.find((tg) => tg.startsWith(QP_TAG_PREFIX));
-  if (tag) {
-    const id = tag.slice(QP_TAG_PREFIX.length);
-    const match = qualityProfiles.find((p) => p.id === id);
-    if (match) return match.name;
-    return formatProfileLabel(id);
-  }
-  return formatProfileLabel(resolvedProfileName) ?? resolvedProfileName;
-}
-
-function resolveDisplayedQualityLabel(
-  title: TitleRecord,
-  qualityProfiles: ParsedQualityProfile[],
-  resolvedProfileName: string | null,
-) {
-  return resolveTitleProfileName(title, qualityProfiles, resolvedProfileName);
-}
-
 type PosterGridProps = {
   titles: TitleRecord[];
   catalogInitialLoadComplete?: boolean;
-  isMovieView: boolean;
-  resolvedProfileName: string | null;
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -84,10 +40,6 @@ type PosterGridProps = {
 export const PosterGrid = React.memo(function PosterGrid({
   titles,
   catalogInitialLoadComplete = true,
-  isMovieView,
-  resolvedProfileName,
-  qualityProfiles,
-  qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
   contextPanelId,
@@ -130,10 +82,6 @@ export const PosterGrid = React.memo(function PosterGrid({
         <PosterCard
           key={title.id}
           title={title}
-          isMovieView={isMovieView}
-          resolvedProfileName={resolvedProfileName}
-          qualityProfiles={qualityProfiles}
-          qualityProfilesLoading={qualityProfilesLoading}
           onOpenOverview={onOpenOverview}
           selected={selectedTitleId === title.id}
           contextPanelId={contextPanelId}
@@ -147,10 +95,6 @@ export const PosterGrid = React.memo(function PosterGrid({
 
 type PosterCardProps = {
   title: TitleRecord;
-  isMovieView: boolean;
-  resolvedProfileName: string | null;
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -163,10 +107,6 @@ type PosterCardProps = {
 
 const PosterCard = React.memo(function PosterCard({
   title,
-  isMovieView,
-  resolvedProfileName,
-  qualityProfiles,
-  qualityProfilesLoading,
   onOpenOverview,
   selected,
   contextPanelId,
@@ -176,20 +116,10 @@ const PosterCard = React.memo(function PosterCard({
   const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const qualityLabel = qualityProfilesLoading
-    ? null
-    : resolveDisplayedQualityLabel(title, qualityProfiles, resolvedProfileName);
   const posterClassName =
     "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
   const contextPanelControlsId =
     selected && onSelectTitle ? contextPanelId : undefined;
-  const yearLabel =
-    typeof title.year === "number" ? title.year.toString() : null;
-  const posterMetaLabel =
-    [yearLabel, qualityLabel].filter(Boolean).join(" / ") ||
-    title.libraryName ||
-    title.libraryId ||
-    t("label.unknown");
   const handleActivate = React.useCallback(() => {
     if (onSelectTitle) {
       persistOverviewWindowScroll(location.pathname);
@@ -269,9 +199,6 @@ const PosterCard = React.memo(function PosterCard({
                 >
                   {title.name}
                 </p>
-                <p className="mt-1 line-clamp-1 text-[10.5px] font-medium text-white/78">
-                  {posterMetaLabel}
-                </p>
               </div>
 
               <div className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/80 shadow-sm">
@@ -280,29 +207,6 @@ const PosterCard = React.memo(function PosterCard({
                 ) : (
                   <EyeOff className="h-4.5 w-4.5 text-rose-400" />
                 )}
-              </div>
-
-              {qualityLabel ? (
-                <div className="absolute right-1.5 top-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                  {qualityLabel}
-                </div>
-              ) : null}
-
-              {!isMovieView &&
-              title.contentStatus?.toLowerCase() === "ended" ? (
-                <div className="absolute bottom-1.5 right-1.5 z-20 rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                  {t("title.ended")}
-                </div>
-              ) : null}
-              <div
-                className={cn(
-                  "absolute left-1.5 top-10 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
-                  selected && "opacity-100",
-                )}
-              >
-                <span className="block truncate">
-                  {title.libraryName ?? title.libraryId}
-                </span>
               </div>
             </div>
           </button>

@@ -1,4 +1,5 @@
 use super::*;
+use crate::discovery::{DiscoveryContextDefaults, build_discovery_library_context};
 use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
 use crate::event_views::replay_active_job_runs;
 use chrono::Utc;
@@ -13,6 +14,11 @@ use tracing::{info, warn};
 
 const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 3600;
 const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
+const DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS: i64 = 4 * 60 * 60;
+const DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS: i64 = 24 * 60 * 60;
+const DISCOVERY_SYNC_JITTER_WINDOW_SECONDS: i64 = 6 * 60 * 60;
+const DISCOVERY_SYNC_BOOTSTRAP_JITTER_WINDOW_SECONDS: i64 = 10 * 60;
+const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 
 fn is_background_library_refresh_job(job_key: JobKey) -> bool {
     matches!(
@@ -43,6 +49,32 @@ fn background_library_refresh_enabled() -> bool {
             )
         })
         .unwrap_or(true)
+}
+
+fn discovery_jitter_seconds(seed: &str, stream: &str, window_seconds: i64) -> i64 {
+    let window_seconds = window_seconds.max(1) as u64;
+    let hash = blake3::hash(format!("{seed}:discovery_sync:{stream}").as_bytes());
+    let mut prefix = [0_u8; 8];
+    prefix.copy_from_slice(&hash.as_bytes()[0..8]);
+    (u64::from_le_bytes(prefix) % window_seconds) as i64
+}
+
+fn next_hash_jittered_bucket(
+    now: chrono::DateTime<Utc>,
+    jitter_seconds: i64,
+) -> chrono::DateTime<Utc> {
+    let cadence = DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS;
+    let jitter_seconds = jitter_seconds.clamp(0, cadence - 1);
+    let now_seconds = now.timestamp();
+    let bucket_start = now_seconds.div_euclid(cadence) * cadence;
+    let candidate = bucket_start + jitter_seconds;
+    let next_seconds = if now_seconds < candidate {
+        candidate
+    } else {
+        bucket_start + cadence + jitter_seconds
+    };
+    chrono::DateTime::from_timestamp(next_seconds, 0)
+        .unwrap_or_else(|| now + chrono::Duration::seconds(cadence))
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -97,6 +129,23 @@ struct HousekeepingRunSummary {
     stale_history_records: u32,
     staged_nzb_artifacts_pruned: u32,
     recycled_purged: u32,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct DiscoverySyncRunSummary {
+    state_created: bool,
+    trigger_source: String,
+    subject_count: usize,
+    subject_fingerprint: String,
+    subject_context_changed: bool,
+    next_run_at: String,
+    next_incremental_reload_eligible_at: String,
+    next_context_snapshot_eligible_at: String,
+    next_public_feed_eligible_at: String,
+    startup_jitter_seconds: i64,
+    context_jitter_seconds: i64,
+    incremental_reload_jitter_seconds: i64,
+    public_feed_jitter_seconds: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -899,6 +948,7 @@ impl AppUseCase {
                     serde_json::to_string(&CountSummary { count }).ok(),
                 ))
             }
+            JobKey::DiscoverySync => self.run_discovery_sync_job(run.trigger_source).await,
             JobKey::TitleImageCacheRefresh => {
                 let summary = self.run_title_image_cache_refresh().await?;
                 Ok(JobExecutionOutcome::new(
@@ -913,6 +963,129 @@ impl AppUseCase {
                 "title deletion jobs must be started from the title deletion mutation".into(),
             )),
         }
+    }
+
+    async fn run_discovery_sync_job(
+        &self,
+        trigger_source: JobTriggerSource,
+    ) -> AppResult<JobExecutionOutcome> {
+        let now = Utc::now();
+        let scheduler_seed = self.discovery_scheduler_seed().await?;
+        let titles = self.services.catalog.titles.list(None, None).await?;
+        let library_context =
+            build_discovery_library_context(&titles, DiscoveryContextDefaults::default());
+        let existing_state = self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?;
+        let state_created = existing_state.is_none();
+        let mut state = existing_state.unwrap_or_default();
+        let subject_context_changed =
+            state.last_subject_fingerprint.as_deref() != Some(library_context.fingerprint.as_str());
+
+        state.startup_jitter_seconds = discovery_jitter_seconds(
+            &scheduler_seed,
+            "startup",
+            DISCOVERY_SYNC_BOOTSTRAP_JITTER_WINDOW_SECONDS,
+        );
+        state.context_jitter_seconds = discovery_jitter_seconds(
+            &scheduler_seed,
+            "context_snapshot",
+            DISCOVERY_SYNC_JITTER_WINDOW_SECONDS,
+        );
+        state.incremental_reload_jitter_seconds = discovery_jitter_seconds(
+            &scheduler_seed,
+            "incremental_reload",
+            DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS,
+        );
+        state.public_feed_jitter_seconds = discovery_jitter_seconds(
+            &scheduler_seed,
+            "public_feed",
+            DISCOVERY_SYNC_JITTER_WINDOW_SECONDS,
+        );
+
+        let next_incremental =
+            next_hash_jittered_bucket(now, state.incremental_reload_jitter_seconds);
+        let next_context = now
+            + chrono::Duration::seconds(
+                DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.context_jitter_seconds,
+            );
+        let next_public = now
+            + chrono::Duration::seconds(
+                DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.public_feed_jitter_seconds,
+            );
+        let next_run_at = [next_incremental, next_context, next_public]
+            .into_iter()
+            .min()
+            .unwrap_or(next_incremental);
+
+        state.next_incremental_reload_eligible_at = Some(next_incremental);
+        state.next_context_snapshot_eligible_at = Some(next_context);
+        state.next_public_feed_eligible_at = Some(next_public);
+        state.updated_at = now;
+
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_state(&state)
+            .await?;
+        self.set_job_next_run_at(JobKey::DiscoverySync, next_run_at)
+            .await;
+
+        let summary = DiscoverySyncRunSummary {
+            state_created,
+            trigger_source: trigger_source.as_str().to_string(),
+            subject_count: library_context.subjects.len(),
+            subject_fingerprint: library_context.fingerprint.clone(),
+            subject_context_changed,
+            next_run_at: next_run_at.to_rfc3339(),
+            next_incremental_reload_eligible_at: next_incremental.to_rfc3339(),
+            next_context_snapshot_eligible_at: next_context.to_rfc3339(),
+            next_public_feed_eligible_at: next_public.to_rfc3339(),
+            startup_jitter_seconds: state.startup_jitter_seconds,
+            context_jitter_seconds: state.context_jitter_seconds,
+            incremental_reload_jitter_seconds: state.incremental_reload_jitter_seconds,
+            public_feed_jitter_seconds: state.public_feed_jitter_seconds,
+        };
+
+        Ok(JobExecutionOutcome::new(
+            Some(format!(
+                "Discovery sync evaluated {} local subjects; next incremental reload window at {}",
+                library_context.subjects.len(),
+                next_incremental.to_rfc3339()
+            )),
+            serde_json::to_string(&summary).ok(),
+        ))
+    }
+
+    async fn discovery_scheduler_seed(&self) -> AppResult<String> {
+        if let Some(existing) = self
+            .read_setting_string_value(SCHEDULER_INSTANCE_ID_KEY, None)
+            .await?
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(existing);
+        }
+
+        let seed = uuid::Uuid::new_v4().to_string();
+        let value_json = serde_json::to_string(&seed)
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                SCHEDULER_INSTANCE_ID_KEY,
+                None,
+                value_json,
+                "system",
+                None,
+            )
+            .await?;
+        Ok(seed)
     }
 
     async fn finish_job_run(
@@ -1153,5 +1326,49 @@ mod tests {
         assert_eq!(movie, 1_234);
         assert_eq!(series - movie, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
         assert_eq!(anime - series, BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS);
+    }
+
+    #[test]
+    fn discovery_sync_job_metadata_matches_dynamic_evaluator_contract() {
+        assert_eq!(JobKey::DiscoverySync.as_str(), "discovery_sync");
+        assert_eq!(JobKey::parse("discovery_sync"), Some(JobKey::DiscoverySync));
+        assert_eq!(
+            JobKey::DiscoverySync.schedule_kind(),
+            JobScheduleKind::StartupAndInterval
+        );
+        assert_eq!(
+            JobKey::DiscoverySync.schedule_description(),
+            "Dynamic discovery evaluator with daily backstop"
+        );
+        assert_eq!(JobKey::DiscoverySync.interval_seconds(), Some(24 * 3600));
+        assert_eq!(JobKey::DiscoverySync.initial_delay_seconds(), Some(30 * 60));
+        assert!(ALL_JOB_KEYS.contains(&JobKey::DiscoverySync));
+    }
+
+    #[test]
+    fn discovery_incremental_bucket_uses_next_jitter_slot_after_offset_passes() {
+        let jitter = 2 * 60 * 60;
+        let before_jitter = chrono::DateTime::from_timestamp(60 * 60, 0).expect("valid time");
+        let after_jitter = chrono::DateTime::from_timestamp(3 * 60 * 60, 0).expect("valid time");
+
+        assert_eq!(
+            next_hash_jittered_bucket(before_jitter, jitter).timestamp(),
+            jitter
+        );
+        assert_eq!(
+            next_hash_jittered_bucket(after_jitter, jitter).timestamp(),
+            DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS + jitter
+        );
+    }
+
+    #[test]
+    fn discovery_jitter_is_stable_and_stream_specific() {
+        let first = discovery_jitter_seconds("instance-a", "incremental_reload", 4 * 60 * 60);
+        let second = discovery_jitter_seconds("instance-a", "incremental_reload", 4 * 60 * 60);
+        let different_stream = discovery_jitter_seconds("instance-a", "public_feed", 4 * 60 * 60);
+
+        assert_eq!(first, second);
+        assert_ne!(first, different_stream);
+        assert!((0..4 * 60 * 60).contains(&first));
     }
 }

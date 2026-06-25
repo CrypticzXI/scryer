@@ -37,6 +37,38 @@ export type GeneralSettings = {
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };
 
+export type UiDateTimeFormat = "locale" | "iso24h";
+
+export type UiTableColumnSetting = {
+  facet: string;
+  tableViewMode: string;
+  columnId: string;
+  columnOrder: number;
+  visible: boolean;
+};
+
+export type UiSettings = {
+  theme: "light" | "dark" | "pride" | "system";
+  dateTimeFormat: UiDateTimeFormat;
+  highlightColor: string | null;
+  secondaryColor: string | null;
+  highContrastMode: boolean;
+  reduceMotion: boolean;
+  density: "compact" | "comfortable";
+  sidebarMode: "expanded" | "collapsed";
+  defaultLandingView:
+    | "movies"
+    | "series"
+    | "anime"
+    | "activity"
+    | "calendar"
+    | "wanted"
+    | "history"
+    | "settings"
+    | "system";
+  tableColumns: UiTableColumnSetting[];
+};
+
 export type TrustedCertificateEntry = {
   fingerprintSha256: string;
   pem: string;

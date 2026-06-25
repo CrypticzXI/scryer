@@ -2,6 +2,7 @@ import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import {
   persistOverviewScrollValue,
   readOverviewSavedScroll,
@@ -11,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowDown,
   ArrowUp,
+  ChevronsUpDown,
   Eye,
   EyeOff,
   Loader2,
@@ -149,6 +151,7 @@ export function TitleTable({
   "use no memo";
   const location = useLocation();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const showLibraryColumn = visibleColumns.library;
@@ -159,7 +162,7 @@ export function TitleTable({
   const showAddedColumn = visibleColumns.added;
   const showActionsColumn = visibleColumns.actions;
   const columnCount =
-    3 +
+    2 +
     (showLibraryColumn ? 1 : 0) +
     (showMonitoredColumn ? 1 : 0) +
     (showQualityColumn ? 1 : 0) +
@@ -179,8 +182,7 @@ export function TitleTable({
       : false;
   const titleTableMinWidthRem =
     3 +
-    4.25 +
-    18 +
+    22.25 +
     (showLibraryColumn ? 7.25 : 0) +
     (showMonitoredColumn ? 5.25 : 0) +
     (showQualityColumn ? 8 : 0) +
@@ -191,7 +193,6 @@ export function TitleTable({
   const titleTableColGroup = (
     <colgroup>
       <col style={{ width: "3rem" }} />
-      <col style={{ width: "4.25rem" }} />
       <col />
       {showLibraryColumn ? <col style={{ width: "7.25rem" }} /> : null}
       {showMonitoredColumn ? <col style={{ width: "5.25rem" }} /> : null}
@@ -202,6 +203,17 @@ export function TitleTable({
       {showActionsColumn ? <col style={{ width: "11rem" }} /> : null}
     </colgroup>
   );
+  const visibleColumnSignature = [
+    showLibraryColumn && "library",
+    showMonitoredColumn && "monitored",
+    showQualityColumn && "quality",
+    showEpisodesColumn && "episodes",
+    showSizeColumn && "size",
+    showAddedColumn && "added",
+    showActionsColumn && "actions",
+  ]
+    .filter(Boolean)
+    .join(":");
 
   const [expandedInteractiveRows, setExpandedInteractiveRows] = React.useState(
     new Set<string>(),
@@ -216,9 +228,13 @@ export function TitleTable({
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
   const sortedTitles = titles;
+  const scrollStorageKeySuffix = selectedPaneMode
+    ? "poster-table-selected"
+    : "poster-table";
   const initialScrollOffset = React.useMemo(
-    () => readOverviewSavedScroll(location.pathname, "poster-table") ?? 0,
-    [location.pathname],
+    () =>
+      readOverviewSavedScroll(location.pathname, scrollStorageKeySuffix) ?? 0,
+    [location.pathname, scrollStorageKeySuffix],
   );
 
   const titleVirtualizer = useVirtualizer({
@@ -232,6 +248,9 @@ export function TitleTable({
   const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
     itemCount: sortedTitles.length,
     loading: titleLoading,
+    rebuildKey: `${
+      selectedPaneMode ? "selected-pane" : "full-table"
+    }:${visibleColumnSignature}`,
     scrollRef: titleTableScrollRef,
     titleVirtualizer,
   });
@@ -244,7 +263,7 @@ export function TitleTable({
   useOverviewElementScrollRestoration({
     enabled: true,
     ready: !titleLoading && titles.length > 0,
-    storageKeySuffix: "poster-table",
+    storageKeySuffix: scrollStorageKeySuffix,
     scrollRef: titleTableScrollRef,
     getMaxScrollTop: getTitleTableMaxScrollTop,
     restoreScrollTop: restoreTitleTableScroll,
@@ -327,7 +346,7 @@ export function TitleTable({
     (item: OverviewTitleTarget) => {
       persistOverviewScrollValue(
         location.pathname,
-        "poster-table",
+        scrollStorageKeySuffix,
         titleVirtualizer.scrollOffset ?? titleTableScrollRef.current?.scrollTop,
       );
       onOpenOverview(overviewTargetView, item);
@@ -336,6 +355,7 @@ export function TitleTable({
       location.pathname,
       onOpenOverview,
       overviewTargetView,
+      scrollStorageKeySuffix,
       titleVirtualizer.scrollOffset,
     ],
   );
@@ -345,7 +365,7 @@ export function TitleTable({
       if (onSelectTitle) {
         persistOverviewScrollValue(
           location.pathname,
-          "poster-table",
+          scrollStorageKeySuffix,
           titleVirtualizer.scrollOffset ??
             titleTableScrollRef.current?.scrollTop,
         );
@@ -358,6 +378,7 @@ export function TitleTable({
       handleOpenOverview,
       location.pathname,
       onSelectTitle,
+      scrollStorageKeySuffix,
       titleVirtualizer.scrollOffset,
     ],
   );
@@ -407,7 +428,9 @@ export function TitleTable({
   const renderSortIcon = React.useCallback(
     (key: TitleTableSortKey) => {
       if (sortKey !== key) {
-        return null;
+        return (
+          <ChevronsUpDown className="h-3.5 w-3.5 text-[var(--scry-muted3)]" />
+        );
       }
       return sortDirection === "asc" ? (
         <ArrowUp className="h-3.5 w-3.5" />
@@ -540,7 +563,8 @@ export function TitleTable({
     const selectedContextPanelControlsId = isSelected
       ? contextPanelControlsId
       : undefined;
-    const addedLabel = formatTitleDate(item.createdAt) ?? t("label.unknown");
+    const addedLabel =
+      formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
     return (
       <React.Fragment key={item.id}>
@@ -582,35 +606,6 @@ export function TitleTable({
               />
             )}
           </TableCell>
-          <TableCell className="align-middle">
-            <button
-              type="button"
-              onClick={() => handleActivateTitle(item)}
-              data-ui="poster-link"
-              className="inline-block text-left"
-              aria-label={t("media.posterAlt", { name: item.name })}
-              aria-current={isSelected ? "true" : undefined}
-              aria-controls={selectedContextPanelControlsId}
-              tabIndex={onSelectTitle ? -1 : undefined}
-            >
-              <div
-                data-ui="poster-thumb"
-                className="h-14 w-10 overflow-hidden rounded-[6px] border border-border bg-muted"
-              >
-                <TitlePosterSlot
-                  src={posterThumbUrl}
-                  sourceSrc={item.posterSourceUrl}
-                  metadataFetchedAt={item.metadataFetchedAt}
-                  createdAt={item.createdAt}
-                  alt={t("media.posterAlt", { name: item.name })}
-                  className="h-full w-full object-cover"
-                  placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
-                  emptyLabel={t("label.noArt")}
-                  loading="lazy"
-                />
-              </div>
-            </button>
-          </TableCell>
           <TableCell className="align-middle overflow-hidden">
             <button
               id={titleOverviewOpenButtonId(item.id)}
@@ -620,9 +615,25 @@ export function TitleTable({
               aria-current={isSelected ? "true" : undefined}
               aria-controls={selectedContextPanelControlsId}
               tabIndex={onSelectTitle ? -1 : undefined}
-              className="block w-full overflow-hidden text-left text-[14px] font-semibold leading-5 hover:text-foreground hover:underline"
+              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left text-[14px] font-semibold leading-5 hover:text-foreground hover:underline"
             >
-              <span className="block truncate">{item.name}</span>
+              <span
+                data-ui="poster-thumb"
+                className="h-14 w-10 shrink-0 overflow-hidden rounded-[6px] border border-border bg-muted"
+              >
+                <TitlePosterSlot
+                  src={posterThumbUrl}
+                  sourceSrc={item.posterSourceUrl}
+                  metadataFetchedAt={item.metadataFetchedAt}
+                  createdAt={item.createdAt}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                  emptyLabel={t("label.noArt")}
+                  loading="lazy"
+                />
+              </span>
+              <span className="block min-w-0 truncate">{item.name}</span>
             </button>
           </TableCell>
           {showLibraryColumn ? (
@@ -839,7 +850,6 @@ export function TitleTable({
             />
           )}
         </TableHead>
-        <TableHead className="w-14" />
         {renderSortableHeader("name", t("label.name"))}
         {showLibraryColumn
           ? renderSortableHeader(

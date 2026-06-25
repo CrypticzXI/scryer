@@ -1865,6 +1865,30 @@ impl UiTheme {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDateTimeFormat {
+    #[default]
+    Locale,
+    Iso24h,
+}
+
+impl UiDateTimeFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Locale => "locale",
+            Self::Iso24h => "iso24h",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "locale" => Some(Self::Locale),
+            "iso24h" => Some(Self::Iso24h),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UiDensity {
     Compact,
     #[default]
@@ -2019,6 +2043,7 @@ pub struct UiTableColumnSetting {
 pub struct UiSettings {
     pub user_id: String,
     pub theme: UiTheme,
+    pub date_time_format: UiDateTimeFormat,
     pub highlight_color: Option<String>,
     pub secondary_color: Option<String>,
     pub high_contrast_mode: bool,
@@ -2034,6 +2059,7 @@ pub struct UiSettings {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UiSettingsUpdate {
     pub theme: UiTheme,
+    pub date_time_format: UiDateTimeFormat,
     pub highlight_color: Option<String>,
     pub secondary_color: Option<String>,
     pub high_contrast_mode: bool,
@@ -2049,6 +2075,7 @@ impl UiSettings {
         Self {
             user_id: user_id.into(),
             theme: UiTheme::default(),
+            date_time_format: UiDateTimeFormat::default(),
             highlight_color: None,
             secondary_color: None,
             high_contrast_mode: false,

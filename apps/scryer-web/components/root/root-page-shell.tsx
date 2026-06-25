@@ -31,6 +31,7 @@ import { useConfigStepUp } from "@/lib/hooks/use-config-step-up";
 
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { RootHeader } from "@/components/root/root-header";
 import { buildRouteCommands } from "@/components/root/route-commands";
 import { JobRunProvider } from "@/components/root/job-run-provider";
@@ -67,6 +68,8 @@ import type {
   WantedSection,
 } from "@/components/root/types";
 import type { Facet } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate } from "@/lib/utils/date-format";
 import {
   URL_PARAM_CONTENT_SECTION_DEPRECATED,
   URL_PARAM_LANGUAGE,
@@ -273,17 +276,15 @@ function defaultAccessibleRoute(
   };
 }
 
-function formatSmgUpgradeDeadline(value: string | null): string | null {
+function formatSmgUpgradeDeadline(
+  value: string | null,
+  dateTimeFormat: UiDateTimeFormat,
+): string | null {
   if (!value) {
     return null;
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleDateString();
+  return formatUiDate(value, dateTimeFormat, { fallback: value });
 }
 
 function SmgUpgradeBanner({
@@ -293,10 +294,11 @@ function SmgUpgradeBanner({
   notice: SmgVersionCompatibilityNotice;
   t: TranslateFn;
 }) {
+  const dateTimeFormat = useUiDateTimeFormat();
   const status = normalizeSmgVersionCompatibilityStatus(notice.status);
   const isDeprecated = status === "deprecated";
   const Icon = isDeprecated ? AlertTriangle : AlertOctagon;
-  const deadline = formatSmgUpgradeDeadline(notice.upgradeDeadline);
+  const deadline = formatSmgUpgradeDeadline(notice.upgradeDeadline, dateTimeFormat);
   const minimumVersion = notice.minimumVersion.trim();
   const serverMessage = notice.message.trim();
   const details = [

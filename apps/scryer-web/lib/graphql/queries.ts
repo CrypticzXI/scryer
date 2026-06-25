@@ -1934,6 +1934,27 @@ export const generalSettingsQuery = `query GeneralSettings {
   }
 }`;
 
+export const myUiSettingsQuery = `query MyUiSettings {
+  myUiSettings {
+    theme
+    dateTimeFormat
+    highlightColor
+    secondaryColor
+    highContrastMode
+    reduceMotion
+    density
+    sidebarMode
+    defaultLandingView
+    tableColumns {
+      facet
+      tableViewMode
+      columnId
+      columnOrder
+      visible
+    }
+  }
+}`;
+
 export const securitySettingsQuery = `query SecuritySettings {
   securitySettings {
     formLoginEnabled

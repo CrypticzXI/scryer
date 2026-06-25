@@ -40,8 +40,11 @@ import type {
   ImportType,
 } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { humanizeEnumValue } from "@/lib/utils/formatting";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 
 export type ImportHistoryViewProps = {
   records: ImportRecord[];
@@ -105,16 +108,12 @@ const importTypeLabels: Record<ImportType, string> = {
   rename_stale_plan: "Rename Stale Plan",
 };
 
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return "\u2014";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "short",
-      timeStyle: "short",
-    }).format(new Date(ts));
-  } catch {
-    return ts;
-  }
+function formatTimestamp(ts: string | null, dateTimeFormat: UiDateTimeFormat): string {
+  return formatUiDateTime(ts, dateTimeFormat, {
+    fallback: "\u2014",
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 
 function formatImportType(record: Pick<ImportRecord, "facet" | "importType">): string {
@@ -290,6 +289,7 @@ export function ImportHistoryView({
   compact = false,
 }: ImportHistoryViewProps) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMobile = useIsMobile();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [expandedRecordIds, setExpandedRecordIds] = useState<Record<string, true>>({});
@@ -434,9 +434,9 @@ export function ImportHistoryView({
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                     <span>{formatImportType(record)}</span>
-                    <span>{formatTimestamp(record.createdAt)}</span>
+                    <span>{formatTimestamp(record.createdAt, dateTimeFormat)}</span>
                     {record.finishedAt && record.finishedAt !== record.createdAt ? (
-                      <span>{formatTimestamp(record.finishedAt)}</span>
+                      <span>{formatTimestamp(record.finishedAt, dateTimeFormat)}</span>
                     ) : null}
                   </div>
                   {record.decision ? (
@@ -574,11 +574,11 @@ export function ImportHistoryView({
 
                         <TableCell className="align-middle">
                           <p className="text-xs text-muted-foreground">
-                            {formatTimestamp(record.createdAt)}
+                            {formatTimestamp(record.createdAt, dateTimeFormat)}
                           </p>
                           {record.finishedAt && record.finishedAt !== record.createdAt ? (
                             <p className="text-xs text-muted-foreground/60" title="Finished">
-                              {formatTimestamp(record.finishedAt)}
+                              {formatTimestamp(record.finishedAt, dateTimeFormat)}
                             </p>
                           ) : null}
                         </TableCell>

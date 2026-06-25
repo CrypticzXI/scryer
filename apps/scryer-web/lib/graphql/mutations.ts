@@ -683,6 +683,27 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   }
 }`;
 
+export const setMyUiSettingsMutation = `mutation SetMyUiSettings($input: SetMyUiSettingsInput!) {
+  setMyUiSettings(input: $input) {
+    theme
+    dateTimeFormat
+    highlightColor
+    secondaryColor
+    highContrastMode
+    reduceMotion
+    density
+    sidebarMode
+    defaultLandingView
+    tableColumns {
+      facet
+      tableViewMode
+      columnId
+      columnOrder
+      visible
+    }
+  }
+}`;
+
 export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
   clearTitleImageCache {
     accepted

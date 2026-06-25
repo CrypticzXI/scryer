@@ -2,6 +2,7 @@ mod acquisition;
 mod authorization;
 mod catalog;
 mod contracts;
+mod discovery;
 mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
@@ -94,9 +95,13 @@ pub(crate) use rules::user_rule_input;
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
-    EpisodeImageUrlUpdate, MediaRequestResolution, MediaRequestResolutionResult,
-    MediaRequestSubmissionResult, MediaRequestUpdateResult, SubtitleSyncClient, SubtitleSyncJob,
-    TitleArtworkUrlUpdate, TitleDeletePreviewInfo, UserUiSettingsRepository,
+    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryFacetRecord, DiscoveryItemRecord,
+    DiscoveryPendingContextChangeRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, EpisodeImageUrlUpdate, MediaRequestResolution,
+    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
+    SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate, TitleDeletePreviewInfo,
+    UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
 pub use events::retention::user_facing_domain_event_types;
@@ -298,11 +303,18 @@ pub use jobs::definitions::{
 pub use library::user_delete::{DeletePreview, DeleteTitlesPreview};
 pub use library_scan::{
     AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkArtworkUrlResult, BulkMetadataResult,
-    EpisodeArtworkUrls, EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,
-    LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner, MetadataGateway,
-    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
-    RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls,
-    source_signature_from_std_metadata,
+    DiscoveryCollectionCompletionInput, DiscoveryCollectionCompletionResult,
+    DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput, DiscoveryContextChangesInput,
+    DiscoveryContextChangesResult, DiscoveryContextSnapshotAckResult,
+    DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
+    DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
+    DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryExternalIdInput, DiscoveryFacet,
+    DiscoveryPublicFeedInput, DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue,
+    DiscoverySubjectInput, DiscoveryTitle, EpisodeArtworkUrls, EpisodeMetadata,
+    LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch, LibraryFileBatchReceiver,
+    LibraryScanSummary, LibraryScanner, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
+    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
+    SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls, source_signature_from_std_metadata,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,
@@ -445,9 +457,9 @@ pub use types::{
     TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
     TitleQualitySummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
     TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
-    TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDefaultLandingView, UiDensity,
-    UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting,
-    UiTableViewMode, UiTheme, UpdateRecycleBinSettings, UserAuthFactorStatus,
+    TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDateTimeFormat,
+    UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode,
+    UiTableColumnSetting, UiTableViewMode, UiTheme, UpdateRecycleBinSettings, UserAuthFactorStatus,
     WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
     WantedSearchTransition, WantedStatus, WantedStatusCount, WebauthnChallengeRecord,
     WebauthnChallengeStart, WebauthnChallengeType, WebauthnCredentialRecord,

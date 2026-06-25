@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
-    UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
-    UserExternalAccountRepository, UserRepository, UserUiSettingsRepository,
+    AppError, AppResult, UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings,
+    UiSettingsFacet, UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode,
+    UiTheme, UserExternalAccountRepository, UserRepository, UserUiSettingsRepository,
 };
 use scryer_domain::{
     AppPermissionMask, ExternalAccountProvider, ExternalAccountStatus, LibraryGrant, User,
@@ -422,7 +422,7 @@ async fn load_ui_settings_by_user_id(
 ) -> AppResult<Option<UiSettings>> {
     let row = SqlRuntime::fetch_optional(
         datastore.read_exec(),
-        "SELECT user_id, theme, highlight_color, secondary_color, high_contrast_mode,
+        "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
                 reduce_motion, density, sidebar_mode, default_landing_view, created_at, updated_at
            FROM user_ui_settings
           WHERE user_id = {}",
@@ -443,7 +443,7 @@ async fn load_ui_settings_by_user_id_tx(
 ) -> AppResult<Option<UiSettings>> {
     let row = SqlRuntime::fetch_optional(
         SqlExec::Tx(tx),
-        "SELECT user_id, theme, highlight_color, secondary_color, high_contrast_mode,
+        "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
                 reduce_motion, density, sidebar_mode, default_landing_view, created_at, updated_at
            FROM user_ui_settings
           WHERE user_id = {}",
@@ -466,12 +466,13 @@ async fn upsert_ui_settings_tx(
     let now = Utc::now();
     tx.execute(
         "INSERT INTO user_ui_settings (
-             user_id, theme, highlight_color, secondary_color, high_contrast_mode, reduce_motion,
+             user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode, reduce_motion,
              density, sidebar_mode, default_landing_view, created_at, updated_at
          )
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
          ON CONFLICT(user_id) DO UPDATE SET
              theme = excluded.theme,
+             date_time_format = excluded.date_time_format,
              highlight_color = excluded.highlight_color,
              secondary_color = excluded.secondary_color,
              high_contrast_mode = excluded.high_contrast_mode,
@@ -483,6 +484,7 @@ async fn upsert_ui_settings_tx(
         &[
             SqlArg::Text(user_id.to_string()),
             SqlArg::Text(settings.theme.as_str().to_string()),
+            SqlArg::Text(settings.date_time_format.as_str().to_string()),
             SqlArg::OptText(settings.highlight_color.clone()),
             SqlArg::OptText(settings.secondary_color.clone()),
             SqlArg::Bool(settings.high_contrast_mode),
@@ -538,6 +540,7 @@ fn row_to_ui_settings(row: &SqlRow) -> AppResult<UiSettings> {
     Ok(UiSettings {
         user_id: row.text("user_id")?,
         theme: parse_ui_theme(row.text("theme")?)?,
+        date_time_format: parse_ui_date_time_format(row.text("date_time_format")?)?,
         highlight_color: row.opt_text("highlight_color")?,
         secondary_color: row.opt_text("secondary_color")?,
         high_contrast_mode: row.bool("high_contrast_mode")?,
@@ -596,6 +599,11 @@ fn row_to_ui_table_column(row: &SqlRow) -> AppResult<UiTableColumnSetting> {
 fn parse_ui_theme(value: String) -> AppResult<UiTheme> {
     UiTheme::parse(&value)
         .ok_or_else(|| AppError::Repository(format!("invalid UI theme {value:?}")))
+}
+
+fn parse_ui_date_time_format(value: String) -> AppResult<UiDateTimeFormat> {
+    UiDateTimeFormat::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI date time format {value:?}")))
 }
 
 fn parse_ui_density(value: String) -> AppResult<UiDensity> {
@@ -759,6 +767,7 @@ mod tests {
             "CREATE TABLE user_ui_settings (
                 user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 theme TEXT NOT NULL DEFAULT 'dark',
+                date_time_format TEXT NOT NULL DEFAULT 'locale',
                 highlight_color TEXT,
                 secondary_color TEXT,
                 high_contrast_mode INTEGER NOT NULL DEFAULT 0,
@@ -876,6 +885,7 @@ mod tests {
             &user.id,
             UiSettingsUpdate {
                 theme: UiTheme::Pride,
+                date_time_format: UiDateTimeFormat::Iso24h,
                 highlight_color: Some("#ff3366".to_string()),
                 secondary_color: Some("#2277aa".to_string()),
                 high_contrast_mode: true,
@@ -905,6 +915,7 @@ mod tests {
         .expect("upsert UI settings");
         assert_eq!(stored.user_id, user.id);
         assert_eq!(stored.theme, UiTheme::Pride);
+        assert_eq!(stored.date_time_format, UiDateTimeFormat::Iso24h);
         assert_eq!(stored.table_columns.len(), 2);
         assert_eq!(stored.table_columns[0].column_id, "name");
         assert_eq!(stored.table_columns[1].column_id, "episodes");
@@ -914,6 +925,7 @@ mod tests {
             &user.id,
             UiSettingsUpdate {
                 theme: UiTheme::System,
+                date_time_format: UiDateTimeFormat::Locale,
                 highlight_color: None,
                 secondary_color: None,
                 high_contrast_mode: false,
@@ -933,6 +945,7 @@ mod tests {
         .await
         .expect("replace UI settings");
         assert_eq!(replaced.theme, UiTheme::System);
+        assert_eq!(replaced.date_time_format, UiDateTimeFormat::Locale);
         assert_eq!(replaced.table_columns.len(), 1);
         assert_eq!(replaced.table_columns[0].facet, UiSettingsFacet::Anime);
         assert_eq!(replaced.table_columns[0].column_id, "status");

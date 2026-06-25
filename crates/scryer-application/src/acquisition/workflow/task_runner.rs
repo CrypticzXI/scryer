@@ -1895,6 +1895,14 @@ pub async fn start_background_acquisition_poller(
     rss_sync_interval.tick().await;
     pending_release_interval.tick().await;
 
+    {
+        let app = app.clone();
+        let token = token.child_token();
+        tokio::spawn(async move {
+            run_discovery_sync_worker(app, token).await;
+        });
+    }
+
     let wake = app.runtime.acquisition.acquisition_wake.clone();
 
     /// Run a scheduled task inside a spawned task to isolate panics.
@@ -2076,6 +2084,58 @@ pub async fn start_background_acquisition_poller(
     }
 }
 
+async fn run_discovery_sync_worker(
+    app: AppUseCase,
+    token: tokio_util::sync::CancellationToken,
+) {
+    let initial_delay_seconds = JobKey::DiscoverySync
+        .initial_delay_seconds()
+        .unwrap_or(30 * 60)
+        .max(1);
+    app.set_job_next_run_at(
+        JobKey::DiscoverySync,
+        Utc::now() + chrono::Duration::seconds(initial_delay_seconds),
+    )
+    .await;
+    let mut delay = std::time::Duration::from_secs(initial_delay_seconds as u64);
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => return,
+            _ = tokio::time::sleep(delay) => {}
+        }
+
+        let started = std::time::Instant::now();
+        if let Err(error) = app
+            .run_scheduled_job_now(JobKey::DiscoverySync, JobTriggerSource::ScheduledInterval)
+            .await
+        {
+            warn!(error = %error, "periodic discovery sync failed");
+            metrics::counter!("scryer_task_errors_total", "task" => "discovery_sync").increment(1);
+        }
+        metrics::counter!("scryer_task_runs_total", "task" => "discovery_sync").increment(1);
+        metrics::histogram!("scryer_task_duration_seconds", "task" => "discovery_sync")
+            .record(started.elapsed().as_secs_f64());
+
+        delay = app
+            .runtime
+            .jobs
+            .job_run_tracker
+            .next_run_at(JobKey::DiscoverySync)
+            .await
+            .map(discovery_sync_delay_until)
+            .unwrap_or_else(|| std::time::Duration::from_secs(24 * 60 * 60));
+    }
+}
+
+fn discovery_sync_delay_until(next_run_at: DateTime<Utc>) -> std::time::Duration {
+    (next_run_at - Utc::now())
+        .to_std()
+        .ok()
+        .filter(|delay| *delay >= std::time::Duration::from_secs(60))
+        .unwrap_or_else(|| std::time::Duration::from_secs(60))
+}
+
 #[cfg(test)]
 mod task_runner_tests {
     use super::*;
@@ -2146,6 +2206,15 @@ mod task_runner_tests {
         assert_eq!(JobKey::PluginRegistryRefresh.interval_seconds(), Some(24 * 60 * 60));
         assert_eq!(JobKey::HealthChecks.interval_seconds(), Some(6 * 60 * 60));
         assert_eq!(JobKey::StagedNzbPrune.interval_seconds(), Some(60 * 60));
+    }
+
+    #[test]
+    fn discovery_sync_delay_until_clamps_stale_times() {
+        let stale = Utc::now() - chrono::Duration::minutes(5);
+        assert_eq!(
+            discovery_sync_delay_until(stale),
+            std::time::Duration::from_secs(60)
+        );
     }
 
     fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> WantedItem {

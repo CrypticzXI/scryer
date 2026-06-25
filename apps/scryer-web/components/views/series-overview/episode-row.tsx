@@ -19,6 +19,7 @@ import {
 import { TableCell, TableRow } from "@/components/ui/table";
 import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
@@ -223,9 +224,10 @@ export const EpisodeRow = React.memo(function EpisodeRow({
     }
   }, [initiallyOpen]);
 
+  const dateTimeFormat = useUiDateTimeFormat();
   const formattedAirDate = React.useMemo(
-    () => formatDate(episode.airDate),
-    [episode.airDate],
+    () => formatDate(episode.airDate, dateTimeFormat),
+    [dateTimeFormat, episode.airDate],
   );
   const episodeRuntime = React.useMemo(
     () => formatRuntimeFromSeconds(episode.durationSeconds),

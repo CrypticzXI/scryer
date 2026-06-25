@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/table";
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { HistoryEventIcon } from "./history-event-icon";
@@ -28,17 +30,6 @@ import {
   getTitleHistoryEventLabel,
   getTitleHistoryEventMeta,
 } from "./title-history-event-meta";
-
-function formatTimestamp(ts: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(ts));
-  } catch {
-    return ts;
-  }
-}
 
 function formatFacetLabel(facet: string | null): string {
   if (!facet) {
@@ -99,6 +90,7 @@ export function HistoryEventTable({
   onRetry?: (importId: string, password?: string) => Promise<void>;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [expandedRows, setExpandedRows] = React.useState<Record<string, boolean>>({});
   const [passwordDrafts, setPasswordDrafts] = React.useState<Record<string, string>>({});
   const [retryingId, setRetryingId] = React.useState<string | null>(null);
@@ -265,7 +257,7 @@ export function HistoryEventTable({
                     {event.quality ?? "\u2014"}
                   </TableCell>
                   <TableCell className="align-top text-sm text-muted-foreground">
-                    {formatTimestamp(event.occurredAt ?? event.createdAt)}
+                    {formatUiDateTime(event.occurredAt ?? event.createdAt, dateTimeFormat)}
                   </TableCell>
                   {showActions ? (
                     <TableCell className="align-top">

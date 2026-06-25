@@ -13,9 +13,12 @@ import {
 } from "@/components/ui/table";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { auditLogQuery } from "@/lib/graphql/queries";
 import { CODE_FONT } from "@/lib/fonts";
 import type { AuditLogEvent } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
 const PAGE_SIZE = 100;
 
@@ -44,16 +47,8 @@ function normalizeAuditEvent(value: unknown): AuditLogEvent | null {
   };
 }
 
-function formatTimestamp(value: string): string {
-  if (!value) return "";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
+function formatTimestamp(value: string, dateTimeFormat: UiDateTimeFormat): string {
+  return formatUiDateTime(value, dateTimeFormat);
 }
 
 function formatLabel(value: string): string {
@@ -76,6 +71,7 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [events, setEvents] = React.useState<AuditLogEvent[]>([]);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [loading, setLoading] = React.useState(false);
@@ -211,7 +207,7 @@ export const SystemAuditContainer = React.memo(function SystemAuditContainer() {
                       </button>
                     </TableCell>
                     <TableCell className="align-top text-sm text-muted-foreground">
-                      {formatTimestamp(event.occurredAt)}
+                      {formatTimestamp(event.occurredAt, dateTimeFormat)}
                     </TableCell>
                     <TableCell className="align-top">
                       <div className="text-sm font-medium text-foreground">

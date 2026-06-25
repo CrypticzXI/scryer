@@ -5,7 +5,10 @@ import { ExternalSubtitleSection } from "@/components/common/external-subtitle-s
 import { MediaInfoBadges, type MediaInfoFile } from "@/components/common/media-info-badges";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate } from "@/lib/utils/date-format";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
@@ -64,6 +67,7 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
   makePrimaryFileIdPrefix = "media-file-make-primary",
 }: MediaFilesOnDiskPanelProps<TFile>) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [subtitleSearchTarget, setSubtitleSearchTarget] = React.useState<{
     mediaFileId: string;
     filePath: string;
@@ -106,7 +110,7 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
             const isAdditionalFile = role === "additional";
             const isPrimaryFile = role === "primary";
             const isPromotingFile = primaryFileUpdatingId === file.id;
-            const fileDate = formatMediaFileDate(file.createdAt);
+            const fileDate = formatMediaFileDate(file.createdAt, dateTimeFormat);
 
             return (
               <div
@@ -284,24 +288,15 @@ function mediaFileRoleSortRank(role: string | null | undefined) {
   return 2;
 }
 
-function formatMediaFileDate(iso: string | null | undefined) {
+function formatMediaFileDate(
+  iso: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+) {
   if (!iso) {
     return null;
   }
 
-  try {
-    const locale =
-      typeof document !== "undefined"
-        ? document.documentElement.lang || undefined
-        : undefined;
-    return new Date(iso).toLocaleDateString(locale, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+  return formatUiDate(iso, dateTimeFormat, { fallback: iso });
 }
 
 function formatMediaFileSize(sizeBytes: number | null | undefined) {

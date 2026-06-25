@@ -1,0 +1,20 @@
+query DiscoveryContextSnapshotStatus($requestId: String!) {
+  discoveryContextSnapshotStatus(requestId: $requestId) {
+    request_id
+    status
+    phase
+    subject_count
+    item_count
+    page_count
+    facet_count
+    lazy_hydration_queued_count
+    lazy_hydration_sources
+    discovery_index_watermark
+    retry_after_seconds
+    created_at
+    started_at
+    completed_at
+    expires_at
+    last_error
+  }
+}

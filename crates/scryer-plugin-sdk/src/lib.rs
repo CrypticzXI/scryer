@@ -34,7 +34,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "3.1.0";
+pub const SDK_VERSION: &str = "3.2.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -980,6 +980,8 @@ pub enum ConfigFieldType {
     Bool,
     Select,
     Number,
+    Path,
+    Tag,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1633,6 +1635,14 @@ pub struct PluginDownloadTitle {
     pub title_id: Option<String>,
     pub title_name: String,
     pub media_facet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -2366,7 +2376,7 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.1.0, <4.0.0");
+        assert_eq!(current_sdk_constraint(), ">=3.2.0, <4.0.0");
     }
 
     #[test]
@@ -2661,6 +2671,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2717,6 +2731,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2759,6 +2777,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2796,6 +2818,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),

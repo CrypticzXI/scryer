@@ -2,6 +2,7 @@ import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLocation } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import {
   persistOverviewScrollValue,
   readOverviewSavedScroll,
@@ -11,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowDown,
   ArrowUp,
+  ChevronsUpDown,
   Eye,
   EyeOff,
   Loader2,
@@ -149,6 +151,7 @@ export function CompactTitleTable({
   "use no memo";
   const location = useLocation();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
   const selectedPaneMode =
@@ -200,6 +203,19 @@ export function CompactTitleTable({
       {showActionsColumn ? <col style={{ width: "10rem" }} /> : null}
     </colgroup>
   );
+  const visibleColumnSignature = selectedPaneMode
+    ? "selected-pane"
+    : [
+        showLibraryColumn && "library",
+        showMonitoredColumn && "monitored",
+        showQualityColumn && "quality",
+        showEpisodesColumn && "episodes",
+        showSizeColumn && "size",
+        showAddedColumn && "added",
+        showActionsColumn && "actions",
+      ]
+        .filter(Boolean)
+        .join(":");
 
   const [expandedInteractiveRows, setExpandedInteractiveRows] = React.useState(
     new Set<string>(),
@@ -234,7 +250,9 @@ export function CompactTitleTable({
   const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
     itemCount: sortedTitles.length,
     loading: titleLoading,
-    rebuildKey: selectedPaneMode ? "selected-pane" : "full-table",
+    rebuildKey: `${
+      selectedPaneMode ? "selected-pane" : "full-table"
+    }:${visibleColumnSignature}`,
     scrollRef: titleTableScrollRef,
     titleVirtualizer,
   });
@@ -414,7 +432,9 @@ export function CompactTitleTable({
   const renderSortIcon = React.useCallback(
     (key: TitleTableSortKey) => {
       if (sortKey !== key) {
-        return null;
+        return (
+          <ChevronsUpDown className="h-3.5 w-3.5 text-[var(--scry-muted3)]" />
+        );
       }
       return sortDirection === "asc" ? (
         <ArrowUp className="h-3.5 w-3.5" />
@@ -553,7 +573,8 @@ export function CompactTitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const isSelected = selectedTitleId === item.id;
-    const addedLabel = formatTitleDate(item.createdAt) ?? t("label.unknown");
+    const addedLabel =
+      formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
     if (selectedPaneMode) {
       const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");

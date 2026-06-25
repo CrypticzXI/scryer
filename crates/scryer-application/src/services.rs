@@ -1119,6 +1119,7 @@ impl<T> RuntimeFeature<T> {
 #[derive(Clone)]
 pub struct AppLibraryServices {
     pub(crate) metadata_gateway: Arc<dyn MetadataGateway>,
+    pub(crate) discovery: Arc<dyn DiscoveryRepository>,
     pub(crate) library_scanner: Arc<dyn LibraryScanner>,
     pub(crate) library_renamer: Arc<dyn LibraryRenamer>,
     pub(crate) media_files: Arc<dyn MediaFileRepository>,
@@ -1339,6 +1340,7 @@ impl AppServices {
             },
             library: AppLibraryServices {
                 metadata_gateway: Arc::new(crate::library_scan::NullMetadataGateway),
+                discovery: Arc::new(null_repositories::NullDiscoveryRepository),
                 library_scanner: Arc::new(crate::library_scan::NullLibraryScanner),
                 library_renamer: Arc::new(crate::library_rename::NullLibraryRenamer),
                 media_files: Arc::new(NullMediaFileRepository),
@@ -1719,6 +1721,11 @@ impl AppServicesBuilder {
         library.metadata_gateway,
         metadata_gateway,
         Arc<dyn MetadataGateway>
+    );
+    app_services_builder_setter!(
+        with_discovery_store,
+        library.discovery,
+        Arc<dyn DiscoveryRepository>
     );
     app_services_builder_required_setter!(
         with_library_scanner,

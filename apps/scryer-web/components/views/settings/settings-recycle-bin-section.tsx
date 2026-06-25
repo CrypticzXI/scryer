@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
@@ -19,6 +20,8 @@ import {
 } from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 import type { LibraryRecord } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
 export type RecycledItem = {
   id: string;
@@ -60,18 +63,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+function formatDate(iso: string, dateTimeFormat: UiDateTimeFormat): string {
+  return formatUiDateTime(iso, dateTimeFormat, { fallback: iso });
 }
 
 const REASON_LABELS: Record<string, { label: string; className: string }> = {
@@ -111,6 +104,7 @@ export function SettingsRecycleBinSection({
   onEmptyAll,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isBusy = settingsSaving || mutatingId !== null;
 
   if (settingsLoading) {
@@ -230,7 +224,7 @@ export function SettingsRecycleBinSection({
                         {formatSize(item.sizeBytes)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                        {formatDate(item.recycledAt)}
+                        {formatDate(item.recycledAt, dateTimeFormat)}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">

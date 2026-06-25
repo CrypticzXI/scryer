@@ -8,9 +8,10 @@ import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
+import { Input, integerInputProps, sanitizeDigits, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   buildWeaverApiKeyUrl,
   buildUrlPreview,
@@ -25,7 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
+import type { ConfigFieldDef, DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
 import {
@@ -40,6 +41,217 @@ type DownloadClientTypeLogoOption = {
   iconSrc?: string;
   icon?: (props: React.ComponentPropsWithoutRef<"svg">) => React.JSX.Element;
 };
+
+const FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS = new Set([
+  "host",
+  "port",
+  "use_ssl",
+  "useSsl",
+  "url_base",
+  "urlBase",
+  "base_url",
+  "baseUrl",
+  "remote_path_mappings",
+  "remotePathMappings",
+  "client_type",
+]);
+
+function defaultConfigValuesForFields(fields: ConfigFieldDef[]) {
+  return Object.fromEntries(
+    fields.map((field) => [
+      field.key,
+      field.defaultValue ?? (field.fieldType === "bool" ? "false" : ""),
+    ]),
+  );
+}
+
+function configFieldValue(
+  draft: DownloadClientDraft,
+  field: ConfigFieldDef,
+  hasStoredSecretValue = false,
+) {
+  return (
+    draft.configValues[field.key] ??
+    (hasStoredSecretValue ? "" : field.defaultValue) ??
+    (field.fieldType === "bool" ? "false" : "")
+  );
+}
+
+function splitConfigTagValue(value: string): string[] {
+  return value
+    .split(/[,\n;]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function joinConfigTagValue(values: string[]): string {
+  return values.join(",");
+}
+
+function DynamicDownloadClientConfigField({
+  field,
+  value,
+  hasStoredSecretValue = false,
+  onChange,
+}: {
+  field: ConfigFieldDef;
+  value: string;
+  hasStoredSecretValue?: boolean;
+  onChange: (key: string, value: string) => void;
+}) {
+  const t = useTranslate();
+  const fieldId = selectorId("settings-download-client-field", field.key);
+  const help = field.helpText ? (
+    <InfoHelp text={field.helpText} ariaLabel={`About ${field.label}`} />
+  ) : null;
+  const requiredMarker = field.required ? (
+    <span aria-hidden="true" className="text-destructive">
+      *
+    </span>
+  ) : null;
+
+  if (field.fieldType === "bool") {
+    return (
+      <label className="flex items-center gap-2">
+        <Checkbox
+          id={fieldId}
+          checked={value === "true"}
+          onCheckedChange={(checked) => onChange(field.key, checked === true ? "true" : "false")}
+        />
+        <span className="inline-flex items-center gap-2 text-sm">
+          {field.label}
+          {requiredMarker}
+          {help}
+        </span>
+      </label>
+    );
+  }
+
+  if (field.fieldType === "select" && field.options.length > 0) {
+    return (
+      <label>
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
+          {field.label}
+          {requiredMarker}
+          {help}
+        </Label>
+        <Select value={value || field.defaultValue || ""} onValueChange={(next) => onChange(field.key, next)}>
+          <SelectTrigger id={fieldId} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {field.options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+    );
+  }
+
+  if (field.fieldType === "tag" && field.options.length > 0) {
+    const selectedValues = splitConfigTagValue(value);
+    const selected = new Set(selectedValues);
+    const optionValues = new Set(field.options.map((option) => option.value));
+
+    return (
+      <div>
+        <Label className="mb-2 inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+          {help}
+        </Label>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {field.options.map((option) => {
+            const optionId = selectorId(
+              "settings-download-client-field-option",
+              field.key,
+              option.value,
+            );
+            return (
+              <label key={option.value} className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  id={optionId}
+                  checked={selected.has(option.value)}
+                  onCheckedChange={(checked) => {
+                    const next = new Set(selectedValues);
+                    if (checked === true) {
+                      next.add(option.value);
+                    } else {
+                      next.delete(option.value);
+                    }
+                    const orderedOptions = field.options
+                      .map((candidate) => candidate.value)
+                      .filter((candidate) => next.has(candidate));
+                    const customValues = selectedValues.filter(
+                      (candidate) => next.has(candidate) && !optionValues.has(candidate),
+                    );
+                    onChange(
+                      field.key,
+                      joinConfigTagValue([...orderedOptions, ...customValues]),
+                    );
+                  }}
+                />
+                <span>{option.label}</span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (field.fieldType === "multiline") {
+    return (
+      <label>
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
+          {field.label}
+          {requiredMarker}
+          {help}
+        </Label>
+        <Textarea
+          id={fieldId}
+          value={value}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          required={field.required && !hasStoredSecretValue}
+          placeholder={field.defaultValue ?? ""}
+          rows={5}
+        />
+      </label>
+    );
+  }
+
+  return (
+    <label>
+      <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
+        {field.label}
+        {requiredMarker}
+        {help}
+      </Label>
+      <Input
+        id={fieldId}
+        value={value}
+        onChange={(event) => onChange(field.key, event.target.value)}
+        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        type={
+          field.fieldType === "password"
+            ? "password"
+            : field.fieldType === "number"
+              ? "number"
+              : "text"
+        }
+        required={field.required && !hasStoredSecretValue}
+        placeholder={
+          hasStoredSecretValue
+            ? t("form.apiKeyStoredPlaceholder")
+            : field.defaultValue ?? ""
+        }
+      />
+    </label>
+  );
+}
 
 const NzbgetIcon = (props: React.ComponentPropsWithoutRef<"svg">) => (
   <svg
@@ -265,12 +477,23 @@ export function SettingsDownloadClientsSection({
   const selectedDownloadClientLabel =
     selectedDownloadClientTypeOption?.label ??
     (configuredClientLabel || "Download client");
+  const selectedConfigFields = selectedDownloadClientTypeOption?.configFields ?? [];
+  const dynamicConfigFields = selectedConfigFields.filter(
+    (field) => !FIXED_DOWNLOAD_CLIENT_CONFIG_FIELD_KEYS.has(field.key),
+  );
+  const selectedFieldKeys = new Set(selectedConfigFields.map((field) => field.key));
+  const hasDescriptorApiKeyField =
+    selectedFieldKeys.has("api_key") || selectedFieldKeys.has("apiKey");
+  const hasDescriptorCredentialFields =
+    selectedFieldKeys.has("username") || selectedFieldKeys.has("password");
   const hasApiKeyField =
-    normalizedClientType === "sabnzbd" || normalizedClientType === "weaver";
+    !hasDescriptorApiKeyField &&
+    (normalizedClientType === "sabnzbd" || normalizedClientType === "weaver");
   const showCredentialFields =
-    normalizedClientType === "nzbget" ||
-    normalizedClientType === "qbittorrent" ||
-    normalizedClientType === "sabnzbd";
+    !hasDescriptorCredentialFields &&
+    (normalizedClientType === "nzbget" ||
+      normalizedClientType === "qbittorrent" ||
+      normalizedClientType === "sabnzbd");
   const weaverApiKeyUrl =
     normalizedClientType === "weaver" ? buildWeaverApiKeyUrl(downloadClientDraft) : "";
 
@@ -278,6 +501,10 @@ export function SettingsDownloadClientsSection({
     () => Object.fromEntries(settingsDownloadClients.map((c) => [c.id, c])),
     [settingsDownloadClients],
   );
+  const editingDownloadClient = editingDownloadClientId
+    ? clientById[editingDownloadClientId]
+    : null;
+  const storedSecretKeys = new Set(editingDownloadClient?.storedSecretKeys ?? []);
 
   const handleDownloadClientTypeChange = React.useCallback(
     (value: string) => {
@@ -291,6 +518,9 @@ export function SettingsDownloadClientsSection({
         const nextLabel =
           downloadClientTypeOptions.find((option) => option.value === value)?.label ??
           value;
+        const nextFields =
+          downloadClientTypeOptions.find((option) => option.value === value)?.configFields ??
+          [];
         const shouldAutofillName =
           prev.name.trim().length === 0 || prev.name === previousLabel;
         return {
@@ -298,6 +528,7 @@ export function SettingsDownloadClientsSection({
           clientType: value,
           name: shouldAutofillName ? nextLabel : prev.name,
           port: isDefaultPort ? (DEFAULT_PORT_FOR_CLIENT_TYPE[value] ?? "8080") : prev.port,
+          configValues: defaultConfigValuesForFields(nextFields),
         };
       });
     },
@@ -740,6 +971,34 @@ export function SettingsDownloadClientsSection({
                   ) : null}
                 </>
               ) : null}
+              {dynamicConfigFields.map((field) => {
+                const hasStoredSecretValue = storedSecretKeys.has(field.key);
+                return (
+                  <div
+                    key={field.key}
+                    className={field.fieldType === "multiline" ? "md:col-span-3" : undefined}
+                  >
+                    <DynamicDownloadClientConfigField
+                      field={field}
+                      value={configFieldValue(
+                        downloadClientDraft,
+                        field,
+                        hasStoredSecretValue,
+                      )}
+                      hasStoredSecretValue={hasStoredSecretValue}
+                      onChange={(key, value) =>
+                        setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                          ...prev,
+                          configValues: {
+                            ...prev.configValues,
+                            [key]: value,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                );
+              })}
               {normalizedClientType === "sabnzbd" || normalizedClientType === "qbittorrent" ? (
                 <p className="md:col-span-3 text-xs text-muted-foreground">
                   {t("settings.downloadClientDecypharrFilesystemHelp")}

@@ -5,8 +5,10 @@ import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +47,7 @@ import type {
   WantedSearchPhase,
   WantedStatus,
 } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 type CutoffUnmetViewState = {
@@ -456,13 +459,8 @@ function decisionBadge(code: string, t: Translate) {
   );
 }
 
-function formatDate(iso: string | null) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+function formatDate(iso: string | null, dateTimeFormat: UiDateTimeFormat) {
+  return formatUiDateTime(iso, dateTimeFormat, { fallback: "—" });
 }
 
 function formatBytes(bytes: number | null) {
@@ -605,6 +603,7 @@ function WantedItemsCard({
   ) => void;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMobile = useIsMobile();
   const {
     items,
@@ -787,7 +786,9 @@ function WantedItemsCard({
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
                       <span className="block">{t("wanted.colNextSearch")}</span>
-                      <span className="text-foreground">{formatDate(item.nextSearchAt)}</span>
+                      <span className="text-foreground">
+                        {formatDate(item.nextSearchAt, dateTimeFormat)}
+                      </span>
                     </div>
                     <div>
                       <span className="block">{t("wanted.colLatestDecision")}</span>
@@ -868,7 +869,7 @@ function WantedItemsCard({
                                 </div>
                                 <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
                                   <span>{formatBytes(d.releaseSizeBytes)}</span>
-                                  <span>{formatDate(d.createdAt)}</span>
+                                  <span>{formatDate(d.createdAt, dateTimeFormat)}</span>
                                 </div>
                                 {hasScoringBreakdown ? (
                                   <div className="mt-3 border-t border-border pt-3">
@@ -969,7 +970,10 @@ function WantedItemsCard({
                           <div className="space-y-1">
                             {decisionBadge(item.latestReleaseDecision.decisionCode, t)}
                             <div className="text-muted-foreground">
-                              {formatDate(item.latestReleaseDecision.createdAt)}
+                              {formatDate(
+                                item.latestReleaseDecision.createdAt,
+                                dateTimeFormat,
+                              )}
                             </div>
                           </div>
                         ) : (
@@ -977,7 +981,7 @@ function WantedItemsCard({
                         )}
                       </TableCell>
                       <TableCell className="text-xs">
-                        {formatDate(item.nextSearchAt)}
+                        {formatDate(item.nextSearchAt, dateTimeFormat)}
                       </TableCell>
                       <TableCell>{item.currentScore ?? "—"}</TableCell>
                       <TableCell>{item.searchCount}</TableCell>
@@ -1099,7 +1103,7 @@ function WantedItemsCard({
                                           {formatBytes(d.releaseSizeBytes)}
                                         </TableCell>
                                         <TableCell className="text-xs">
-                                          {formatDate(d.createdAt)}
+                                          {formatDate(d.createdAt, dateTimeFormat)}
                                         </TableCell>
                                       </TableRow>
                                       {scoringExpanded ? (
@@ -1207,6 +1211,7 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
 
 function PendingReleasesCard({ state }: { state: PendingViewState }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMobile = useIsMobile();
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const {
@@ -1288,12 +1293,17 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                     <div>
                       <span className="block">{t("pending.colDelayUntil")}</span>
-                      <span className="text-foreground" title={formatDate(item.delayUntil)}>
+                      <span
+                        className="text-foreground"
+                        title={formatDate(item.delayUntil, dateTimeFormat)}
+                      >
                         {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </div>
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{formatDate(item.addedAt)}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {formatDate(item.addedAt, dateTimeFormat)}
+                  </p>
                   <div className="mt-3 flex gap-2">
                     <Button size="sm" variant="secondary" className="flex-1" onClick={() => void forceGrab(item.id)}>
                       <Download className="h-4 w-4" />
@@ -1333,9 +1343,11 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                       {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
                     </TableCell>
                     <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
-                    <TableCell className="text-xs">{formatDate(item.addedAt)}</TableCell>
                     <TableCell className="text-xs">
-                      <span title={formatDate(item.delayUntil)}>
+                      {formatDate(item.addedAt, dateTimeFormat)}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <span title={formatDate(item.delayUntil, dateTimeFormat)}>
                         {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </TableCell>

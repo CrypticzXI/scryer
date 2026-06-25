@@ -9,10 +9,14 @@ use aws_lc_rs::digest;
 use reqwest::Client;
 use scryer_application::{
     AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkArtworkUrlResult,
-    BulkMetadataResult, EpisodeArtworkUrls, EpisodeMetadata, MetadataGateway, MetadataSearchItem,
-    MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
-    SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice,
-    TitleArtworkUrls,
+    BulkMetadataResult, DiscoveryCollectionCompletionInput, DiscoveryCollectionCompletionResult,
+    DiscoveryContextChangesInput, DiscoveryContextChangesResult, DiscoveryContextSnapshotAckResult,
+    DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
+    DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
+    DiscoveryDashboardResult, DiscoveryPublicFeedInput, EpisodeArtworkUrls, EpisodeMetadata,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
+    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
+    SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -92,6 +96,13 @@ const OP_SEARCH_TVDB_RICH: &str = "SearchTvdbRich";
 const OP_SEARCH_TVDB_MULTI: &str = "SearchTvdbMulti";
 const OP_GET_MOVIE: &str = "GetMovie";
 const OP_GET_SERIES: &str = "GetSeries";
+const OP_DISCOVER_PUBLIC_FEED: &str = "DiscoverPublicFeed";
+const OP_COLLECTION_COMPLETIONS: &str = "CollectionCompletions";
+const OP_SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT: &str = "SubmitDiscoveryContextSnapshot";
+const OP_DISCOVERY_CONTEXT_SNAPSHOT_STATUS: &str = "DiscoveryContextSnapshotStatus";
+const OP_DISCOVERY_CONTEXT_SNAPSHOT_PAGE: &str = "DiscoveryContextSnapshotPage";
+const OP_DISCOVERY_CONTEXT_CHANGES: &str = "DiscoveryContextChanges";
+const OP_ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT: &str = "AcknowledgeDiscoveryContextSnapshot";
 
 /// Configuration for SMG enrollment and application-layer instance auth.
 pub struct SmgEnrollmentConfig {
@@ -448,6 +459,13 @@ pub struct MetadataGatewayClient {
     search_multi_hash: String,
     movie_hash: String,
     series_hash: String,
+    discover_public_feed_hash: String,
+    collection_completions_hash: String,
+    submit_discovery_context_snapshot_hash: String,
+    discovery_context_snapshot_status_hash: String,
+    discovery_context_snapshot_page_hash: String,
+    discovery_context_changes_hash: String,
+    acknowledge_discovery_context_snapshot_hash: String,
     apq_cache: RwLock<ApqCache>,
 }
 
@@ -477,6 +495,18 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let discover_public_feed_hash = apq_hash(graphql_docs::DISCOVER_PUBLIC_FEED_QUERY);
+        let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
+        let submit_discovery_context_snapshot_hash =
+            apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
+        let discovery_context_snapshot_status_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_STATUS_QUERY);
+        let discovery_context_snapshot_page_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY);
+        let discovery_context_changes_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_CHANGES_QUERY);
+        let acknowledge_discovery_context_snapshot_hash =
+            apq_hash(graphql_docs::ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
 
         // Derive registration URL from GraphQL endpoint
         let registration_url = if endpoint.ends_with("/graphql") {
@@ -496,6 +526,13 @@ impl MetadataGatewayClient {
             %search_multi_hash,
             %movie_hash,
             %series_hash,
+            %discover_public_feed_hash,
+            %collection_completions_hash,
+            %submit_discovery_context_snapshot_hash,
+            %discovery_context_snapshot_status_hash,
+            %discovery_context_snapshot_page_hash,
+            %discovery_context_changes_hash,
+            %acknowledge_discovery_context_snapshot_hash,
             "metadata gateway client initialized (APQ enabled)"
         );
 
@@ -518,6 +555,13 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            discover_public_feed_hash,
+            collection_completions_hash,
+            submit_discovery_context_snapshot_hash,
+            discovery_context_snapshot_status_hash,
+            discovery_context_snapshot_page_hash,
+            discovery_context_changes_hash,
+            acknowledge_discovery_context_snapshot_hash,
             apq_cache: RwLock::new(ApqCache::new()),
         }
     }
@@ -537,6 +581,18 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let discover_public_feed_hash = apq_hash(graphql_docs::DISCOVER_PUBLIC_FEED_QUERY);
+        let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
+        let submit_discovery_context_snapshot_hash =
+            apq_hash(graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
+        let discovery_context_snapshot_status_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_STATUS_QUERY);
+        let discovery_context_snapshot_page_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY);
+        let discovery_context_changes_hash =
+            apq_hash(graphql_docs::DISCOVERY_CONTEXT_CHANGES_QUERY);
+        let acknowledge_discovery_context_snapshot_hash =
+            apq_hash(graphql_docs::ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT_QUERY);
         let registration_url = if endpoint.ends_with("/graphql") {
             format!(
                 "{}/api/register",
@@ -564,6 +620,13 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
+            discover_public_feed_hash,
+            collection_completions_hash,
+            submit_discovery_context_snapshot_hash,
+            discovery_context_snapshot_status_hash,
+            discovery_context_snapshot_page_hash,
+            discovery_context_changes_hash,
+            acknowledge_discovery_context_snapshot_hash,
             apq_cache: RwLock::new(ApqCache::new()),
         }
     }
@@ -1157,6 +1220,24 @@ impl MetadataGatewayClient {
         });
 
         self.execute_graphql(payload).await
+    }
+
+    async fn execute_graphql_apq_post<T: serde::de::DeserializeOwned>(
+        &self,
+        operation_name: &'static str,
+        query: &str,
+        hash: &str,
+        variables: serde_json::Value,
+    ) -> AppResult<T> {
+        let extensions = json!({
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": hash
+            }
+        });
+
+        self.execute_graphql_apq_register(operation_name, query, &extensions, &variables)
+            .await
     }
 
     async fn execute_graphql<T: serde::de::DeserializeOwned>(
@@ -1992,7 +2073,8 @@ fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language:
 mod tests {
     use super::{
         ArtworkItem, InstanceAuth, MetadataGatewayClient, MetadataSearchQuery, MtlsState,
-        OP_SEARCH_TVDB, SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
+        OP_DISCOVER_PUBLIC_FEED, OP_DISCOVERY_CONTEXT_CHANGES, OP_SEARCH_TVDB,
+        SearchTvdbBatchResult, SearchTvdbResponse, SmgEnrollmentConfig,
         apply_instance_auth_headers_with_nonce, apq_cache_key, apq_hash,
         build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
         canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
@@ -2003,6 +2085,11 @@ mod tests {
         validate_search_tvdb_batch_echo,
     };
     use base64::Engine as _;
+    use scryer_application::{
+        DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput,
+        DiscoveryContextChangesInput, DiscoveryPublicFeedInput, DiscoverySubjectInput,
+        MetadataGateway,
+    };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
@@ -2160,6 +2247,101 @@ mod tests {
             .expect("APQ registration should succeed");
 
         assert!(data.search_tvdb.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_public_feed_uses_apq_get_operation_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_DISCOVER_PUBLIC_FEED))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "discoverPublicFeed": {
+                        "subject_keys": [],
+                        "generated_at": "2026-06-25T00:00:00Z",
+                        "sections": []
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let data = client
+            .discover_public_feed(&DiscoveryPublicFeedInput {
+                region: "US".to_string(),
+                language: "eng".to_string(),
+                section_types: Vec::new(),
+                limit_per_section: 25,
+                include_unresolved: false,
+            })
+            .await
+            .expect("discovery feed should succeed through APQ GET");
+
+        assert!(data.sections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_context_changes_uses_post_apq_and_serializes_change_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(
+                "\"operationName\":\"DiscoveryContextChanges\"",
+            ))
+            .and(body_string_contains("\"changeType\":\"ADDED\""))
+            .and(body_string_contains(
+                "\"contextSubjectKeys\":[\"tvdb:series:1\"]",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "discoveryContextChanges": {
+                        "status": "COMPLETE",
+                        "retry_after_seconds": 5,
+                        "generated_at": "2026-06-25T00:00:00Z",
+                        "context_fingerprint": "current",
+                        "previous_context_fingerprint": "previous",
+                        "discovery_index_watermark": "test",
+                        "context_subject_count": 1,
+                        "changed_subject_count": 1,
+                        "resolved_changed_subject_keys": ["tvdb:series:1"],
+                        "removed_subject_keys": [],
+                        "affected_target_keys": [],
+                        "items": []
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let data = client
+            .discovery_context_changes(&DiscoveryContextChangesInput {
+                context_subject_keys: vec!["tvdb:series:1".to_string()],
+                changed_subjects: vec![DiscoveryContextChangedSubjectInput {
+                    subject: DiscoverySubjectInput {
+                        key: Some("tvdb:series:1".to_string()),
+                        ..Default::default()
+                    },
+                    change_type: DiscoveryContextChangeType::Added,
+                    previous_subject: None,
+                }],
+                previous_context_fingerprint: Some("previous".to_string()),
+                region: "US".to_string(),
+                language: "eng".to_string(),
+                max_items: 50,
+                include_owned: true,
+                include_unresolved: false,
+                context_fingerprint: Some("current".to_string()),
+            })
+            .await
+            .expect("incremental discovery reload should succeed through APQ POST");
+
+        assert_eq!(data.status, "COMPLETE");
+        assert_eq!(data.resolved_changed_subject_keys, vec!["tvdb:series:1"]);
     }
 
     #[test]
@@ -2813,6 +2995,50 @@ struct GraphqlResponse<T> {
 #[derive(Deserialize)]
 struct GraphqlError {
     message: String,
+}
+
+// --- Discovery types ---
+
+#[derive(Deserialize)]
+struct DiscoverPublicFeedResponse {
+    #[serde(rename = "discoverPublicFeed")]
+    discover_public_feed: DiscoveryDashboardResult,
+}
+
+#[derive(Deserialize)]
+struct CollectionCompletionsResponse {
+    #[serde(rename = "collectionCompletions")]
+    collection_completions: DiscoveryCollectionCompletionResult,
+}
+
+#[derive(Deserialize)]
+struct SubmitDiscoveryContextSnapshotResponse {
+    #[serde(rename = "submitDiscoveryContextSnapshot")]
+    submit_discovery_context_snapshot: DiscoveryContextSnapshotSubmitResult,
+}
+
+#[derive(Deserialize)]
+struct DiscoveryContextSnapshotStatusResponse {
+    #[serde(rename = "discoveryContextSnapshotStatus")]
+    discovery_context_snapshot_status: DiscoveryContextSnapshotStatusResult,
+}
+
+#[derive(Deserialize)]
+struct DiscoveryContextSnapshotPageResponse {
+    #[serde(rename = "discoveryContextSnapshotPage")]
+    discovery_context_snapshot_page: DiscoveryContextSnapshotPageResult,
+}
+
+#[derive(Deserialize)]
+struct DiscoveryContextChangesResponse {
+    #[serde(rename = "discoveryContextChanges")]
+    discovery_context_changes: DiscoveryContextChangesResult,
+}
+
+#[derive(Deserialize)]
+struct AcknowledgeDiscoveryContextSnapshotResponse {
+    #[serde(rename = "acknowledgeDiscoveryContextSnapshot")]
+    acknowledge_discovery_context_snapshot: DiscoveryContextSnapshotAckResult,
 }
 
 // --- Search types ---
@@ -3648,6 +3874,112 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata complete"
         );
         Ok(BulkMetadataResult { movies, series })
+    }
+
+    async fn discover_public_feed(
+        &self,
+        input: &DiscoveryPublicFeedInput,
+    ) -> AppResult<DiscoveryDashboardResult> {
+        let data: DiscoverPublicFeedResponse = self
+            .execute_graphql_apq(
+                OP_DISCOVER_PUBLIC_FEED,
+                graphql_docs::DISCOVER_PUBLIC_FEED_QUERY,
+                &self.discover_public_feed_hash,
+                json!({ "input": input }),
+            )
+            .await?;
+        Ok(data.discover_public_feed)
+    }
+
+    async fn collection_completions(
+        &self,
+        input: &DiscoveryCollectionCompletionInput,
+    ) -> AppResult<DiscoveryCollectionCompletionResult> {
+        let data: CollectionCompletionsResponse = self
+            .execute_graphql_apq(
+                OP_COLLECTION_COMPLETIONS,
+                graphql_docs::COLLECTION_COMPLETIONS_QUERY,
+                &self.collection_completions_hash,
+                json!({ "input": input }),
+            )
+            .await?;
+        Ok(data.collection_completions)
+    }
+
+    async fn submit_discovery_context_snapshot(
+        &self,
+        input: &DiscoveryContextSnapshotSubmitInput,
+    ) -> AppResult<DiscoveryContextSnapshotSubmitResult> {
+        let data: SubmitDiscoveryContextSnapshotResponse = self
+            .execute_graphql_apq_post(
+                OP_SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT,
+                graphql_docs::SUBMIT_DISCOVERY_CONTEXT_SNAPSHOT_QUERY,
+                &self.submit_discovery_context_snapshot_hash,
+                json!({ "input": input }),
+            )
+            .await?;
+        Ok(data.submit_discovery_context_snapshot)
+    }
+
+    async fn discovery_context_snapshot_status(
+        &self,
+        request_id: &str,
+    ) -> AppResult<DiscoveryContextSnapshotStatusResult> {
+        let data: DiscoveryContextSnapshotStatusResponse = self
+            .execute_graphql_apq(
+                OP_DISCOVERY_CONTEXT_SNAPSHOT_STATUS,
+                graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_STATUS_QUERY,
+                &self.discovery_context_snapshot_status_hash,
+                json!({ "requestId": request_id }),
+            )
+            .await?;
+        Ok(data.discovery_context_snapshot_status)
+    }
+
+    async fn discovery_context_snapshot_page(
+        &self,
+        request_id: &str,
+        page: i32,
+    ) -> AppResult<DiscoveryContextSnapshotPageResult> {
+        let data: DiscoveryContextSnapshotPageResponse = self
+            .execute_graphql_apq(
+                OP_DISCOVERY_CONTEXT_SNAPSHOT_PAGE,
+                graphql_docs::DISCOVERY_CONTEXT_SNAPSHOT_PAGE_QUERY,
+                &self.discovery_context_snapshot_page_hash,
+                json!({ "requestId": request_id, "page": page }),
+            )
+            .await?;
+        Ok(data.discovery_context_snapshot_page)
+    }
+
+    async fn discovery_context_changes(
+        &self,
+        input: &DiscoveryContextChangesInput,
+    ) -> AppResult<DiscoveryContextChangesResult> {
+        let data: DiscoveryContextChangesResponse = self
+            .execute_graphql_apq_post(
+                OP_DISCOVERY_CONTEXT_CHANGES,
+                graphql_docs::DISCOVERY_CONTEXT_CHANGES_QUERY,
+                &self.discovery_context_changes_hash,
+                json!({ "input": input }),
+            )
+            .await?;
+        Ok(data.discovery_context_changes)
+    }
+
+    async fn acknowledge_discovery_context_snapshot(
+        &self,
+        request_id: &str,
+    ) -> AppResult<DiscoveryContextSnapshotAckResult> {
+        let data: AcknowledgeDiscoveryContextSnapshotResponse = self
+            .execute_graphql_apq_post(
+                OP_ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT,
+                graphql_docs::ACKNOWLEDGE_DISCOVERY_CONTEXT_SNAPSHOT_QUERY,
+                &self.acknowledge_discovery_context_snapshot_hash,
+                json!({ "requestId": request_id }),
+            )
+            .await?;
+        Ok(data.acknowledge_discovery_context_snapshot)
     }
 
     async fn get_artwork_urls_bulk(

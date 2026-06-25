@@ -13,6 +13,7 @@ import {
 import { TitleHistoryModal } from "@/components/common/title-history-modal";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
 import type { Release, WantedItem } from "@/lib/types";
 import { useClient } from "urql";
@@ -45,6 +46,8 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate, formatUiDateTime } from "@/lib/utils/date-format";
 import {
   AnidbExternalLink,
   ImdbExternalLink,
@@ -53,29 +56,15 @@ import {
 } from "@/components/common/external-media-links";
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-function formatDate(iso: string) {
-  try {
-    const locale =
-      typeof document !== "undefined"
-        ? document.documentElement.lang || undefined
-        : undefined;
-    return new Date(iso).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
-  } catch {
-    return iso;
-  }
+function formatDate(iso: string, dateTimeFormat: UiDateTimeFormat) {
+  return formatUiDate(iso, dateTimeFormat, { fallback: iso });
 }
 
-function formatDateTime(iso: string | null | undefined) {
-  if (!iso) return "—";
-  try {
-    const locale =
-      typeof document !== "undefined"
-        ? document.documentElement.lang || undefined
-        : undefined;
-    return new Date(iso).toLocaleString(locale);
-  } catch {
-    return iso;
-  }
+function formatDateTime(
+  iso: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+) {
+  return formatUiDateTime(iso, dateTimeFormat, { fallback: "—" });
 }
 
 function formatRuntime(minutes: number | null | undefined) {
@@ -514,6 +503,7 @@ export function MovieOverviewView({
   onOpenFixMatch,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [historyOpen, setHistoryOpen] = React.useState(false);
   if (loading) {
     return (
@@ -719,7 +709,8 @@ export function MovieOverviewView({
                       {wantedPhaseLabel}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {t("wanted.colNextSearch")}: {formatDateTime(wantedItem.nextSearchAt)}
+                      {t("wanted.colNextSearch")}:{" "}
+                      {formatDateTime(wantedItem.nextSearchAt, dateTimeFormat)}
                     </span>
                     {canManageTitle ? (
                       <>
@@ -813,7 +804,9 @@ export function MovieOverviewView({
                     </div>
                   ))}
                 <span className="ml-auto text-xs text-muted-foreground/60">
-                  {t("title.addedAt", { date: formatDate(title.createdAt) })}
+                  {t("title.addedAt", {
+                    date: formatDate(title.createdAt, dateTimeFormat),
+                  })}
                 </span>
               </div>
             </div>
@@ -944,7 +937,9 @@ export function MovieOverviewView({
                             <span className="rounded bg-accent px-1 py-0.5 text-card-foreground">{qualityHint}</span>
                           ) : null}
                           <span className="text-muted-foreground/60">
-                            {t("title.addedAt", { date: formatDate(collection.createdAt) })}
+                            {t("title.addedAt", {
+                              date: formatDate(collection.createdAt, dateTimeFormat),
+                            })}
                           </span>
                         </div>
                       </div>
@@ -996,7 +991,9 @@ export function MovieOverviewView({
                         {entry.sourceTitle || t("episode.untitledRelease")}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-muted-foreground/60">{formatDateTime(entry.attemptedAt)}</span>
+                        <span className="text-muted-foreground/60">
+                          {formatDateTime(entry.attemptedAt, dateTimeFormat)}
+                        </span>
                         {entry.errorMessage ? (
                           <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
                             {entry.errorMessage}

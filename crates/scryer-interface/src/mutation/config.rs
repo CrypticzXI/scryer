@@ -54,6 +54,8 @@ fn provider_config_key_looks_secret(key: &str) -> bool {
     normalized.contains("password")
         || normalized.contains("secret")
         || normalized.contains("token")
+        || normalized == "username"
+        || normalized == "user_name"
         || normalized == "api_key"
         || normalized == "apikey"
         || normalized.contains("api_key")

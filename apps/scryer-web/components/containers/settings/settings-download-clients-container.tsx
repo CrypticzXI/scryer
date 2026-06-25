@@ -57,7 +57,7 @@ type PendingDownloadClientEditorAction =
 function cloneDownloadClientDraft(
   draft: DownloadClientDraft,
 ): DownloadClientDraft {
-  return { ...draft };
+  return { ...draft, configValues: { ...draft.configValues } };
 }
 
 export function SettingsDownloadClientsContainer({
@@ -236,6 +236,13 @@ export function SettingsDownloadClientsContainer({
       (configuredClientLabel || "Download client")
     );
   }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
+  const selectedDownloadClientConfigFields = useMemo(() => {
+    const normalizedClientType = normalizeDownloadClientType(downloadClientDraft.clientType, "");
+    return (
+      availableDownloadClientTypeOptions.find((option) => option.value === normalizedClientType)
+        ?.configFields ?? []
+    );
+  }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
 
   const openCreateEditor = useCallback(() => {
     resetDownloadClientDraft();
@@ -251,7 +258,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       port: downloadClientDraft.port.trim(),
-      config: buildDownloadClientConfigValues(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
       isEnabled: downloadClientDraft.isEnabled,
     };
 
@@ -349,7 +356,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       baseUrl: buildDownloadClientBaseUrl(downloadClientDraft),
-      config: buildDownloadClientConfigValues(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
     };
 
     if (!payload.name || !payload.host) {

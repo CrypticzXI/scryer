@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 
 mod customization;
+mod discovery;
 mod downloads;
 mod indexers;
 mod media;

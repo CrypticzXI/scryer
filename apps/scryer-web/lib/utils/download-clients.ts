@@ -3,6 +3,7 @@ import type {
   DownloadClientDraft,
   DownloadClientRecord,
   DownloadClientTypeOption,
+  ConfigFieldDef,
   ProviderTypeInfo,
 } from "@/lib/types";
 import {
@@ -50,6 +51,8 @@ export function buildDownloadClientTypeOptions(
     options.push({
       value,
       label: providerType.name?.trim() || value,
+      configFields: providerType.configFields,
+      defaultBaseUrl: providerType.defaultBaseUrl,
     });
     seenValues.add(value);
   }
@@ -73,6 +76,56 @@ export function ensureDownloadClientTypeOption(
       label: clientType.trim() || normalized,
     },
   ];
+}
+
+function configFieldByKey(fields: ConfigFieldDef[]) {
+  return new Map(fields.map((field) => [field.key, field]));
+}
+
+function configValueInput(
+  key: string,
+  value: unknown,
+  field: ConfigFieldDef | undefined,
+): ProviderConfigValueInput {
+  const normalizedKey = key.trim().toLowerCase();
+  const isSecretKey =
+    normalizedKey === "api_key" ||
+    normalizedKey === "apikey" ||
+    normalizedKey === "username" ||
+    normalizedKey === "user_name" ||
+    normalizedKey.includes("api_key") ||
+    normalizedKey.includes("password") ||
+    normalizedKey.includes("secret") ||
+    normalizedKey.includes("token");
+
+  if (field?.fieldType === "bool") {
+    return { key, boolValue: String(value).trim().toLowerCase() === "true" };
+  }
+
+  if (field?.fieldType === "number") {
+    const parsed = Number(String(value).trim());
+    if (Number.isNaN(parsed)) {
+      return { key, stringValue: String(value) };
+    }
+    if (Number.isInteger(parsed)) {
+      return { key, intValue: parsed };
+    }
+    return { key, floatValue: parsed };
+  }
+
+  if (typeof value === "boolean") {
+    return { key, boolValue: value };
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return { key, intValue: value };
+  }
+  if (typeof value === "number") {
+    return { key, floatValue: value };
+  }
+  if (isSecretKey) {
+    return { key, secretValue: String(value) };
+  }
+  return { key, stringValue: String(value) };
 }
 
 export function readConfigValueAsString(rawValue: unknown): string {
@@ -224,9 +277,13 @@ export function cleanPayloadObject(payload: Record<string, unknown>) {
   }, {});
 }
 
-export function buildDownloadClientConfigValues(draft: DownloadClientDraft) {
+export function buildDownloadClientConfigValues(
+  draft: DownloadClientDraft,
+  fields: ConfigFieldDef[] = [],
+) {
   const normalizedClientType = normalizeDownloadClientType(draft.clientType);
   const payload: DownloadClientConfigPayloadRecord = {
+    ...draft.configValues,
     host: draft.host.trim(),
     port: draft.port.trim(),
     use_ssl: draft.useSsl,
@@ -241,30 +298,11 @@ export function buildDownloadClientConfigValues(draft: DownloadClientDraft) {
     payload.api_key = draft.apiKey.trim();
   }
 
+  const fieldsByKey = configFieldByKey(fields);
   const cleaned = cleanPayloadObject(payload);
-  return Object.entries(cleaned).map(([key, value]): ProviderConfigValueInput => {
-    const normalizedKey = key.trim().toLowerCase();
-    const isSecretKey =
-      normalizedKey === "api_key" ||
-      normalizedKey === "apikey" ||
-      normalizedKey.includes("api_key") ||
-      normalizedKey.includes("password") ||
-      normalizedKey.includes("secret") ||
-      normalizedKey.includes("token");
-    if (typeof value === "boolean") {
-      return { key, boolValue: value };
-    }
-    if (typeof value === "number" && Number.isInteger(value)) {
-      return { key, intValue: value };
-    }
-    if (typeof value === "number") {
-      return { key, floatValue: value };
-    }
-    if (isSecretKey) {
-      return { key, secretValue: String(value) };
-    }
-    return { key, stringValue: String(value) };
-  });
+  return Object.entries(cleaned).map(([key, value]): ProviderConfigValueInput =>
+    configValueInput(key, value, fieldsByKey.get(key)),
+  );
 }
 
 export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord): DownloadClientDraft {
@@ -289,6 +327,7 @@ export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord)
     username: readConfigStringValue(config, ["username"]),
     password: "",
     remotePathMappings: readConfigStringValue(config, ["remote_path_mappings", "remotePathMappings"]),
+    configValues: config,
     useSsl: readConfigBooleanValue(config, ["use_ssl", "useSsl"], baseUrlParts.useSsl),
   };
 }

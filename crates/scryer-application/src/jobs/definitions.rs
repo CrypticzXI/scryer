@@ -155,6 +155,7 @@ pub enum JobKey {
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
+    DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
 }
@@ -179,6 +180,7 @@ impl JobKey {
             Self::WantedSync => "wanted_sync",
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
+            Self::DiscoverySync => "discovery_sync",
             Self::TitleImageCacheRefresh => "title_image_cache_refresh",
             Self::TitleDeletion => "title_deletion",
         }
@@ -203,6 +205,7 @@ impl JobKey {
             "wanted_sync" => Some(Self::WantedSync),
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
+            "discovery_sync" => Some(Self::DiscoverySync),
             "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
             "title_deletion" => Some(Self::TitleDeletion),
             _ => None,
@@ -228,6 +231,7 @@ impl JobKey {
             Self::WantedSync => "Wanted Sync",
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
+            Self::DiscoverySync => "Discovery Sync",
             Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
             Self::TitleDeletion => "Title Deletion",
         }
@@ -264,6 +268,9 @@ impl JobKey {
                 "Process delayed pending releases whose hold period has expired."
             }
             Self::StagedNzbPrune => "Prune expired staged NZB artifacts.",
+            Self::DiscoverySync => {
+                "Evaluate local discovery freshness and refresh SMG discovery snapshots."
+            }
             Self::TitleImageCacheRefresh => {
                 "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
             }
@@ -284,6 +291,7 @@ impl JobKey {
             Self::PluginRegistryRefresh
             | Self::HealthChecks
             | Self::AutoBackup
+            | Self::DiscoverySync
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion => JobCategory::System,
             Self::Housekeeping
@@ -317,6 +325,7 @@ impl JobKey {
             | Self::WantedSync
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
+            Self::DiscoverySync => JobScheduleKind::StartupAndInterval,
             Self::AutoBackup => JobScheduleKind::DailyAtTime,
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
@@ -342,6 +351,7 @@ impl JobKey {
             Self::WantedSync => "Based on acquisition sync interval",
             Self::PendingReleaseProcessing => "Every minute",
             Self::StagedNzbPrune => "Every hour",
+            Self::DiscoverySync => "Dynamic discovery evaluator with daily backstop",
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
@@ -363,6 +373,7 @@ impl JobKey {
             Self::HealthChecks => Some(6 * 3600),
             Self::PendingReleaseProcessing => Some(60),
             Self::StagedNzbPrune => Some(3600),
+            Self::DiscoverySync => Some(24 * 3600),
             _ => None,
         }
     }
@@ -374,6 +385,7 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshAnime => None,
             Self::SubtitleSearch => Some(120),
             Self::HealthChecks => Some(30),
+            Self::DiscoverySync => Some(30 * 60),
             _ => None,
         }
     }
@@ -395,7 +407,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 17] = [
+pub const ALL_JOB_KEYS: [JobKey; 18] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -412,6 +424,7 @@ pub const ALL_JOB_KEYS: [JobKey; 17] = [
     JobKey::WantedSync,
     JobKey::PendingReleaseProcessing,
     JobKey::StagedNzbPrune,
+    JobKey::DiscoverySync,
     JobKey::TitleImageCacheRefresh,
 ];
 

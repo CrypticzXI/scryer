@@ -1401,6 +1401,7 @@ pub enum JobKeyValue {
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
+    DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
 }
@@ -2156,6 +2157,14 @@ pub enum UiThemeValue {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "lowercase")]
+pub enum UiDateTimeFormatValue {
+    Locale,
+    #[graphql(name = "iso24h")]
+    Iso24h,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
 pub enum UiDensityValue {
     Compact,
     Comfortable,
@@ -2210,6 +2219,7 @@ pub struct UiTableColumnSettingPayload {
 pub struct UiSettingsPayload {
     pub user_id: ID,
     pub theme: UiThemeValue,
+    pub date_time_format: UiDateTimeFormatValue,
     pub highlight_color: Option<String>,
     pub secondary_color: Option<String>,
     pub high_contrast_mode: bool,
@@ -2234,6 +2244,7 @@ pub struct UiTableColumnSettingInput {
 #[derive(InputObject, Clone)]
 pub struct SetMyUiSettingsInput {
     pub theme: UiThemeValue,
+    pub date_time_format: Option<UiDateTimeFormatValue>,
     pub highlight_color: Option<String>,
     pub secondary_color: Option<String>,
     pub high_contrast_mode: bool,
@@ -3795,6 +3806,8 @@ pub enum PluginConfigFieldTypeValue {
     Bool,
     Select,
     Number,
+    Path,
+    Tag,
 }
 
 impl PluginConfigFieldTypeValue {
@@ -3806,6 +3819,8 @@ impl PluginConfigFieldTypeValue {
             ConfigFieldType::Bool => Self::Bool,
             ConfigFieldType::Select => Self::Select,
             ConfigFieldType::Number => Self::Number,
+            ConfigFieldType::Path => Self::Path,
+            ConfigFieldType::Tag => Self::Tag,
         }
     }
 }

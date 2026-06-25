@@ -65,6 +65,8 @@ pub(crate) enum SqlArg {
     I64(i64),
     OptI32(Option<i32>),
     OptI64(Option<i64>),
+    F64(f64),
+    OptF64(Option<f64>),
     Bool(bool),
     OptBool(Option<bool>),
     Timestamp(DateTime<Utc>),
@@ -433,6 +435,8 @@ fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &'q [SqlArg]) -> SqliteQu
             SqlArg::I64(value) => query.bind(*value),
             SqlArg::OptI32(value) => query.bind(value.map(i64::from)),
             SqlArg::OptI64(value) => query.bind(*value),
+            SqlArg::F64(value) => query.bind(*value),
+            SqlArg::OptF64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(if *value { 1_i64 } else { 0_i64 }),
             SqlArg::OptBool(value) => {
                 query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 }))
@@ -456,6 +460,8 @@ fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &'q [SqlArg]) -> Post
             SqlArg::I64(value) => query.bind(*value),
             SqlArg::OptI32(value) => query.bind(*value),
             SqlArg::OptI64(value) => query.bind(*value),
+            SqlArg::F64(value) => query.bind(*value),
+            SqlArg::OptF64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(*value),
             SqlArg::OptBool(value) => query.bind(*value),
             SqlArg::Timestamp(value) => query.bind(*value),

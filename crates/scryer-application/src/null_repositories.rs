@@ -24,7 +24,10 @@ use scryer_domain::BlocklistEntry;
 
 use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    CutoffUnmetQualitySummary, DomainEventRepository, DownloadQueueCommandRecord,
+    CutoffUnmetQualitySummary, DiscoveryFacetRecord, DiscoveryItemRecord,
+    DiscoveryPendingContextChangeRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, DomainEventRepository, DownloadQueueCommandRecord,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionRepository, ExternalIdentityVerifier,
     ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
@@ -49,6 +52,93 @@ use crate::{
     types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
     types::TotpRecoveryCodeRecord,
 };
+
+#[derive(Default)]
+pub struct NullDiscoveryRepository;
+
+#[async_trait]
+impl DiscoveryRepository for NullDiscoveryRepository {
+    async fn get_discovery_sync_state(
+        &self,
+        _scope_key: &str,
+    ) -> AppResult<Option<DiscoverySyncStateRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_discovery_sync_state(
+        &self,
+        _state: &DiscoverySyncStateRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_discovery_sync_run(&self, _id: &str) -> AppResult<Option<DiscoverySyncRunRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_discovery_sync_run(&self, _run: &DiscoverySyncRunRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn insert_discovery_raw_page(&self, _page: &DiscoveryRawPageRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_submitted_subjects(
+        &self,
+        _run_id: &str,
+        _subjects: &[DiscoverySubmittedSubjectRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn upsert_pending_discovery_context_change(
+        &self,
+        _change: &DiscoveryPendingContextChangeRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_pending_discovery_context_changes(
+        &self,
+        _scope_key: &str,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn clear_pending_discovery_context_changes_through_sequence(
+        &self,
+        _scope_key: &str,
+        _last_seen_sequence: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn replace_discovery_sections(
+        &self,
+        _run_id: &str,
+        _sections: &[DiscoverySectionRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_items(
+        &self,
+        _run_id: &str,
+        _items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_facets(
+        &self,
+        _run_id: &str,
+        _facets: &[DiscoveryFacetRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 pub struct NullImportRepository;
@@ -1958,6 +2048,7 @@ impl UserUiSettingsRepository for NullUserUiSettingsRepository {
     async fn upsert(&self, user_id: &str, settings: UiSettingsUpdate) -> AppResult<UiSettings> {
         let mut current = UiSettings::defaults_for_user(user_id.to_string());
         current.theme = settings.theme;
+        current.date_time_format = settings.date_time_format;
         current.highlight_color = settings.highlight_color;
         current.secondary_color = settings.secondary_color;
         current.high_contrast_mode = settings.high_contrast_mode;

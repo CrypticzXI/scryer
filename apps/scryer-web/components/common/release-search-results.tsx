@@ -298,7 +298,11 @@ function SearchResultRow({
                 variant="outline"
                 onClick={handleQueueAdditionalClick}
                 disabled={additionalQueueDisabled}
-                className="w-full"
+                className={cn(
+                  "w-full border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
+                  additionalQueueRequested &&
+                    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-200 dark:hover:text-emerald-100",
+                )}
               >
                 {additionalQueueRequested ? (
                   <span className="inline-flex items-center gap-1.5">
@@ -439,7 +443,11 @@ function SearchResultRow({
                 variant="outline"
                 onClick={handleQueueAdditionalClick}
                 disabled={additionalQueueDisabled}
-                className="h-9"
+                className={cn(
+                  "h-9 border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
+                  additionalQueueRequested &&
+                    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-200 dark:hover:text-emerald-100",
+                )}
               >
                 {additionalQueueRequested ? (
                   <span className="inline-flex items-center gap-1.5">

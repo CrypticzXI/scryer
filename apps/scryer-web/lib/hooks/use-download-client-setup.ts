@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Client } from "urql";
 
 import {
@@ -64,6 +64,14 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
     dcTypeOptions,
     dcDraft.clientType,
   );
+  const selectedDcConfigFields = useMemo(
+    () =>
+      dcTypeOptions.find(
+        (option) =>
+          option.value === normalizeDownloadClientType(dcDraft.clientType),
+      )?.configFields ?? [],
+    [dcDraft.clientType, dcTypeOptions],
+  );
 
   const handleDcDraftChange = useCallback(
     (updates: Partial<DownloadClientDraft>) => {
@@ -103,7 +111,10 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
         .mutation(testDownloadClientConnectionMutation, {
           input: {
             clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
+            config: buildDownloadClientConfigValues(
+              dcDraft,
+              selectedDcConfigFields,
+            ),
           },
         })
         .toPromise();
@@ -118,7 +129,7 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
     } finally {
       setDcTesting(false);
     }
-  }, [client, dcDraft]);
+  }, [client, dcDraft, selectedDcConfigFields]);
 
   // ── Download client save ────────────────────────────────────────────
   const saveDownloadClient = useCallback(async () => {
@@ -130,7 +141,10 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
           input: {
             name: dcDraft.name.trim(),
             clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
+            config: buildDownloadClientConfigValues(
+              dcDraft,
+              selectedDcConfigFields,
+            ),
             isEnabled: true,
           },
         })
@@ -142,7 +156,7 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
     } finally {
       setDcSaving(false);
     }
-  }, [client, dcDraft]);
+  }, [client, dcDraft, selectedDcConfigFields]);
 
   const handleDcTestAndSave = useCallback(async () => {
     setDcTesting(true);
@@ -153,7 +167,10 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
         .mutation(testDownloadClientConnectionMutation, {
           input: {
             clientType: dcDraft.clientType,
-            config: buildDownloadClientConfigValues(dcDraft),
+            config: buildDownloadClientConfigValues(
+              dcDraft,
+              selectedDcConfigFields,
+            ),
           },
         })
         .toPromise();
@@ -170,7 +187,7 @@ export function useDownloadClientSetup({ client }: UseDownloadClientSetupArgs) {
       setDcTestResult("failed");
       setDcTesting(false);
     }
-  }, [client, dcDraft, saveDownloadClient]);
+  }, [client, dcDraft, saveDownloadClient, selectedDcConfigFields]);
 
   return {
     dcDraft,

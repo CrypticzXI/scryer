@@ -12,7 +12,9 @@ import {
 } from "@/components/ui/tooltip";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
+import { formatUiDate } from "@/lib/utils/date-format";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
@@ -462,6 +464,7 @@ export function defaultSortDirectionForTitleKey(
 
 export function formatTitleDate(
   value: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
 ): string | null {
   if (!value) {
     return null;
@@ -472,11 +475,7 @@ export function formatTitleDate(
     return null;
   }
 
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(parsed);
+  return formatUiDate(value, dateTimeFormat);
 }
 
 export function StatusBadge({

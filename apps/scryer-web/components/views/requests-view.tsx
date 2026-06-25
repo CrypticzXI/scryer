@@ -19,7 +19,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { LibraryRecord, MediaRequestRecord } from "@/lib/types";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import {
   mediaRequestApproveId,
   mediaRequestCancelId,
@@ -252,6 +254,7 @@ export function RequestsView({
   onCancelRequest,
 }: RequestsViewProps) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const showModeSwitch = canShowAdminMode && canShowRequesterMode;
   const [approvalRequest, setApprovalRequest] =
     React.useState<MediaRequestRecord | null>(null);
@@ -556,7 +559,10 @@ export function RequestsView({
                         {monitorTypeLabel(t, request.requestedMonitorType)}
                       </span>
                     ) : null}
-                    <span>{t("requests.updated")}: {new Date(request.updatedAt).toLocaleString()}</span>
+                    <span>
+                      {t("requests.updated")}:{" "}
+                      {formatUiDateTime(request.updatedAt, dateTimeFormat)}
+                    </span>
                   </div>
                 </div>
               </div>

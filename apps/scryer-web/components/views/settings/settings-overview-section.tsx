@@ -16,13 +16,21 @@ import {
   mergeTrustedCertificateEntries,
   readTrustedCertificateEntriesFromFiles,
 } from "@/lib/utils/certificates";
-import type { GeneralSettings, TrustedCertificateEntry } from "@/lib/types/settings";
+import type {
+  GeneralSettings,
+  TrustedCertificateEntry,
+  UiDateTimeFormat,
+} from "@/lib/types/settings";
 
 type SettingsOverviewSectionProps = {
   availableLanguages: LanguageOption[];
   selectedLanguage: LanguageOption | null;
   uiLanguage: LocaleCode;
   onSelectLanguage: (code: string) => void;
+  dateTimeFormat: UiDateTimeFormat;
+  dateTimeFormatLoading: boolean;
+  dateTimeFormatSaving: boolean;
+  onDateTimeFormatChange: (format: UiDateTimeFormat) => void;
   generalSettings: GeneralSettings;
   onGeneralSettingsChange: (settings: GeneralSettings) => void;
   generalLoading: boolean;
@@ -34,6 +42,10 @@ export function SettingsOverviewSection({
   availableLanguages,
   uiLanguage,
   onSelectLanguage,
+  dateTimeFormat,
+  dateTimeFormatLoading,
+  dateTimeFormatSaving,
+  onDateTimeFormatChange,
   generalSettings,
   onGeneralSettingsChange,
   generalLoading,
@@ -143,6 +155,33 @@ export function SettingsOverviewSection({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {t("settings.dateTimeFormatLabel")}
+        </label>
+        <Select
+          value={dateTimeFormat}
+          disabled={dateTimeFormatLoading || dateTimeFormatSaving}
+          onValueChange={(value) =>
+            onDateTimeFormatChange(value as UiDateTimeFormat)}
+        >
+          <SelectTrigger className="w-64">
+            <SelectValue placeholder={t("settings.dateTimeFormatLabel")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="locale">
+              {t("settings.dateTimeFormatLocale")}
+            </SelectItem>
+            <SelectItem value="iso24h">
+              {t("settings.dateTimeFormatIso24h")}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {t("settings.dateTimeFormatHelp")}
+        </p>
       </div>
 
       <div className="space-y-4 border-t border-border pt-6">
