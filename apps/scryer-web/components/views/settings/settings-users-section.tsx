@@ -150,6 +150,7 @@ export function SettingsUsersSection({
                   value={newUsername}
                   onChange={(event) => setNewUsername(event.target.value)}
                   placeholder={t("form.usernamePlaceholder")}
+                  autoComplete="off"
                   required
                 />
               </div>
@@ -163,6 +164,7 @@ export function SettingsUsersSection({
                   onChange={(event) => setNewPassword(event.target.value)}
                   placeholder={t("form.passwordPlaceholder")}
                   type="password"
+                  autoComplete="new-password"
                   required
                 />
               </div>
@@ -285,6 +287,7 @@ export function SettingsUsersSection({
                             onChange={(event) => updateUserPasswordDraft(user.id, event.target.value)}
                             placeholder={t("form.newPasswordPlaceholder")}
                             type="password"
+                            autoComplete="new-password"
                             aria-label={t("settings.newPassword")}
                             disabled={isOwnUser}
                           />
