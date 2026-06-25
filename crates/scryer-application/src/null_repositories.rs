@@ -84,6 +84,13 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(())
     }
 
+    async fn commit_discovery_context_snapshot(
+        &self,
+        _commit: &DiscoveryContextSnapshotCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn replace_discovery_submitted_subjects(
         &self,
         _run_id: &str,

@@ -36,6 +36,7 @@ import {
 } from "@/components/common/external-media-links";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -108,7 +109,6 @@ import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
 import {
   TitleTableActionButton,
-  TitleEpisodeProgressBar,
   DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   TITLE_TABLE_COLUMN_KEYS,
   bytesToReadable,
@@ -143,6 +143,12 @@ import type { ContentViewMode } from "./media-content/content-view-mode";
 import { localizedTitleStatus } from "./overview-localization";
 
 type Facet = "movie" | "series" | "anime";
+
+const SeriesOverviewContainer = React.lazy(() =>
+  import("@/components/containers/series-overview-container").then((m) => ({
+    default: m.SeriesOverviewContainer,
+  })),
+);
 
 function titleTableColumnLabel(
   key: TitleTableColumnKey,

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppResult, DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryPendingContextChangeRecord,
-    DiscoveryRawPageRecord, DiscoveryRepository, DiscoverySectionRecord,
+    AppResult, DiscoveryContextSnapshotCommit, DiscoveryFacetRecord, DiscoveryItemRecord,
+    DiscoveryPendingContextChangeRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    DiscoverySectionRecord,
     DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
 };
 use serde_json::Value as JsonValue;
@@ -195,6 +196,46 @@ impl DiscoveryRepository for DiscoveryStore {
         )
         .await?;
         Ok(())
+    }
+
+    async fn commit_discovery_context_snapshot(
+        &self,
+        commit: &DiscoveryContextSnapshotCommit,
+    ) -> AppResult<()> {
+        let datastore = self.datastore.clone();
+        let commit = commit.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "commit_discovery_context_snapshot",
+            move |tx| {
+                let datastore = datastore.clone();
+                let commit = commit.clone();
+                Box::pin(async move {
+                    upsert_sync_state_tx(tx, &commit.state).await?;
+                    upsert_sync_run_tx(tx, &datastore, &commit.run).await?;
+                    delete_for_run_tx(tx, "discovery_raw_pages", &commit.run.id).await?;
+                    delete_for_run_tx(tx, "discovery_submitted_subjects", &commit.run.id).await?;
+                    delete_for_run_tx(tx, "discovery_items", &commit.run.id).await?;
+                    delete_for_run_tx(tx, "discovery_facets", &commit.run.id).await?;
+
+                    for page in &commit.raw_pages {
+                        insert_raw_page_tx(tx, page).await?;
+                    }
+                    for subject in &commit.submitted_subjects {
+                        insert_submitted_subject_tx(tx, &datastore, subject).await?;
+                    }
+                    for item in &commit.items {
+                        insert_item_tx(tx, &datastore, item).await?;
+                    }
+                    for facet in &commit.facets {
+                        insert_facet_tx(tx, &datastore, facet).await?;
+                    }
+
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     async fn replace_discovery_submitted_subjects(

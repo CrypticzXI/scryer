@@ -126,6 +126,16 @@ pub struct DiscoverySyncRunRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryContextSnapshotCommit {
+    pub state: DiscoverySyncStateRecord,
+    pub run: DiscoverySyncRunRecord,
+    pub raw_pages: Vec<DiscoveryRawPageRecord>,
+    pub submitted_subjects: Vec<DiscoverySubmittedSubjectRecord>,
+    pub items: Vec<DiscoveryItemRecord>,
+    pub facets: Vec<DiscoveryFacetRecord>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveryRawPageRecord {
     pub run_id: String,
@@ -262,6 +272,10 @@ pub trait DiscoveryRepository: Send + Sync {
     async fn get_discovery_sync_run(&self, id: &str) -> AppResult<Option<DiscoverySyncRunRecord>>;
     async fn upsert_discovery_sync_run(&self, run: &DiscoverySyncRunRecord) -> AppResult<()>;
     async fn insert_discovery_raw_page(&self, page: &DiscoveryRawPageRecord) -> AppResult<()>;
+    async fn commit_discovery_context_snapshot(
+        &self,
+        commit: &DiscoveryContextSnapshotCommit,
+    ) -> AppResult<()>;
     async fn replace_discovery_submitted_subjects(
         &self,
         run_id: &str,
