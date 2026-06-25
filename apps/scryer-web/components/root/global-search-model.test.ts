@@ -14,6 +14,7 @@ import {
   countHiddenMetadataResults,
   countHiddenRouteCommandResults,
   countMetadataResults,
+  filterGlobalSearchRouteCommands,
   GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
   GLOBAL_SEARCH_ALL_METADATA_RESULT_LIMIT,
   GLOBAL_SEARCH_ALL_ROUTE_COMMAND_DESKTOP_LIMIT,
@@ -187,6 +188,38 @@ test("getVisibleRouteCommandResults previews commands in All and shows all comma
   );
 });
 
+test("filterGlobalSearchRouteCommands keeps command shortcuts available before typing", () => {
+  const commands: RouteCommandItem[] = [
+    {
+      id: "settings-profile",
+      label: "Settings / Profile",
+      description: "Profile",
+      groupLabel: "Settings",
+      keywords: ["settings", "profile", "account"],
+      onSelect: () => {},
+    },
+    {
+      id: "wanted-items",
+      label: "Wanted / Wanted Items",
+      description: "Wanted Items",
+      groupLabel: "Automation",
+      keywords: ["wanted", "missing"],
+      onSelect: () => {},
+    },
+  ];
+
+  assert.deepEqual(
+    filterGlobalSearchRouteCommands(commands, "").map((command) => command.id),
+    ["settings-profile", "wanted-items"],
+  );
+  assert.deepEqual(
+    filterGlobalSearchRouteCommands(commands, "profile").map(
+      (command) => command.id,
+    ),
+    ["settings-profile"],
+  );
+});
+
 test("getVisibleMetadataResults previews rails in All and expands type tabs", () => {
   const results = Array.from({ length: 8 }, (_, index) => `result-${index}`);
 
@@ -241,6 +274,10 @@ test("buildGlobalSearchTabs keeps catalog, metadata, and route command counts al
       ["anime", 0],
       ["actions", 2],
     ],
+  );
+  assert.equal(
+    tabs.find((tab) => tab.key === "actions")?.label,
+    "search.actionsAndSettings",
   );
 });
 

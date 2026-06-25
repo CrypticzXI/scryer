@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useClient } from "urql";
 import { myUiSettingsQuery } from "@/lib/graphql/queries";
+import { AUTH_SESSION_CHANGED_EVENT } from "@/lib/hooks/use-auth";
 import type { UiSettings } from "@/lib/types/settings";
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
@@ -19,6 +20,8 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
 type UiSettingsContextValue = {
   uiSettings: UiSettings;
   uiSettingsLoading: boolean;
+  uiSettingsLoaded: boolean;
+  uiSettingsLoadError: string | null;
   setUiSettings: (settings: UiSettings) => void;
   refreshUiSettings: () => Promise<void>;
 };
@@ -33,6 +36,10 @@ function normalizeUiSettings(settings: Partial<UiSettings> | null | undefined): 
   };
 }
 
+function uiSettingsErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to load UI settings";
+}
+
 export function uiSettingsInputFromSettings(settings: UiSettings): UiSettings {
   return {
     ...settings,
@@ -44,58 +51,79 @@ export function UiSettingsProvider({ children }: { children: React.ReactNode }) 
   const client = useClient();
   const [uiSettings, setUiSettings] = React.useState<UiSettings>(DEFAULT_UI_SETTINGS);
   const [uiSettingsLoading, setUiSettingsLoading] = React.useState(true);
+  const [uiSettingsLoaded, setUiSettingsLoaded] = React.useState(false);
+  const [uiSettingsLoadError, setUiSettingsLoadError] = React.useState<string | null>(null);
+  const requestSequenceRef = React.useRef(0);
 
-  const refreshUiSettings = React.useCallback(async () => {
+  const loadUiSettings = React.useCallback(async (options?: { resetToFallback?: boolean }) => {
+    const requestId = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestId;
+
+    if (options?.resetToFallback) {
+      setUiSettings(DEFAULT_UI_SETTINGS);
+    }
     setUiSettingsLoading(true);
+    setUiSettingsLoaded(false);
+    setUiSettingsLoadError(null);
     try {
       const { data, error } = await client
         .query<{ myUiSettings: UiSettings }>(myUiSettingsQuery, {})
         .toPromise();
       if (error) throw error;
+      if (requestSequenceRef.current !== requestId) return;
       setUiSettings(normalizeUiSettings(data?.myUiSettings));
-    } catch {
+      setUiSettingsLoaded(true);
+    } catch (error) {
+      if (requestSequenceRef.current !== requestId) return;
       setUiSettings(DEFAULT_UI_SETTINGS);
+      setUiSettingsLoaded(false);
+      setUiSettingsLoadError(uiSettingsErrorMessage(error));
     } finally {
-      setUiSettingsLoading(false);
+      if (requestSequenceRef.current === requestId) {
+        setUiSettingsLoading(false);
+      }
     }
   }, [client]);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    setUiSettingsLoading(true);
-    (async () => {
-      try {
-        const { data, error } = await client
-          .query<{ myUiSettings: UiSettings }>(myUiSettingsQuery, {})
-          .toPromise();
-        if (error) throw error;
-        if (!cancelled) {
-          setUiSettings(normalizeUiSettings(data?.myUiSettings));
-        }
-      } catch {
-        if (!cancelled) {
-          setUiSettings(DEFAULT_UI_SETTINGS);
-        }
-      } finally {
-        if (!cancelled) {
-          setUiSettingsLoading(false);
-        }
-      }
-    })();
+  const refreshUiSettings = React.useCallback(
+    () => loadUiSettings(),
+    [loadUiSettings],
+  );
 
-    return () => {
-      cancelled = true;
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      void loadUiSettings({ resetToFallback: true });
+      return undefined;
+    }
+
+    const handleAuthSessionChanged = () => {
+      void loadUiSettings({ resetToFallback: true });
     };
-  }, [client]);
+
+    window.addEventListener(AUTH_SESSION_CHANGED_EVENT, handleAuthSessionChanged);
+    void loadUiSettings({ resetToFallback: true });
+    return () => {
+      requestSequenceRef.current += 1;
+      window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, handleAuthSessionChanged);
+    };
+  }, [loadUiSettings]);
 
   const value = React.useMemo<UiSettingsContextValue>(
     () => ({
       uiSettings,
       uiSettingsLoading,
+      uiSettingsLoaded,
+      uiSettingsLoadError,
       setUiSettings,
       refreshUiSettings,
     }),
-    [refreshUiSettings, uiSettings, uiSettingsLoading],
+    [
+      refreshUiSettings,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoadError,
+      uiSettingsLoading,
+    ],
   );
 
   return (

@@ -355,6 +355,13 @@ impl SqlRow {
         }
     }
 
+    pub(crate) fn opt_f64(&self, column: &str) -> AppResult<Option<f64>> {
+        match self {
+            SqlRow::Sqlite(row) => row.try_get(column).map_err(repo_err),
+            SqlRow::Postgres(row) => row.try_get(column).map_err(repo_err),
+        }
+    }
+
     pub(crate) fn bool(&self, column: &str) -> AppResult<bool> {
         match self {
             SqlRow::Sqlite(row) => bool_from_sqlite_row(row, column),

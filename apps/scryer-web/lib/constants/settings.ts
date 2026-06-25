@@ -67,6 +67,7 @@ export const URL_SECTION_SETTINGS = "settings";
 export const URL_SECTION_MOVIES = "movies";
 export const URL_SECTION_SERIES = "series";
 export const URL_SECTION_ANIME = "anime";
+export const URL_SECTION_DISCOVERY = "discovery";
 export const URL_SECTION_ACTIVITY = "activity";
 export const URL_SECTION_CALENDAR = "calendar";
 export const URL_SECTION_WANTED = "wanted";
@@ -79,6 +80,7 @@ export const URL_PARAM_CONTENT_SECTION_DEPRECATED = "contentSection";
 
 export const URL_PATH_SEGMENTS: ViewId[] = [
   ...MEDIA_VIEW_IDS as string[] as ViewId[],
+  URL_SECTION_DISCOVERY,
   URL_SECTION_ACTIVITY,
   URL_SECTION_CALENDAR,
   URL_SECTION_WANTED,

@@ -903,6 +903,7 @@ pub struct AppRuntimeEnvironmentState {
     pub(crate) supported_plugin_required_features: Arc<HashSet<String>>,
     pub(crate) config_dir: Arc<PathBuf>,
     pub(crate) performance_snapshot: Arc<OnceCell<RuntimePerformanceSnapshot>>,
+    fixed_now: Arc<std::sync::RwLock<Option<DateTime<Utc>>>>,
 }
 
 impl AppRuntimeEnvironmentState {
@@ -923,6 +924,21 @@ impl AppRuntimeEnvironmentState {
             ),
             config_dir: Arc::new(config_dir.into()),
             performance_snapshot: Arc::new(OnceCell::new()),
+            fixed_now: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.fixed_now
+            .read()
+            .ok()
+            .and_then(|guard| *guard)
+            .unwrap_or_else(Utc::now)
+    }
+
+    pub fn set_fixed_now_for_tests(&self, now: Option<DateTime<Utc>>) {
+        if let Ok(mut guard) = self.fixed_now.write() {
+            *guard = now;
         }
     }
 }

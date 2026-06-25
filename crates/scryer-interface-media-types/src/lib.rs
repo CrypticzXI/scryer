@@ -1541,6 +1541,163 @@ pub struct JobRunPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct DiscoverySyncStatusPayload {
+    pub state: DiscoverySyncStatePayload,
+    pub recent_runs: Vec<DiscoverySyncRunPayload>,
+    pub pending_context_change_count: Long,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoverySyncStatePayload {
+    pub scope_key: String,
+    pub last_success_generation_id: Option<ID>,
+    pub last_public_feed_generation_id: Option<ID>,
+    pub last_subject_fingerprint: Option<String>,
+    pub last_context_snapshot_completed_at: Option<DateTime<Utc>>,
+    pub last_incremental_reload_completed_at: Option<DateTime<Utc>>,
+    pub last_public_feed_completed_at: Option<DateTime<Utc>>,
+    pub dirty_since: Option<DateTime<Utc>>,
+    pub dirty_reason_mask: Long,
+    pub bootstrap_started_at: Option<DateTime<Utc>>,
+    pub bootstrap_quiet_until: Option<DateTime<Utc>>,
+    pub next_context_snapshot_eligible_at: Option<DateTime<Utc>>,
+    pub next_incremental_reload_eligible_at: Option<DateTime<Utc>>,
+    pub next_public_feed_eligible_at: Option<DateTime<Utc>>,
+    pub backoff_until: Option<DateTime<Utc>>,
+    pub startup_jitter_seconds: Long,
+    pub context_jitter_seconds: Long,
+    pub incremental_reload_jitter_seconds: Long,
+    pub public_feed_jitter_seconds: Long,
+    pub last_seen_domain_event_sequence: Option<Long>,
+    pub inflight_subject_fingerprint: Option<String>,
+    pub inflight_domain_event_sequence: Option<Long>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoverySyncRunPayload {
+    pub id: ID,
+    pub kind: String,
+    pub status: String,
+    pub trigger_source: String,
+    pub region: String,
+    pub language: String,
+    pub subject_count: Long,
+    pub subject_fingerprint: Option<String>,
+    pub previous_subject_fingerprint: Option<String>,
+    pub base_generation_id: Option<ID>,
+    pub changed_subject_count: Long,
+    pub affected_target_count: Long,
+    pub smg_request_id: Option<String>,
+    pub smg_status: Option<String>,
+    pub discovery_index_watermark: Option<String>,
+    pub page_count: Option<i32>,
+    pub item_count: Option<Long>,
+    pub facet_count: Option<Long>,
+    pub error_text: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(InputObject, Clone, Default)]
+pub struct DiscoveryHomeInput {
+    pub include_public: Option<bool>,
+    pub include_personalized: Option<bool>,
+    pub include_unresolved: Option<bool>,
+    pub limit_per_section: Option<i32>,
+}
+
+#[derive(InputObject, Clone, Default)]
+pub struct DiscoveryItemsInput {
+    pub query: Option<String>,
+    pub target_kinds: Option<Vec<String>>,
+    pub sources: Option<Vec<String>>,
+    pub relation_types: Option<Vec<String>>,
+    pub relation_subtypes: Option<Vec<String>>,
+    pub genres: Option<Vec<String>>,
+    pub status_tags: Option<Vec<String>>,
+    pub facet_terms: Option<Vec<String>>,
+    pub include_owned: Option<bool>,
+    pub include_unresolved: Option<bool>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomePayload {
+    pub status: DiscoverySyncStatusPayload,
+    pub public_sections: Vec<DiscoverySectionPayload>,
+    pub personalized_sections: Vec<DiscoverySectionPayload>,
+    pub complete_collection: Option<DiscoverySectionPayload>,
+    pub facets: Vec<DiscoveryFacetPayload>,
+    pub can_view_personalized: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryItemsPayload {
+    pub items: Vec<DiscoveryItemPayload>,
+    pub total_count: Long,
+    pub can_view_personalized: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoverySectionPayload {
+    pub section_id: String,
+    pub section_type: String,
+    pub title: String,
+    pub surface: String,
+    pub total_count: Long,
+    pub items: Vec<DiscoveryItemPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryItemPayload {
+    pub id: ID,
+    pub target_key: String,
+    pub target_kind: String,
+    pub resolved: bool,
+    pub resolved_title_id: Option<ID>,
+    pub display_title: String,
+    pub original_title: Option<String>,
+    pub sort_title: Option<String>,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub overview: Option<String>,
+    pub content_type: Option<String>,
+    pub genres: Vec<String>,
+    pub rating: Option<f64>,
+    pub status_tags: Vec<String>,
+    pub source_tags: Vec<String>,
+    pub sources: Vec<String>,
+    pub best_source: Option<String>,
+    pub relation_types: Vec<String>,
+    pub relation_subtypes: Vec<String>,
+    pub source_count: Option<i32>,
+    pub edge_count: Option<i32>,
+    pub relation_count: Option<i32>,
+    pub source_subject_count: Option<i32>,
+    pub rank_score: Option<f64>,
+    pub matched_subject_titles: Vec<String>,
+    pub matched_subject_count: i32,
+    pub tmdb_collection_id: Option<String>,
+    pub tmdb_collection_name: Option<String>,
+    pub owned_in_input: bool,
+    pub facet_terms: Vec<String>,
+    pub context_terms: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryFacetPayload {
+    pub name: String,
+    pub value: String,
+    pub smg_count: Option<Long>,
+    pub local_count: Option<Long>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct TitleReleaseBlocklistEntryPayload {
     pub id: ID,
     pub source_hint: Option<String>,

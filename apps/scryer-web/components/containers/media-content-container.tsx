@@ -8,17 +8,20 @@ import {
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
   createLibraryMutation,
+  deleteMediaFileMutation,
   deleteLibraryMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
   deleteTitlesMutation,
+  setPrimaryMovieFileMutation,
   setTitleMonitoredMutation,
   updateLibraryMutation,
   updateRuleSetMutation,
 } from "@/lib/graphql/mutations";
 import {
   browsePathQuery,
+  deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
   downloadClientRoutingQuery,
   jobRunEventsSubscription,
@@ -138,6 +141,13 @@ type MediaContentContainerProps = {
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
   ) => void;
+};
+
+type SelectedOverviewMediaFile = NonNullable<TitleRecord["mediaFiles"]>[number];
+
+type SelectedOverviewMediaFileDeleteTarget = {
+  titleId: string;
+  file: SelectedOverviewMediaFile;
 };
 
 type TitleCatalogState = {
@@ -727,6 +737,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<
     Set<string>
   >(() => new Set());
+  const pendingDeletedTitleIdsRef = React.useRef(pendingDeletedTitleIds);
+  React.useLayoutEffect(() => {
+    pendingDeletedTitleIdsRef.current = pendingDeletedTitleIds;
+  }, [pendingDeletedTitleIds]);
   const deletionJobIdsRef = React.useRef(new Set<string>());
   const deletionFallbackTimersRef = React.useRef<
     ReturnType<typeof setTimeout>[]
@@ -877,6 +891,44 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     libraryScanSummary,
     setLibraryScanSummary,
   } = useTitleManagementState();
+  const [titleContextTitles, setTitleContextTitles] = React.useState<
+    TitleRecord[]
+  >([]);
+  const [
+    selectedOverviewMediaFileToDelete,
+    setSelectedOverviewMediaFileToDelete,
+  ] = React.useState<SelectedOverviewMediaFileDeleteTarget | null>(null);
+  const [
+    selectedOverviewMediaFileDeleteLoading,
+    setSelectedOverviewMediaFileDeleteLoading,
+  ] = React.useState(false);
+  const [
+    selectedOverviewMediaFileDeleteTypedConfirmation,
+    setSelectedOverviewMediaFileDeleteTypedConfirmation,
+  ] = React.useState("");
+  const [
+    selectedOverviewPrimaryMovieFileUpdatingId,
+    setSelectedOverviewPrimaryMovieFileUpdatingId,
+  ] = React.useState<string | null>(null);
+  const mergeTitleContextTitles = React.useCallback(
+    (incomingTitles: TitleRecord[]) => {
+      const activeFacetTitles = incomingTitles.filter(
+        (title) =>
+          title.facet === activeFacet &&
+          !pendingDeletedTitleIdsRef.current.has(title.id),
+      );
+      if (activeFacetTitles.length === 0) {
+        return;
+      }
+      setTitleContextTitles((current) =>
+        appendCatalogTitlesPreservingImages(
+          current.filter((title) => title.facet === activeFacet),
+          activeFacetTitles,
+        ),
+      );
+    },
+    [activeFacet],
+  );
   const libraryScanInProgress =
     libraryScanLoading ||
     Boolean(activeLibraryScanSession) ||
@@ -904,6 +956,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     "deleteTitlePreview",
     titleDeletePreviewVariables,
     titleToDelete !== null && deleteFilesOnDisk,
+  );
+  const selectedOverviewMediaFileDeletePreviewVariables = React.useMemo(
+    () =>
+      selectedOverviewMediaFileToDelete
+        ? { fileId: selectedOverviewMediaFileToDelete.file.id }
+        : null,
+    [selectedOverviewMediaFileToDelete],
+  );
+  const {
+    preview: selectedOverviewMediaFileDeletePreview,
+    loading: selectedOverviewMediaFileDeletePreviewLoading,
+    error: selectedOverviewMediaFileDeletePreviewError,
+  } = useDeletePreview(
+    deleteMediaFilePreviewQuery,
+    "deleteMediaFilePreview",
+    selectedOverviewMediaFileDeletePreviewVariables,
+    selectedOverviewMediaFileToDelete !== null,
   );
   const effectiveTitleQuickFilters = React.useMemo<TitleQuickFilters>(
     () => ({
@@ -942,10 +1011,39 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ),
     [monitoredTitlesWithLibraries, pendingDeletedTitleIds],
   );
+  const titleContextTitlesWithLibraries = React.useMemo(
+    () =>
+      titleContextTitles.map((title) => ({
+        ...title,
+        libraryName:
+          title.libraryName ??
+          libraryNameById.get(title.libraryId) ??
+          title.libraryId,
+        librarySlug:
+          title.librarySlug ?? librarySlugById.get(title.libraryId) ?? null,
+      })),
+    [libraryNameById, librarySlugById, titleContextTitles],
+  );
+  const titleContextSourceTitles = React.useMemo(
+    () =>
+      titleContextTitlesWithLibraries.filter(
+        (title) =>
+          title.facet === activeFacet && !pendingDeletedTitleIds.has(title.id),
+      ),
+    [activeFacet, pendingDeletedTitleIds, titleContextTitlesWithLibraries],
+  );
   const titleQuickFilterCounts = React.useMemo(
     () => getTitleQuickFilterCounts(titleQuickFilterSourceTitles),
     [titleQuickFilterSourceTitles],
   );
+  React.useEffect(() => {
+    if (pendingDeletedTitleIds.size === 0) {
+      return;
+    }
+    setTitleContextTitles((current) =>
+      current.filter((title) => !pendingDeletedTitleIds.has(title.id)),
+    );
+  }, [pendingDeletedTitleIds]);
   const visibleTitles = React.useMemo(
     () =>
       filterTitlesByQuickFilters(
@@ -1019,6 +1117,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setSelectedTitleIds(new Set());
     setSelectedOverviewTitleId(null);
     setSelectedLibraryIds([]);
+    setTitleContextTitles([]);
   }, [activeFacet]);
 
   React.useEffect(() => {
@@ -1046,11 +1145,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
 
     setSelectedOverviewTitleId((current) => {
-      return current && visibleTitles.some((title) => title.id === current)
+      return current &&
+        titleContextSourceTitles.some((title) => title.id === current)
         ? current
         : null;
     });
-  }, [contentSettingsSection, shouldLoadCatalogTitles, visibleTitles]);
+  }, [
+    contentSettingsSection,
+    shouldLoadCatalogTitles,
+    titleContextSourceTitles,
+  ]);
 
   React.useEffect(() => {
     activeCatalogQueryRef.current = debouncedTitleFilter;
@@ -1392,6 +1496,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setMonitoredTitles((current) =>
           mergeCatalogTitlesPreservingImages(current, nextTitles),
         );
+        mergeTitleContextTitles(nextTitles);
         setCatalogPaginationState({
           queryKey,
           hasMore: Boolean(page.hasMore),
@@ -1433,6 +1538,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       client,
       effectiveTitleQuickFilters,
       effectiveTitleCatalogSort,
+      mergeTitleContextTitles,
       selectedLibraryIds,
       setMonitoredTitles,
       setTitleLoading,
@@ -1507,6 +1613,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setMonitoredTitles((current) =>
         appendCatalogTitlesPreservingImages(current, nextTitles),
       );
+      mergeTitleContextTitles(nextTitles);
       setCatalogPaginationState({
         queryKey,
         hasMore: Boolean(page.hasMore),
@@ -1551,6 +1658,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     client,
     effectiveTitleCatalogSort,
     effectiveTitleQuickFilters,
+    mergeTitleContextTitles,
     selectedLibraryIds,
     setMonitoredTitles,
     setTitleStatus,
@@ -1583,8 +1691,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       deletionJobIdsRef.current.delete(run.id);
       if (deletionJobIdsRef.current.size === 0) {
         clearDeletionFallbackTimers();
+        setPendingDeletedTitleIds(new Set());
       }
-      setPendingDeletedTitleIds(new Set());
       void refreshTitles();
       return true;
     },
@@ -1723,6 +1831,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return;
       }
 
+      setTitleContextTitles((current) => {
+        if (!title) {
+          return current.filter((item) => item.id !== titleId);
+        }
+        return upsertCatalogTitleRecord(current, title);
+      });
+
       setMonitoredTitles((current) => {
         const next = [...current];
         const existingIndex = next.findIndex((item) => item.id === titleId);
@@ -1781,6 +1896,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     pause: !shouldLoadCatalogTitles,
     onTitleRefreshed: applyRefreshedTitleRecord,
   });
+
+  const refreshTitlePanelDetail = React.useCallback(
+    async (titleId: string) => {
+      const requestEpoch = reactiveRefreshEpoch();
+      const detailResult = await client
+        .query<{ title?: TitleRecord | null }>(
+          titlePanelDetailQuery,
+          { id: titleId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (detailResult.error) {
+        throw detailResult.error;
+      }
+      if (detailResult.data?.title) {
+        applyRefreshedTitleRecord(
+          titleId,
+          detailResult.data.title,
+          requestEpoch,
+        );
+      }
+    },
+    [applyRefreshedTitleRecord, client],
+  );
 
   const previewTitleRename = React.useCallback(
     async (title: TitleRecord): Promise<MediaRenamePlan | null> => {
@@ -1852,24 +1991,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             failed: result?.failed ?? 0,
           }),
         );
-        const requestEpoch = reactiveRefreshEpoch();
-        const detailResult = await client
-          .query<{ title?: TitleRecord | null }>(
-            titlePanelDetailQuery,
-            { id: title.id },
-            { requestPolicy: "network-only" },
-          )
-          .toPromise();
-        if (detailResult.error) {
-          throw detailResult.error;
-        }
-        if (detailResult.data?.title) {
-          applyRefreshedTitleRecord(
-            title.id,
-            detailResult.data.title,
-            requestEpoch,
-          );
-        }
+        await refreshTitlePanelDetail(title.id);
         return true;
       } catch (error) {
         setGlobalStatus(
@@ -1879,9 +2001,63 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       }
     },
     [
-      applyRefreshedTitleRecord,
       client,
       recordCriticalCatalogMutation,
+      refreshTitlePanelDetail,
+      setGlobalStatus,
+      t,
+    ],
+  );
+
+  const requestDeleteSelectedOverviewMediaFile = React.useCallback(
+    (title: TitleRecord, fileId: string) => {
+      const file =
+        title.mediaFiles?.find((candidate) => candidate.id === fileId) ?? null;
+      if (!file) {
+        return;
+      }
+      setSelectedOverviewMediaFileToDelete({
+        titleId: title.id,
+        file,
+      });
+      setSelectedOverviewMediaFileDeleteTypedConfirmation("");
+    },
+    [],
+  );
+
+  const makeSelectedOverviewMovieFilePrimary = React.useCallback(
+    async (title: TitleRecord, fileId: string) => {
+      if (title.facet !== "movie") {
+        return;
+      }
+      setSelectedOverviewPrimaryMovieFileUpdatingId(fileId);
+      try {
+        recordCriticalCatalogMutation();
+        const { error } = await client
+          .mutation(setPrimaryMovieFileMutation, {
+            input: {
+              titleId: title.id,
+              fileId,
+            },
+          })
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        setGlobalStatus(t("status.primaryMovieFileUpdated"));
+        await refreshTitlePanelDetail(title.id);
+      } catch (error) {
+        setGlobalStatus(
+          userFacingGraphQlErrorMessage(error, t("status.apiError")),
+        );
+      } finally {
+        setSelectedOverviewPrimaryMovieFileUpdatingId(null);
+      }
+    },
+    [
+      client,
+      recordCriticalCatalogMutation,
+      refreshTitlePanelDetail,
       setGlobalStatus,
       t,
     ],
@@ -1890,11 +2066,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const selectedOverviewTitleForPanelHydration = React.useMemo(
     () =>
       selectedOverviewTitleId
-        ? (monitoredTitles.find(
+        ? (titleContextSourceTitles.find(
             (title) => title.id === selectedOverviewTitleId,
           ) ?? null)
         : null,
-    [monitoredTitles, selectedOverviewTitleId],
+    [selectedOverviewTitleId, titleContextSourceTitles],
   );
   const selectedPanelHydrationTitleId =
     selectedOverviewTitleForPanelHydration?.id ?? null;
@@ -2243,6 +2419,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           ),
         );
         if (shouldLoadCatalogTitles && data?.addTitle?.title) {
+          mergeTitleContextTitles([data.addTitle.title as TitleRecord]);
           setMonitoredTitles((current) => {
             const title = data.addTitle.title as TitleRecord;
             const next = upsertCatalogTitleRecord(
@@ -2267,6 +2444,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       monitoredForQueue,
       queueFacet,
       client,
+      mergeTitleContextTitles,
       shouldLoadCatalogTitles,
       setMonitoredTitles,
       setGlobalStatus,
@@ -2421,6 +2599,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           .toPromise();
         if (error) throw error;
         setMonitoredTitles((previous) =>
+          previous.map((item) =>
+            item.id === titleId ? { ...item, monitored } : item,
+          ),
+        );
+        setTitleContextTitles((previous) =>
           previous.map((item) =>
             item.id === titleId ? { ...item, monitored } : item,
           ),
@@ -2922,6 +3105,60 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setDeleteTitleLoadingById,
   ]);
 
+  const closeSelectedOverviewMediaFileDeleteDialog = React.useCallback(() => {
+    if (selectedOverviewMediaFileDeleteLoading) {
+      return;
+    }
+    setSelectedOverviewMediaFileToDelete(null);
+    setSelectedOverviewMediaFileDeleteTypedConfirmation("");
+  }, [selectedOverviewMediaFileDeleteLoading]);
+
+  const confirmDeleteSelectedOverviewMediaFile = React.useCallback(async () => {
+    if (
+      !selectedOverviewMediaFileToDelete ||
+      !selectedOverviewMediaFileDeletePreview
+    ) {
+      return;
+    }
+    setSelectedOverviewMediaFileDeleteLoading(true);
+    try {
+      recordCriticalCatalogMutation();
+      const { error } = await client
+        .mutation(deleteMediaFileMutation, {
+          input: {
+            fileId: selectedOverviewMediaFileToDelete.file.id,
+            deleteFromDisk: true,
+            previewFingerprint: selectedOverviewMediaFileDeletePreview.fingerprint,
+            typedConfirmation:
+              selectedOverviewMediaFileDeleteTypedConfirmation.trim() ||
+              undefined,
+          },
+        })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      await refreshTitlePanelDetail(selectedOverviewMediaFileToDelete.titleId);
+      setSelectedOverviewMediaFileToDelete(null);
+      setSelectedOverviewMediaFileDeleteTypedConfirmation("");
+    } catch (error) {
+      setGlobalStatus(
+        userFacingGraphQlErrorMessage(error, t("status.apiError")),
+      );
+    } finally {
+      setSelectedOverviewMediaFileDeleteLoading(false);
+    }
+  }, [
+    client,
+    recordCriticalCatalogMutation,
+    refreshTitlePanelDetail,
+    selectedOverviewMediaFileDeletePreview,
+    selectedOverviewMediaFileDeleteTypedConfirmation,
+    selectedOverviewMediaFileToDelete,
+    setGlobalStatus,
+    t,
+  ]);
+
   const deleteTitleConfirmDisabled =
     deleteFilesOnDisk &&
     (titleDeletePreviewLoading ||
@@ -2929,6 +3166,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       !titleDeletePreview ||
       (titleDeletePreview.requiresTypedConfirmation &&
         titleDeleteTypedConfirmation.trim() !== "DELETE"));
+  const deleteSelectedOverviewMediaFileConfirmDisabled =
+    selectedOverviewMediaFileDeletePreviewLoading ||
+    !!selectedOverviewMediaFileDeletePreviewError ||
+    !selectedOverviewMediaFileDeletePreview ||
+    (selectedOverviewMediaFileDeletePreview.requiresTypedConfirmation &&
+      selectedOverviewMediaFileDeleteTypedConfirmation.trim() !== "DELETE");
 
   const refreshLibraries = React.useCallback(async (): Promise<
     LibraryRecord[] | null
@@ -3627,6 +3870,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           catalogBootstrapLoading,
           catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,
+          titleContextTitles: titleContextSourceTitles,
           titleQuickFilters,
           titleQuickFilterCounts,
           toggleTitleQuickMonitoringFilter,
@@ -3683,6 +3927,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           selectedOverviewBlocklistEntries,
           selectedOverviewExternalSubtitles,
           refreshSelectedOverviewExternalSubtitles,
+          deleteSelectedOverviewMediaFile:
+            requestDeleteSelectedOverviewMediaFile,
+          makeSelectedOverviewMovieFilePrimary,
+          selectedOverviewPrimaryMovieFileUpdatingId,
           previewTitleRename,
           applyTitleRename,
           setSelectedOverviewTitleId: selectOverviewTitle,
@@ -3796,6 +4044,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             />
           ) : null}
         </div>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={selectedOverviewMediaFileToDelete !== null}
+        title={t("mediaFile.delete")}
+        description={
+          selectedOverviewMediaFileToDelete?.file.filePath ??
+          t("mediaFile.delete")
+        }
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        isBusy={selectedOverviewMediaFileDeleteLoading}
+        confirmDisabled={deleteSelectedOverviewMediaFileConfirmDisabled}
+        onConfirm={confirmDeleteSelectedOverviewMediaFile}
+        onCancel={closeSelectedOverviewMediaFileDeleteDialog}
+      >
+        <DeletePreviewSummary
+          preview={selectedOverviewMediaFileDeletePreview}
+          loading={selectedOverviewMediaFileDeletePreviewLoading}
+          error={selectedOverviewMediaFileDeletePreviewError}
+          typedConfirmation={selectedOverviewMediaFileDeleteTypedConfirmation}
+          onTypedConfirmationChange={
+            setSelectedOverviewMediaFileDeleteTypedConfirmation
+          }
+        />
       </ConfirmDialog>
       {replaceConflictDialog}
     </>

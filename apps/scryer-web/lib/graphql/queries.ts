@@ -1,3 +1,83 @@
+export const DISCOVERY_ITEM_FIELDS = `
+    id
+    targetKey
+    targetKind
+    resolved
+    resolvedTitleId
+    displayTitle
+    originalTitle
+    sortTitle
+    year
+    posterUrl
+    backgroundUrl
+    overview
+    contentType
+    genres
+    rating
+    statusTags
+    sourceTags
+    sources
+    bestSource
+    relationTypes
+    relationSubtypes
+    sourceCount
+    edgeCount
+    relationCount
+    sourceSubjectCount
+    rankScore
+    matchedSubjectTitles
+    matchedSubjectCount
+    tmdbCollectionId
+    tmdbCollectionName
+    ownedInInput
+    facetTerms
+    contextTerms`;
+
+export const DISCOVERY_SECTION_FIELDS = `
+    sectionId
+    sectionType
+    title
+    surface
+    totalCount
+    items {
+${DISCOVERY_ITEM_FIELDS}
+    }`;
+
+export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInput) {
+  discoveryHome(input: $input) {
+    canViewPersonalized
+    status {
+      pendingContextChangeCount
+      state {
+        lastSuccessGenerationId
+        lastPublicFeedGenerationId
+        lastContextSnapshotCompletedAt
+        lastIncrementalReloadCompletedAt
+        lastPublicFeedCompletedAt
+        nextContextSnapshotEligibleAt
+        nextIncrementalReloadEligibleAt
+        nextPublicFeedEligibleAt
+        updatedAt
+      }
+    }
+    facets {
+      name
+      value
+      smgCount
+      localCount
+    }
+    publicSections {
+${DISCOVERY_SECTION_FIELDS}
+    }
+    personalizedSections {
+${DISCOVERY_SECTION_FIELDS}
+    }
+    completeCollection {
+${DISCOVERY_SECTION_FIELDS}
+    }
+  }
+}`;
+
 export const TITLE_CORE_FIELDS = `
     id
     name
@@ -836,6 +916,7 @@ export const TITLE_LIST_FIELDS = `
     rootFolderId
     rootFolderPath
     qualityTier
+    currentQualityTier
     sizeBytes
     episodesOwned
     episodesMonitored
@@ -888,11 +969,23 @@ export const TITLE_CATALOG_SEARCH_FIELDS = `
     name
     facet
     libraryId
+    libraryName
     librarySlug
     monitored
+    tags
     slug
+    sortTitle
+    year
     posterUrl
     posterSourceUrl
+    rootFolderId
+    rootFolderPath
+    qualityTier
+    sizeBytes
+    episodesOwned
+    episodesMonitored
+    episodesTotal
+    contentStatus
     metadataFetchedAt
     createdAt
     externalIds {

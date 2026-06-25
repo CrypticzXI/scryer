@@ -3,6 +3,7 @@ export * from "./audit";
 export * from "./download-clients";
 export * from "./external-import";
 export * from "./download-queue";
+export * from "./discovery";
 export * from "./import-history";
 export * from "./indexers";
 export * from "./delay-profiles";

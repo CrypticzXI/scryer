@@ -1,4 +1,14 @@
-export type ViewId = "movies" | "series" | "anime" | "activity" | "calendar" | "wanted" | "history" | "settings" | "system";
+export type ViewId =
+  | "movies"
+  | "series"
+  | "anime"
+  | "discovery"
+  | "activity"
+  | "calendar"
+  | "wanted"
+  | "history"
+  | "settings"
+  | "system";
 export type SystemSection = "overview" | "jobs" | "audit";
 export type ActivitySection = "activity" | "import" | "history";
 export type WantedSection = "wanted" | "cutoff" | "pending" | "history";

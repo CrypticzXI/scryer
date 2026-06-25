@@ -137,8 +137,11 @@ const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
   {
     id: "discover",
     label: "Discover",
-    labelKey: "nav.group.requests",
-    items: [{ kind: "requests", icon: Inbox }],
+    labelKey: "nav.group.discover",
+    items: [
+      { kind: "view", id: "discovery" },
+      { kind: "requests", icon: Inbox },
+    ],
   },
   {
     id: "automation",

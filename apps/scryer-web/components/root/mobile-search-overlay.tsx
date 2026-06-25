@@ -346,6 +346,7 @@ export function MobileSearchOverlay({
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
     librariesByFacet,
+    rootFoldersByFacet,
     requestableLibrariesByFacet,
     setGlobalSearch,
     clearGlobalSearch,
@@ -757,7 +758,10 @@ export function MobileSearchOverlay({
         isInCatalog: isMetadataSearchResultInCatalog(facet, result),
         canAdd:
           catalogQualityProfileOptions.length > 0 &&
-          librariesByFacet[facet].length > 0,
+          (librariesByFacet[facet].length > 0 ||
+            rootFoldersByFacet[facet].some((rootFolder) =>
+              Boolean(rootFolder.id?.trim()),
+            )),
         canRequest: requestableLibrariesByFacet[facet].length > 0,
         resultName: result.name,
         t,
@@ -813,6 +817,7 @@ export function MobileSearchOverlay({
       isMetadataSearchResultInCatalog,
       catalogQualityProfileOptions.length,
       librariesByFacet,
+      rootFoldersByFacet,
       requestableLibrariesByFacet,
       t,
     ],
@@ -1172,6 +1177,9 @@ export function MobileSearchOverlay({
         )}
         manageableLibraries={
           librariesByFacet[addDialogTarget?.facet ?? "series"]
+        }
+        rootFolderOptions={
+          rootFoldersByFacet[addDialogTarget?.facet ?? "series"]
         }
         onAdd={handleAddDialogSubmit}
       />

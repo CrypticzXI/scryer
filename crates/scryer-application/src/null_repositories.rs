@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     AppPermissionMask, DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus,
@@ -24,8 +24,9 @@ use scryer_domain::BlocklistEntry;
 
 use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    CutoffUnmetQualitySummary, DiscoveryFacetRecord, DiscoveryItemRecord,
-    DiscoveryPendingContextChangeRecord, DiscoveryRawPageRecord, DiscoveryRepository,
+    CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
+    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryPendingContextChangeRecord,
+    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRawPageRecord, DiscoveryRepository,
     DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
     DiscoverySyncStateRecord, DomainEventRepository, DownloadQueueCommandRecord,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
@@ -72,8 +73,51 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(())
     }
 
+    async fn try_acquire_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _lease_expires_at: DateTime<Utc>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Ok(true)
+    }
+
+    async fn renew_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _lease_expires_at: DateTime<Utc>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Ok(true)
+    }
+
+    async fn release_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn get_discovery_sync_run(&self, _id: &str) -> AppResult<Option<DiscoverySyncRunRecord>> {
         Ok(None)
+    }
+
+    async fn list_recent_discovery_sync_runs(
+        &self,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_unacked_discovery_context_snapshot_runs(
+        &self,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>> {
+        Ok(Vec::new())
     }
 
     async fn upsert_discovery_sync_run(&self, _run: &DiscoverySyncRunRecord) -> AppResult<()> {
@@ -91,12 +135,33 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(())
     }
 
+    async fn commit_discovery_context_incremental(
+        &self,
+        _commit: &DiscoveryContextIncrementalCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn commit_discovery_public_feed(
+        &self,
+        _commit: &DiscoveryPublicFeedCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn replace_discovery_submitted_subjects(
         &self,
         _run_id: &str,
         _subjects: &[DiscoverySubmittedSubjectRecord],
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn list_discovery_submitted_subjects(
+        &self,
+        _run_id: &str,
+    ) -> AppResult<Vec<DiscoverySubmittedSubjectRecord>> {
+        Ok(Vec::new())
     }
 
     async fn upsert_pending_discovery_context_change(
@@ -106,12 +171,34 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         Ok(())
     }
 
+    async fn get_pending_discovery_context_change(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<DiscoveryPendingContextChangeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_pending_discovery_context_change(&self, _id: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_all_pending_discovery_context_changes(
+        &self,
+        _scope_key: &str,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn list_pending_discovery_context_changes(
         &self,
         _scope_key: &str,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>> {
         Ok(Vec::new())
+    }
+
+    async fn count_pending_discovery_context_changes(&self, _scope_key: &str) -> AppResult<i64> {
+        Ok(0)
     }
 
     async fn clear_pending_discovery_context_changes_through_sequence(
@@ -144,6 +231,34 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _facets: &[DiscoveryFacetRecord],
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn list_discovery_sections(
+        &self,
+        _run_id: &str,
+        _surface: Option<&str>,
+    ) -> AppResult<Vec<DiscoverySectionRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_discovery_items_for_generation(
+        &self,
+        _base_generation_id: &str,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_discovery_facets(&self, _run_id: &str) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn prune_discovery_history(
+        &self,
+        _scope_key: &str,
+        _retain_successful_per_kind: usize,
+        _diagnostic_cutoff: DateTime<Utc>,
+    ) -> AppResult<DiscoveryPruneReport> {
+        Ok(DiscoveryPruneReport::default())
     }
 }
 

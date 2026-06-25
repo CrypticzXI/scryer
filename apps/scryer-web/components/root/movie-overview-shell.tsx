@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useMemo } from "react";
-import { ActivitySquare, CalendarDays, Clapperboard, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
+import { ActivitySquare, CalendarDays, Clapperboard, Compass, Film, History, ListChecks, Monitor, MonitorCog, Settings } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RootHeader } from "@/components/root/root-header";
 import { RootSidebar } from "@/components/root/root-sidebar";
@@ -27,12 +27,13 @@ const MovieOverviewContainer = lazy(() =>
 );
 
 // Minimal nav items — same sidebar as the main shell so navigation feels consistent.
-const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "activity", "calendar", "wanted", "settings", "system"];
+const TOP_NAV_IDS: ViewId[] = ["movies", "series", "anime", "discovery", "activity", "calendar", "wanted", "settings", "system"];
 
 const TOP_NAV_ICONS: Record<ViewId, typeof Film> = {
   movies: Film,
   series: Monitor,
   anime: Clapperboard,
+  discovery: Compass,
   activity: ActivitySquare,
   calendar: CalendarDays,
   wanted: ListChecks,

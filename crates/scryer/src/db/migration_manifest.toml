@@ -581,6 +581,40 @@ file = "postgres/migrations/0141_discovery_storage.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 142
+description = "discovery sync resume and lease"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0142_discovery_sync_resume_and_lease.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0142_discovery_sync_resume_and_lease.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 143
+description = "discovery sync transient failure count"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0143_discovery_sync_transient_failure_count.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0143_discovery_sync_transient_failure_count.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

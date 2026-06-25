@@ -40,7 +40,12 @@ export function SettingsOverviewContainer({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { uiSettings, uiSettingsLoading, setUiSettings } = useUiSettings();
+  const {
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+    setUiSettings,
+  } = useUiSettings();
   const [pendingLanguage, setPendingLanguage] = React.useState<string | null>(null);
   const [rehydrating, setRehydrating] = React.useState(false);
   const [uiSettingsSaving, setUiSettingsSaving] = React.useState(false);
@@ -114,7 +119,14 @@ export function SettingsOverviewContainer({
 
   const handleDateTimeFormatChange = React.useCallback(
     async (dateTimeFormat: UiDateTimeFormat) => {
-      if (dateTimeFormat === uiSettings.dateTimeFormat || uiSettingsSaving) return;
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        uiSettingsSaving ||
+        dateTimeFormat === uiSettings.dateTimeFormat
+      ) {
+        return;
+      }
 
       const nextSettings: UiSettings = {
         ...uiSettings,
@@ -144,6 +156,8 @@ export function SettingsOverviewContainer({
       setUiSettings,
       t,
       uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
       uiSettingsSaving,
     ],
   );
@@ -188,7 +202,7 @@ export function SettingsOverviewContainer({
         uiLanguage={uiLanguage}
         onSelectLanguage={handleLanguageSelect}
         dateTimeFormat={uiSettings.dateTimeFormat}
-        dateTimeFormatLoading={uiSettingsLoading}
+        dateTimeFormatLoading={uiSettingsLoading || !uiSettingsLoaded}
         dateTimeFormatSaving={uiSettingsSaving}
         onDateTimeFormatChange={handleDateTimeFormatChange}
         generalSettings={generalSettings}

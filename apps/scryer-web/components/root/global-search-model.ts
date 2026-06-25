@@ -137,6 +137,9 @@ export function filterGlobalSearchRouteCommands(
   routeCommandItems: RouteCommandItem[],
   searchValue: string,
 ): RouteCommandItem[] {
+  if (searchValue.trim().length === 0) {
+    return routeCommandItems;
+  }
   return filterRouteCommandItems(routeCommandItems, searchValue);
 }
 
@@ -351,7 +354,7 @@ export function buildGlobalSearchTabs({
       ? [
           {
             key: "actions" as GlobalSearchTabKey,
-            label: t("search.tabActions"),
+            label: t("search.actionsAndSettings"),
             count: routeCommandResultCount,
           },
         ]

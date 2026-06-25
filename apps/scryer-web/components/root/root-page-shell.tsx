@@ -13,6 +13,7 @@ import {
   AlertOctagon,
   AlertTriangle,
   CalendarDays,
+  Compass,
   Download,
   ListChecks,
   Loader2,
@@ -141,6 +142,12 @@ const SystemContainer = lazy(() =>
 const WantedContainer = lazy(() =>
   import("@/components/containers/wanted-container").then((m) => ({
     default: m.WantedContainer,
+  })),
+);
+
+const DiscoveryContainer = lazy(() =>
+  import("@/components/containers/discovery-container").then((m) => ({
+    default: m.DiscoveryContainer,
   })),
 );
 
@@ -514,6 +521,7 @@ function MainContent({
   canAccessRecycleBin,
   canResolveImports,
   canManageTitle,
+  canRequestMedia,
   canManageUserAccounts,
   canManageUsers,
   canManageSystemSettings,
@@ -549,6 +557,7 @@ function MainContent({
   canAccessRecycleBin: boolean;
   canResolveImports: boolean;
   canManageTitle: boolean;
+  canRequestMedia: boolean;
   canManageUserAccounts: boolean;
   canManageUsers: boolean;
   canManageSystemSettings: boolean;
@@ -567,6 +576,15 @@ function MainContent({
   if (view === "calendar") {
     return (
       <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />
+    );
+  }
+  if (view === "discovery") {
+    return (
+      <DiscoveryContainer
+        key="discovery"
+        canManageTitle={canManageTitle}
+        canRequestMedia={canRequestMedia}
+      />
     );
   }
   if (view === "wanted") {
@@ -1324,6 +1342,11 @@ function AuthenticatedHomePage({
         icon: f.icon,
       })),
       {
+        id: "discovery" as ViewId,
+        label: t("nav.discovery"),
+        icon: Compass,
+      },
+      {
         id: "activity" as ViewId,
         label: t("nav.activity"),
         icon: ActivitySquare,
@@ -1901,6 +1924,7 @@ function AuthenticatedHomePage({
                                   canAccessRecycleBin={canAccessRecycleBin}
                                   canResolveImports={canResolveImports}
                                   canManageTitle={canManageTitle}
+                                  canRequestMedia={canRequestMedia}
                                   canManageUserAccounts={canManageUserAccounts}
                                   canManageUsers={canManageUsers}
                                   canManageSystemSettings={

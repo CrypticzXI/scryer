@@ -128,10 +128,10 @@ function QuickFilterTab({
       aria-pressed={selected}
       onClick={onClick}
       className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[12.5px] font-semibold tracking-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]",
+        "inline-flex h-[38px] shrink-0 items-center gap-2 border-b-2 px-0.5 text-[13px] font-semibold tracking-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)]",
         selected
-          ? "bg-[var(--scry-accent-grad)] text-primary-foreground shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.22)]"
-          : "text-[var(--scry-muted3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
+          ? "border-[var(--scry-accent-ring)] text-[var(--scry-ink2)]"
+          : "border-transparent text-[var(--scry-muted3)] hover:text-[var(--scry-ink2)]",
       )}
     >
       {icon ? (
@@ -139,7 +139,7 @@ function QuickFilterTab({
           className={cn(
             "shrink-0",
             selected
-              ? "text-primary-foreground"
+              ? "text-[var(--scry-accent-text)]"
               : tone === "success"
                 ? "text-emerald-500"
                 : tone === "danger"
@@ -156,10 +156,10 @@ function QuickFilterTab({
       {typeof count === "number" ? (
         <span
           className={cn(
-            "rounded-md px-1.5 py-0.5 text-[10.5px] font-bold leading-none",
+            "rounded-[6px] px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums",
             selected
-              ? "bg-white/20 text-primary-foreground"
-              : "bg-[var(--scry-soft)] text-[var(--scry-muted2)]",
+              ? "bg-[rgba(var(--scry-accent-rgb),0.18)] text-[var(--scry-accent-text)]"
+              : "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
           )}
         >
           {count.toLocaleString()}
@@ -191,8 +191,8 @@ export function TitleQuickFilterBar({
   const allSelected = !hasActiveTitleQuickFilters(filters, view);
 
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex min-w-0 max-w-full flex-1 gap-1 overflow-x-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex min-h-12 min-w-0 max-w-full flex-1 items-end gap-5 overflow-x-auto">
         <QuickFilterTab
           selected={allSelected}
           onClick={onClear}

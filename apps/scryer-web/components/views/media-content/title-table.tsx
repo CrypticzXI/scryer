@@ -583,8 +583,9 @@ export function TitleTable({
           onClick={(event) => handleTitleRowClick(event, item)}
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
-            "h-[4.75rem] transition-colors hover:bg-muted/35",
-            isSelected && "bg-primary/10 ring-1 ring-inset ring-primary/30",
+            "h-[4.75rem] border-b border-[var(--scry-line2)] transition-colors hover:bg-[var(--scry-hover)]",
+            isSelected &&
+              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
           )}
         >
           <TableCell className="align-middle">
@@ -833,7 +834,7 @@ export function TitleTable({
 
   const titleTableHeader = (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 bg-background">
+      <TableRow className="sticky top-0 z-10 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
         <TableHead className="w-12 text-center">
           {selectedPaneMode ? (
             <span
@@ -916,7 +917,7 @@ export function TitleTable({
     <div
       data-slot="title-list-scroll"
       ref={titleTableScrollRef}
-      className="relative h-full min-h-[22rem] w-full overflow-auto rounded-lg border border-border bg-background/40"
+      className="relative h-full min-h-[22rem] w-full overflow-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]"
     >
       <table
         data-ui="title-table"

@@ -123,6 +123,7 @@ export const RootHeader = React.memo(function RootHeader({
     ensureCatalogConfigReady,
     isCatalogConfigReady,
     librariesByFacet,
+    rootFoldersByFacet,
     requestableLibrariesByFacet,
     catalogSearchResults,
     catalogSearchLoading,
@@ -1123,7 +1124,10 @@ export const RootHeader = React.memo(function RootHeader({
           isInCatalog: isMetadataSearchResultInCatalog(facet, result),
           canAdd:
             catalogQualityProfileOptions.length > 0 &&
-            librariesByFacet[facet].length > 0,
+            (librariesByFacet[facet].length > 0 ||
+              rootFoldersByFacet[facet].some((rootFolder) =>
+                Boolean(rootFolder.id?.trim()),
+              )),
           canRequest: requestableLibrariesByFacet[facet].length > 0,
           resultName: result.name,
           t,
@@ -1180,6 +1184,7 @@ export const RootHeader = React.memo(function RootHeader({
       isMetadataSearchResultInCatalog,
       catalogQualityProfileOptions.length,
       librariesByFacet,
+      rootFoldersByFacet,
       requestableLibrariesByFacet,
       t,
     ],
@@ -1754,6 +1759,9 @@ export const RootHeader = React.memo(function RootHeader({
         )}
         manageableLibraries={
           librariesByFacet[addDialogTarget?.facet ?? "series"]
+        }
+        rootFolderOptions={
+          rootFoldersByFacet[addDialogTarget?.facet ?? "series"]
         }
         onAdd={handleAddDialogSubmit}
       />

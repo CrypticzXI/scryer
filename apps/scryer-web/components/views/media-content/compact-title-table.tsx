@@ -623,7 +623,7 @@ export function CompactTitleTable({
           className={cn(
             "h-[68px] border-b border-[var(--scry-line2)] bg-[var(--scry-card2)] transition-colors hover:bg-[var(--scry-hover)]",
             isSelected &&
-              "bg-[rgba(var(--scry-accent-rgb),0.11)] shadow-[inset_3px_0_0_var(--scry-accent)]",
+              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
           )}
         >
           <TableCell className="align-middle overflow-hidden py-2 pl-3 pr-2">
@@ -637,7 +637,7 @@ export function CompactTitleTable({
               tabIndex={selectedPaneMode ? -1 : undefined}
               className="flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[8px] p-1 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <span className="h-12 w-8 shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_14px_rgba(0,0,0,0.26)]">
+              <span className="h-12 w-8 shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]">
                 <TitlePosterSlot
                   src={posterUrl}
                   sourceSrc={item.posterSourceUrl}
@@ -674,7 +674,7 @@ export function CompactTitleTable({
                       <span className="inline-flex min-w-0 items-center gap-1.5">
                         <span
                           aria-hidden="true"
-                          className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)] shadow-[0_0_0_2px_rgba(var(--scry-accent-rgb),0.16)]"
+                          className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)]"
                         />
                         <span className="min-w-0 truncate">{libraryLabel}</span>
                       </span>
@@ -733,7 +733,8 @@ export function CompactTitleTable({
           onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
             "h-12 transition-colors hover:bg-muted/35",
-            isSelected && "bg-primary/10 ring-1 ring-inset ring-primary/30",
+            isSelected &&
+              "bg-[rgba(var(--scry-accent-rgb),0.12)] shadow-[inset_3px_0_0_var(--scry-accent-ring)]",
           )}
         >
           <TableCell className="align-middle">
@@ -956,7 +957,7 @@ export function CompactTitleTable({
 
   const titleTableHeader = selectedPaneMode ? (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 h-9 border-b border-[var(--scry-line3)] bg-[var(--scry-surfD)] shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
+      <TableRow className="sticky top-0 z-10 h-9 border-b border-[var(--scry-line3)] bg-[var(--scry-surfD)]">
         {renderSortableHeader(
           "name",
           t("label.title"),
@@ -979,7 +980,7 @@ export function CompactTitleTable({
     </TableHeader>
   ) : (
     <TableHeader>
-      <TableRow className="sticky top-0 z-10 bg-background">
+      <TableRow className="sticky top-0 z-10 border-b border-[var(--scry-border)] bg-[var(--scry-surfD)]">
         <TableHead className="w-12 text-center">
           <Checkbox
             checked={selectAllState}
@@ -1057,9 +1058,9 @@ export function CompactTitleTable({
         data-slot="title-list-scroll"
         ref={titleTableScrollRef}
         className={cn(
-          "relative flex-1 overflow-auto rounded-lg border border-border bg-background/40",
+          "relative flex-1 overflow-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]",
           selectedPaneMode
-            ? "min-h-0 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-card2)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            ? "min-h-0 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-card2)]"
             : "min-h-[22rem]",
         )}
       >

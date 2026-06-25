@@ -18,8 +18,10 @@ use crate::context::{
     current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_collection, from_delete_preview,
-    from_delete_titles_preview, from_domain_event, from_download_queue_item, from_episode,
+    discovery_home_query_from_input, discovery_items_query_from_input, from_activity_event,
+    from_backup_info, from_collection, from_delete_preview, from_delete_titles_preview,
+    from_discovery_home, from_discovery_items_result, from_discovery_sync_status,
+    from_domain_event, from_download_queue_item, from_episode,
     from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
@@ -1113,6 +1115,47 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(runs.into_iter().map(from_job_run).collect())
+    }
+
+    async fn discovery_home(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeInput>,
+    ) -> GqlResult<DiscoveryHomePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .discovery_home(&actor, discovery_home_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_home(result))
+    }
+
+    async fn discovery_items(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryItemsInput>,
+    ) -> GqlResult<DiscoveryItemsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .discovery_items(&actor, discovery_items_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_items_result(result))
+    }
+
+    async fn discovery_sync_status(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<DiscoverySyncStatusPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let status = app
+            .discovery_sync_status(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_sync_status(status))
     }
 
     async fn download_queue(

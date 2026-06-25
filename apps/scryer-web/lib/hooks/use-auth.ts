@@ -8,6 +8,7 @@ import type { UserAccountKind } from "@/lib/types/users";
 import type { AppPermission, LibraryPermissionGrant } from "@/lib/utils/permissions";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
+export const AUTH_SESSION_CHANGED_EVENT = "scryer:auth-session-changed";
 
 export type AuthUser = {
   id: string;
@@ -41,7 +42,7 @@ export function getAuthToken(): string | null {
   }
 
   if (!userFromToken(stored)) {
-    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    clearPersistedAuthToken();
     return null;
   }
 
@@ -71,14 +72,32 @@ export function clearClientAuthSession() {
   clearPersistedAuthToken();
 }
 
+function dispatchAuthSessionChanged() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(AUTH_SESSION_CHANGED_EVENT));
+}
+
 function persistAuthToken(token: string) {
   sessionStorage.setItem(SESSION_STORAGE_KEY, token);
   currentToken = token;
+  dispatchAuthSessionChanged();
 }
 
 function clearPersistedAuthToken() {
-  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  const hadCurrentToken = currentToken !== null;
+  const hadPersistedToken =
+    typeof window !== "undefined" &&
+    sessionStorage.getItem(SESSION_STORAGE_KEY) !== null;
+
+  if (typeof window !== "undefined") {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  }
   currentToken = null;
+  if (hadCurrentToken || hadPersistedToken) {
+    dispatchAuthSessionChanged();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -242,7 +261,7 @@ export function useAuth(): AuthState {
           setLoading(false);
           return;
         }
-        currentToken = null;
+        clearPersistedAuthToken();
       }
 
       const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
@@ -255,7 +274,7 @@ export function useAuth(): AuthState {
           setLoading(false);
           return;
         }
-        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        clearPersistedAuthToken();
       }
 
       if (

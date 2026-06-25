@@ -1831,6 +1831,7 @@ pub struct HousekeepingReport {
     pub stale_history_records: u32,
     pub staged_nzb_artifacts_pruned: u32,
     pub recycled_purged: u32,
+    pub discovery_pruned_runs: u32,
     pub ran_at: String,
 }
 

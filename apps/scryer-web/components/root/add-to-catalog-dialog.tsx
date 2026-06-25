@@ -28,7 +28,7 @@ import type {
   MetadataCatalogAddOptions,
   MetadataCatalogMonitorType,
 } from "@/lib/hooks/use-global-search";
-import type { LibraryRecord } from "@/lib/types/titles";
+import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
 
 type AddToCatalogDialogProps = {
   open: boolean;
@@ -39,6 +39,7 @@ type AddToCatalogDialogProps = {
   catalogConfigLoading: boolean;
   defaultQualityProfileId: string;
   manageableLibraries: LibraryRecord[];
+  rootFolderOptions: RootFolderOption[];
   onAdd: (
     result: MetadataTvdbSearchItem,
     facet: Facet,
@@ -67,10 +68,12 @@ function buildDefaultDraft(
   facet: Facet,
   defaultQualityProfileId: string,
   defaultLibraryId?: string,
+  defaultRootFolderId?: string,
 ): MetadataCatalogAddOptions {
   return {
     libraryId: defaultLibraryId,
     qualityProfileId: defaultQualityProfileId,
+    rootFolderId: defaultRootFolderId,
     seasonFolder: facet !== "movie",
     monitorType: defaultMonitorTypeForFacet(facet),
     ...(facet === "movie" ? { minAvailability: "announced" } : {}),
@@ -83,6 +86,19 @@ function buildDefaultDraft(
   };
 }
 
+function defaultLibrary(libraries: LibraryRecord[]): LibraryRecord | null {
+  return libraries.find((library) => library.isDefault) || libraries[0] || null;
+}
+
+function defaultRootFolderId(
+  rootFolders: Array<{ id?: string; isDefault: boolean }>,
+): string | undefined {
+  return (
+    rootFolders.find((rootFolder) => rootFolder.isDefault && rootFolder.id)?.id ||
+    rootFolders.find((rootFolder) => rootFolder.id)?.id
+  );
+}
+
 export function AddToCatalogDialog({
   open,
   onOpenChange,
@@ -92,15 +108,18 @@ export function AddToCatalogDialog({
   catalogConfigLoading,
   defaultQualityProfileId,
   manageableLibraries,
+  rootFolderOptions,
   onAdd,
 }: AddToCatalogDialogProps) {
   const t = useTranslate();
   const libraries = manageableLibraries;
+  const fallbackRootFolders = rootFolderOptions;
   const [draft, setDraft] = React.useState<MetadataCatalogAddOptions>(() =>
     buildDefaultDraft(
       facet,
       defaultQualityProfileId,
-      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
+      defaultLibrary(libraries)?.id,
+      defaultRootFolderId(defaultLibrary(libraries)?.roots ?? fallbackRootFolders),
     ),
   );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -108,34 +127,44 @@ export function AddToCatalogDialog({
   // Reset draft when dialog opens
   React.useEffect(() => {
     if (!open) return;
-    setDraft(buildDefaultDraft(
-      facet,
-      defaultQualityProfileId,
-      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
-    ));
+    const nextDefaultLibrary = defaultLibrary(libraries);
+    setDraft(
+      buildDefaultDraft(
+        facet,
+        defaultQualityProfileId,
+        nextDefaultLibrary?.id,
+        defaultRootFolderId(nextDefaultLibrary?.roots ?? fallbackRootFolders),
+      ),
+    );
     setIsSubmitting(false);
-  }, [open, facet, defaultQualityProfileId, libraries]);
+  }, [open, facet, defaultQualityProfileId, libraries, fallbackRootFolders]);
 
   const qualityProfileValue =
     draft.qualityProfileId || defaultQualityProfileId;
   const selectedLibrary =
     libraries.find((library) => library.id === draft.libraryId) ||
-    libraries.find((library) => library.isDefault) ||
-    libraries[0] ||
+    defaultLibrary(libraries) ||
     null;
-  const selectedRootFolders = selectedLibrary?.roots ?? [];
+  const selectedRootFolders = selectedLibrary?.roots ?? fallbackRootFolders;
+  const selectableRootFolders = selectedRootFolders.flatMap((rootFolder) => {
+    const id = rootFolder.id?.trim();
+    return id ? [{ ...rootFolder, id }] : [];
+  });
+  const draftRootFolderId = draft.rootFolderId?.trim();
   const effectiveRootFolderId =
-    draft.rootFolderId ||
-    selectedRootFolders.find((rf) => rf.isDefault)?.id ||
-    selectedRootFolders[0]?.id ||
-    "";
+    draftRootFolderId &&
+    selectableRootFolders.some((rootFolder) => rootFolder.id === draftRootFolderId)
+      ? draftRootFolderId
+      : defaultRootFolderId(selectableRootFolders) || "";
   const libraryRequired = libraries.length > 0;
+  const hasCatalogDestination =
+    libraries.length > 0 || selectableRootFolders.length > 0;
   const qualityProfileSelectionDisabled =
     isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
 
   const handleSubmit = React.useCallback(async () => {
     const libraryId = selectedLibrary?.id?.trim();
-    if (libraryRequired && !libraryId) return;
+    if (!hasCatalogDestination || (libraryRequired && !libraryId)) return;
 
     setIsSubmitting(true);
     try {
@@ -157,6 +186,7 @@ export function AddToCatalogDialog({
     draft,
     defaultQualityProfileId,
     facet,
+    hasCatalogDestination,
     libraryRequired,
     onAdd,
     onOpenChange,
@@ -282,7 +312,7 @@ export function AddToCatalogDialog({
           )}
 
           {/* Root Folder */}
-          {selectedRootFolders.length >= 1 ? (
+          {selectableRootFolders.length >= 1 ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigRootFolder")}
@@ -296,7 +326,7 @@ export function AddToCatalogDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {selectedRootFolders.map((rf) => (
+                  {selectableRootFolders.map((rf) => (
                     <SelectItem key={rf.id} value={rf.id}>
                       {rf.path}
                     </SelectItem>
@@ -399,6 +429,7 @@ export function AddToCatalogDialog({
               isSubmitting ||
               catalogConfigLoading ||
               !qualityProfileValue ||
+              !hasCatalogDestination ||
               (libraryRequired && !selectedLibrary)
             }
             className="bg-primary text-primary-foreground hover:bg-primary/90"

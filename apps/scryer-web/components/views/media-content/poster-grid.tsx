@@ -7,6 +7,7 @@ import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scr
 import type { TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
+import { titleOverviewOpenButtonId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
   TitleCollectionEmptyState,
@@ -139,27 +140,28 @@ const PosterCard = React.memo(function PosterCard({
   return (
     <div
       className={cn(
-        "cv-auto-poster group rounded-xl transition-shadow",
-        selected &&
-          "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
+        "cv-auto-poster group motion-safe:transition-transform motion-safe:hover:-translate-y-1",
       )}
     >
       <div
         className={cn(
-          "overflow-hidden rounded-xl border bg-card shadow-[0_10px_24px_rgba(2,6,23,0.18)]",
-          selected ? "border-primary/70" : "border-border",
+          "overflow-hidden rounded-[12px] border bg-[var(--scry-card2)]",
+          selected
+            ? "border-[var(--scry-accent-ring)]"
+            : "border-[var(--scry-border2)] shadow-[0_8px_20px_rgba(0,0,0,0.4)]",
         )}
       >
         <div className="relative">
           <button
+            id={titleOverviewOpenButtonId(title.id)}
             type="button"
             onClick={handleActivate}
             aria-current={selected ? "true" : undefined}
             aria-controls={contextPanelControlsId}
-            className="block w-full overflow-hidden rounded-[calc(var(--radius)-1px)] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="block w-full overflow-hidden rounded-[11px] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >
-            <div className="relative isolate aspect-[2/3] overflow-hidden rounded-[calc(var(--radius)-1px)]">
+            <div className="relative isolate aspect-[2/3] overflow-hidden rounded-[11px]">
               <TitlePosterSlot
                 src={posterUrl}
                 sourceSrc={title.posterSourceUrl}
@@ -181,7 +183,7 @@ const PosterCard = React.memo(function PosterCard({
               >
                 <div
                   aria-hidden="true"
-                  className="absolute inset-0 rounded-[calc(var(--radius)-1px)] border border-white/15 bg-gradient-to-t from-black/82 via-black/18 to-transparent"
+                  className="absolute inset-0 rounded-[11px] border border-white/15 bg-gradient-to-t from-black/82 via-black/18 to-transparent"
                 />
               </div>
               <div
@@ -201,11 +203,11 @@ const PosterCard = React.memo(function PosterCard({
                 </p>
               </div>
 
-              <div className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/80 shadow-sm">
+              <div className="absolute left-[7px] top-[7px] z-20 flex h-[25px] w-[25px] items-center justify-center rounded-[7px] border border-white/10 bg-black/65 backdrop-blur-[4px]">
                 {title.monitored ? (
-                  <Eye className="h-4.5 w-4.5 text-emerald-400" />
+                  <Eye className="h-3.5 w-3.5 text-emerald-400" />
                 ) : (
-                  <EyeOff className="h-4.5 w-4.5 text-rose-400" />
+                  <EyeOff className="h-3.5 w-3.5 text-[var(--scry-faint2)]" />
                 )}
               </div>
             </div>

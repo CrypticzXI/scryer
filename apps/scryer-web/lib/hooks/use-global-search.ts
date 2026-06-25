@@ -179,6 +179,18 @@ function sameExternalIds(
   );
 }
 
+function sameStringList(
+  previous: string[] | null | undefined,
+  next: string[] | null | undefined,
+): boolean {
+  const previousItems = previous ?? [];
+  const nextItems = next ?? [];
+  return (
+    previousItems.length === nextItems.length &&
+    previousItems.every((item, index) => item === nextItems[index])
+  );
+}
+
 function sameTitleList(
   previous: TitleRecord[],
   next: TitleRecord[],
@@ -192,12 +204,29 @@ function sameTitleList(
         item.id === nextItem.id &&
         item.name === nextItem.name &&
         item.facet === nextItem.facet &&
+        item.libraryId === nextItem.libraryId &&
         item.monitored === nextItem.monitored &&
+        sameStringList(item.tags, nextItem.tags) &&
+        (item.libraryName ?? null) === (nextItem.libraryName ?? null) &&
+        (item.librarySlug ?? null) === (nextItem.librarySlug ?? null) &&
         (item.slug ?? null) === (nextItem.slug ?? null) &&
+        (item.sortTitle ?? null) === (nextItem.sortTitle ?? null) &&
         (item.year ?? null) === (nextItem.year ?? null) &&
         (item.posterUrl ?? null) === (nextItem.posterUrl ?? null) &&
         (item.posterSourceUrl ?? null) === (nextItem.posterSourceUrl ?? null) &&
+        (item.rootFolderId ?? null) === (nextItem.rootFolderId ?? null) &&
+        (item.rootFolderPath ?? null) === (nextItem.rootFolderPath ?? null) &&
+        (item.qualityTier ?? null) === (nextItem.qualityTier ?? null) &&
+        (item.currentQualityTier ?? null) ===
+          (nextItem.currentQualityTier ?? null) &&
+        (item.sizeBytes ?? null) === (nextItem.sizeBytes ?? null) &&
+        (item.episodesOwned ?? null) === (nextItem.episodesOwned ?? null) &&
+        (item.episodesMonitored ?? null) ===
+          (nextItem.episodesMonitored ?? null) &&
+        (item.episodesTotal ?? null) === (nextItem.episodesTotal ?? null) &&
+        (item.contentStatus ?? null) === (nextItem.contentStatus ?? null) &&
         (item.metadataFetchedAt ?? null) === (nextItem.metadataFetchedAt ?? null) &&
+        (item.createdAt ?? null) === (nextItem.createdAt ?? null) &&
         sameExternalIds(item.externalIds, nextItem.externalIds)
       );
     })
@@ -300,6 +329,28 @@ function normalizeCatalogAddRequestKey(
     .join("|");
 
   return `${facet}|${normalizedIds}`;
+}
+
+function metadataResultExternalIds(result: MetadataTvdbSearchItem): ExternalId[] {
+  const tvdbId = String(result.tvdbId).trim();
+  const imdbId = result.imdbId?.trim();
+  const seen = new Set<string>();
+  const ids: ExternalId[] = [];
+  for (const externalId of [
+    ...(result.externalIds ?? []),
+    ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+    ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+  ]) {
+    const source = externalId.source.trim().toLowerCase();
+    const value = externalId.value.trim();
+    const key = `${source}:${value}`;
+    if (!source || !value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ids.push({ source, value });
+  }
+  return ids;
 }
 
 function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, LibraryRecord[]> {
@@ -1260,12 +1311,7 @@ export function useGlobalSearch({
 
       const monitored = monitorTypeToMonitored(options.monitorType);
 
-      const tvdbId = String(result.tvdbId).trim();
-      const imdbId = result.imdbId?.trim();
-      const externalIds = [
-        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
-        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
-      ];
+      const externalIds = metadataResultExternalIds(result);
       const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
       if (pendingCatalogAddKeysRef.current.has(requestKey)) {
         return null;
@@ -1345,12 +1391,7 @@ export function useGlobalSearch({
         return false;
       }
 
-      const tvdbId = String(result.tvdbId).trim();
-      const imdbId = result.imdbId?.trim();
-      const externalIds = [
-        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
-        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
-      ];
+      const externalIds = metadataResultExternalIds(result);
       const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
       if (pendingRequestKeysRef.current.has(requestKey)) {
         return false;

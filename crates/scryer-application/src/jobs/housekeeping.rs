@@ -13,6 +13,8 @@ use tracing::{info, warn};
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
 const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
 const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
+const DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN: usize = 2;
+const DISCOVERY_DIAGNOSTIC_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone, Debug)]
 struct RecycleEntryLibrary {
@@ -613,11 +615,12 @@ impl AppUseCase {
             .await?;
 
         // 4. Stale staged NZB artifacts (> 1 hour old)
+        let now = self.runtime.environment.now();
         let staged_nzb_artifacts_pruned = self
             .services
             .workflow
             .staged_nzb_store
-            .prune_staged_nzbs_older_than(chrono::Utc::now() - chrono::Duration::hours(1))
+            .prune_staged_nzbs_older_than(now - chrono::Duration::hours(1))
             .await?;
 
         // 5. Purge expired recycle bin entries (per media root)
@@ -631,6 +634,28 @@ impl AppUseCase {
                 Err(e) => info!(error = %e, media_root = %media_root, "recycle bin purge failed"),
             }
         }
+
+        // 6. Discovery history retention.
+        let discovery_pruned_runs = match self
+            .services
+            .library
+            .discovery
+            .prune_discovery_history(
+                DISCOVERY_DEFAULT_SCOPE_KEY,
+                DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN,
+                now - chrono::Duration::days(DISCOVERY_DIAGNOSTIC_RETENTION_DAYS),
+            )
+            .await
+        {
+            Ok(report) => report.runs_deleted as u32,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed to prune discovery history during housekeeping"
+                );
+                0
+            }
+        };
 
         self.services
             .workflow
@@ -647,7 +672,8 @@ impl AppUseCase {
             stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
-            ran_at: chrono::Utc::now().to_rfc3339(),
+            discovery_pruned_runs,
+            ran_at: self.runtime.environment.now().to_rfc3339(),
         };
 
         info!(
@@ -665,6 +691,7 @@ impl AppUseCase {
             stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
+            discovery_pruned_runs,
             "housekeeping completed"
         );
 

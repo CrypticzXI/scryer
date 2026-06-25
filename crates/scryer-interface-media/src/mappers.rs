@@ -1,14 +1,17 @@
 use crate::types::*;
+use async_graphql::ID;
 use chrono::{DateTime, Utc};
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, BackupInfo, DeletePreview, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
-    IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
-    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
-    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    ActivityEvent, BackupInfo, DeletePreview, DiscoveryFacetRecord, DiscoveryHomeQuery,
+    DiscoveryHomeResult, DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult,
+    DiscoverySectionResult, DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
+    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
+    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
+    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
+    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
@@ -44,6 +47,35 @@ fn parse_required_datetime(value: &str, field: &str) -> DateTime<Utc> {
 
 fn parse_optional_datetime(value: Option<String>, field: &str) -> Option<DateTime<Utc>> {
     value.and_then(|value| parse_datetime(&value, field).ok())
+}
+
+fn json_text_values(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(raw)
+        .map(|value| {
+            let mut values = Vec::new();
+            collect_json_text_values(&value, &mut values);
+            values
+        })
+        .unwrap_or_default()
+}
+
+fn collect_json_text_values(value: &Value, values: &mut Vec<String>) {
+    match value {
+        Value::String(value) => values.push(value.clone()),
+        Value::Number(value) => values.push(value.to_string()),
+        Value::Bool(value) => values.push(value.to_string()),
+        Value::Array(items) => {
+            for item in items {
+                collect_json_text_values(item, values);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values() {
+                collect_json_text_values(value, values);
+            }
+        }
+        Value::Null => {}
+    }
 }
 
 fn provider_config_field_payload_options(
@@ -1477,6 +1509,195 @@ pub fn from_job_run(run: JobRun) -> JobRunPayload {
         error_text: run.error_text,
         progress_json: run.progress_json,
         library_scan_progress: run.library_scan_progress.map(from_library_scan_session),
+    }
+}
+
+pub fn from_discovery_sync_status(status: DiscoverySyncStatus) -> DiscoverySyncStatusPayload {
+    DiscoverySyncStatusPayload {
+        state: from_discovery_sync_state(status.state),
+        recent_runs: status
+            .recent_runs
+            .into_iter()
+            .map(from_discovery_sync_run)
+            .collect(),
+        pending_context_change_count: Long(status.pending_context_change_count),
+    }
+}
+
+pub fn from_discovery_sync_state(state: DiscoverySyncStateRecord) -> DiscoverySyncStatePayload {
+    DiscoverySyncStatePayload {
+        scope_key: state.scope_key,
+        last_success_generation_id: state.last_success_generation_id.map(ID::from),
+        last_public_feed_generation_id: state.last_public_feed_generation_id.map(ID::from),
+        last_subject_fingerprint: state.last_subject_fingerprint,
+        last_context_snapshot_completed_at: state.last_context_snapshot_completed_at,
+        last_incremental_reload_completed_at: state.last_incremental_reload_completed_at,
+        last_public_feed_completed_at: state.last_public_feed_completed_at,
+        dirty_since: state.dirty_since,
+        dirty_reason_mask: Long(state.dirty_reason_mask),
+        bootstrap_started_at: state.bootstrap_started_at,
+        bootstrap_quiet_until: state.bootstrap_quiet_until,
+        next_context_snapshot_eligible_at: state.next_context_snapshot_eligible_at,
+        next_incremental_reload_eligible_at: state.next_incremental_reload_eligible_at,
+        next_public_feed_eligible_at: state.next_public_feed_eligible_at,
+        backoff_until: state.backoff_until,
+        startup_jitter_seconds: Long(state.startup_jitter_seconds),
+        context_jitter_seconds: Long(state.context_jitter_seconds),
+        incremental_reload_jitter_seconds: Long(state.incremental_reload_jitter_seconds),
+        public_feed_jitter_seconds: Long(state.public_feed_jitter_seconds),
+        last_seen_domain_event_sequence: state.last_seen_domain_event_sequence.map(Long),
+        inflight_subject_fingerprint: state.inflight_subject_fingerprint,
+        inflight_domain_event_sequence: state.inflight_domain_event_sequence.map(Long),
+        updated_at: state.updated_at,
+    }
+}
+
+pub fn from_discovery_sync_run(run: DiscoverySyncRunRecord) -> DiscoverySyncRunPayload {
+    DiscoverySyncRunPayload {
+        id: run.id.into(),
+        kind: run.kind,
+        status: run.status,
+        trigger_source: run.trigger_source,
+        region: run.region,
+        language: run.language,
+        subject_count: Long(run.subject_count),
+        subject_fingerprint: run.subject_fingerprint,
+        previous_subject_fingerprint: run.previous_subject_fingerprint,
+        base_generation_id: run.base_generation_id.map(ID::from),
+        changed_subject_count: Long(run.changed_subject_count),
+        affected_target_count: Long(run.affected_target_count),
+        smg_request_id: run.smg_request_id,
+        smg_status: run.smg_status,
+        discovery_index_watermark: run.discovery_index_watermark,
+        page_count: run.page_count,
+        item_count: run.item_count.map(Long),
+        facet_count: run.facet_count.map(Long),
+        error_text: run.error_text,
+        started_at: run.started_at,
+        completed_at: run.completed_at,
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+    }
+}
+
+pub fn discovery_home_query_from_input(input: Option<DiscoveryHomeInput>) -> DiscoveryHomeQuery {
+    let input = input.unwrap_or_default();
+    DiscoveryHomeQuery {
+        include_public: input.include_public.unwrap_or(true),
+        include_personalized: input.include_personalized.unwrap_or(true),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        limit_per_section: input
+            .limit_per_section
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(25),
+    }
+}
+
+pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> DiscoveryItemsQuery {
+    let input = input.unwrap_or_default();
+    DiscoveryItemsQuery {
+        query: input.query,
+        target_kinds: input.target_kinds.unwrap_or_default(),
+        sources: input.sources.unwrap_or_default(),
+        relation_types: input.relation_types.unwrap_or_default(),
+        relation_subtypes: input.relation_subtypes.unwrap_or_default(),
+        genres: input.genres.unwrap_or_default(),
+        status_tags: input.status_tags.unwrap_or_default(),
+        facet_terms: input.facet_terms.unwrap_or_default(),
+        include_owned: input.include_owned.unwrap_or(false),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        include_public: false,
+        limit: input.limit.map(|value| value.max(1) as usize).unwrap_or(50),
+        offset: input.offset.map(|value| value.max(0) as usize).unwrap_or(0),
+    }
+}
+
+pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload {
+    DiscoveryHomePayload {
+        status: from_discovery_sync_status(result.status),
+        public_sections: result
+            .public_sections
+            .into_iter()
+            .map(from_discovery_section)
+            .collect(),
+        personalized_sections: result
+            .personalized_sections
+            .into_iter()
+            .map(from_discovery_section)
+            .collect(),
+        complete_collection: result.complete_collection.map(from_discovery_section),
+        facets: result
+            .facets
+            .into_iter()
+            .map(from_discovery_facet)
+            .collect(),
+        can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryItemsPayload {
+    DiscoveryItemsPayload {
+        items: result.items.into_iter().map(from_discovery_item).collect(),
+        total_count: Long(result.total_count),
+        can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_discovery_section(section: DiscoverySectionResult) -> DiscoverySectionPayload {
+    DiscoverySectionPayload {
+        section_id: section.section_id,
+        section_type: section.section_type,
+        title: section.title,
+        surface: section.surface,
+        total_count: Long(section.total_count),
+        items: section.items.into_iter().map(from_discovery_item).collect(),
+    }
+}
+
+pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
+    DiscoveryItemPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind: item.target_kind,
+        resolved: item.resolved,
+        resolved_title_id: item.resolved_title_id.map(ID::from),
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        background_url: item.background_url,
+        overview: item.overview,
+        content_type: item.content_type,
+        genres: json_text_values(&item.genres_json),
+        rating: item.rating,
+        status_tags: json_text_values(&item.status_tags_json),
+        source_tags: json_text_values(&item.source_tags_json),
+        sources: json_text_values(&item.sources_json),
+        best_source: item.best_source,
+        relation_types: json_text_values(&item.relation_types_json),
+        relation_subtypes: json_text_values(&item.relation_subtypes_json),
+        source_count: item.source_count,
+        edge_count: item.edge_count,
+        relation_count: item.relation_count,
+        source_subject_count: item.source_subject_count,
+        rank_score: item.rank_score,
+        matched_subject_titles: json_text_values(&item.matched_subject_titles_json),
+        matched_subject_count: item.matched_subject_count,
+        tmdb_collection_id: item.tmdb_collection_id,
+        tmdb_collection_name: item.tmdb_collection_name,
+        owned_in_input: item.owned_in_input,
+        facet_terms: json_text_values(&item.facet_terms_json),
+        context_terms: json_text_values(&item.context_terms_json),
+    }
+}
+
+pub fn from_discovery_facet(facet: DiscoveryFacetRecord) -> DiscoveryFacetPayload {
+    DiscoveryFacetPayload {
+        name: facet.facet_name,
+        value: facet.facet_value,
+        smg_count: facet.smg_count.map(Long),
+        local_count: facet.local_count.map(Long),
     }
 }
 

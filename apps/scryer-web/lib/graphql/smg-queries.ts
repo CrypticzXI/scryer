@@ -5,6 +5,7 @@ export type MetadataTvdbSearchItem = {
   tvdbId: string;
   name: string;
   imdbId: string | null;
+  externalIds?: Array<{ source: string; value: string }>;
   slug: string | null;
   type: string | null;
   year: number | null;

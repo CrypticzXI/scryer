@@ -1,13 +1,21 @@
 use super::*;
-use crate::discovery::{DiscoveryContextDefaults, build_discovery_library_context};
+use crate::discovery::{
+    DiscoveryContextDefaults, DiscoveryLibraryContext, build_discovery_library_context,
+    coalesce_pending_context_change, context_changes_raw_page_record, incremental_item_records,
+    pending_context_change_from_domain_event, pending_context_changes_need_snapshot_reconciliation,
+    public_feed_item_records, public_feed_raw_page_record, public_feed_section_records,
+    snapshot_facet_records, snapshot_item_records, snapshot_raw_page_record,
+};
 use crate::domain_events::{DomainEventActor, new_job_run_domain_event};
-use crate::event_views::replay_active_job_runs;
-use chrono::Utc;
+use crate::event_views::{replay_active_job_runs, replay_library_scan_state};
+use chrono::{DateTime, Utc};
 use scryer_domain::{
-    DomainEventFilter, DomainEventPayload, DomainEventType, JobNextRunUpdatedEventData,
-    JobRunCompletedEventData, JobRunFailedEventData, JobRunStartedEventData,
+    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType,
+    JobNextRunUpdatedEventData, JobRunCompletedEventData, JobRunFailedEventData,
+    JobRunStartedEventData,
 };
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -15,9 +23,16 @@ use tracing::{info, warn};
 const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 3600;
 const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
 const DISCOVERY_SYNC_INCREMENTAL_CADENCE_SECONDS: i64 = 4 * 60 * 60;
+const DISCOVERY_SYNC_LEASE_SECONDS: i64 = 30 * 60;
+const DISCOVERY_SYNC_MANUAL_CONTEXT_COOLDOWN_SECONDS: i64 = 15 * 60;
 const DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS: i64 = 24 * 60 * 60;
 const DISCOVERY_SYNC_JITTER_WINDOW_SECONDS: i64 = 6 * 60 * 60;
 const DISCOVERY_SYNC_BOOTSTRAP_JITTER_WINDOW_SECONDS: i64 = 10 * 60;
+const DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS: i64 = 10 * 60;
+const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT: usize = 500;
+const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES: usize = 20;
+const DISCOVERY_DIRTY_REASON_TITLE_CHANGE: i64 = 1 << 0;
+const DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY: i64 = 1 << 1;
 const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 
 fn is_background_library_refresh_job(job_key: JobKey) -> bool {
@@ -57,6 +72,175 @@ fn discovery_jitter_seconds(seed: &str, stream: &str, window_seconds: i64) -> i6
     let mut prefix = [0_u8; 8];
     prefix.copy_from_slice(&hash.as_bytes()[0..8]);
     (u64::from_le_bytes(prefix) % window_seconds) as i64
+}
+
+fn discovery_status_is(actual: &str, expected: &str) -> bool {
+    actual.trim().eq_ignore_ascii_case(expected)
+}
+
+fn discovery_snapshot_status_is_polling(status: &str) -> bool {
+    discovery_status_is(status, "ACCEPTED")
+        || discovery_status_is(status, "RUNNING")
+        || discovery_status_is(status, "BUILDING")
+}
+
+fn discovery_snapshot_status_is_terminal(status: &str) -> bool {
+    discovery_status_is(status, "FAILED")
+        || discovery_status_is(status, "CANCELED")
+        || discovery_status_is(status, "EXPIRED")
+}
+
+fn discovery_retry_after(now: DateTime<Utc>, retry_after_seconds: i32) -> DateTime<Utc> {
+    let seconds = i64::from(retry_after_seconds).clamp(5 * 60, 6 * 60 * 60);
+    now + chrono::Duration::seconds(seconds)
+}
+
+fn discovery_transient_retry_after(
+    state: &mut DiscoverySyncStateRecord,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
+    state.transient_failure_count = state.transient_failure_count.saturating_add(1);
+    let seconds = match state.transient_failure_count {
+        0 | 1 => 15 * 60,
+        2 => 60 * 60,
+        _ => 6 * 60 * 60,
+    };
+    now + chrono::Duration::seconds(seconds)
+}
+
+fn discovery_reset_transient_failure_count(state: &mut DiscoverySyncStateRecord) {
+    state.transient_failure_count = 0;
+}
+
+fn discovery_schedule_context_snapshot_retry(
+    state: &mut DiscoverySyncStateRecord,
+    retry_at: DateTime<Utc>,
+) {
+    state.backoff_until = Some(retry_at);
+    state.next_context_snapshot_eligible_at = Some(retry_at);
+}
+
+fn discovery_schedule_incremental_retry(
+    state: &mut DiscoverySyncStateRecord,
+    retry_at: DateTime<Utc>,
+) {
+    state.backoff_until = Some(retry_at);
+    state.next_incremental_reload_eligible_at = Some(retry_at);
+}
+
+fn discovery_schedule_public_feed_retry(
+    state: &mut DiscoverySyncStateRecord,
+    retry_at: DateTime<Utc>,
+) {
+    state.backoff_until = Some(retry_at);
+    state.next_public_feed_eligible_at = Some(retry_at);
+}
+
+fn discovery_next_run_at(
+    now: DateTime<Utc>,
+    next_incremental: DateTime<Utc>,
+    next_context: DateTime<Utc>,
+    next_public: DateTime<Utc>,
+    bootstrap_quiet_until: Option<DateTime<Utc>>,
+    backoff_until: Option<DateTime<Utc>>,
+    scan_blocked_retry_at: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    [
+        Some(next_incremental),
+        Some(next_context),
+        Some(next_public),
+        bootstrap_quiet_until,
+        backoff_until,
+        scan_blocked_retry_at,
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|candidate| *candidate >= now)
+    .min()
+    .unwrap_or(next_incremental)
+}
+
+fn discovery_pending_changes_are_quiet(
+    now: DateTime<Utc>,
+    pending_changes: &[DiscoveryPendingContextChangeRecord],
+) -> bool {
+    pending_changes
+        .iter()
+        .map(|change| change.last_seen_at)
+        .max()
+        .is_none_or(|last_seen| {
+            now >= last_seen + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS)
+        })
+}
+
+fn mark_discovery_context_dirty(state: &mut DiscoverySyncStateRecord, occurred_at: DateTime<Utc>) {
+    state.dirty_since = Some(
+        state
+            .dirty_since
+            .map(|existing| existing.min(occurred_at))
+            .unwrap_or(occurred_at),
+    );
+    state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_TITLE_CHANGE;
+}
+
+fn extend_discovery_bootstrap_quiet_window(
+    state: &mut DiscoverySyncStateRecord,
+    occurred_at: DateTime<Utc>,
+) {
+    if state.bootstrap_started_at.is_none() {
+        state.bootstrap_started_at = Some(occurred_at);
+    }
+    let quiet_until = occurred_at
+        + chrono::Duration::seconds(
+            DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS + state.startup_jitter_seconds,
+        );
+    state.bootstrap_quiet_until = Some(
+        state
+            .bootstrap_quiet_until
+            .map(|existing| existing.max(quiet_until))
+            .unwrap_or(quiet_until),
+    );
+}
+
+fn discovery_scan_boundary_event(event: &DomainEvent) -> bool {
+    matches!(
+        &event.payload,
+        DomainEventPayload::LibraryScanCompleted(_)
+            | DomainEventPayload::LibraryScanCanceled(_)
+            | DomainEventPayload::LibraryScanFailed(_)
+    )
+}
+
+fn discovery_context_dirty_event_types() -> Vec<DomainEventType> {
+    vec![
+        DomainEventType::TitleAdded,
+        DomainEventType::TitleUpdated,
+        DomainEventType::TitleRematched,
+        DomainEventType::TitleDeleted,
+        DomainEventType::LibraryScanCompleted,
+        DomainEventType::LibraryScanCanceled,
+        DomainEventType::LibraryScanFailed,
+    ]
+}
+
+fn discovery_scan_projection_event_types() -> Vec<DomainEventType> {
+    vec![
+        DomainEventType::LibraryScanStarted,
+        DomainEventType::LibraryScanProgressed,
+        DomainEventType::LibraryScanCompleted,
+        DomainEventType::LibraryScanCanceled,
+        DomainEventType::LibraryScanFailed,
+    ]
+}
+
+fn non_empty_discovery_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn discovery_json_string<T: serde::Serialize>(value: &T) -> AppResult<String> {
+    serde_json::to_string(value)
+        .map_err(|error| AppError::Repository(format!("failed to encode discovery JSON: {error}")))
 }
 
 fn next_hash_jittered_bucket(
@@ -129,6 +313,7 @@ struct HousekeepingRunSummary {
     stale_history_records: u32,
     staged_nzb_artifacts_pruned: u32,
     recycled_purged: u32,
+    discovery_pruned_runs: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -138,6 +323,10 @@ struct DiscoverySyncRunSummary {
     subject_count: usize,
     subject_fingerprint: String,
     subject_context_changed: bool,
+    ack_recovery: Option<DiscoveryAckRecoveryRunSummary>,
+    context_snapshot: Option<DiscoveryContextSnapshotRunSummary>,
+    context_incremental: Option<DiscoveryContextIncrementalRunSummary>,
+    public_feed: Option<DiscoveryPublicFeedRunSummary>,
     next_run_at: String,
     next_incremental_reload_eligible_at: String,
     next_context_snapshot_eligible_at: String,
@@ -146,6 +335,43 @@ struct DiscoverySyncRunSummary {
     context_jitter_seconds: i64,
     incremental_reload_jitter_seconds: i64,
     public_feed_jitter_seconds: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct DiscoveryAckRecoveryRunSummary {
+    attempted: i64,
+    acknowledged: i64,
+    failed_run_id: Option<String>,
+    next_retry_at: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct DiscoveryContextSnapshotRunSummary {
+    run_id: String,
+    committed: bool,
+    smg_request_id: Option<String>,
+    smg_status: Option<String>,
+    page_count: i32,
+    item_count: i64,
+    facet_count: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct DiscoveryContextIncrementalRunSummary {
+    run_id: String,
+    committed: bool,
+    smg_status: Option<String>,
+    changed_subject_count: i64,
+    affected_target_count: i64,
+    item_count: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct DiscoveryPublicFeedRunSummary {
+    run_id: String,
+    committed: bool,
+    section_count: i64,
+    item_count: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +473,61 @@ impl AppUseCase {
             .collect::<Vec<_>>();
         runs.sort_by_key(|run| run.started_at);
         Ok(runs)
+    }
+
+    async fn active_library_scan_run_count(&self) -> AppResult<usize> {
+        let runs = self.runtime.jobs.job_run_tracker.list_active().await;
+        let tracker_scan_count = runs
+            .iter()
+            .filter(|run| job_key_library_facet(run.job_key).is_some())
+            .count();
+        if tracker_scan_count > 0 {
+            return Ok(tracker_scan_count);
+        }
+
+        let runtime_scan_count = self
+            .active_library_scan_sessions()
+            .await
+            .iter()
+            .filter(|session| !session.status.is_terminal())
+            .count();
+        if runtime_scan_count > 0 {
+            return Ok(runtime_scan_count);
+        }
+
+        let mut events = Vec::new();
+        let mut after_sequence = 0i64;
+        let event_types = discovery_scan_projection_event_types();
+        loop {
+            let batch = self
+                .services
+                .events
+                .domain_events
+                .list(&DomainEventFilter {
+                    after_sequence: Some(after_sequence),
+                    event_types: Some(event_types.clone()),
+                    limit: DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT,
+                    ..DomainEventFilter::default()
+                })
+                .await?;
+            if batch.is_empty() {
+                break;
+            }
+            after_sequence = batch
+                .last()
+                .map(|event| event.sequence)
+                .unwrap_or(after_sequence);
+            let count = batch.len();
+            events.extend(batch);
+            if count < DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT {
+                break;
+            }
+        }
+
+        Ok(replay_library_scan_state(&events)
+            .values()
+            .filter(|session| !session.status.is_terminal())
+            .count())
     }
 
     pub async fn list_jobs(&self, actor: &User) -> AppResult<Vec<JobDefinition>> {
@@ -351,6 +632,37 @@ impl AppUseCase {
                     .unwrap_or_else(|| JobRun::from_record(&record, None))
             })
             .collect())
+    }
+
+    pub async fn discovery_sync_status(&self, actor: &User) -> AppResult<DiscoverySyncStatus> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let state = self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?
+            .unwrap_or_default();
+        let recent_runs = self
+            .services
+            .library
+            .discovery
+            .list_recent_discovery_sync_runs(10)
+            .await?;
+        let pending_context_change_count = self
+            .services
+            .library
+            .discovery
+            .count_pending_discovery_context_changes(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?;
+
+        Ok(DiscoverySyncStatus {
+            state,
+            recent_runs,
+            pending_context_change_count,
+        })
     }
 
     pub async fn subscribe_job_run_events(
@@ -855,6 +1167,7 @@ impl AppUseCase {
                         stale_history_records: report.stale_history_records,
                         staged_nzb_artifacts_pruned: report.staged_nzb_artifacts_pruned,
                         recycled_purged: report.recycled_purged,
+                        discovery_pruned_runs: report.discovery_pruned_runs,
                     })
                     .ok(),
                 ))
@@ -969,11 +1282,55 @@ impl AppUseCase {
         &self,
         trigger_source: JobTriggerSource,
     ) -> AppResult<JobExecutionOutcome> {
-        let now = Utc::now();
+        let lease_owner_id = format!("discovery-sync-{}", uuid::Uuid::new_v4());
+        let acquired_at = self.runtime.environment.now();
+        let acquired = self
+            .services
+            .library
+            .discovery
+            .try_acquire_discovery_sync_lease(
+                DISCOVERY_DEFAULT_SCOPE_KEY,
+                &lease_owner_id,
+                acquired_at + chrono::Duration::seconds(DISCOVERY_SYNC_LEASE_SECONDS),
+                acquired_at,
+            )
+            .await?;
+        if !acquired {
+            return Ok(JobExecutionOutcome::warning(
+                Some("Discovery sync is already running on another worker".to_string()),
+                None,
+            ));
+        }
+
+        let result = self
+            .run_discovery_sync_job_with_lease(trigger_source, &lease_owner_id)
+            .await;
+        let released_at = self.runtime.environment.now();
+        let release_result = self
+            .services
+            .library
+            .discovery
+            .release_discovery_sync_lease(DISCOVERY_DEFAULT_SCOPE_KEY, &lease_owner_id, released_at)
+            .await;
+        if let Err(error) = release_result {
+            warn!(
+                error = %error,
+                "failed to release discovery sync lease after job run"
+            );
+        }
+        result
+    }
+
+    async fn run_discovery_sync_job_with_lease(
+        &self,
+        trigger_source: JobTriggerSource,
+        lease_owner_id: &str,
+    ) -> AppResult<JobExecutionOutcome> {
+        let now = self.runtime.environment.now();
         let scheduler_seed = self.discovery_scheduler_seed().await?;
         let titles = self.services.catalog.titles.list(None, None).await?;
-        let library_context =
-            build_discovery_library_context(&titles, DiscoveryContextDefaults::default());
+        let defaults = DiscoveryContextDefaults::default();
+        let library_context = build_discovery_library_context(&titles, defaults.clone());
         let existing_state = self
             .services
             .library
@@ -982,6 +1339,9 @@ impl AppUseCase {
             .await?;
         let state_created = existing_state.is_none();
         let mut state = existing_state.unwrap_or_default();
+        let previous_incremental_gate = state.next_incremental_reload_eligible_at;
+        let previous_context_gate = state.next_context_snapshot_eligible_at;
+        let previous_public_gate = state.next_public_feed_eligible_at;
         let subject_context_changed =
             state.last_subject_fingerprint.as_deref() != Some(library_context.fingerprint.as_str());
 
@@ -1016,15 +1376,200 @@ impl AppUseCase {
             + chrono::Duration::seconds(
                 DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.public_feed_jitter_seconds,
             );
-        let next_run_at = [next_incremental, next_context, next_public]
-            .into_iter()
-            .min()
-            .unwrap_or(next_incremental);
 
         state.next_incremental_reload_eligible_at = Some(next_incremental);
         state.next_context_snapshot_eligible_at = Some(next_context);
         state.next_public_feed_eligible_at = Some(next_public);
         state.updated_at = now;
+
+        let ack_recovery = self
+            .retry_unacked_discovery_context_snapshot_acks(&mut state, now)
+            .await?;
+
+        self.catch_up_discovery_context_dirty_state(&mut state, now)
+            .await?;
+        let mut pending_changes = self
+            .services
+            .library
+            .discovery
+            .list_all_pending_discovery_context_changes(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await?;
+        let pending_changes_are_quiet = discovery_pending_changes_are_quiet(now, &pending_changes);
+        let unchanged_fingerprint_cleanup_due = state.last_success_generation_id.is_some()
+            && state.inflight_context_snapshot_run_id.is_none()
+            && !subject_context_changed
+            && state.dirty_since.is_some()
+            && pending_changes_are_quiet;
+        let cleanup_sequence = pending_changes
+            .iter()
+            .filter_map(|change| change.last_seen_sequence)
+            .max();
+        if unchanged_fingerprint_cleanup_due
+            && (pending_changes.is_empty() || cleanup_sequence.is_some())
+        {
+            if let Some(sequence) = cleanup_sequence {
+                self.services
+                    .library
+                    .discovery
+                    .clear_pending_discovery_context_changes_through_sequence(
+                        DISCOVERY_DEFAULT_SCOPE_KEY,
+                        sequence,
+                    )
+                    .await?;
+            }
+            state.dirty_since = None;
+            state.dirty_reason_mask = 0;
+            state.bootstrap_started_at = None;
+            state.bootstrap_quiet_until = None;
+            if let Some(sequence) = cleanup_sequence {
+                state.last_seen_domain_event_sequence = Some(
+                    state
+                        .last_seen_domain_event_sequence
+                        .unwrap_or_default()
+                        .max(sequence),
+                );
+            }
+            state.updated_at = now;
+            pending_changes.clear();
+        }
+        let incremental_changes_need_snapshot_reconciliation =
+            pending_context_changes_need_snapshot_reconciliation(&pending_changes);
+        let full_snapshot_reconciliation_due = state.last_success_generation_id.is_some()
+            && !pending_changes.is_empty()
+            && pending_changes_are_quiet
+            && incremental_changes_need_snapshot_reconciliation;
+
+        let active_scan_count = self.active_library_scan_run_count().await?;
+        let scans_active = active_scan_count > 0;
+        let scan_blocked_retry_at = scans_active
+            .then_some(now + chrono::Duration::seconds(DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS));
+        let snapshot_backoff_ready = state.backoff_until.is_none_or(|until| now >= until);
+        let snapshot_resume_due = state.inflight_context_snapshot_run_id.is_some()
+            && !scans_active
+            && snapshot_backoff_ready;
+        let last_context_reload_completed_at = [
+            state.last_context_snapshot_completed_at,
+            state.last_incremental_reload_completed_at,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        let manual_context_cooldown_active = trigger_source == JobTriggerSource::Manual
+            && state.last_success_generation_id.is_some()
+            && last_context_reload_completed_at.is_some_and(|completed_at| {
+                now < completed_at
+                    + chrono::Duration::seconds(DISCOVERY_SYNC_MANUAL_CONTEXT_COOLDOWN_SECONDS)
+            });
+        let snapshot_can_submit = !library_context.subjects.is_empty()
+            && !scans_active
+            && state.inflight_context_snapshot_run_id.is_none()
+            && !manual_context_cooldown_active
+            && snapshot_backoff_ready;
+        let context_snapshot_due = if snapshot_resume_due {
+            true
+        } else if snapshot_can_submit && state.last_success_generation_id.is_none() {
+            if subject_context_changed {
+                match state.bootstrap_quiet_until {
+                    Some(quiet_until) if now >= quiet_until => true,
+                    _ => {
+                        if state.bootstrap_started_at.is_none() {
+                            state.bootstrap_started_at = Some(now);
+                        }
+                        state.bootstrap_quiet_until = Some(
+                            now + chrono::Duration::seconds(
+                                DISCOVERY_SYNC_BOOTSTRAP_QUIET_SECONDS
+                                    + state.startup_jitter_seconds,
+                            ),
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else if snapshot_can_submit
+            && (previous_context_gate.is_some_and(|gate| now >= gate)
+                || full_snapshot_reconciliation_due)
+            && state.last_success_generation_id.is_some()
+        {
+            true
+        } else {
+            false
+        };
+
+        let context_snapshot = if context_snapshot_due {
+            Some(
+                self.execute_discovery_context_snapshot(
+                    trigger_source,
+                    &defaults,
+                    &library_context,
+                    &mut state,
+                    lease_owner_id,
+                    now,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        let incremental_due = context_snapshot.is_none()
+            && !scans_active
+            && state.last_success_generation_id.is_some()
+            && !pending_changes.is_empty()
+            && pending_changes_are_quiet
+            && !incremental_changes_need_snapshot_reconciliation
+            && previous_incremental_gate.is_some_and(|gate| now >= gate)
+            && state.inflight_context_snapshot_run_id.is_none()
+            && !manual_context_cooldown_active
+            && state.backoff_until.is_none_or(|until| now >= until);
+
+        let context_incremental = if incremental_due {
+            Some(
+                self.execute_discovery_context_incremental(
+                    trigger_source,
+                    &defaults,
+                    &library_context,
+                    &pending_changes,
+                    &mut state,
+                    now,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        let public_feed_due = (trigger_source == JobTriggerSource::Manual
+            || state.last_public_feed_generation_id.is_none()
+            || previous_public_gate.is_some_and(|gate| now >= gate))
+            && state.backoff_until.is_none_or(|until| now >= until);
+        let public_feed = if public_feed_due {
+            Some(
+                self.execute_discovery_public_feed(trigger_source, &defaults, &mut state, now)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let effective_next_incremental = state
+            .next_incremental_reload_eligible_at
+            .unwrap_or(next_incremental);
+        let effective_next_context = state
+            .next_context_snapshot_eligible_at
+            .unwrap_or(next_context);
+        let effective_next_public = state.next_public_feed_eligible_at.unwrap_or(next_public);
+
+        let next_run_at = discovery_next_run_at(
+            now,
+            effective_next_incremental,
+            effective_next_context,
+            effective_next_public,
+            state.bootstrap_quiet_until,
+            state.backoff_until,
+            scan_blocked_retry_at,
+        );
 
         self.services
             .library
@@ -1040,24 +1585,1050 @@ impl AppUseCase {
             subject_count: library_context.subjects.len(),
             subject_fingerprint: library_context.fingerprint.clone(),
             subject_context_changed,
+            ack_recovery,
+            context_snapshot,
+            context_incremental,
+            public_feed,
             next_run_at: next_run_at.to_rfc3339(),
-            next_incremental_reload_eligible_at: next_incremental.to_rfc3339(),
-            next_context_snapshot_eligible_at: next_context.to_rfc3339(),
-            next_public_feed_eligible_at: next_public.to_rfc3339(),
+            next_incremental_reload_eligible_at: effective_next_incremental.to_rfc3339(),
+            next_context_snapshot_eligible_at: effective_next_context.to_rfc3339(),
+            next_public_feed_eligible_at: effective_next_public.to_rfc3339(),
             startup_jitter_seconds: state.startup_jitter_seconds,
             context_jitter_seconds: state.context_jitter_seconds,
             incremental_reload_jitter_seconds: state.incremental_reload_jitter_seconds,
             public_feed_jitter_seconds: state.public_feed_jitter_seconds,
         };
+        let summary_json = serde_json::to_string(&summary).ok();
+
+        if trigger_source == JobTriggerSource::Manual
+            && summary
+                .ack_recovery
+                .as_ref()
+                .is_none_or(|ack_recovery| ack_recovery.attempted == 0)
+            && summary.context_snapshot.is_none()
+            && summary.context_incremental.is_none()
+            && summary.public_feed.is_none()
+        {
+            self.record_deferred_discovery_sync_run(
+                trigger_source,
+                &defaults,
+                &state,
+                library_context.subjects.len(),
+                Some(library_context.fingerprint.clone()),
+                now,
+                "No discovery sync work is currently eligible",
+            )
+            .await?;
+            return Ok(JobExecutionOutcome::warning(
+                Some("Discovery sync deferred; no work is currently eligible".to_string()),
+                summary_json,
+            ));
+        }
 
         Ok(JobExecutionOutcome::new(
             Some(format!(
                 "Discovery sync evaluated {} local subjects; next incremental reload window at {}",
                 library_context.subjects.len(),
-                next_incremental.to_rfc3339()
+                effective_next_incremental.to_rfc3339()
             )),
-            serde_json::to_string(&summary).ok(),
+            summary_json,
         ))
+    }
+
+    async fn record_deferred_discovery_sync_run(
+        &self,
+        trigger_source: JobTriggerSource,
+        defaults: &DiscoveryContextDefaults,
+        state: &DiscoverySyncStateRecord,
+        subject_count: usize,
+        subject_fingerprint: Option<String>,
+        observed_at: DateTime<Utc>,
+        reason: &str,
+    ) -> AppResult<()> {
+        let run = DiscoverySyncRunRecord {
+            id: format!("deferred-{}", uuid::Uuid::new_v4()),
+            kind: "deferred".to_string(),
+            status: "deferred".to_string(),
+            trigger_source: trigger_source.as_str().to_string(),
+            region: defaults.region.clone(),
+            language: defaults.language.clone(),
+            subject_count: subject_count as i64,
+            subject_fingerprint,
+            previous_subject_fingerprint: state.last_subject_fingerprint.clone(),
+            base_generation_id: state.last_success_generation_id.clone(),
+            changed_subject_count: 0,
+            affected_target_count: 0,
+            smg_request_id: None,
+            smg_status: None,
+            discovery_index_watermark: None,
+            page_count: None,
+            item_count: None,
+            facet_count: None,
+            raw_submit_json: None,
+            raw_changes_json: None,
+            raw_final_status_json: None,
+            raw_ack_json: None,
+            error_text: Some(reason.to_string()),
+            started_at: Some(observed_at),
+            completed_at: Some(observed_at),
+            created_at: observed_at,
+            updated_at: observed_at,
+        };
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_run(&run)
+            .await
+    }
+
+    async fn catch_up_discovery_context_dirty_state(
+        &self,
+        state: &mut DiscoverySyncStateRecord,
+        now: DateTime<Utc>,
+    ) -> AppResult<usize> {
+        let start_sequence = state.last_seen_domain_event_sequence.unwrap_or_default();
+        let mut after_sequence = start_sequence;
+        let mut max_seen_sequence = after_sequence;
+        let mut subject_change_count = 0usize;
+        let event_types = discovery_context_dirty_event_types();
+
+        for _ in 0..DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&DomainEventFilter {
+                    after_sequence: Some(after_sequence),
+                    event_types: Some(event_types.clone()),
+                    limit: DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT,
+                    ..DomainEventFilter::default()
+                })
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+
+            let batch_len = events.len();
+            for event in events {
+                after_sequence = after_sequence.max(event.sequence);
+                max_seen_sequence = max_seen_sequence.max(event.sequence);
+                let pending_change =
+                    pending_context_change_from_domain_event(DISCOVERY_DEFAULT_SCOPE_KEY, &event)?;
+                if let Some(change) = pending_change {
+                    subject_change_count += 1;
+                    mark_discovery_context_dirty(state, event.occurred_at);
+                    if state.last_success_generation_id.is_some() {
+                        let existing = self
+                            .services
+                            .library
+                            .discovery
+                            .get_pending_discovery_context_change(&change.id)
+                            .await?;
+                        match coalesce_pending_context_change(existing.as_ref(), change)? {
+                            Some(change) => {
+                                self.services
+                                    .library
+                                    .discovery
+                                    .upsert_pending_discovery_context_change(&change)
+                                    .await?;
+                            }
+                            None => {
+                                if let Some(existing) = existing.as_ref() {
+                                    self.services
+                                        .library
+                                        .discovery
+                                        .delete_pending_discovery_context_change(&existing.id)
+                                        .await?;
+                                }
+                            }
+                        }
+                    } else {
+                        extend_discovery_bootstrap_quiet_window(state, event.occurred_at);
+                    }
+                } else if discovery_scan_boundary_event(&event) && state.dirty_since.is_some() {
+                    state.dirty_reason_mask |= DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY;
+                }
+            }
+
+            if batch_len < DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_BATCH_LIMIT {
+                break;
+            }
+        }
+
+        if max_seen_sequence > start_sequence {
+            state.last_seen_domain_event_sequence = Some(
+                state
+                    .last_seen_domain_event_sequence
+                    .unwrap_or_default()
+                    .max(max_seen_sequence),
+            );
+            state.updated_at = now;
+        }
+
+        Ok(subject_change_count)
+    }
+
+    async fn retry_unacked_discovery_context_snapshot_acks(
+        &self,
+        state: &mut DiscoverySyncStateRecord,
+        now: DateTime<Utc>,
+    ) -> AppResult<Option<DiscoveryAckRecoveryRunSummary>> {
+        let mut runs = self
+            .services
+            .library
+            .discovery
+            .list_unacked_discovery_context_snapshot_runs(10)
+            .await?;
+        if runs.is_empty() {
+            return Ok(None);
+        }
+
+        let mut summary = DiscoveryAckRecoveryRunSummary {
+            attempted: 0,
+            acknowledged: 0,
+            failed_run_id: None,
+            next_retry_at: None,
+        };
+
+        for run in &mut runs {
+            let Some(request_id) = run.smg_request_id.clone() else {
+                continue;
+            };
+            summary.attempted += 1;
+            match self
+                .services
+                .library
+                .metadata_gateway
+                .acknowledge_discovery_context_snapshot(&request_id)
+                .await
+            {
+                Ok(ack) => {
+                    run.raw_ack_json = Some(discovery_json_string(&ack)?);
+                    run.status = "complete".to_string();
+                    run.error_text = None;
+                    run.updated_at = now;
+                    self.services
+                        .library
+                        .discovery
+                        .upsert_discovery_sync_run(run)
+                        .await?;
+                    discovery_reset_transient_failure_count(state);
+                    summary.acknowledged += 1;
+                }
+                Err(error) => {
+                    let failed_at = now;
+                    let retry_at = discovery_transient_retry_after(state, failed_at);
+                    run.status = "warning".to_string();
+                    run.error_text = Some(format!(
+                        "local discovery snapshot committed but SMG ack retry failed: {error}"
+                    ));
+                    run.updated_at = failed_at;
+                    self.services
+                        .library
+                        .discovery
+                        .upsert_discovery_sync_run(run)
+                        .await?;
+                    state.backoff_until = Some(retry_at);
+                    state.updated_at = failed_at;
+                    summary.failed_run_id = Some(run.id.clone());
+                    summary.next_retry_at = Some(retry_at.to_rfc3339());
+                    break;
+                }
+            }
+        }
+
+        if summary.attempted == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(summary))
+        }
+    }
+
+    async fn execute_discovery_public_feed(
+        &self,
+        trigger_source: JobTriggerSource,
+        defaults: &DiscoveryContextDefaults,
+        state: &mut DiscoverySyncStateRecord,
+        started_at: DateTime<Utc>,
+    ) -> AppResult<DiscoveryPublicFeedRunSummary> {
+        let run_id = format!("public-feed-{}", uuid::Uuid::new_v4());
+        let mut run = DiscoverySyncRunRecord {
+            id: run_id.clone(),
+            kind: "public_feed".to_string(),
+            status: "running".to_string(),
+            trigger_source: trigger_source.as_str().to_string(),
+            region: defaults.region.clone(),
+            language: defaults.language.clone(),
+            subject_count: 0,
+            subject_fingerprint: None,
+            previous_subject_fingerprint: None,
+            base_generation_id: None,
+            changed_subject_count: 0,
+            affected_target_count: 0,
+            smg_request_id: None,
+            smg_status: None,
+            discovery_index_watermark: None,
+            page_count: None,
+            item_count: None,
+            facet_count: None,
+            raw_submit_json: None,
+            raw_changes_json: None,
+            raw_final_status_json: None,
+            raw_ack_json: None,
+            error_text: None,
+            started_at: Some(started_at),
+            completed_at: None,
+            created_at: started_at,
+            updated_at: started_at,
+        };
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_run(&run)
+            .await?;
+
+        let input = defaults.public_feed_input();
+        let result = match self
+            .services
+            .library
+            .metadata_gateway
+            .discover_public_feed(&input)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.fail_discovery_sync_run(&mut run, &error.to_string())
+                    .await?;
+                let failed_at = self.runtime.environment.now();
+                let retry_at = discovery_transient_retry_after(state, failed_at);
+                discovery_schedule_public_feed_retry(state, retry_at);
+                state.updated_at = failed_at;
+                return Ok(DiscoveryPublicFeedRunSummary {
+                    run_id,
+                    committed: false,
+                    section_count: 0,
+                    item_count: 0,
+                });
+            }
+        };
+
+        let completed_at = self.runtime.environment.now();
+        let raw_feed = public_feed_raw_page_record(&run_id, &result, completed_at)?;
+        let sections = public_feed_section_records(&run_id, &result, completed_at)?;
+        let items = public_feed_item_records(&run_id, &result, completed_at)?;
+        let facet_count = result
+            .sections
+            .iter()
+            .filter(|section| {
+                !section
+                    .section_type
+                    .trim()
+                    .eq_ignore_ascii_case("COMPLETE_THE_COLLECTION")
+            })
+            .map(|section| section.facets.len() as i64)
+            .sum::<i64>();
+
+        run.status = "complete".to_string();
+        run.smg_status = Some("COMPLETE".to_string());
+        run.page_count = Some(sections.len() as i32);
+        run.item_count = Some(items.len() as i64);
+        run.facet_count = Some(facet_count);
+        run.raw_submit_json = Some(discovery_json_string(&input)?);
+        run.raw_final_status_json = Some(discovery_json_string(&result)?);
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+
+        state.last_public_feed_generation_id = Some(run_id.clone());
+        state.last_public_feed_completed_at = Some(completed_at);
+        state.next_public_feed_eligible_at = Some(
+            completed_at
+                + chrono::Duration::seconds(
+                    DISCOVERY_SYNC_DAILY_BACKSTOP_SECONDS + state.public_feed_jitter_seconds,
+                ),
+        );
+        state.backoff_until = None;
+        discovery_reset_transient_failure_count(state);
+        state.updated_at = completed_at;
+
+        self.services
+            .library
+            .discovery
+            .commit_discovery_public_feed(&DiscoveryPublicFeedCommit {
+                state: state.clone(),
+                run: run.clone(),
+                raw_feed,
+                sections: sections.clone(),
+                items: items.clone(),
+            })
+            .await?;
+
+        Ok(DiscoveryPublicFeedRunSummary {
+            run_id,
+            committed: true,
+            section_count: sections.len() as i64,
+            item_count: items.len() as i64,
+        })
+    }
+
+    async fn renew_discovery_sync_lease(&self, lease_owner_id: &str) -> AppResult<bool> {
+        let now = self.runtime.environment.now();
+        self.services
+            .library
+            .discovery
+            .renew_discovery_sync_lease(
+                DISCOVERY_DEFAULT_SCOPE_KEY,
+                lease_owner_id,
+                now + chrono::Duration::seconds(DISCOVERY_SYNC_LEASE_SECONDS),
+                now,
+            )
+            .await
+    }
+
+    async fn execute_discovery_context_snapshot(
+        &self,
+        trigger_source: JobTriggerSource,
+        defaults: &DiscoveryContextDefaults,
+        library_context: &DiscoveryLibraryContext,
+        state: &mut DiscoverySyncStateRecord,
+        lease_owner_id: &str,
+        started_at: DateTime<Utc>,
+    ) -> AppResult<DiscoveryContextSnapshotRunSummary> {
+        let mut resumed_run = None;
+        if let Some(run_id) = state.inflight_context_snapshot_run_id.clone() {
+            match self
+                .services
+                .library
+                .discovery
+                .get_discovery_sync_run(&run_id)
+                .await?
+            {
+                Some(run) if run.smg_request_id.is_some() => {
+                    resumed_run = Some(run);
+                }
+                _ => {
+                    state.inflight_context_snapshot_run_id = None;
+                    state.inflight_subject_fingerprint = None;
+                    state.inflight_domain_event_sequence = None;
+                }
+            }
+        }
+
+        let (run_id, mut run, request_id) = if let Some(mut run) = resumed_run {
+            run.status = "running".to_string();
+            run.error_text = None;
+            run.updated_at = started_at;
+            let request_id = run
+                .smg_request_id
+                .clone()
+                .expect("resumed discovery snapshot run has request id");
+            (run.id.clone(), run, request_id)
+        } else {
+            let run_id = format!("context-snapshot-{}", uuid::Uuid::new_v4());
+            let mut run = DiscoverySyncRunRecord {
+                id: run_id.clone(),
+                kind: "context_snapshot".to_string(),
+                status: "running".to_string(),
+                trigger_source: trigger_source.as_str().to_string(),
+                region: defaults.region.clone(),
+                language: defaults.language.clone(),
+                subject_count: library_context.subjects.len() as i64,
+                subject_fingerprint: Some(library_context.fingerprint.clone()),
+                previous_subject_fingerprint: state.last_subject_fingerprint.clone(),
+                base_generation_id: None,
+                changed_subject_count: 0,
+                affected_target_count: 0,
+                smg_request_id: None,
+                smg_status: None,
+                discovery_index_watermark: None,
+                page_count: None,
+                item_count: None,
+                facet_count: None,
+                raw_submit_json: None,
+                raw_changes_json: None,
+                raw_final_status_json: None,
+                raw_ack_json: None,
+                error_text: None,
+                started_at: Some(started_at),
+                completed_at: None,
+                created_at: started_at,
+                updated_at: started_at,
+            };
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+
+            let submit_input = library_context.snapshot_submit_input(defaults);
+            let submit_result = match self
+                .services
+                .library
+                .metadata_gateway
+                .submit_discovery_context_snapshot(&submit_input)
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    let failed_at = self.runtime.environment.now();
+                    run.status = "deferred".to_string();
+                    run.error_text = Some(format!("SMG discovery snapshot submit failed: {error}"));
+                    run.completed_at = Some(failed_at);
+                    run.updated_at = failed_at;
+                    let retry_at = discovery_transient_retry_after(state, failed_at);
+                    discovery_schedule_context_snapshot_retry(state, retry_at);
+                    state.updated_at = failed_at;
+                    self.services
+                        .library
+                        .discovery
+                        .upsert_discovery_sync_run(&run)
+                        .await?;
+                    return Ok(DiscoveryContextSnapshotRunSummary {
+                        run_id,
+                        committed: false,
+                        smg_request_id: None,
+                        smg_status: run.smg_status.clone(),
+                        page_count: 0,
+                        item_count: 0,
+                        facet_count: 0,
+                    });
+                }
+            };
+
+            let now = self.runtime.environment.now();
+            run.raw_submit_json = Some(discovery_json_string(&submit_result)?);
+            run.smg_status = Some(submit_result.status.clone());
+            run.smg_request_id = submit_result.request_id.clone();
+            run.updated_at = now;
+
+            let Some(request_id) = submit_result.request_id.clone() else {
+                run.status = "deferred".to_string();
+                run.error_text = Some("SMG discovery snapshot was not accepted".to_string());
+                run.completed_at = Some(now);
+                let retry_at = discovery_retry_after(now, submit_result.retry_after_seconds);
+                discovery_schedule_context_snapshot_retry(state, retry_at);
+                state.updated_at = now;
+                self.services
+                    .library
+                    .discovery
+                    .upsert_discovery_sync_run(&run)
+                    .await?;
+                return Ok(DiscoveryContextSnapshotRunSummary {
+                    run_id,
+                    committed: false,
+                    smg_request_id: None,
+                    smg_status: run.smg_status.clone(),
+                    page_count: 0,
+                    item_count: 0,
+                    facet_count: 0,
+                });
+            };
+
+            state.inflight_context_snapshot_run_id = Some(run_id.clone());
+            state.inflight_subject_fingerprint = Some(library_context.fingerprint.clone());
+            state.inflight_domain_event_sequence = state.last_seen_domain_event_sequence;
+            state.updated_at = now;
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+            (run_id, run, request_id)
+        };
+
+        let status_result = match self
+            .services
+            .library
+            .metadata_gateway
+            .discovery_context_snapshot_status(&request_id)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let failed_at = self.runtime.environment.now();
+                run.status = "deferred".to_string();
+                run.error_text = Some(format!("SMG discovery snapshot status failed: {error}"));
+                run.completed_at = Some(failed_at);
+                run.updated_at = failed_at;
+                let retry_at = discovery_transient_retry_after(state, failed_at);
+                discovery_schedule_context_snapshot_retry(state, retry_at);
+                state.updated_at = failed_at;
+                self.services
+                    .library
+                    .discovery
+                    .upsert_discovery_sync_run(&run)
+                    .await?;
+                return Ok(DiscoveryContextSnapshotRunSummary {
+                    run_id,
+                    committed: false,
+                    smg_request_id: Some(request_id),
+                    smg_status: run.smg_status.clone(),
+                    page_count: 0,
+                    item_count: 0,
+                    facet_count: 0,
+                });
+            }
+        };
+
+        let status_checked_at = self.runtime.environment.now();
+        run.raw_final_status_json = Some(discovery_json_string(&status_result)?);
+        run.smg_status = Some(status_result.status.clone());
+        run.discovery_index_watermark =
+            non_empty_discovery_string(status_result.discovery_index_watermark.as_str());
+        run.page_count = Some(status_result.page_count);
+        run.item_count = Some(i64::from(status_result.item_count));
+        run.facet_count = Some(i64::from(status_result.facet_count));
+        run.updated_at = status_checked_at;
+
+        if !discovery_status_is(&status_result.status, "COMPLETE") {
+            run.status = if discovery_snapshot_status_is_terminal(&status_result.status) {
+                "failed".to_string()
+            } else {
+                "deferred".to_string()
+            };
+            run.error_text = Some(format!(
+                "SMG discovery snapshot status is {}",
+                status_result.status
+            ));
+            run.completed_at = Some(status_checked_at);
+            state.inflight_subject_fingerprint = Some(library_context.fingerprint.clone());
+            let retry_at =
+                discovery_retry_after(status_checked_at, status_result.retry_after_seconds);
+            discovery_schedule_context_snapshot_retry(state, retry_at);
+            if discovery_snapshot_status_is_polling(&status_result.status) {
+                state.inflight_context_snapshot_run_id = Some(run_id.clone());
+                state.inflight_subject_fingerprint = Some(library_context.fingerprint.clone());
+            } else {
+                state.inflight_context_snapshot_run_id = None;
+                state.inflight_subject_fingerprint = None;
+                state.inflight_domain_event_sequence = None;
+            }
+            state.updated_at = status_checked_at;
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+            return Ok(DiscoveryContextSnapshotRunSummary {
+                run_id,
+                committed: false,
+                smg_request_id: Some(request_id),
+                smg_status: run.smg_status.clone(),
+                page_count: status_result.page_count,
+                item_count: i64::from(status_result.item_count),
+                facet_count: i64::from(status_result.facet_count),
+            });
+        }
+
+        if !self.renew_discovery_sync_lease(lease_owner_id).await? {
+            let failed_at = self.runtime.environment.now();
+            run.status = "deferred".to_string();
+            run.error_text = Some("discovery sync lease was lost before page fetch".to_string());
+            run.completed_at = Some(failed_at);
+            run.updated_at = failed_at;
+            let retry_at = discovery_transient_retry_after(state, failed_at);
+            discovery_schedule_context_snapshot_retry(state, retry_at);
+            state.updated_at = failed_at;
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+            return Ok(DiscoveryContextSnapshotRunSummary {
+                run_id,
+                committed: false,
+                smg_request_id: Some(request_id),
+                smg_status: run.smg_status.clone(),
+                page_count: status_result.page_count,
+                item_count: i64::from(status_result.item_count),
+                facet_count: i64::from(status_result.facet_count),
+            });
+        }
+
+        let mut pages = Vec::new();
+        for page_number in 1..=status_result.page_count.max(0) {
+            let page = match self
+                .services
+                .library
+                .metadata_gateway
+                .discovery_context_snapshot_page(&request_id, page_number)
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    let failed_at = self.runtime.environment.now();
+                    run.status = "deferred".to_string();
+                    run.error_text =
+                        Some(format!("SMG discovery snapshot page fetch failed: {error}"));
+                    run.completed_at = Some(failed_at);
+                    run.updated_at = failed_at;
+                    state.inflight_context_snapshot_run_id = Some(run_id.clone());
+                    state.inflight_subject_fingerprint = Some(library_context.fingerprint.clone());
+                    let retry_at = discovery_transient_retry_after(state, failed_at);
+                    discovery_schedule_context_snapshot_retry(state, retry_at);
+                    state.updated_at = failed_at;
+                    self.services
+                        .library
+                        .discovery
+                        .upsert_discovery_sync_run(&run)
+                        .await?;
+                    return Ok(DiscoveryContextSnapshotRunSummary {
+                        run_id,
+                        committed: false,
+                        smg_request_id: Some(request_id),
+                        smg_status: run.smg_status.clone(),
+                        page_count: status_result.page_count,
+                        item_count: i64::from(status_result.item_count),
+                        facet_count: i64::from(status_result.facet_count),
+                    });
+                }
+            };
+            pages.push(page);
+        }
+
+        if !self.renew_discovery_sync_lease(lease_owner_id).await? {
+            let failed_at = self.runtime.environment.now();
+            run.status = "deferred".to_string();
+            run.error_text =
+                Some("discovery sync lease was lost before snapshot commit".to_string());
+            run.completed_at = Some(failed_at);
+            run.updated_at = failed_at;
+            let retry_at = discovery_transient_retry_after(state, failed_at);
+            discovery_schedule_context_snapshot_retry(state, retry_at);
+            state.updated_at = failed_at;
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+            return Ok(DiscoveryContextSnapshotRunSummary {
+                run_id,
+                committed: false,
+                smg_request_id: Some(request_id),
+                smg_status: run.smg_status.clone(),
+                page_count: status_result.page_count,
+                item_count: i64::from(status_result.item_count),
+                facet_count: i64::from(status_result.facet_count),
+            });
+        }
+
+        let completed_at = self.runtime.environment.now();
+        let raw_pages = pages
+            .iter()
+            .map(|page| snapshot_raw_page_record(&run_id, page, completed_at))
+            .collect::<AppResult<Vec<_>>>()?;
+        let snapshot_titles = pages
+            .iter()
+            .flat_map(|page| page.items.iter().cloned())
+            .collect::<Vec<_>>();
+        let items = snapshot_item_records(&run_id, &run_id, &snapshot_titles, completed_at)?;
+        let facets = snapshot_facet_records(&run_id, &pages)?;
+        let submitted_subjects = library_context.submitted_subject_records(&run_id)?;
+
+        run.status = "complete".to_string();
+        run.discovery_index_watermark =
+            non_empty_discovery_string(status_result.discovery_index_watermark.as_str());
+        run.page_count = Some(status_result.page_count);
+        run.item_count = Some(items.len() as i64);
+        run.facet_count = Some(facets.len() as i64);
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+
+        state.last_success_generation_id = Some(run_id.clone());
+        state.last_subject_fingerprint = Some(library_context.fingerprint.clone());
+        state.last_context_snapshot_completed_at = Some(completed_at);
+        let clear_pending_through_sequence = state.inflight_domain_event_sequence;
+        let submitted_fingerprint_still_current = state
+            .inflight_subject_fingerprint
+            .as_deref()
+            .is_some_and(|fingerprint| fingerprint == library_context.fingerprint);
+        let has_newer_dirty_events = match (
+            state.last_seen_domain_event_sequence,
+            clear_pending_through_sequence,
+        ) {
+            (Some(last_seen), Some(captured)) => last_seen > captured,
+            _ => false,
+        };
+        if !has_newer_dirty_events && submitted_fingerprint_still_current {
+            state.dirty_since = None;
+            state.dirty_reason_mask = 0;
+        }
+        state.bootstrap_started_at = None;
+        state.bootstrap_quiet_until = None;
+        state.backoff_until = None;
+        discovery_reset_transient_failure_count(state);
+        state.inflight_context_snapshot_run_id = None;
+        state.inflight_subject_fingerprint = None;
+        state.inflight_domain_event_sequence = None;
+        state.updated_at = completed_at;
+
+        self.services
+            .library
+            .discovery
+            .commit_discovery_context_snapshot(&DiscoveryContextSnapshotCommit {
+                state: state.clone(),
+                run: run.clone(),
+                raw_pages,
+                submitted_subjects,
+                items: items.clone(),
+                facets: facets.clone(),
+                clear_pending_through_sequence,
+            })
+            .await?;
+
+        match self
+            .services
+            .library
+            .metadata_gateway
+            .acknowledge_discovery_context_snapshot(&request_id)
+            .await
+        {
+            Ok(ack) => {
+                run.raw_ack_json = Some(discovery_json_string(&ack)?);
+                run.updated_at = self.runtime.environment.now();
+                self.services
+                    .library
+                    .discovery
+                    .upsert_discovery_sync_run(&run)
+                    .await?;
+            }
+            Err(error) => {
+                let failed_at = self.runtime.environment.now();
+                run.status = "warning".to_string();
+                run.error_text = Some(format!(
+                    "local discovery snapshot committed but SMG ack failed: {error}"
+                ));
+                run.updated_at = failed_at;
+                state.backoff_until = Some(discovery_transient_retry_after(state, failed_at));
+                state.updated_at = failed_at;
+                self.services
+                    .library
+                    .discovery
+                    .upsert_discovery_sync_run(&run)
+                    .await?;
+            }
+        }
+
+        Ok(DiscoveryContextSnapshotRunSummary {
+            run_id,
+            committed: true,
+            smg_request_id: Some(request_id),
+            smg_status: run.smg_status.clone(),
+            page_count: status_result.page_count,
+            item_count: items.len() as i64,
+            facet_count: facets.len() as i64,
+        })
+    }
+
+    async fn execute_discovery_context_incremental(
+        &self,
+        trigger_source: JobTriggerSource,
+        defaults: &DiscoveryContextDefaults,
+        library_context: &DiscoveryLibraryContext,
+        pending_changes: &[DiscoveryPendingContextChangeRecord],
+        state: &mut DiscoverySyncStateRecord,
+        started_at: DateTime<Utc>,
+    ) -> AppResult<DiscoveryContextIncrementalRunSummary> {
+        let run_id = format!("context-incremental-{}", uuid::Uuid::new_v4());
+        let base_generation_id = state.last_success_generation_id.clone().ok_or_else(|| {
+            AppError::Validation("discovery incremental requires an active generation".into())
+        })?;
+        let previous_fingerprint = state.last_subject_fingerprint.clone().ok_or_else(|| {
+            AppError::Validation("discovery incremental requires a previous fingerprint".into())
+        })?;
+        let covered_sequence = pending_changes
+            .iter()
+            .filter_map(|change| change.last_seen_sequence)
+            .max();
+        let input = library_context.incremental_changes_input(
+            defaults,
+            pending_changes,
+            &previous_fingerprint,
+        )?;
+
+        let mut run = DiscoverySyncRunRecord {
+            id: run_id.clone(),
+            kind: "context_incremental".to_string(),
+            status: "running".to_string(),
+            trigger_source: trigger_source.as_str().to_string(),
+            region: defaults.region.clone(),
+            language: defaults.language.clone(),
+            subject_count: library_context.subjects.len() as i64,
+            subject_fingerprint: Some(library_context.fingerprint.clone()),
+            previous_subject_fingerprint: Some(previous_fingerprint),
+            base_generation_id: Some(base_generation_id.clone()),
+            changed_subject_count: pending_changes.len() as i64,
+            affected_target_count: 0,
+            smg_request_id: None,
+            smg_status: None,
+            discovery_index_watermark: None,
+            page_count: None,
+            item_count: None,
+            facet_count: None,
+            raw_submit_json: None,
+            raw_changes_json: None,
+            raw_final_status_json: None,
+            raw_ack_json: None,
+            error_text: None,
+            started_at: Some(started_at),
+            completed_at: None,
+            created_at: started_at,
+            updated_at: started_at,
+        };
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_run(&run)
+            .await?;
+
+        let result = match self
+            .services
+            .library
+            .metadata_gateway
+            .discovery_context_changes(&input)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let failed_at = self.runtime.environment.now();
+                run.status = "deferred".to_string();
+                run.error_text = Some(format!("SMG discovery incremental request failed: {error}"));
+                run.completed_at = Some(failed_at);
+                run.updated_at = failed_at;
+                let retry_at = discovery_transient_retry_after(state, failed_at);
+                discovery_schedule_incremental_retry(state, retry_at);
+                state.updated_at = failed_at;
+                self.services
+                    .library
+                    .discovery
+                    .upsert_discovery_sync_run(&run)
+                    .await?;
+                return Ok(DiscoveryContextIncrementalRunSummary {
+                    run_id,
+                    committed: false,
+                    smg_status: run.smg_status.clone(),
+                    changed_subject_count: run.changed_subject_count,
+                    affected_target_count: run.affected_target_count,
+                    item_count: 0,
+                });
+            }
+        };
+
+        let completed_at = self.runtime.environment.now();
+        run.raw_changes_json = Some(discovery_json_string(&result)?);
+        run.smg_status = Some(result.status.clone());
+        run.discovery_index_watermark =
+            non_empty_discovery_string(&result.discovery_index_watermark);
+        run.changed_subject_count = i64::from(result.changed_subject_count);
+        run.affected_target_count = result.affected_target_keys.len() as i64;
+        run.item_count = Some(result.items.len() as i64);
+        run.updated_at = completed_at;
+
+        if !discovery_status_is(&result.status, "COMPLETE") {
+            run.status = "deferred".to_string();
+            run.error_text = Some(format!(
+                "SMG discovery incremental status is {}",
+                result.status
+            ));
+            run.completed_at = Some(completed_at);
+            let retry_at = discovery_retry_after(completed_at, result.retry_after_seconds);
+            discovery_schedule_incremental_retry(state, retry_at);
+            state.updated_at = completed_at;
+            self.services
+                .library
+                .discovery
+                .upsert_discovery_sync_run(&run)
+                .await?;
+            return Ok(DiscoveryContextIncrementalRunSummary {
+                run_id,
+                committed: false,
+                smg_status: run.smg_status.clone(),
+                changed_subject_count: run.changed_subject_count,
+                affected_target_count: run.affected_target_count,
+                item_count: 0,
+            });
+        }
+
+        let items =
+            incremental_item_records(&run_id, &base_generation_id, &result.items, completed_at)?;
+        let mut tombstone_target_keys = result
+            .affected_target_keys
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        tombstone_target_keys.extend(result.items.iter().map(|item| item.target_key.clone()));
+        let tombstone_target_keys = tombstone_target_keys.into_iter().collect::<Vec<_>>();
+
+        run.status = "complete".to_string();
+        run.item_count = Some(items.len() as i64);
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+
+        state.last_subject_fingerprint = Some(library_context.fingerprint.clone());
+        state.last_incremental_reload_completed_at = Some(completed_at);
+        state.next_incremental_reload_eligible_at = Some(next_hash_jittered_bucket(
+            completed_at,
+            state.incremental_reload_jitter_seconds,
+        ));
+        let has_newer_dirty_events = match (state.last_seen_domain_event_sequence, covered_sequence)
+        {
+            (Some(last_seen), Some(covered)) => last_seen > covered,
+            _ => false,
+        };
+        if !has_newer_dirty_events {
+            state.dirty_since = None;
+            state.dirty_reason_mask = 0;
+        }
+        state.backoff_until = None;
+        discovery_reset_transient_failure_count(state);
+        if let Some(sequence) = covered_sequence {
+            state.last_seen_domain_event_sequence = Some(
+                state
+                    .last_seen_domain_event_sequence
+                    .unwrap_or_default()
+                    .max(sequence),
+            );
+        }
+        state.updated_at = completed_at;
+
+        let raw_changes = context_changes_raw_page_record(&run_id, &result, completed_at)?;
+        self.services
+            .library
+            .discovery
+            .commit_discovery_context_incremental(&DiscoveryContextIncrementalCommit {
+                state: state.clone(),
+                run: run.clone(),
+                raw_changes,
+                items: items.clone(),
+                tombstone_target_keys,
+                clear_pending_through_sequence: covered_sequence,
+            })
+            .await?;
+
+        Ok(DiscoveryContextIncrementalRunSummary {
+            run_id,
+            committed: true,
+            smg_status: run.smg_status.clone(),
+            changed_subject_count: run.changed_subject_count,
+            affected_target_count: run.affected_target_count,
+            item_count: items.len() as i64,
+        })
+    }
+
+    async fn fail_discovery_sync_run(
+        &self,
+        run: &mut DiscoverySyncRunRecord,
+        error_text: &str,
+    ) -> AppResult<()> {
+        let now = self.runtime.environment.now();
+        run.status = "failed".to_string();
+        run.error_text = Some(error_text.to_string());
+        run.completed_at = Some(now);
+        run.updated_at = now;
+        self.services
+            .library
+            .discovery
+            .upsert_discovery_sync_run(run)
+            .await
     }
 
     async fn discovery_scheduler_seed(&self) -> AppResult<String> {

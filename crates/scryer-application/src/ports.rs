@@ -55,13 +55,17 @@ pub struct DiscoverySyncStateRecord {
     pub next_incremental_reload_eligible_at: Option<DateTime<Utc>>,
     pub next_public_feed_eligible_at: Option<DateTime<Utc>>,
     pub backoff_until: Option<DateTime<Utc>>,
+    pub transient_failure_count: i64,
     pub startup_jitter_seconds: i64,
     pub context_jitter_seconds: i64,
     pub incremental_reload_jitter_seconds: i64,
     pub public_feed_jitter_seconds: i64,
     pub last_seen_domain_event_sequence: Option<i64>,
+    pub inflight_context_snapshot_run_id: Option<String>,
     pub inflight_subject_fingerprint: Option<String>,
     pub inflight_domain_event_sequence: Option<i64>,
+    pub lease_owner_id: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -83,13 +87,17 @@ impl Default for DiscoverySyncStateRecord {
             next_incremental_reload_eligible_at: None,
             next_public_feed_eligible_at: None,
             backoff_until: None,
+            transient_failure_count: 0,
             startup_jitter_seconds: 0,
             context_jitter_seconds: 0,
             incremental_reload_jitter_seconds: 0,
             public_feed_jitter_seconds: 0,
             last_seen_domain_event_sequence: None,
+            inflight_context_snapshot_run_id: None,
             inflight_subject_fingerprint: None,
             inflight_domain_event_sequence: None,
+            lease_owner_id: None,
+            lease_expires_at: None,
             updated_at: Utc::now(),
         }
     }
@@ -127,6 +135,81 @@ pub struct DiscoverySyncRunRecord {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DiscoverySyncStatus {
+    pub state: DiscoverySyncStateRecord,
+    pub recent_runs: Vec<DiscoverySyncRunRecord>,
+    pub pending_context_change_count: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryPruneReport {
+    pub runs_deleted: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryHomeQuery {
+    pub include_public: bool,
+    pub include_personalized: bool,
+    pub include_unresolved: bool,
+    pub limit_per_section: usize,
+}
+
+impl Default for DiscoveryHomeQuery {
+    fn default() -> Self {
+        Self {
+            include_public: true,
+            include_personalized: true,
+            include_unresolved: false,
+            limit_per_section: 25,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryHomeResult {
+    pub status: DiscoverySyncStatus,
+    pub public_sections: Vec<DiscoverySectionResult>,
+    pub personalized_sections: Vec<DiscoverySectionResult>,
+    pub complete_collection: Option<DiscoverySectionResult>,
+    pub facets: Vec<DiscoveryFacetRecord>,
+    pub can_view_personalized: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryItemsQuery {
+    pub query: Option<String>,
+    pub target_kinds: Vec<String>,
+    pub sources: Vec<String>,
+    pub relation_types: Vec<String>,
+    pub relation_subtypes: Vec<String>,
+    pub genres: Vec<String>,
+    pub status_tags: Vec<String>,
+    pub facet_terms: Vec<String>,
+    pub include_owned: bool,
+    pub include_unresolved: bool,
+    pub include_public: bool,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryItemsResult {
+    pub items: Vec<DiscoveryItemRecord>,
+    pub total_count: i64,
+    pub can_view_personalized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoverySectionResult {
+    pub section_id: String,
+    pub section_type: String,
+    pub title: String,
+    pub surface: String,
+    pub total_count: i64,
+    pub items: Vec<DiscoveryItemRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiscoveryContextSnapshotCommit {
     pub state: DiscoverySyncStateRecord,
     pub run: DiscoverySyncRunRecord,
@@ -134,6 +217,26 @@ pub struct DiscoveryContextSnapshotCommit {
     pub submitted_subjects: Vec<DiscoverySubmittedSubjectRecord>,
     pub items: Vec<DiscoveryItemRecord>,
     pub facets: Vec<DiscoveryFacetRecord>,
+    pub clear_pending_through_sequence: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryContextIncrementalCommit {
+    pub state: DiscoverySyncStateRecord,
+    pub run: DiscoverySyncRunRecord,
+    pub raw_changes: DiscoveryRawPageRecord,
+    pub items: Vec<DiscoveryItemRecord>,
+    pub tombstone_target_keys: Vec<String>,
+    pub clear_pending_through_sequence: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryPublicFeedCommit {
+    pub state: DiscoverySyncStateRecord,
+    pub run: DiscoverySyncRunRecord,
+    pub raw_feed: DiscoveryRawPageRecord,
+    pub sections: Vec<DiscoverySectionRecord>,
+    pub items: Vec<DiscoveryItemRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,27 +372,77 @@ pub trait DiscoveryRepository: Send + Sync {
         scope_key: &str,
     ) -> AppResult<Option<DiscoverySyncStateRecord>>;
     async fn upsert_discovery_sync_state(&self, state: &DiscoverySyncStateRecord) -> AppResult<()>;
+    async fn try_acquire_discovery_sync_lease(
+        &self,
+        scope_key: &str,
+        owner_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool>;
+    async fn renew_discovery_sync_lease(
+        &self,
+        scope_key: &str,
+        owner_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool>;
+    async fn release_discovery_sync_lease(
+        &self,
+        scope_key: &str,
+        owner_id: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<()>;
     async fn get_discovery_sync_run(&self, id: &str) -> AppResult<Option<DiscoverySyncRunRecord>>;
+    async fn list_recent_discovery_sync_runs(
+        &self,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>>;
+    async fn list_unacked_discovery_context_snapshot_runs(
+        &self,
+        limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>>;
     async fn upsert_discovery_sync_run(&self, run: &DiscoverySyncRunRecord) -> AppResult<()>;
     async fn insert_discovery_raw_page(&self, page: &DiscoveryRawPageRecord) -> AppResult<()>;
     async fn commit_discovery_context_snapshot(
         &self,
         commit: &DiscoveryContextSnapshotCommit,
     ) -> AppResult<()>;
+    async fn commit_discovery_context_incremental(
+        &self,
+        commit: &DiscoveryContextIncrementalCommit,
+    ) -> AppResult<()>;
+    async fn commit_discovery_public_feed(
+        &self,
+        commit: &DiscoveryPublicFeedCommit,
+    ) -> AppResult<()>;
     async fn replace_discovery_submitted_subjects(
         &self,
         run_id: &str,
         subjects: &[DiscoverySubmittedSubjectRecord],
     ) -> AppResult<()>;
+    async fn list_discovery_submitted_subjects(
+        &self,
+        run_id: &str,
+    ) -> AppResult<Vec<DiscoverySubmittedSubjectRecord>>;
     async fn upsert_pending_discovery_context_change(
         &self,
         change: &DiscoveryPendingContextChangeRecord,
     ) -> AppResult<()>;
+    async fn get_pending_discovery_context_change(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<DiscoveryPendingContextChangeRecord>>;
+    async fn delete_pending_discovery_context_change(&self, id: &str) -> AppResult<u64>;
+    async fn list_all_pending_discovery_context_changes(
+        &self,
+        scope_key: &str,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>>;
     async fn list_pending_discovery_context_changes(
         &self,
         scope_key: &str,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>>;
+    async fn count_pending_discovery_context_changes(&self, scope_key: &str) -> AppResult<i64>;
     async fn clear_pending_discovery_context_changes_through_sequence(
         &self,
         scope_key: &str,
@@ -310,6 +463,22 @@ pub trait DiscoveryRepository: Send + Sync {
         run_id: &str,
         facets: &[DiscoveryFacetRecord],
     ) -> AppResult<()>;
+    async fn list_discovery_sections(
+        &self,
+        run_id: &str,
+        surface: Option<&str>,
+    ) -> AppResult<Vec<DiscoverySectionRecord>>;
+    async fn list_discovery_items_for_generation(
+        &self,
+        base_generation_id: &str,
+    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    async fn list_discovery_facets(&self, run_id: &str) -> AppResult<Vec<DiscoveryFacetRecord>>;
+    async fn prune_discovery_history(
+        &self,
+        scope_key: &str,
+        retain_successful_per_kind: usize,
+        diagnostic_cutoff: DateTime<Utc>,
+    ) -> AppResult<DiscoveryPruneReport>;
 }
 
 #[async_trait]
