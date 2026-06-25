@@ -402,6 +402,41 @@ fn log_smg_version_incompatibility(
     }
 }
 
+fn install_panic_logging_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let payload = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| {
+                panic_info
+                    .payload()
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+            })
+            .unwrap_or("<non-string panic payload>");
+        let location = panic_info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "<unknown location>".to_string());
+
+        tracing::error!(
+            panic_payload = %payload,
+            panic_location = %location,
+            "scryer process panicked"
+        );
+        default_hook(panic_info);
+    }));
+}
+
 #[tokio::main]
 async fn main() {
     // Phase 1: Extract startup path flags before subcommand dispatch.
@@ -509,6 +544,7 @@ async fn main() {
             .with(file_layer)
             .init();
     }
+    install_panic_logging_hook();
     if let Some(path) = file_logging_path.as_ref() {
         tracing::info!(path = %path.display(), "file logging enabled");
     }
@@ -1138,6 +1174,8 @@ async fn bootstrap_application(
     tracing::info!(
         build_lane = %app_use_case.runtime_build_lane(),
         build_class = %app_use_case.runtime_build_class(),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
         "initialized runtime build identity"
     );
     app_use_case.warm_runtime_performance();

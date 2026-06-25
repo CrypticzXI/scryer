@@ -48,15 +48,21 @@ async fn process_due_wanted_items(app: &AppUseCase) {
 }
 fn select_due_items_for_cooperative_slice(
     due_items: Vec<WantedItem>,
-) -> (Vec<WantedItem>, HashMap<String, usize>) {
+) -> (Vec<WantedItem>, HashMap<String, usize>, usize) {
     let mut due_items = due_items;
     due_items.sort_by(compare_due_wanted_items_for_search);
 
     let mut selected = Vec::with_capacity(due_items.len());
     let mut selected_per_title: HashMap<String, usize> = HashMap::new();
     let mut deferred_per_title: HashMap<String, usize> = HashMap::new();
+    let mut deferred_by_global_limit = 0usize;
 
     for item in due_items {
+        if selected.len() >= ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE {
+            deferred_by_global_limit += 1;
+            continue;
+        }
+
         let selected_for_title = selected_per_title.entry(item.title_id.clone()).or_insert(0);
         if *selected_for_title >= ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE {
             *deferred_per_title.entry(item.title_id.clone()).or_insert(0) += 1;
@@ -67,7 +73,7 @@ fn select_due_items_for_cooperative_slice(
         selected.push(item);
     }
 
-    (selected, deferred_per_title)
+    (selected, deferred_per_title, deferred_by_global_limit)
 }
 fn compare_due_wanted_items_for_search(
     left: &WantedItem,
@@ -176,13 +182,17 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     }
 
     let fetched_due_count = due_items.len();
-    let (due_items, deferred_per_title) = select_due_items_for_cooperative_slice(due_items);
-    if !deferred_per_title.is_empty() {
+    let (due_items, deferred_per_title, deferred_by_global_limit) =
+        select_due_items_for_cooperative_slice(due_items);
+    if deferred_by_global_limit > 0 || !deferred_per_title.is_empty() {
         info!(
             fetched_due_count,
             selected_due_count = due_items.len(),
-            deferred_due_count = deferred_per_title.values().copied().sum::<usize>(),
+            deferred_due_count = deferred_by_global_limit
+                + deferred_per_title.values().copied().sum::<usize>(),
+            deferred_by_global_limit,
             deferred_title_count = deferred_per_title.len(),
+            global_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE,
             per_title_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE,
             deferred_titles = ?deferred_per_title,
             "background acquisition: deferring excess wanted items for cooperative processing"
@@ -1509,9 +1519,111 @@ async fn process_single_wanted_item(
 }
 
 const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
+const FRUITLESS_WANTED_RESET_COOLDOWN_HOURS: i64 = 24;
 const INTERNAL_SETTINGS_SOURCE: &str = "system";
 const METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 const METADATA_REFRESH_NEXT_RUN_MIN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn fruitless_wanted_reset_cooldown_active(
+    now: DateTime<Utc>,
+    last_run_at: DateTime<Utc>,
+) -> bool {
+    last_run_at + Duration::hours(FRUITLESS_WANTED_RESET_COOLDOWN_HOURS) > now
+}
+
+async fn fruitless_wanted_reset_last_run_at(
+    app: &AppUseCase,
+) -> AppResult<Option<DateTime<Utc>>> {
+    let Some(value_json) = app
+        .services
+        .config
+        .settings
+        .get_setting_json_explicit(SETTINGS_SCOPE_SYSTEM, FRUITLESS_WANTED_RESET_LAST_RUN_KEY, None)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    let Ok(raw_value) = serde_json::from_str::<String>(&value_json) else {
+        warn!(
+            key = FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
+            value = %value_json,
+            "fruitless wanted reset cooldown setting is not a string"
+        );
+        return Ok(None);
+    };
+
+    match DateTime::parse_from_rfc3339(raw_value.trim()) {
+        Ok(value) => Ok(Some(value.with_timezone(&Utc))),
+        Err(error) => {
+            warn!(
+                key = FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
+                value = %raw_value,
+                error = %error,
+                "fruitless wanted reset cooldown setting is invalid"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn record_fruitless_wanted_reset_run(app: &AppUseCase, now_str: &str) -> AppResult<()> {
+    let value_json =
+        serde_json::to_string(now_str).map_err(|error| AppError::Repository(error.to_string()))?;
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
+            None,
+            value_json,
+            INTERNAL_SETTINGS_SOURCE,
+            None,
+        )
+        .await
+}
+
+async fn reset_fruitless_wanted_items_after_cooldown(app: &AppUseCase) {
+    let now = Utc::now();
+    match fruitless_wanted_reset_last_run_at(app).await {
+        Ok(Some(last_run_at)) => {
+            if fruitless_wanted_reset_cooldown_active(now, last_run_at) {
+                info!(
+                    last_run_at = %last_run_at.to_rfc3339(),
+                    cooldown_hours = FRUITLESS_WANTED_RESET_COOLDOWN_HOURS,
+                    "skipping fruitless wanted reset during cooldown"
+                );
+                return;
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            warn!(error = %error, "failed to read fruitless wanted reset cooldown");
+        }
+    }
+
+    let now_str = now.to_rfc3339();
+    match app
+        .services
+        .workflow
+        .wanted_items
+        .reset_fruitless_wanted_items(&now_str)
+        .await
+    {
+        Ok(count) => {
+            if let Err(error) = record_fruitless_wanted_reset_run(app, &now_str).await {
+                warn!(error = %error, "failed to record fruitless wanted reset cooldown");
+            }
+            if count > 0 {
+                info!(count, "reset fruitless wanted items to search immediately");
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to reset fruitless wanted items");
+        }
+    }
+}
 
 async fn scheduler_instance_id(app: &AppUseCase) -> AppResult<String> {
     if let Some(existing) = app
@@ -1657,22 +1769,7 @@ pub async fn start_background_acquisition_poller(
     // Reset items that were searched but never found anything. This recovers
     // from scenarios where a bug (e.g. broken capability filter) caused searches
     // to return 0 results and items got rescheduled far into the future.
-    let now_str = Utc::now().to_rfc3339();
-    match app
-        .services
-        .workflow
-        .wanted_items
-        .reset_fruitless_wanted_items(&now_str)
-        .await
-    {
-        Ok(count) if count > 0 => {
-            info!(count, "reset fruitless wanted items to search immediately");
-        }
-        Err(err) => {
-            warn!(error = %err, "failed to reset fruitless wanted items");
-        }
-        _ => {}
-    }
+    reset_fruitless_wanted_items_after_cooldown(&app).await;
 
     // Run initial health checks after a short delay to let services initialize
     {
@@ -2204,7 +2301,8 @@ mod task_runner_tests {
             .map(|episode| wanted_episode_item("title-bluey", "Bluey", episode))
             .collect::<Vec<_>>();
 
-        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let (selected, deferred, deferred_by_global_limit) =
+            select_due_items_for_cooperative_slice(due_items);
         let selected_ids = selected
             .iter()
             .map(|item| item.id.clone())
@@ -2215,6 +2313,7 @@ mod task_runner_tests {
 
         assert_eq!(selected_ids, expected_ids);
         assert_eq!(deferred.get("title-bluey"), Some(&144));
+        assert_eq!(deferred_by_global_limit, 0);
     }
 
     #[test]
@@ -2229,7 +2328,8 @@ mod task_runner_tests {
             })
             .collect::<Vec<_>>();
 
-        let (selected, deferred) = select_due_items_for_cooperative_slice(due_items);
+        let (selected, deferred, deferred_by_global_limit) =
+            select_due_items_for_cooperative_slice(due_items);
         let alpha = selected
             .iter()
             .filter(|item| item.title_id == "title-alpha")
@@ -2240,8 +2340,9 @@ mod task_runner_tests {
             .count();
 
         assert_eq!(alpha, 10);
-        assert_eq!(beta, 10);
+        assert_eq!(beta, 2);
         assert_eq!(deferred.get("title-alpha"), Some(&2));
-        assert_eq!(deferred.get("title-beta"), Some(&2));
+        assert_eq!(deferred.get("title-beta"), None);
+        assert_eq!(deferred_by_global_limit, 10);
     }
 }

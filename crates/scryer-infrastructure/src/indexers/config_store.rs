@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use scryer_application::{AppError, AppResult, IndexerConfigRepository, IndexerConfigUpdate};
+use scryer_application::{
+    AppError, AppResult, IndexerConfigRepository, IndexerConfigUpdate, IndexerSystemBackoff,
+};
 use scryer_domain::IndexerConfig;
 use serde_json::Value as JsonValue;
 
@@ -239,6 +242,76 @@ impl IndexerConfigRepository for IndexerConfigStore {
                     "UPDATE indexers
                      SET last_error_at = NULL, last_health_status = NULL
                      WHERE id = {}",
+                    &[SqlArg::Text(id)],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn list_system_backoffs(&self) -> AppResult<HashMap<String, IndexerSystemBackoff>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT indexer_id, disabled_until, escalation_level FROM indexer_system_backoffs",
+            &[],
+        )
+        .await?;
+
+        let mut backoffs = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let escalation_level = row.i64("escalation_level")?.max(0) as usize;
+            backoffs.insert(
+                row.text("indexer_id")?,
+                IndexerSystemBackoff {
+                    disabled_until: row.timestamp("disabled_until")?,
+                    escalation_level,
+                },
+            );
+        }
+        Ok(backoffs)
+    }
+
+    async fn set_system_backoff(&self, id: &str, backoff: IndexerSystemBackoff) -> AppResult<()> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "set_indexer_system_backoff", move |tx| {
+            let id = id.clone();
+            let backoff = backoff.clone();
+            Box::pin(async move {
+                let now = Utc::now();
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "INSERT INTO indexer_system_backoffs (
+                        indexer_id, disabled_until, escalation_level, created_at, updated_at
+                     ) VALUES ({}, {}, {}, {}, {})
+                     ON CONFLICT(indexer_id) DO UPDATE SET
+                        disabled_until = excluded.disabled_until,
+                        escalation_level = excluded.escalation_level,
+                        updated_at = excluded.updated_at",
+                    &[
+                        SqlArg::Text(id),
+                        SqlArg::Timestamp(backoff.disabled_until),
+                        SqlArg::I64(backoff.escalation_level as i64),
+                        SqlArg::Timestamp(now),
+                        SqlArg::Timestamp(now),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn clear_system_backoff(&self, id: &str) -> AppResult<()> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "clear_indexer_system_backoff", move |tx| {
+            let id = id.clone();
+            Box::pin(async move {
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "DELETE FROM indexer_system_backoffs WHERE indexer_id = {}",
                     &[SqlArg::Text(id)],
                 )
                 .await?;
@@ -511,6 +584,21 @@ mod tests {
         .expect("indexers table should be created");
     }
 
+    async fn create_test_indexer_system_backoffs_table(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            "CREATE TABLE indexer_system_backoffs (
+                indexer_id TEXT PRIMARY KEY NOT NULL,
+                disabled_until TEXT NOT NULL,
+                escalation_level INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(pool)
+        .await
+        .expect("system backoffs table should be created");
+    }
+
     #[tokio::test]
     async fn touch_last_error_sets_last_error_at_without_changing_updated_at() {
         let pool = SqlitePoolOptions::new()
@@ -643,6 +731,98 @@ mod tests {
         assert!(config.last_error_at.is_none());
         assert!(config.last_health_status.is_none());
         assert_eq!(config.updated_at, updated_at);
+    }
+
+    #[tokio::test]
+    async fn system_backoff_methods_do_not_change_config_disabled_until() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        create_test_indexers_table(&pool).await;
+        create_test_indexer_system_backoffs_table(&pool).await;
+
+        let now = Utc::now();
+        let config_disabled_until = now + chrono::Duration::hours(6);
+        let system_disabled_until = now + chrono::Duration::minutes(5);
+        sqlx::query(
+            "INSERT INTO indexers (
+                id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
+                rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
+                enable_auto_search, last_health_status, last_error_at, config_json, created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("idx-system-backoff")
+        .bind("System Backoff Indexer")
+        .bind("newznab")
+        .bind("")
+        .bind(None::<String>)
+        .bind(None::<i64>)
+        .bind(None::<i64>)
+        .bind(Some(config_disabled_until.to_rfc3339()))
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("indexer row should insert");
+
+        let store = IndexerConfigStore::new(
+            StoreDatastore::Sqlite {
+                pool,
+                writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+            },
+            Arc::new(RwLock::new(None)),
+        );
+
+        store
+            .set_system_backoff(
+                "idx-system-backoff",
+                IndexerSystemBackoff {
+                    disabled_until: system_disabled_until,
+                    escalation_level: 3,
+                },
+            )
+            .await
+            .expect("system backoff should be persisted");
+
+        let backoffs = store
+            .list_system_backoffs()
+            .await
+            .expect("system backoffs should load");
+        assert_eq!(
+            backoffs.get("idx-system-backoff"),
+            Some(&IndexerSystemBackoff {
+                disabled_until: system_disabled_until,
+                escalation_level: 3,
+            })
+        );
+
+        let config = store
+            .get_by_id("idx-system-backoff")
+            .await
+            .expect("config should load")
+            .expect("config should exist");
+        assert_eq!(config.disabled_until, Some(config_disabled_until));
+
+        store
+            .clear_system_backoff("idx-system-backoff")
+            .await
+            .expect("system backoff should clear");
+        assert!(
+            store
+                .list_system_backoffs()
+                .await
+                .expect("system backoffs should load")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

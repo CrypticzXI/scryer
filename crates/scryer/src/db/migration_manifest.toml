@@ -530,6 +530,23 @@ file = "postgres/migrations/0138_clear_smg_incident_metadata_fetches.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 139
+description = "indexer system backoffs"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0139_indexer_system_backoffs.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0139_indexer_system_backoffs.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

@@ -143,9 +143,29 @@ fn compile_windows_resources() {
         return;
     }
 
-    embed_resource::compile("resources/windows/scryer.rc", embed_resource::NONE)
+    let version = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION is set by Cargo");
+    let resource_macros = windows_resource_macros(&version);
+
+    embed_resource::compile("resources/windows/scryer.rc", &resource_macros)
         .manifest_required()
         .unwrap_or_else(|error| panic!("failed to embed Windows application manifest: {error}"));
+}
+
+fn windows_resource_macros(version: &str) -> [String; 4] {
+    let version_parts = version
+        .split('.')
+        .map(|part| part.split(['-', '+']).next().unwrap_or(part))
+        .map(|part| part.parse::<u16>().unwrap_or(0))
+        .chain(std::iter::repeat(0))
+        .take(3)
+        .collect::<Vec<_>>();
+
+    [
+        format!("SCRYER_VERSION_MAJOR={}", version_parts[0]),
+        format!("SCRYER_VERSION_MINOR={}", version_parts[1]),
+        format!("SCRYER_VERSION_PATCH={}", version_parts[2]),
+        format!("SCRYER_VERSION_STR=\"{version}\""),
+    ]
 }
 
 fn compiled_build_lane() -> scryer_runtime_info::BinaryLane {
