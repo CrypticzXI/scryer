@@ -2403,14 +2403,14 @@ mod tests {
     fn validate_sdk_contract_rejects_legacy_minor_line_plugin_on_sdk3_host() {
         let err = validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
             .expect_err("legacy minor-line plugin should not load across SDK 3 boundary");
-        assert!(err.contains("host sdk_version 3.1.0"));
+        assert!(err.contains(&format!("host sdk_version {SDK_VERSION}")));
     }
 
     #[test]
     fn validate_sdk_contract_rejects_sdk2_plugin_on_sdk3_host() {
         let err = validate_sdk_contract("sdk2-plugin", "2.3.0", ">=2.3.0, <3.0.0", SDK_VERSION)
             .expect_err("SDK 2 plugin should not load on SDK 3 host");
-        assert!(err.contains("host sdk_version 3.1.0"));
+        assert!(err.contains(&format!("host sdk_version {SDK_VERSION}")));
     }
 
     #[test]
