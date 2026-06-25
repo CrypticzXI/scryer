@@ -38,6 +38,19 @@ struct StrategyExecutionOutcome {
     retry_after: Option<std::time::Duration>,
 }
 
+#[derive(Clone)]
+struct StrategyTierContext {
+    client: Arc<dyn IndexerClient>,
+    search_limit: Arc<Semaphore>,
+    rate_limiter: IndexerRateLimiter,
+    indexer_id: String,
+    rate_limit_seconds: Option<i64>,
+    category: Option<String>,
+    per_indexer_categories: Option<Vec<String>>,
+    mode: SearchMode,
+    tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TitleGuardMode {
     SkipTitleMatch,
@@ -110,9 +123,7 @@ impl StrategyBatchHealth {
     fn mark_error(&mut self, retry_after: Option<std::time::Duration>) {
         self.any_error = true;
         if let Some(retry_after) = retry_after
-            && self
-                .retry_after
-                .map_or(true, |current| retry_after > current)
+            && self.retry_after.is_none_or(|current| retry_after > current)
         {
             self.retry_after = Some(retry_after);
         }
@@ -481,7 +492,7 @@ impl IndexerBackoffTracker {
         if backoff.disabled_until > chrono::Utc::now()
             && state
                 .disabled_until
-                .map_or(true, |current| backoff.disabled_until > current)
+                .is_none_or(|current| backoff.disabled_until > current)
         {
             state.disabled_until = Some(backoff.disabled_until);
         }
@@ -851,28 +862,14 @@ impl MultiIndexerSearchClient {
     }
 
     async fn execute_strategy_tier(
-        client: Arc<dyn IndexerClient>,
-        search_limit: Arc<Semaphore>,
-        rate_limiter: IndexerRateLimiter,
-        indexer_id: String,
-        rate_limit_seconds: Option<i64>,
-        category: Option<String>,
-        per_indexer_categories: Option<Vec<String>>,
-        mode: SearchMode,
-        tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        context: StrategyTierContext,
         strategies: Vec<SearchStrategy>,
     ) -> Vec<StrategyExecutionOutcome> {
         let mut set = tokio::task::JoinSet::<StrategyExecutionOutcome>::new();
 
         for strategy in strategies {
-            let client = client.clone();
-            let category = category.clone();
-            let per_indexer_categories = per_indexer_categories.clone();
-            let tagged_aliases = tagged_aliases.clone();
+            let context = context.clone();
             let strategy_label = strategy.label.clone();
-            let search_limit = search_limit.clone();
-            let rate_limiter = rate_limiter.clone();
-            let indexer_id = indexer_id.clone();
             let title_guard_mode =
                 if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
                     TitleGuardMode::SkipTitleMatch
@@ -881,6 +878,17 @@ impl MultiIndexerSearchClient {
                 };
 
             set.spawn(async move {
+                let StrategyTierContext {
+                    client,
+                    search_limit,
+                    rate_limiter,
+                    indexer_id,
+                    rate_limit_seconds,
+                    category,
+                    per_indexer_categories,
+                    mode,
+                    tagged_aliases,
+                } = context;
                 let permit = search_limit.acquire_owned().await;
                 let response = match permit {
                     Ok(_permit) => {
@@ -1331,7 +1339,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let indexer_configs = self.indexer_configs.clone();
                     let facet = facet.clone();
                     let search_limit = search_limit.clone();
-                    let had_persisted_system_backoff = had_persisted_system_backoff;
 
                     set.spawn(async move {
                         let results = cell
@@ -1522,7 +1529,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let search_limit = search_limit.clone();
                 let rate_limiter = self.rate_limiter.clone();
                 let rate_limit_seconds = config.rate_limit_seconds;
-                let had_persisted_system_backoff = had_persisted_system_backoff;
 
                 set.spawn(async move {
                     let mut collected_results = Vec::new();
@@ -1530,15 +1536,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let mut batch_health = StrategyBatchHealth::default();
 
                     let primary_outcomes = Self::execute_strategy_tier(
-                        client.clone(),
-                        search_limit.clone(),
-                        rate_limiter.clone(),
-                        indexer_id.clone(),
-                        rate_limit_seconds,
-                        category_for_indexer.clone(),
-                        rss_category_request.clone(),
-                        mode,
-                        tagged_aliases_for_indexer.clone(),
+                        StrategyTierContext {
+                            client: client.clone(),
+                            search_limit: search_limit.clone(),
+                            rate_limiter: rate_limiter.clone(),
+                            indexer_id: indexer_id.clone(),
+                            rate_limit_seconds,
+                            category: category_for_indexer.clone(),
+                            per_indexer_categories: rss_category_request.clone(),
+                            mode,
+                            tagged_aliases: tagged_aliases_for_indexer.clone(),
+                        },
                         primary_strategies,
                     )
                     .await;
@@ -1626,15 +1634,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                         );
 
                         let fallback_outcomes = Self::execute_strategy_tier(
-                            client,
-                            search_limit,
-                            rate_limiter,
-                            indexer_id.clone(),
-                            rate_limit_seconds,
-                            category_for_indexer,
-                            rss_category_request,
-                            mode,
-                            tagged_aliases_for_indexer.clone(),
+                            StrategyTierContext {
+                                client,
+                                search_limit,
+                                rate_limiter,
+                                indexer_id: indexer_id.clone(),
+                                rate_limit_seconds,
+                                category: category_for_indexer,
+                                per_indexer_categories: rss_category_request,
+                                mode,
+                                tagged_aliases: tagged_aliases_for_indexer.clone(),
+                            },
                             fallback_strategies,
                         )
                         .await;
