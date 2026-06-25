@@ -280,6 +280,10 @@ fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
     titles.sort_by(|left, right| {
         let ordering = match sort.key {
             TitleCatalogSortKey::Title => compare_titles_by_catalog_title(left, right),
+            TitleCatalogSortKey::Library => left
+                .library_id
+                .cmp(&right.library_id)
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
             TitleCatalogSortKey::Monitored => left
                 .monitored
                 .cmp(&right.monitored)
@@ -293,6 +297,10 @@ fn sort_titles_for_catalog(titles: &mut [Title], sort: TitleCatalogSort) {
             TitleCatalogSortKey::Episodes | TitleCatalogSortKey::Size => {
                 compare_titles_by_catalog_title(left, right)
             }
+            TitleCatalogSortKey::Added => left
+                .created_at
+                .cmp(&right.created_at)
+                .then_with(|| compare_titles_by_catalog_title(left, right)),
         };
         match sort.direction {
             SortDirection::Asc => ordering,

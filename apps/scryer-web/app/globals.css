@@ -117,9 +117,7 @@
     radial-gradient(circle at 86% 14%, rgba(56, 189, 248, 0.06), transparent 28rem),
     radial-gradient(circle at 60% 92%, rgba(16, 185, 129, 0.05), transparent 34rem),
     linear-gradient(180deg, var(--scry-page1) 0%, var(--scry-page2) 42%, var(--scry-page3) 100%);
-  --scry-shell-main-bg:
-    radial-gradient(circle at 92% 10%, rgba(56, 189, 248, 0.035), transparent 22rem),
-    linear-gradient(180deg, color-mix(in srgb, var(--scry-page1) 36%, transparent), transparent 20rem);
+  --scry-shell-main-bg: transparent;
   --scry-shell-side-bg:
     radial-gradient(circle at 18% 0%, rgba(var(--scry-accent-rgb), 0.10), transparent 13rem),
     linear-gradient(180deg, var(--scry-side1), var(--scry-side2));
@@ -290,12 +288,26 @@ body {
   min-width: 0;
 }
 
+[data-slot="sidebar-container"],
+[data-slot="sidebar-inner"][data-sidebar="sidebar"],
+[data-slot="sidebar"]:not([data-mobile="true"]),
+[data-slot="sidebar"][data-mobile="true"] {
+  background: var(--scry-shell-side-bg);
+}
+
 [data-slot="root-content-panel"] {
   background: var(--scry-shell-main-bg);
 }
 
 [data-slot="root-main-scroll"] {
   background: transparent;
+}
+
+[data-slot="settings-main-scroll"],
+[data-slot="settings-subnav-scroll"],
+[data-slot="title-list-scroll"],
+[data-slot="title-context-scroll"] {
+  overscroll-behavior: contain;
 }
 
 [data-slot="root-shell-notice"] {
@@ -452,6 +464,10 @@ body {
 [data-slot="global-search-results"],
 [data-slot="mobile-global-search-results"],
 [data-slot="root-main-scroll"],
+[data-slot="settings-main-scroll"],
+[data-slot="settings-subnav-scroll"],
+[data-slot="title-list-scroll"],
+[data-slot="title-context-scroll"],
 [data-slot="sidebar-content"] {
   scrollbar-color: color-mix(in srgb, var(--scry-border2) 88%, transparent) transparent;
   scrollbar-width: thin;
@@ -460,13 +476,22 @@ body {
 [data-slot="global-search-results"]::-webkit-scrollbar,
 [data-slot="mobile-global-search-results"]::-webkit-scrollbar,
 [data-slot="root-main-scroll"]::-webkit-scrollbar,
+[data-slot="settings-main-scroll"]::-webkit-scrollbar,
+[data-slot="settings-subnav-scroll"]::-webkit-scrollbar,
+[data-slot="title-list-scroll"]::-webkit-scrollbar,
+[data-slot="title-context-scroll"]::-webkit-scrollbar,
 [data-slot="sidebar-content"]::-webkit-scrollbar {
   width: 10px;
+  height: 10px;
 }
 
 [data-slot="global-search-results"]::-webkit-scrollbar-thumb,
 [data-slot="mobile-global-search-results"]::-webkit-scrollbar-thumb,
 [data-slot="root-main-scroll"]::-webkit-scrollbar-thumb,
+[data-slot="settings-main-scroll"]::-webkit-scrollbar-thumb,
+[data-slot="settings-subnav-scroll"]::-webkit-scrollbar-thumb,
+[data-slot="title-list-scroll"]::-webkit-scrollbar-thumb,
+[data-slot="title-context-scroll"]::-webkit-scrollbar-thumb,
 [data-slot="sidebar-content"]::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--scry-border2) 88%, transparent);
   background-clip: content-box;
@@ -477,6 +502,10 @@ body {
 [data-slot="global-search-results"]::-webkit-scrollbar-track,
 [data-slot="mobile-global-search-results"]::-webkit-scrollbar-track,
 [data-slot="root-main-scroll"]::-webkit-scrollbar-track,
+[data-slot="settings-main-scroll"]::-webkit-scrollbar-track,
+[data-slot="settings-subnav-scroll"]::-webkit-scrollbar-track,
+[data-slot="title-list-scroll"]::-webkit-scrollbar-track,
+[data-slot="title-context-scroll"]::-webkit-scrollbar-track,
 [data-slot="sidebar-content"]::-webkit-scrollbar-track {
   background: transparent;
 }

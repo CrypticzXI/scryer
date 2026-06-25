@@ -1221,7 +1221,7 @@ export function useGlobalSearch({
 
       event.preventDefault();
       if (isCommandShortcut && isGlobalSearchPanelOpen) {
-        resetGlobalSearch();
+        closeGlobalSearchPanel();
         globalSearchInputRef.current?.blur();
         return;
       }
@@ -1236,7 +1236,7 @@ export function useGlobalSearch({
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [isGlobalSearchPanelOpen, resetGlobalSearch]);
+  }, [closeGlobalSearchPanel, isGlobalSearchPanelOpen]);
 
   const addMetadataSearchResultToCatalog = useCallback(
     async (

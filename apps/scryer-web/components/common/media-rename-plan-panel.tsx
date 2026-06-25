@@ -1,14 +1,26 @@
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
 
-type MediaRenamePlanItem = {
+export type MediaRenamePlanItem = {
   collectionId?: string | null;
   seriesMovieLinkIds?: string[];
   currentPath?: string | null;
   proposedPath?: string | null;
+  normalizedFilename?: string | null;
+  collision?: boolean;
+  reasonCode?: string | null;
+  writeAction?: string | null;
+  sourceSizeBytes?: number | null;
+  sourceMtimeUnixMs?: string | null;
 };
 
-type MediaRenamePlan = {
+export type MediaRenamePlan = {
+  facet?: string;
+  titleId?: string | null;
+  template?: string;
+  collisionPolicy?: string;
+  missingMetadataPolicy?: string;
+  fingerprint: string;
   total: number;
   renamable: number;
   noop: number;

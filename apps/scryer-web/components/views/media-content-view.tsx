@@ -2,15 +2,21 @@ import * as React from "react";
 import { useLocation } from "react-router-dom";
 import {
   ArrowUpRight,
-  CalendarDays,
+  ArrowDown,
+  ArrowUp,
+  Ban,
+  ChevronDown,
+  ClipboardList,
+  Columns3,
+  Database,
+  Edit,
   Eye,
   EyeOff,
-  Folder,
   HardDrive,
   LayoutGrid,
   LayoutList,
-  Library,
   Loader2,
+  PanelLeftOpen,
   Pencil,
   RefreshCw,
   Search,
@@ -19,12 +25,45 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import {
+  AnidbExternalLink,
+  AnilistExternalLink,
+  ImdbExternalLink,
+  MalExternalLink,
+  TmdbExternalLink,
+  TvdbMovieExternalLink,
+  TvdbSeriesExternalLink,
+} from "@/components/common/external-media-links";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import { SearchResultBuckets } from "@/components/common/release-search-results";
+import {
+  MediaFilesOnDiskPanel,
+  type MediaFileOnDisk,
+} from "@/components/common/media-files-on-disk-panel";
+import {
+  MediaRenamePlanPanel,
+  type MediaRenamePlan,
+} from "@/components/common/media-rename-plan-panel";
+import { TitleHistoryModal } from "@/components/common/title-history-modal";
+import {
+  SearchResultBuckets,
+  type ReleaseSearchSortDirection,
+  type ReleaseSearchSortKey,
+} from "@/components/common/release-search-results";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type {
   ContentSettingsSection,
@@ -44,9 +83,11 @@ import type {
   LibrarySettingsRecord,
   NzbgetCategoryRoutingSettings,
   Release,
+  TitleReleaseBlocklistEntry,
   TitleRecord,
 } from "@/lib/types";
 import type { ImportMode } from "@/lib/types/settings";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { ViewCategoryId } from "./media-content/indexer-category-picker";
 import { MediaLibrarySettingsPanel } from "./media-content/media-library-settings-panel";
 import { IndexerRoutingPanel } from "./media-content/indexer-routing-panel";
@@ -61,11 +102,15 @@ import { CompactTitleTable } from "./media-content/compact-title-table";
 import {
   TitleTableActionButton,
   TitleEpisodeProgressBar,
+  DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+  TITLE_TABLE_COLUMN_KEYS,
   bytesToReadable,
   formatTitleDate,
   resolveDisplayedQualityLabel,
+  type TitleTableColumnKey,
   type TitleTableSortDirection,
   type TitleTableSortKey,
+  type TitleTableVisibleColumns,
 } from "./media-content/title-table-shared";
 import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
 import {
@@ -91,6 +136,28 @@ import type { ContentViewMode } from "./media-content/content-view-mode";
 import { localizedTitleStatus } from "./overview-localization";
 
 type Facet = "movie" | "series" | "anime";
+
+function titleTableColumnLabel(
+  key: TitleTableColumnKey,
+  t: Translate,
+): string {
+  switch (key) {
+    case "library":
+      return t("title.table.library");
+    case "monitored":
+      return t("title.table.monitored");
+    case "quality":
+      return t("title.table.qualityTier");
+    case "episodes":
+      return t("title.table.episodes");
+    case "size":
+      return t("title.table.size");
+    case "added":
+      return t("title.contextAdded");
+    case "actions":
+      return t("label.actions");
+  }
+}
 
 type ParsedQualityProfile = {
   id: string;
@@ -173,6 +240,42 @@ function useMinViewportWidth(query: string) {
   return matches;
 }
 
+function useMeasuredElementWidth<TElement extends HTMLElement>() {
+  const [element, setElement] = React.useState<TElement | null>(null);
+  const [width, setWidth] = React.useState<number | null>(null);
+  const ref = React.useCallback((node: TElement | null) => {
+    setElement(node);
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!element) {
+      setWidth(null);
+      return;
+    }
+
+    const updateWidth = () => {
+      const nextWidth = Math.round(element.getBoundingClientRect().width);
+      setWidth((current) => (current === nextWidth ? current : nextWidth));
+    };
+
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateWidth);
+      return () => window.removeEventListener("resize", updateWidth);
+    }
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element]);
+
+  return [ref, width] as const;
+}
+
 function formatTitleYear(title: TitleRecord): string | null {
   if (typeof title.year === "number" && Number.isFinite(title.year)) {
     return String(title.year);
@@ -201,27 +304,201 @@ function formatRuntimeLabel(minutes: number | null | undefined): string | null {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function titleExternalIdValue(
+  title: TitleRecord,
+  source: string,
+): string | null {
+  const normalizedSource = source.toLowerCase();
+  const idFromList = title.externalIds?.find(
+    (entry) => entry.source.toLowerCase() === normalizedSource,
+  )?.value;
+  const value =
+    normalizedSource === "imdb" ? title.imdbId || idFromList : idFromList;
+  const trimmed = value?.trim();
+  return trimmed || null;
+}
+
+function titleOtherExternalIds(title: TitleRecord) {
+  const knownSources = new Set([
+    "imdb",
+    "tmdb",
+    "tvdb",
+    "anidb",
+    "anilist",
+    "mal",
+  ]);
+  return (title.externalIds ?? [])
+    .map((entry) => ({
+      source: entry.source.trim(),
+      value: entry.value.trim(),
+    }))
+    .filter(
+      (entry) =>
+        entry.source.length > 0 &&
+        entry.value.length > 0 &&
+        !knownSources.has(entry.source.toLowerCase()),
+    );
+}
+
+function compactPolicyLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function TitleContextMetric({
   icon: Icon,
   label,
   value,
   children,
+  className,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value?: React.ReactNode;
   children?: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="min-w-0 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-2.5">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-normal text-[var(--scry-muted2)]">
-        <Icon className="h-3.5 w-3.5" />
+    <div
+      className={cn(
+        "min-w-0 rounded-[9px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] px-3 py-2.5",
+        className,
+      )}
+    >
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-normal text-[var(--scry-muted2)]">
+        <Icon className="h-3.5 w-3.5 text-[var(--scry-muted3)]" />
         <span>{label}</span>
       </div>
-      <div className="min-w-0 text-[13px] font-semibold text-[var(--scry-ink2)]">
+      <div className="min-w-0 text-[13px] font-semibold leading-5 text-[var(--scry-ink2)]">
         {children ?? value}
       </div>
     </div>
+  );
+}
+
+function TitleContextSection({
+  icon: Icon,
+  title,
+  description,
+  summary,
+  action,
+  children,
+  className,
+  collapsible = false,
+  defaultOpen = true,
+  resetKey,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  description?: React.ReactNode;
+  summary?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+  resetKey?: React.Key;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+
+  React.useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen, resetKey]);
+
+  if (collapsible) {
+    return (
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <section
+          className={cn(
+            "overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]",
+            className,
+          )}
+        >
+          <div className="flex min-w-0 items-stretch">
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)]"
+              >
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] text-[var(--scry-muted2)]">
+                  <Icon className="h-3.5 w-3.5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] font-semibold uppercase tracking-normal text-[var(--scry-ink2)]">
+                    {title}
+                  </span>
+                  {description ? (
+                    <span className="mt-1 block text-[11.5px] leading-5 text-[var(--scry-muted3)]">
+                      {description}
+                    </span>
+                  ) : null}
+                </span>
+                {summary ? (
+                  <span className="max-w-[8rem] shrink-0 truncate text-right text-[11.5px] font-semibold text-[var(--scry-muted2)]">
+                    {summary}
+                  </span>
+                ) : null}
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 shrink-0 text-[var(--scry-muted3)] transition-transform",
+                    open && "rotate-180",
+                  )}
+                />
+              </button>
+            </CollapsibleTrigger>
+            {action ? (
+              <div className="flex shrink-0 items-center py-3.5 pr-4">
+                {action}
+              </div>
+            ) : null}
+          </div>
+          <CollapsibleContent className="border-t border-[var(--scry-line3)] p-4">
+            {children}
+          </CollapsibleContent>
+        </section>
+      </Collapsible>
+    );
+  }
+
+  return (
+    <section
+      className={cn(
+        "rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]",
+        className,
+      )}
+    >
+      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-[8px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] text-[var(--scry-muted2)]">
+            <Icon className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[12px] font-semibold uppercase tracking-normal text-[var(--scry-ink2)]">
+              {title}
+            </h3>
+            {description ? (
+              <p className="mt-1 text-[11.5px] leading-5 text-[var(--scry-muted3)]">
+                {description}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {summary ? (
+          <div className="shrink-0 text-[11.5px] font-semibold text-[var(--scry-muted2)]">
+            {summary}
+          </div>
+        ) : null}
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -237,6 +514,413 @@ function titleContextDateScore(value: string | null | undefined): number {
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function formatTitleEpisodeSummary(title: TitleRecord, t: Translate): string {
+  const ownedEpisodes = title.episodesOwned ?? 0;
+  const totalEpisodes = title.episodesTotal ?? title.episodesMonitored ?? 0;
+
+  if (totalEpisodes <= 0) {
+    return t("label.unknown");
+  }
+
+  return `${ownedEpisodes}/${totalEpisodes}`;
+}
+
+type TitleContextCollection = NonNullable<
+  NonNullable<TitleRecord["collections"]>[number]
+>;
+type TitleContextEpisode = NonNullable<
+  NonNullable<TitleContextCollection["episodes"]>[number]
+>;
+type TitleContextMediaFile = NonNullable<
+  NonNullable<TitleRecord["mediaFiles"]>[number]
+>;
+
+const TITLE_CONTEXT_MAX_COLLECTIONS = 4;
+const TITLE_CONTEXT_MAX_EPISODES_PER_COLLECTION = 6;
+
+function titleContextValueText(
+  value: string | number | null | undefined,
+): string | null {
+  const text = `${value ?? ""}`.trim();
+  return text || null;
+}
+
+function titleContextNumberValue(
+  value: string | number | null | undefined,
+): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const match = titleContextValueText(value)?.match(/\d+(?:\.\d+)?/);
+  return match ? Number.parseFloat(match[0]) : null;
+}
+
+function titleContextPaddedNumber(
+  value: string | number | null | undefined,
+): string | null {
+  const text = titleContextValueText(value);
+  if (!text) {
+    return null;
+  }
+  const parsed = Number.parseInt(text, 10);
+  return /^\d+$/.test(text) && Number.isFinite(parsed)
+    ? String(parsed).padStart(2, "0")
+    : text;
+}
+
+function titleContextCollectionSortValue(
+  collection: TitleContextCollection,
+): number {
+  const direct = titleContextNumberValue(
+    collection.narrativeOrder ?? collection.collectionIndex,
+  );
+  if (direct !== null) {
+    return direct;
+  }
+  return (
+    titleContextNumberValue(
+      `${collection.collectionIndex ?? ""} ${collection.label ?? ""}`,
+    ) ?? Number.MAX_SAFE_INTEGER
+  );
+}
+
+function sortTitleContextCollections(
+  collections: TitleContextCollection[],
+): TitleContextCollection[] {
+  return [...collections].sort((left, right) => {
+    const leftValue = titleContextCollectionSortValue(left);
+    const rightValue = titleContextCollectionSortValue(right);
+    if (leftValue === 0 && rightValue !== 0) return 1;
+    if (rightValue === 0 && leftValue !== 0) return -1;
+    if (leftValue !== rightValue) return rightValue - leftValue;
+    return `${right.collectionIndex ?? right.label ?? right.id}`.localeCompare(
+      `${left.collectionIndex ?? left.label ?? left.id}`,
+    );
+  });
+}
+
+function sortTitleContextEpisodes(
+  episodes: TitleContextEpisode[],
+): TitleContextEpisode[] {
+  return [...episodes].sort((left, right) => {
+    const leftValue = titleContextNumberValue(
+      left.episodeNumber ?? left.absoluteNumber,
+    );
+    const rightValue = titleContextNumberValue(
+      right.episodeNumber ?? right.absoluteNumber,
+    );
+    if (leftValue !== null && rightValue !== null && leftValue !== rightValue) {
+      return leftValue - rightValue;
+    }
+    if (leftValue !== null) return -1;
+    if (rightValue !== null) return 1;
+    return (
+      titleContextDateScore(left.airDate) - titleContextDateScore(right.airDate)
+    );
+  });
+}
+
+function titleContextCollectionLabel(
+  collection: TitleContextCollection,
+  t: Translate,
+): string {
+  const label = collection.label?.trim();
+  if (label) {
+    return label;
+  }
+  const index =
+    titleContextValueText(collection.narrativeOrder) ??
+    titleContextValueText(collection.collectionIndex);
+  if (titleContextNumberValue(index) === 0) {
+    return t("title.specials");
+  }
+  return index
+    ? t("title.seasonNumber", { number: index })
+    : t("label.unknown");
+}
+
+function titleContextCollectionEpisodeCount(
+  collection: TitleContextCollection,
+  t: Translate,
+): string {
+  const episodeCount = collection.episodes?.length ?? 0;
+  const key =
+    episodeCount === 1 ? "title.episodeCountOne" : "title.episodeCountOther";
+  return t(key, { count: episodeCount });
+}
+
+function titleContextEpisodeLabel(
+  title: TitleRecord,
+  episode: TitleContextEpisode,
+  t: Translate,
+): string {
+  const label = episode.episodeLabel?.trim();
+  if (label) {
+    return label;
+  }
+  if (title.facet === "anime") {
+    const absoluteNumber = titleContextValueText(episode.absoluteNumber);
+    if (absoluteNumber) {
+      return t("episode.absoluteNumber", { number: absoluteNumber });
+    }
+  }
+  const seasonNumber = titleContextPaddedNumber(episode.seasonNumber);
+  const episodeNumber = titleContextPaddedNumber(episode.episodeNumber);
+  if (seasonNumber && episodeNumber) {
+    return `S${seasonNumber}E${episodeNumber}`;
+  }
+  if (episodeNumber) {
+    return `${t("episode.numberLabel")} ${episodeNumber}`;
+  }
+  return t("label.unknown");
+}
+
+function titleContextEpisodeFiles(
+  title: TitleRecord,
+  episodeId: string,
+): TitleContextMediaFile[] {
+  return (title.mediaFiles ?? []).filter(
+    (file) => file.episodeId === episodeId,
+  );
+}
+
+function titleContextMediaFileQuality(
+  file: TitleContextMediaFile,
+): string | null {
+  const label = file.qualityLabel?.trim() || file.resolution?.trim();
+  if (label) {
+    return label;
+  }
+  if (
+    typeof file.videoHeight === "number" &&
+    Number.isFinite(file.videoHeight)
+  ) {
+    return `${file.videoHeight}p`;
+  }
+  return file.scanStatus?.trim() || null;
+}
+
+function titleContextEpisodeQualityLabel(
+  files: TitleContextMediaFile[],
+  t: Translate,
+): string {
+  if (files.length === 0) {
+    return t("episode.missing");
+  }
+  return titleContextMediaFileQuality(files[0]) ?? t("episode.fileOnDisk");
+}
+
+function TitleContextEpisodesPanel({
+  title,
+  statusLabel,
+  qualityLabel,
+  t,
+}: {
+  title: TitleRecord;
+  statusLabel: string | null;
+  qualityLabel: string;
+  t: Translate;
+}) {
+  const collections = React.useMemo(
+    () => sortTitleContextCollections(title.collections ?? []),
+    [title.collections],
+  );
+  const collectionSignature = collections
+    .map((collection) => collection.id)
+    .join("|");
+  const [openCollectionIds, setOpenCollectionIds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+
+  React.useEffect(() => {
+    const firstCollectionId = collections[0]?.id;
+    setOpenCollectionIds(
+      firstCollectionId ? new Set([firstCollectionId]) : new Set(),
+    );
+  }, [collections, collectionSignature, title.id]);
+
+  const displayedCollections = collections.slice(
+    0,
+    TITLE_CONTEXT_MAX_COLLECTIONS,
+  );
+  const hiddenCollectionCount =
+    collections.length - displayedCollections.length;
+  const collectionsLoaded = title.collections !== undefined;
+
+  return (
+    <div className="space-y-3">
+      <TitleEpisodeProgressBar item={title} t={t} compact />
+      <div className="grid grid-cols-2 gap-2">
+        <TitleContextMetric
+          icon={LayoutGrid}
+          label={t("title.contextEpisodes")}
+          value={formatTitleEpisodeSummary(title, t)}
+        />
+        <TitleContextMetric
+          icon={Eye}
+          label={t("title.contextStatus")}
+          value={statusLabel ?? t("label.unknown")}
+        />
+        <TitleContextMetric
+          icon={LayoutList}
+          label={t("title.contextQuality")}
+          value={qualityLabel}
+        />
+        <TitleContextMetric
+          icon={HardDrive}
+          label={t("title.contextSize")}
+          value={bytesToReadable(title.sizeBytes)}
+        />
+      </div>
+
+      {displayedCollections.length > 0 ? (
+        <div className="space-y-2">
+          {displayedCollections.map((collection) => {
+            const open = openCollectionIds.has(collection.id);
+            const episodes = sortTitleContextEpisodes(
+              collection.episodes ?? [],
+            );
+            const displayedEpisodes = episodes.slice(
+              0,
+              TITLE_CONTEXT_MAX_EPISODES_PER_COLLECTION,
+            );
+            const hiddenEpisodeCount =
+              episodes.length - displayedEpisodes.length;
+            return (
+              <div
+                key={collection.id}
+                className="overflow-hidden rounded-[10px] border border-[var(--scry-line2)] bg-[var(--scry-inset)]"
+              >
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--scry-focus)]"
+                  onClick={() => {
+                    setOpenCollectionIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(collection.id)) {
+                        next.delete(collection.id);
+                      } else {
+                        next.add(collection.id);
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 shrink-0 text-[var(--scry-muted2)] transition-transform",
+                      open ? "rotate-180" : "-rotate-90",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-semibold text-[var(--scry-ink2)]">
+                      {titleContextCollectionLabel(collection, t)}
+                    </span>
+                    <span className="block truncate text-[10px] font-medium text-[var(--scry-muted2)]">
+                      {titleContextCollectionEpisodeCount(collection, t)}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[10px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]">
+                    {bytesToReadable(collection.fileSizeBytes)}
+                  </span>
+                </button>
+
+                {open ? (
+                  <div className="border-t border-[var(--scry-line2)]">
+                    {displayedEpisodes.length > 0 ? (
+                      <div className="divide-y divide-[var(--scry-line2)]">
+                        {displayedEpisodes.map((episode) => {
+                          const episodeFiles = titleContextEpisodeFiles(
+                            title,
+                            episode.id,
+                          );
+                          const episodeQualityLabel =
+                            titleContextEpisodeQualityLabel(episodeFiles, t);
+                          const airDateLabel =
+                            formatTitleDate(episode.airDate) ??
+                            t("label.unknown");
+                          return (
+                            <div
+                              key={episode.id}
+                              className="grid min-w-0 grid-cols-[68px_minmax(0,1fr)] gap-2 px-3 py-2.5"
+                            >
+                              <div className="text-[10px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]">
+                                {titleContextEpisodeLabel(title, episode, t)}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="truncate text-[12px] font-semibold text-[var(--scry-ink2)]">
+                                  {episode.title?.trim() || t("label.unknown")}
+                                </div>
+                                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] font-medium text-[var(--scry-muted2)]">
+                                  <span>{airDateLabel}</span>
+                                  <span className="text-[var(--scry-faint2)]">
+                                    /
+                                  </span>
+                                  <span>{episodeQualityLabel}</span>
+                                  {episode.isFiller ? (
+                                    <span className="rounded-[5px] bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-normal text-amber-200">
+                                      {t("episode.filler")}
+                                    </span>
+                                  ) : null}
+                                  {episode.isRecap ? (
+                                    <span className="rounded-[5px] bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-normal text-sky-200">
+                                      {t("episode.recap")}
+                                    </span>
+                                  ) : null}
+                                  {episode.hasMultiAudio ? (
+                                    <span className="rounded-[5px] bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-normal text-emerald-200">
+                                      {t("episode.multiAudio")}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {hiddenEpisodeCount > 0 ? (
+                          <div className="px-3 py-2 text-[10px] font-semibold text-[var(--scry-muted2)]">
+                            {t(
+                              hiddenEpisodeCount === 1
+                                ? "title.contextMoreEpisodesOne"
+                                : "title.contextMoreEpisodesOther",
+                              { count: hiddenEpisodeCount },
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="px-3 py-3 text-[11px] font-medium text-[var(--scry-muted2)]">
+                        {t("seasonSection.noEpisodeRecords")}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {hiddenCollectionCount > 0 ? (
+            <div className="rounded-[8px] border border-dashed border-[var(--scry-line2)] px-3 py-2 text-[10px] font-semibold text-[var(--scry-muted2)]">
+              {t(
+                hiddenCollectionCount === 1
+                  ? "title.contextMoreSeasonsOne"
+                  : "title.contextMoreSeasonsOther",
+                { count: hiddenCollectionCount },
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rounded-[10px] border border-dashed border-[var(--scry-line2)] px-3 py-4 text-[11px] font-medium text-[var(--scry-muted2)]">
+          {collectionsLoaded
+            ? t("title.noTrackedSeasons")
+            : t("title.fetchingData")}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function titleContextRecommendationScore(title: TitleRecord): number {
@@ -485,6 +1169,8 @@ function TitleContextActionButton({
   destructive = false,
   active = false,
   disabled = false,
+  expanded,
+  controlsId,
   onClick,
 }: {
   icon: React.ComponentType<{ className?: string }>;
@@ -493,12 +1179,16 @@ function TitleContextActionButton({
   destructive?: boolean;
   active?: boolean;
   disabled?: boolean;
+  expanded?: boolean;
+  controlsId?: string;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
+      aria-expanded={expanded}
+      aria-controls={controlsId}
       title={label}
       className={cn(
         "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1.5 bg-[var(--scry-card)] px-2 text-[10px] font-bold uppercase tracking-normal text-[var(--scry-muted3)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)] disabled:cursor-not-allowed disabled:opacity-55",
@@ -537,61 +1227,59 @@ function TitleContextMoreLikeThisStrip({
   }
 
   return (
-    <section>
-      <h3 className="text-[11px] font-semibold uppercase tracking-normal text-[var(--scry-muted2)]">
-        {t("title.contextMoreLikeThis")}
-      </h3>
-      <p className="mt-1 text-[11.5px] text-[var(--scry-muted3)]">
-        {t("title.contextMoreLikeThisScope")}
-      </p>
-      <div className="mt-2 grid grid-cols-2 gap-2 min-[1500px]:grid-cols-3">
+    <TitleContextSection
+      icon={Sparkles}
+      title={t("title.contextMoreLikeThis")}
+      description={t("title.contextMoreLikeThisScope")}
+      className="bg-[var(--scry-surf)]"
+    >
+      <div className="flex gap-3 overflow-x-auto pb-2">
         {titles.map((similarTitle) => {
           const posterUrl = selectPosterVariantUrl(
             similarTitle.posterUrl,
-            "w70",
+            "w250",
           );
           const yearLabel = formatTitleYear(similarTitle);
           const genreLabel = titlePrimaryGenre(similarTitle);
-          const subline = [yearLabel, genreLabel].filter(Boolean).join(" / ");
 
           return (
             <button
               key={similarTitle.id}
               type="button"
-              className="group min-w-0 overflow-hidden rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-left transition hover:border-[var(--scry-baccent)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
+              className="group w-24 shrink-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
               aria-label={t("title.selectTitle", { name: similarTitle.name })}
               onClick={() => onSelectTitle(similarTitle)}
             >
-              <div className="flex gap-2 p-2">
-                <div className="h-[60px] w-10 shrink-0 overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]">
-                  <TitlePosterSlot
-                    src={posterUrl}
-                    sourceSrc={similarTitle.posterSourceUrl}
-                    metadataFetchedAt={similarTitle.metadataFetchedAt}
-                    createdAt={similarTitle.createdAt}
-                    alt={t("media.posterAlt", { name: similarTitle.name })}
-                    className="h-full w-full object-cover"
-                    placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[8px] text-[var(--scry-muted3)]"
-                    emptyLabel={t("label.noArt")}
-                    loading="lazy"
-                    decoding="async"
-                  />
-                </div>
-                <div className="min-w-0 flex-1 py-0.5">
-                  <p className="truncate text-[12px] font-semibold text-[var(--scry-ink2)]">
-                    {similarTitle.name}
-                  </p>
-                  <p className="mt-1 truncate text-[11px] text-[var(--scry-muted3)]">
-                    {subline || mediaTitleLabel(view, t)}
-                  </p>
-                  <ArrowUpRight className="mt-2 h-3.5 w-3.5 text-[var(--scry-muted2)] transition group-hover:text-[var(--scry-accent)]" />
-                </div>
+              <div className="relative h-[142px] w-24 overflow-hidden rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_16px_rgba(0,0,0,0.28)] transition group-hover:border-[var(--scry-bhover2)] group-hover:shadow-[0_10px_22px_rgba(0,0,0,0.36)]">
+                <TitlePosterSlot
+                  src={posterUrl}
+                  sourceSrc={similarTitle.posterSourceUrl}
+                  metadataFetchedAt={similarTitle.metadataFetchedAt}
+                  createdAt={similarTitle.createdAt}
+                  alt={t("media.posterAlt", { name: similarTitle.name })}
+                  className="h-full w-full object-cover"
+                  placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-[var(--scry-muted3)]"
+                  emptyLabel={t("label.noArt")}
+                  loading="lazy"
+                  decoding="async"
+                />
+                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_55%,rgba(4,6,12,0.82))]" />
+                <span className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-[7px] border border-white/15 bg-slate-950/70 text-[var(--scry-text2)] backdrop-blur-sm">
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </span>
               </div>
+              <p className="mt-2 truncate text-[12px] font-semibold text-[var(--scry-body)]">
+                {similarTitle.name}
+              </p>
+              <p className="truncate text-[11px] text-[var(--scry-faint)]">
+                {[yearLabel, genreLabel].filter(Boolean).join(" / ") ||
+                  mediaTitleLabel(view, t)}
+              </p>
             </button>
           );
         })}
       </div>
-    </section>
+    </TitleContextSection>
   );
 }
 
@@ -674,6 +1362,8 @@ function TitleContextReleaseSearchPanel({
   onQueueFromInteractive,
   onQueueAdditionalFromInteractive,
   disabled = false,
+  runRequestId = 0,
+  onLoadingChange,
 }: {
   title: TitleRecord;
   onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
@@ -686,12 +1376,68 @@ function TitleContextReleaseSearchPanel({
     release: Release,
   ) => Promise<void> | void;
   disabled?: boolean;
+  runRequestId?: number;
+  onLoadingChange?: (loading: boolean) => void;
 }) {
   const t = useTranslate();
   const requestIdRef = React.useRef(0);
+  const lastRunRequestIdRef = React.useRef(0);
   const [results, setResults] = React.useState<Release[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [searchFailed, setSearchFailed] = React.useState(false);
+  const [sortKey, setSortKey] =
+    React.useState<ReleaseSearchSortKey>("score");
+  const [sortDirection, setSortDirection] =
+    React.useState<ReleaseSearchSortDirection>("desc");
+  const releaseSearchDescription = React.useMemo(() => {
+    if (results === null) {
+      return t("help.interactiveSearchTooltip");
+    }
+
+    const sourceCount = new Set(
+      results
+        .map((release) => release.source?.trim())
+        .filter((source): source is string => Boolean(source)),
+    ).size;
+    return t("title.contextReleaseSearchSummary", {
+      releaseCount: results.length,
+      indexerCount: sourceCount,
+    });
+  }, [results, t]);
+
+  const handleSortChange = React.useCallback(
+    (
+      nextKey: ReleaseSearchSortKey,
+      nextDirection: ReleaseSearchSortDirection,
+    ) => {
+      setSortKey(nextKey);
+      setSortDirection(nextDirection);
+    },
+    [],
+  );
+
+  const toggleSort = React.useCallback(
+    (nextKey: ReleaseSearchSortKey) => {
+      const nextDirection: ReleaseSearchSortDirection =
+        sortKey === nextKey && sortDirection === "desc" ? "asc" : "desc";
+      handleSortChange(nextKey, nextDirection);
+    },
+    [handleSortChange, sortDirection, sortKey],
+  );
+
+  const renderSortIcon = React.useCallback(
+    (key: ReleaseSearchSortKey) => {
+      if (sortKey !== key) {
+        return <ChevronDown className="h-3 w-3 opacity-45" />;
+      }
+      return sortDirection === "desc" ? (
+        <ArrowDown className="h-3 w-3" />
+      ) : (
+        <ArrowUp className="h-3 w-3" />
+      );
+    },
+    [sortDirection, sortKey],
+  );
 
   React.useEffect(() => {
     requestIdRef.current += 1;
@@ -700,8 +1446,12 @@ function TitleContextReleaseSearchPanel({
     setSearchFailed(false);
   }, [title.id]);
 
+  React.useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
+
   const runSearch = React.useCallback(() => {
-    if (disabled) {
+    if (disabled || loading) {
       return;
     }
 
@@ -729,37 +1479,66 @@ function TitleContextReleaseSearchPanel({
           setLoading(false);
         }
       });
-  }, [disabled, onInteractiveSearch, title]);
+  }, [disabled, loading, onInteractiveSearch, title]);
+
+  React.useEffect(() => {
+    if (runRequestId <= 0 || lastRunRequestIdRef.current === runRequestId) {
+      return;
+    }
+    lastRunRequestIdRef.current = runRequestId;
+    runSearch();
+  }, [runRequestId, runSearch]);
 
   return (
-    <section className="rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-[11px] font-semibold uppercase tracking-normal text-[var(--scry-muted2)]">
-            {t("label.interactiveSearch")}
-          </h3>
-          <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-[var(--scry-muted3)]">
-            {t("help.interactiveSearchTooltip")}
-          </p>
+    <TitleContextSection
+      icon={Search}
+      title={t("label.interactiveSearch")}
+      description={releaseSearchDescription}
+      action={
+        <div className="flex max-w-[11.5rem] flex-wrap items-center justify-end gap-1.5 sm:max-w-none">
+          {results && results.length > 1 ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant={sortKey === "score" ? "secondary" : "outline"}
+                className="h-8 shrink-0 rounded-[8px] px-2.5 text-[11px]"
+                onClick={() => toggleSort("score")}
+              >
+                <span>Score</span>
+                {renderSortIcon("score")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={sortKey === "size" ? "secondary" : "outline"}
+                className="h-8 shrink-0 rounded-[8px] px-2.5 text-[11px]"
+                onClick={() => toggleSort("size")}
+              >
+                <span>Size</span>
+                {renderSortIcon("size")}
+              </Button>
+            </>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant={results === null ? "secondary" : "ghost"}
+            className="h-8 shrink-0 px-2.5 text-[12px]"
+            onClick={runSearch}
+            disabled={loading || disabled}
+          >
+            {loading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Search className="h-3.5 w-3.5" />
+            )}
+            <span>{loading ? t("label.searching") : t("label.search")}</span>
+          </Button>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={results === null ? "secondary" : "ghost"}
-          className="h-8 shrink-0 px-2.5 text-[12px]"
-          onClick={runSearch}
-          disabled={loading || disabled}
-        >
-          {loading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Search className="h-3.5 w-3.5" />
-          )}
-          <span>{loading ? t("label.searching") : t("label.search")}</span>
-        </Button>
-      </div>
-
-      <div className="mt-3">
+      }
+    >
+      <div>
         {loading && results === null ? (
           <div className="flex items-center gap-2 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] px-3 py-2 text-[12px] text-[var(--scry-muted2)]">
             <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-accent)]" />
@@ -790,19 +1569,26 @@ function TitleContextReleaseSearchPanel({
             disabled={disabled}
             requireCandidateToken
             compact
+            sortKey={sortKey}
+            sortDirection={sortDirection}
+            onSortChange={handleSortChange}
+            hideInlineSortControls
           />
         )}
       </div>
-    </section>
+    </TitleContextSection>
   );
 }
 
 function TitleContextPanel({
+  id,
   title,
   titles,
   view,
   overviewTargetView,
   resolvedProfileName,
+  blocklistEntries,
+  externalSubtitles,
   qualityProfiles,
   qualityProfilesLoading,
   isTogglingMonitored,
@@ -810,6 +1596,11 @@ function TitleContextPanel({
   onOpenOverview,
   onToggleMonitored,
   onAutoQueue,
+  onRefreshTitles,
+  onRefreshSubtitles,
+  onPreviewRename,
+  onApplyRename,
+  refreshLoading,
   onInteractiveSearch,
   onQueueFromInteractive,
   onQueueAdditionalFromInteractive,
@@ -817,13 +1608,17 @@ function TitleContextPanel({
   onDelete,
   onClearSelection,
   onSelectTitle,
+  titleListDisclosure,
   className,
 }: {
+  id?: string;
   title: TitleRecord | null;
   titles: TitleRecord[];
   view: ViewId;
   overviewTargetView: ViewId;
   resolvedProfileName: string | null;
+  blocklistEntries: TitleReleaseBlocklistEntry[];
+  externalSubtitles: ExternalSubtitleRecord[];
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
   isTogglingMonitored: boolean;
@@ -837,6 +1632,16 @@ function TitleContextPanel({
     monitored: boolean,
   ) => Promise<void> | void;
   onAutoQueue: (title: TitleRecord) => Promise<void> | void;
+  onRefreshTitles: () => Promise<void> | void;
+  onRefreshSubtitles: () => Promise<void> | void;
+  onPreviewRename: (
+    title: TitleRecord,
+  ) => Promise<MediaRenamePlan | null> | MediaRenamePlan | null;
+  onApplyRename: (
+    title: TitleRecord,
+    plan: MediaRenamePlan,
+  ) => Promise<boolean | void> | boolean | void;
+  refreshLoading: boolean;
   onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (
     title: TitleRecord,
@@ -850,24 +1655,131 @@ function TitleContextPanel({
   onDelete: (title: TitleRecord) => void;
   onClearSelection: () => void;
   onSelectTitle: (title: TitleRecord) => void;
+  titleListDisclosure?: React.ReactNode;
   className?: string;
 }) {
   const t = useTranslate();
   const [autoQueueLoadingTitleId, setAutoQueueLoadingTitleId] = React.useState<
     string | null
   >(null);
+  const [releaseSearchRequestId, setReleaseSearchRequestId] = React.useState(0);
+  const [releaseSearchLoading, setReleaseSearchLoading] = React.useState(false);
+  const [releaseSearchTitleId, setReleaseSearchTitleId] = React.useState<
+    string | null
+  >(null);
+  const [renamePlan, setRenamePlan] = React.useState<MediaRenamePlan | null>(
+    null,
+  );
+  const [renamePreviewing, setRenamePreviewing] = React.useState(false);
+  const [renameApplying, setRenameApplying] = React.useState(false);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  const releaseSearchOpen = title !== null && releaseSearchTitleId === title.id;
+  const releaseSearchActionLoading = releaseSearchOpen && releaseSearchLoading;
   const panelClassName = cn(
-    "hidden min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] shadow-[0_18px_44px_rgba(15,23,42,0.10)] xl:flex",
+    "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] shadow-[0_18px_44px_rgba(15,23,42,0.10)]",
     className,
   );
   const moreLikeThisTitles = React.useMemo(
     () => (title ? buildTitleMoreLikeThisTitles(title, titles) : []),
     [title, titles],
   );
+  const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
+    () =>
+      (title?.mediaFiles ?? []).flatMap((file) => {
+        const filePath = file.filePath?.trim();
+        if (!filePath) {
+          return [];
+        }
+        return [
+          {
+            ...file,
+            filePath,
+            sizeBytes: file.sizeBytes ?? null,
+            scanStatus: file.scanStatus ?? "unknown",
+            videoCodec: file.videoCodec ?? file.videoCodecParsed ?? null,
+            videoWidth: file.videoWidth ?? null,
+            videoHeight: file.videoHeight ?? null,
+            videoBitrateKbps: file.videoBitrateKbps ?? null,
+            videoBitDepth: file.videoBitDepth ?? null,
+            videoHdrFormat: file.videoHdrFormat ?? null,
+            videoFrameRate: file.videoFrameRate ?? null,
+            videoProfile: file.videoProfile ?? null,
+            audioCodec: file.audioCodec ?? file.audioCodecParsed ?? null,
+            audioChannels: file.audioChannels ?? null,
+            audioBitrateKbps: file.audioBitrateKbps ?? null,
+            audioLanguages: file.audioLanguages ?? [],
+            audioStreams: (file.audioStreams ?? []).map((stream) => ({
+              codec: stream.codec ?? null,
+              channels: stream.channels ?? null,
+              language: stream.language ?? null,
+              bitrateKbps: stream.bitrateKbps ?? null,
+            })),
+            subtitleLanguages: file.subtitleLanguages ?? [],
+            subtitleCodecs: file.subtitleCodecs ?? [],
+            subtitleStreams: (file.subtitleStreams ?? []).map((stream) => ({
+              codec: stream.codec ?? null,
+              language: stream.language ?? null,
+              name: stream.name ?? null,
+              forced: stream.forced ?? false,
+              default: stream.default ?? false,
+            })),
+            hasMultiaudio: file.hasMultiaudio ?? false,
+            durationSeconds: file.durationSeconds ?? null,
+            numChapters: file.numChapters ?? null,
+            containerFormat: file.containerFormat ?? null,
+          },
+        ];
+      }),
+    [title?.mediaFiles],
+  );
+
+  React.useEffect(() => {
+    setReleaseSearchLoading(false);
+    setReleaseSearchTitleId(title?.id ?? null);
+    if (title?.id) {
+      setReleaseSearchRequestId((current) => current + 1);
+    }
+  }, [title?.id]);
+  React.useEffect(() => {
+    setRenamePlan(null);
+    setRenamePreviewing(false);
+    setRenameApplying(false);
+    setHistoryOpen(false);
+  }, [title?.facet, title?.id]);
+
+  const handlePreviewRename = React.useCallback(async () => {
+    if (!title) {
+      return;
+    }
+
+    setRenamePreviewing(true);
+    try {
+      setRenamePlan(await onPreviewRename(title));
+    } finally {
+      setRenamePreviewing(false);
+    }
+  }, [onPreviewRename, title]);
+
+  const handleApplyRename = React.useCallback(async () => {
+    if (!title || !renamePlan) {
+      return;
+    }
+
+    setRenameApplying(true);
+    try {
+      const applied = await onApplyRename(title, renamePlan);
+      if (applied !== false) {
+        setRenamePlan(null);
+      }
+    } finally {
+      setRenameApplying(false);
+    }
+  }, [onApplyRename, renamePlan, title]);
 
   if (!title) {
     return (
       <aside
+        id={id}
         aria-label={t("title.contextPanelTitle")}
         className={panelClassName}
       >
@@ -882,7 +1794,7 @@ function TitleContextPanel({
 
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
   const backgroundUrl =
-    title.backgroundUrl ?? title.backgroundSourceUrl ?? null;
+    title.backgroundUrl ?? title.backgroundSourceUrl ?? posterUrl ?? null;
   const yearLabel = formatTitleYear(title);
   const statusLabel = localizedTitleStatus(t, title.contentStatus);
   const addedAtLabel = formatTitleDate(title.createdAt) ?? t("label.unknown");
@@ -906,6 +1818,93 @@ function TitleContextPanel({
     view === "movies"
       ? title.studio?.trim()
       : title.network?.trim() || title.studio?.trim();
+  const firstAiredLabel = formatTitleDate(title.firstAired);
+  const metadataFetchedLabel = formatTitleDate(title.metadataFetchedAt);
+  const imdbId = titleExternalIdValue(title, "imdb");
+  const tmdbId = titleExternalIdValue(title, "tmdb");
+  const tvdbId = titleExternalIdValue(title, "tvdb");
+  const malId = titleExternalIdValue(title, "mal");
+  const anilistId = titleExternalIdValue(title, "anilist");
+  const anidbId = titleExternalIdValue(title, "anidb");
+  const otherExternalIds = titleOtherExternalIds(title);
+  const hasExternalLinks = Boolean(
+    imdbId || tmdbId || tvdbId || malId || anilistId || anidbId,
+  );
+  const metadataDetailPairs = [
+    { label: t("title.contextStatus"), value: statusLabel },
+    { label: t("title.contextRuntime"), value: runtimeLabel },
+    {
+      label:
+        view === "movies"
+          ? t("title.contextStudio")
+          : t("title.contextNetwork"),
+      value: studioOrNetworkLabel,
+    },
+    {
+      label: t("title.contextLanguage"),
+      value: title.language?.trim() || title.metadataLanguage?.trim() || null,
+    },
+    { label: t("title.contextCountry"), value: title.country?.trim() || null },
+    {
+      label:
+        view === "movies"
+          ? t("title.contextReleased")
+          : t("title.contextFirstAired"),
+      value: firstAiredLabel,
+    },
+    { label: t("title.contextMetadataFetched"), value: metadataFetchedLabel },
+    {
+      label: t("title.contextSortTitle"),
+      value: title.sortTitle?.trim() || null,
+    },
+  ].filter((item): item is { label: string; value: string } =>
+    Boolean(item.value),
+  );
+  const monitoringDetailPairs = [
+    {
+      label: t("title.contextMonitorType"),
+      value:
+        compactPolicyLabel(title.monitorType) ??
+        (title.monitored ? t("label.enabled") : t("label.disabled")),
+    },
+    {
+      label: t("title.contextSeasonFolders"),
+      value:
+        title.useSeasonFolders == null
+          ? null
+          : title.useSeasonFolders
+            ? t("label.enabled")
+            : t("label.disabled"),
+    },
+    {
+      label: t("title.contextSpecials"),
+      value:
+        title.monitorSpecials == null
+          ? null
+          : title.monitorSpecials
+            ? t("label.enabled")
+            : t("label.disabled"),
+    },
+    {
+      label: t("title.contextFiller"),
+      value: compactPolicyLabel(title.fillerPolicy),
+    },
+    {
+      label: t("title.contextRecaps"),
+      value: compactPolicyLabel(title.recapPolicy),
+    },
+    {
+      label: t("title.contextInterSeasonMovies"),
+      value:
+        title.interSeasonMovies == null
+          ? null
+          : title.interSeasonMovies
+            ? t("label.enabled")
+            : t("label.disabled"),
+    },
+  ].filter((item): item is { label: string; value: string } =>
+    Boolean(item.value),
+  );
   const heroMetadataPills = [
     statusLabel,
     qualityLabel === unknownLabel || qualityLabel === loadingLabel
@@ -919,6 +1918,7 @@ function TitleContextPanel({
     .filter(Boolean)
     .slice(0, 4);
   const autoQueueLoading = autoQueueLoadingTitleId === title.id;
+  const releaseSearchPanelId = `title-context-release-search-${title.id}`;
   const handleAutoQueue = async () => {
     setAutoQueueLoadingTitleId(title.id);
     try {
@@ -929,33 +1929,50 @@ function TitleContextPanel({
       );
     }
   };
+  const handleInteractiveSearchAction = () => {
+    if (releaseSearchOpen) {
+      setReleaseSearchTitleId(null);
+      setReleaseSearchLoading(false);
+      return;
+    }
+    setReleaseSearchTitleId(title.id);
+    setReleaseSearchRequestId((current) => current + 1);
+  };
 
   return (
-    <aside aria-label={t("title.contextPanelTitle")} className={panelClassName}>
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="relative h-28 overflow-hidden border-b border-[var(--scry-border2)] bg-[var(--scry-inset)]">
+    <aside
+      id={id}
+      aria-label={t("title.contextPanelTitle")}
+      className={panelClassName}
+    >
+      <div
+        data-slot="title-context-scroll"
+        className="relative min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"
+      >
+        {titleListDisclosure ? (
+          <div className="mb-3 flex items-center">{titleListDisclosure}</div>
+        ) : null}
+        <section className="relative overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[linear-gradient(135deg,var(--scry-surfE),var(--scry-bg))] shadow-[0_18px_44px_rgba(0,0,0,0.28)]">
           {backgroundUrl ? (
             <img
               src={backgroundUrl}
               alt=""
               aria-hidden="true"
-              className="h-full w-full object-cover opacity-45"
+              className="absolute inset-0 h-full w-full object-cover opacity-40 saturate-90"
               loading="lazy"
             />
           ) : null}
-          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),var(--scry-surfD))]" />
+          <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(8,12,22,0.96)_28%,rgba(8,12,22,0.72)_68%,rgba(8,12,22,0.38))] dark:bg-[linear-gradient(105deg,rgba(8,12,22,0.97)_28%,rgba(8,12,22,0.66)_68%,rgba(8,12,22,0.34))]" />
           <button
             type="button"
             aria-label={t("label.clear")}
-            className="absolute right-3 top-3 z-10 flex size-8 items-center justify-center rounded-[10px] border border-white/35 bg-white/75 text-[var(--scry-ink2)] shadow-sm transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)] dark:border-white/15 dark:bg-slate-950/65 dark:hover:bg-slate-950"
+            className="absolute right-3 top-3 z-10 flex size-8 items-center justify-center rounded-[9px] border border-white/15 bg-slate-950/60 text-[#dde4f5] shadow-sm backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
             onClick={onClearSelection}
           >
             <X className="h-4 w-4" />
           </button>
-        </div>
-        <div className="-mt-14 px-4 pb-4">
-          <div className="relative flex gap-3">
-            <div className="h-36 w-24 shrink-0 overflow-hidden rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] shadow-[0_12px_30px_rgba(15,23,42,0.18)]">
+          <div className="relative flex gap-4 p-4 pr-14 sm:gap-5 sm:p-5 sm:pr-16">
+            <div className="relative h-44 w-[116px] shrink-0 overflow-hidden rounded-[10px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_12px_32px_rgba(0,0,0,0.5)] sm:h-[198px] sm:w-[132px]">
               <TitlePosterSlot
                 src={posterUrl}
                 sourceSrc={title.posterSourceUrl}
@@ -968,15 +1985,31 @@ function TitleContextPanel({
                 loading="lazy"
                 decoding="async"
               />
+              <div
+                className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_42%,rgba(4,6,12,0.86))]"
+                aria-hidden="true"
+              />
+              <span className="pointer-events-none absolute inset-x-2 bottom-2 line-clamp-2 text-[12px] font-bold leading-[1.08] text-white shadow-black [text-shadow:0_1px_6px_rgba(0,0,0,0.75)]">
+                {title.name}
+              </span>
             </div>
-            <div className="min-w-0 flex-1 pt-14">
-              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-[21px] font-bold leading-[1.1] tracking-normal text-white">
+                {title.name}
+                {yearLabel ? (
+                  <span className="font-medium text-[var(--scry-muted3)]">
+                    {" "}
+                    ({yearLabel})
+                  </span>
+                ) : null}
+              </h2>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span
                   className={cn(
-                    "inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold",
+                    "inline-flex h-6 items-center gap-1 rounded-[7px] px-2.5 text-[11px] font-semibold",
                     title.monitored
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                      : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                      ? "bg-emerald-500/15 text-emerald-200"
+                      : "bg-rose-500/15 text-rose-200",
                   )}
                 >
                   {title.monitored ? (
@@ -991,137 +2024,358 @@ function TitleContextPanel({
                 {heroMetadataPills.map((pill, index) => (
                   <span
                     key={`${index}-${pill}`}
-                    className="inline-flex h-6 max-w-[11rem] items-center truncate rounded-full border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2 text-[11px] font-semibold text-[var(--scry-accent)]"
+                    className="inline-flex h-6 max-w-[12rem] items-center truncate rounded-[7px] bg-[rgba(var(--scry-accent-rgb),0.15)] px-2.5 text-[11px] font-semibold text-[var(--scry-accent-text)]"
                   >
                     {pill}
                   </span>
                 ))}
               </div>
-              <h2 className="line-clamp-3 text-[18px] font-bold leading-tight text-[var(--scry-ink2)]">
-                {title.name}
-              </h2>
-              <p className="mt-1 truncate text-[12px] text-[var(--scry-muted3)]">
-                {subheading || mediaTitleLabel(view, t)}
-              </p>
               {heroGenreLabels.length > 0 ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="mt-3 flex flex-wrap gap-1.5">
                   {heroGenreLabels.map((genre) => (
                     <span
                       key={genre}
-                      className="inline-flex h-6 max-w-[8.5rem] items-center rounded-md border border-[var(--scry-border2)] bg-[var(--scry-soft)] px-2 text-[11px] font-semibold text-[var(--scry-muted2)]"
+                      className="inline-flex h-6 max-w-[9.5rem] items-center rounded-[7px] border border-white/10 bg-white/[0.06] px-2.5 text-[11px] font-semibold text-[#cfd7ee]"
                     >
                       <span className="min-w-0 truncate">{genre}</span>
                     </span>
                   ))}
                 </div>
               ) : null}
-            </div>
-          </div>
-
-          <div className="mt-4 grid grid-cols-4 gap-px overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-border)]">
-            <TitleContextActionButton
-              icon={ArrowUpRight}
-              label={t("title.openOverview")}
-              disabled={bulkActionBusy}
-              onClick={() => onOpenOverview(overviewTargetView, title)}
-            />
-            <TitleContextActionButton
-              icon={Zap}
-              label={t("title.queueLatest")}
-              loading={autoQueueLoading}
-              disabled={bulkActionBusy}
-              onClick={() => void handleAutoQueue()}
-            />
-            <TitleContextActionButton
-              icon={title.monitored ? EyeOff : Eye}
-              label={
-                title.monitored
-                  ? t("title.unmonitorAction")
-                  : t("title.monitorAction")
-              }
-              active={title.monitored}
-              loading={isTogglingMonitored}
-              disabled={bulkActionBusy || !onToggleMonitored}
-              onClick={() => void onToggleMonitored?.(title, !title.monitored)}
-            />
-            <TitleContextActionButton
-              icon={Trash2}
-              label={t("label.delete")}
-              destructive
-              loading={isDeleting}
-              disabled={bulkActionBusy}
-              onClick={() => onDelete(title)}
-            />
-          </div>
-
-          <div className="mt-4 space-y-4">
-            <section>
-              <h3 className="text-[11px] font-semibold uppercase tracking-normal text-[var(--scry-muted2)]">
-                {t("title.contextOverview")}
-              </h3>
-              <p className="mt-2 line-clamp-5 text-[12.5px] leading-5 text-[var(--scry-body)]">
+              <p className="mt-3 line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
                 {overviewText}
               </p>
-            </section>
-
-            <div className="grid grid-cols-2 gap-2">
-              <TitleContextMetric
-                icon={Library}
-                label={t("title.contextLibrary")}
-                value={<span className="block truncate">{libraryLabel}</span>}
-              />
-              <TitleContextMetric
-                icon={HardDrive}
-                label={t("title.contextSize")}
-                value={bytesToReadable(title.sizeBytes)}
-              />
-              <TitleContextMetric
-                icon={Folder}
-                label={t("title.contextRootFolder")}
-                value={
-                  <span className="block truncate">{rootFolderLabel}</span>
-                }
-              />
-              <TitleContextMetric
-                icon={CalendarDays}
-                label={t("title.contextAdded")}
-                value={addedAtLabel}
-              />
+              {hasExternalLinks ? (
+                <div className="mt-3 flex flex-wrap gap-2 [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
+                  <ImdbExternalLink imdbId={imdbId} />
+                  {view === "movies" ? (
+                    <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
+                  ) : (
+                    <TvdbSeriesExternalLink tvdbId={tvdbId} slug={title.slug} />
+                  )}
+                  <TmdbExternalLink
+                    mediaType={view === "movies" ? "movie" : "tv"}
+                    tmdbId={tmdbId}
+                  />
+                  <MalExternalLink malId={malId} />
+                  <AnilistExternalLink anilistId={anilistId} />
+                  <AnidbExternalLink anidbId={anidbId} />
+                </div>
+              ) : null}
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--scry-faint2)]">
+                <span>{subheading || mediaTitleLabel(view, t)}</span>
+                <span aria-hidden="true">/</span>
+                <span>
+                  {t("title.contextLibrary")}: {libraryLabel}
+                </span>
+                <span aria-hidden="true">/</span>
+                <span>
+                  {t("title.contextAdded")}: {addedAtLabel}
+                </span>
+              </div>
             </div>
+          </div>
+        </section>
 
-            <TitleContextMetric
-              icon={LayoutList}
-              label={t("title.contextQuality")}
-              value={qualityLabel}
-            />
+        <div className="mt-3 grid grid-cols-7 gap-px overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-border)]">
+          <TitleContextActionButton
+            icon={title.monitored ? EyeOff : Eye}
+            label={
+              title.monitored
+                ? t("title.unmonitorAction")
+                : t("title.monitorAction")
+            }
+            active={title.monitored}
+            loading={isTogglingMonitored}
+            disabled={bulkActionBusy || !onToggleMonitored}
+            onClick={() => void onToggleMonitored?.(title, !title.monitored)}
+          />
+          <TitleContextActionButton
+            icon={Zap}
+            label={t("title.queueLatest")}
+            loading={autoQueueLoading}
+            disabled={bulkActionBusy}
+            onClick={() => void handleAutoQueue()}
+          />
+          <TitleContextActionButton
+            icon={Search}
+            label={t("label.interactiveSearch")}
+            active={releaseSearchOpen}
+            loading={releaseSearchActionLoading}
+            disabled={bulkActionBusy && !releaseSearchOpen}
+            expanded={releaseSearchOpen}
+            controlsId={releaseSearchPanelId}
+            onClick={handleInteractiveSearchAction}
+          />
+          <TitleContextActionButton
+            icon={RefreshCw}
+            label={t("label.refresh")}
+            loading={refreshLoading}
+            disabled={bulkActionBusy || refreshLoading}
+            onClick={() => void onRefreshTitles()}
+          />
+          <TitleContextActionButton
+            icon={ClipboardList}
+            label={t("activity.history")}
+            disabled={bulkActionBusy}
+            onClick={() => setHistoryOpen(true)}
+          />
+          <TitleContextActionButton
+            icon={Edit}
+            label={t("label.edit")}
+            disabled={bulkActionBusy}
+            onClick={() => onOpenOverview(overviewTargetView, title)}
+          />
+          <TitleContextActionButton
+            icon={Trash2}
+            label={t("label.delete")}
+            destructive
+            loading={isDeleting}
+            disabled={bulkActionBusy}
+            onClick={() => onDelete(title)}
+          />
+        </div>
 
-            {view !== "movies" ? (
-              <TitleContextMetric
-                icon={LayoutGrid}
-                label={t("title.contextEpisodes")}
-              >
-                <TitleEpisodeProgressBar item={title} t={t} compact />
-              </TitleContextMetric>
-            ) : null}
-
+        {releaseSearchOpen ? (
+          <div
+            id={releaseSearchPanelId}
+            role="region"
+            aria-label={t("label.interactiveSearch")}
+            aria-live="polite"
+            className="mt-3"
+          >
             <TitleContextReleaseSearchPanel
               title={title}
               onInteractiveSearch={onInteractiveSearch}
               onQueueFromInteractive={onQueueFromInteractive}
-              onQueueAdditionalFromInteractive={
-                onQueueAdditionalFromInteractive
-              }
+              onQueueAdditionalFromInteractive={onQueueAdditionalFromInteractive}
               disabled={bulkActionBusy}
-            />
-
-            <TitleContextMoreLikeThisStrip
-              titles={moreLikeThisTitles}
-              view={view}
-              onSelectTitle={onSelectTitle}
+              runRequestId={releaseSearchRequestId}
+              onLoadingChange={setReleaseSearchLoading}
             />
           </div>
+        ) : null}
+
+        <div className="mt-3 space-y-3">
+          <TitleContextSection
+            icon={HardDrive}
+            title={t("title.filesOnDisk")}
+            summary={`${titleMediaFiles.length} / ${bytesToReadable(title.sizeBytes)}`}
+            description={
+              <span className="block truncate" title={rootFolderLabel}>
+                {libraryLabel} / {rootFolderLabel}
+              </span>
+            }
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 rounded-[8px] border-[var(--scry-border2)] bg-[var(--scry-soft)] text-[11.5px] shadow-none"
+                onClick={() => {
+                  void handlePreviewRename();
+                }}
+                disabled={renamePreviewing || renameApplying}
+              >
+                {renamePreviewing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Pencil className="h-3.5 w-3.5" />
+                )}
+                <span>
+                  {renamePreviewing
+                    ? t("rename.previewing")
+                    : t("rename.previewButton")}
+                </span>
+              </Button>
+            }
+            collapsible
+            resetKey={title.id}
+          >
+            <MediaFilesOnDiskPanel
+              emptyMessage={t("title.noFilesTracked")}
+              emptyHint={t("title.noFilesTrackedHint")}
+              mediaFiles={titleMediaFiles}
+              subtitleDownloads={externalSubtitles}
+              onRefreshSubtitles={onRefreshSubtitles}
+              showPrimaryRoleBadge
+              fileRowIdPrefix={`title-context-file-row-${title.id}`}
+              filePathIdPrefix={`title-context-file-path-${title.id}`}
+              roleIdPrefix={`title-context-file-role-${title.id}`}
+              subtitleSearchIdPrefix={`title-context-file-search-subtitles-${title.id}`}
+            />
+            {renamePlan ? (
+              <MediaRenamePlanPanel
+                plan={renamePlan}
+                applying={renameApplying}
+                applyDisabled={renameApplying || renamePlan.renamable === 0}
+                applyButtonId={`title-context-rename-apply-${title.id}`}
+                onApply={() => {
+                  void handleApplyRename();
+                }}
+              />
+            ) : null}
+          </TitleContextSection>
+
+          {view !== "movies" ? (
+            <TitleContextSection
+              icon={LayoutGrid}
+              title={t("title.contextEpisodes")}
+              summary={formatTitleEpisodeSummary(title, t)}
+              collapsible
+              resetKey={title.id}
+            >
+              <TitleContextEpisodesPanel
+                title={title}
+                statusLabel={statusLabel}
+                qualityLabel={qualityLabel}
+                t={t}
+              />
+            </TitleContextSection>
+          ) : null}
+
+          {metadataDetailPairs.length > 0 || otherExternalIds.length > 0 ? (
+            <TitleContextSection
+              icon={Database}
+              title={t("title.contextMetadata")}
+              summary={metadataDetailPairs[0]?.value}
+              collapsible
+              resetKey={title.id}
+            >
+              <div className="grid grid-cols-2 gap-2">
+                {metadataDetailPairs.map((item) => (
+                  <TitleContextMetric
+                    key={item.label}
+                    icon={Database}
+                    label={item.label}
+                    value={
+                      <span className="block truncate" title={item.value}>
+                        {item.value}
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+              {otherExternalIds.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {otherExternalIds.map((entry) => (
+                    <span
+                      key={`${entry.source}:${entry.value}`}
+                      className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-[7px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[11px] font-semibold text-[var(--scry-muted2)]"
+                      title={`${entry.source}: ${entry.value}`}
+                    >
+                      <span className="uppercase text-[var(--scry-faint2)]">
+                        {entry.source}
+                      </span>
+                      <span className="min-w-0 truncate text-[var(--scry-ink2)]">
+                        {entry.value}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </TitleContextSection>
+          ) : null}
+
+          {monitoringDetailPairs.length > 0 ? (
+            <TitleContextSection
+              icon={Eye}
+              title={t("title.contextMonitoring")}
+              summary={
+                title.monitored ? t("label.enabled") : t("label.disabled")
+              }
+              collapsible
+              defaultOpen={false}
+              resetKey={title.id}
+            >
+              <div className="grid grid-cols-2 gap-2">
+                {monitoringDetailPairs.map((item) => (
+                  <TitleContextMetric
+                    key={item.label}
+                    icon={Eye}
+                    label={item.label}
+                    value={
+                      <span className="block truncate" title={item.value}>
+                        {item.value}
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+            </TitleContextSection>
+          ) : null}
+
+          <TitleContextMoreLikeThisStrip
+            titles={moreLikeThisTitles}
+            view={view}
+            onSelectTitle={onSelectTitle}
+          />
+
+          <TitleContextSection
+            icon={Ban}
+            title={t("title.contextBlockedReleases")}
+            summary={String(blocklistEntries.length)}
+            collapsible
+            defaultOpen={false}
+            resetKey={title.id}
+          >
+            {blocklistEntries.length === 0 ? (
+              <div className="rounded-[11px] border border-dashed border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-4 text-[12px] leading-5 text-[var(--scry-muted3)]">
+                {t("title.contextBlockedReleasesEmpty")}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {blocklistEntries.map((entry) => {
+                  const attemptedAtLabel = formatTitleDate(entry.attemptedAt);
+                  const releaseLabel =
+                    entry.sourceTitle?.trim() ||
+                    entry.sourceHint?.trim() ||
+                    t("episode.untitledRelease");
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className="rounded-[11px] border border-[var(--scry-line3)] bg-[var(--scry-inset)] p-3"
+                    >
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="line-clamp-2 break-words text-[12px] font-semibold text-[var(--scry-ink2)]">
+                            {releaseLabel}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--scry-muted3)]">
+                            {attemptedAtLabel ? (
+                              <span>{attemptedAtLabel}</span>
+                            ) : null}
+                            {entry.sourceHint ? (
+                              <span>{entry.sourceHint}</span>
+                            ) : null}
+                          </div>
+                        </div>
+                        {entry.episodeIds.length > 0 ? (
+                          <span className="shrink-0 rounded-[6px] border border-[var(--scry-line3)] bg-[var(--scry-card)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--scry-muted2)]">
+                            {entry.episodeIds.length}
+                          </span>
+                        ) : null}
+                      </div>
+                      {entry.errorMessage ? (
+                        <p className="mt-2 line-clamp-3 rounded-[8px] bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-4 text-red-700 dark:text-red-200">
+                          {entry.errorMessage}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </TitleContextSection>
         </div>
       </div>
+      <TitleHistoryModal
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        titleId={title.id}
+        titleName={title.name}
+      />
     </aside>
   );
 }
@@ -1383,6 +2637,16 @@ export function MediaContentView({
       overviewTarget: OverviewTitleTarget,
     ) => void;
     selectedOverviewTitleId: string | null;
+    selectedOverviewBlocklistEntries: TitleReleaseBlocklistEntry[];
+    selectedOverviewExternalSubtitles: ExternalSubtitleRecord[];
+    refreshSelectedOverviewExternalSubtitles: () => Promise<void> | void;
+    previewTitleRename: (
+      title: TitleRecord,
+    ) => Promise<MediaRenamePlan | null> | MediaRenamePlan | null;
+    applyTitleRename: (
+      title: TitleRecord,
+      plan: MediaRenamePlan,
+    ) => Promise<boolean | void> | boolean | void;
     setSelectedOverviewTitleId: (titleId: string | null) => void;
     clearSelectedOverviewTitle: () => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
@@ -1403,7 +2667,13 @@ export function MediaContentView({
   const t = useTranslate();
   const location = useLocation();
   const contextPanelViewportMatches = useMinViewportWidth(
-    "(min-width: 1280px)",
+    "(min-width: 760px)",
+  );
+  const posterContextPanelViewportMatches = useMinViewportWidth(
+    "(min-width: 720px)",
+  );
+  const selectedTitleListInlineViewportMatches = useMinViewportWidth(
+    "(min-width: 1180px)",
   );
   const {
     view,
@@ -1527,11 +2797,15 @@ export function MediaContentView({
     scanLibrary,
     onOpenOverview,
     selectedOverviewTitleId,
+    selectedOverviewBlocklistEntries,
+    selectedOverviewExternalSubtitles,
+    refreshSelectedOverviewExternalSubtitles,
+    previewTitleRename,
+    applyTitleRename,
     setSelectedOverviewTitleId,
     clearSelectedOverviewTitle,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
-    isMobile,
     viewMode,
     setViewMode,
     selectedTitleIds,
@@ -1545,7 +2819,29 @@ export function MediaContentView({
   } = state;
   const [titleFilterInputValue, setTitleFilterInputValue] =
     React.useState(titleFilter);
+  const [titleLayoutRef, titleLayoutWidth] =
+    useMeasuredElementWidth<HTMLDivElement>();
   const deferredMonitoredTitles = React.useDeferredValue(monitoredTitles);
+  const [visibleTitleTableColumns, setVisibleTitleTableColumns] =
+    React.useState<TitleTableVisibleColumns>(() => ({
+      ...DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+    }));
+  const titleTableColumnOptions = React.useMemo(
+    () =>
+      TITLE_TABLE_COLUMN_KEYS.filter(
+        (key) => key !== "episodes" || view !== "movies",
+      ),
+    [view],
+  );
+  const toggleTitleTableColumn = React.useCallback(
+    (key: TitleTableColumnKey, checked: boolean) => {
+      setVisibleTitleTableColumns((current) => ({
+        ...current,
+        [key]: checked,
+      }));
+    },
+    [],
+  );
 
   React.useEffect(() => {
     setTitleFilterInputValue((current) =>
@@ -1569,6 +2865,26 @@ export function MediaContentView({
   );
   const activeOverviewTitle = selectedOverviewTitle;
   const activeOverviewTitleId = activeOverviewTitle?.id ?? null;
+  React.useEffect(() => {
+    if (!selectedOverviewTitleId || selectedOverviewTitle) {
+      return;
+    }
+    if (
+      titleLoading ||
+      catalogBootstrapLoading ||
+      !catalogInitialLoadComplete
+    ) {
+      return;
+    }
+    clearSelectedOverviewTitle();
+  }, [
+    catalogBootstrapLoading,
+    catalogInitialLoadComplete,
+    clearSelectedOverviewTitle,
+    selectedOverviewTitle,
+    selectedOverviewTitleId,
+    titleLoading,
+  ]);
   const handleSelectOverviewTitle = React.useCallback(
     (title: TitleRecord) => {
       setSelectedOverviewTitleId(title.id);
@@ -1593,14 +2909,206 @@ export function MediaContentView({
       : activeQualityScopeId === "series"
         ? t("search.facetSeries")
         : t("search.facetAnime");
-  const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
-  const contextPanelAvailable = contextPanelViewportMatches && !isMobile;
+  const effectiveViewMode: ContentViewMode = viewMode;
+  const contextPanelMinimumWidth =
+    effectiveViewMode === "poster" ? 720 : 760;
+  const contextPanelWidthMatches =
+    titleLayoutWidth == null
+      ? effectiveViewMode === "poster"
+        ? posterContextPanelViewportMatches
+        : contextPanelViewportMatches
+      : titleLayoutWidth >= contextPanelMinimumWidth;
+  const contextPanelAvailable =
+    contextPanelWidthMatches || selectedOverviewTitleId !== null;
+  const selectedTitleLayoutActive =
+    contextPanelAvailable && activeOverviewTitle !== null;
+  const selectedTitlePosterInlineActive =
+    selectedTitleLayoutActive &&
+    effectiveViewMode === "poster" &&
+    (titleLayoutWidth == null
+      ? selectedTitleListInlineViewportMatches
+      : titleLayoutWidth >= 1180);
+  const selectedTitleCompactLayoutActive =
+    selectedTitleLayoutActive && !selectedTitlePosterInlineActive;
+  const selectedTitleListInlineActive =
+    selectedTitleCompactLayoutActive &&
+    (titleLayoutWidth == null
+      ? selectedTitleListInlineViewportMatches
+      : titleLayoutWidth >= 1180);
+  const [selectedTitleListDrawerOpen, setSelectedTitleListDrawerOpen] =
+    React.useState(false);
+  const selectedTitleListDrawerRef = React.useRef<HTMLDivElement | null>(null);
+  const selectedTitleListPreviousFocusRef = React.useRef<HTMLElement | null>(
+    null,
+  );
+  const selectedTitleListDrawerModeActive =
+    selectedTitleListDrawerOpen &&
+    selectedTitleCompactLayoutActive &&
+    !selectedTitleListInlineActive;
+
+  React.useEffect(() => {
+    setSelectedTitleListDrawerOpen(false);
+  }, [activeOverviewTitleId, selectedTitleCompactLayoutActive]);
+
+  React.useEffect(() => {
+    if (!selectedTitleListDrawerModeActive) {
+      return;
+    }
+
+    selectedTitleListPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const getDrawerFocusableElements = () => {
+      const drawer = selectedTitleListDrawerRef.current;
+      if (!drawer) {
+        return [];
+      }
+
+      return Array.from(
+        drawer.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.offsetParent !== null);
+    };
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      const drawer = selectedTitleListDrawerRef.current;
+      if (!drawer) {
+        return;
+      }
+
+      (getDrawerFocusableElements()[0] ?? drawer).focus();
+    });
+
+    const handleSelectedTitleDrawerKeyDown = (event: KeyboardEvent) => {
+      const drawer = selectedTitleListDrawerRef.current;
+      const eventTarget = event.target;
+      if (!(eventTarget instanceof Node) || !drawer?.contains(eventTarget)) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSelectedTitleListDrawerOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const focusableElements = getDrawerFocusableElements();
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        selectedTitleListDrawerRef.current?.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+
+    window.addEventListener("keydown", handleSelectedTitleDrawerKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleSelectedTitleDrawerKeyDown);
+      const previousFocus = selectedTitleListPreviousFocusRef.current;
+      selectedTitleListPreviousFocusRef.current = null;
+      if (previousFocus && document.contains(previousFocus)) {
+        previousFocus.focus();
+      }
+    };
+  }, [selectedTitleListDrawerModeActive]);
+
+  const isTitleCatalogView =
+    view === "movies" || view === "series" || view === "anime";
+  const selectedTitleCompactDrawerActive =
+    selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
+  const selectedTitleFullTableInlineActive =
+    selectedTitleCompactLayoutActive && selectedTitleListInlineActive;
+  const collectionViewMode: ContentViewMode = selectedTitleCompactDrawerActive
+    ? "compact"
+    : selectedTitleFullTableInlineActive
+      ? "poster-table"
+    : effectiveViewMode;
+  const selectedTitlePosterLayoutActive =
+    selectedTitleLayoutActive && collectionViewMode === "poster";
+
+  React.useEffect(() => {
+    if (
+      !isTitleCatalogView ||
+      collectionViewMode !== "poster" ||
+      !catalogHasMoreTitles ||
+      catalogLoadingMoreTitles
+    ) {
+      return;
+    }
+
+    const maybeLoadNextPage = () => {
+      if (selectedTitlePosterLayoutActive) {
+        const element = selectedTitleListDrawerRef.current;
+        if (!element || element.clientHeight <= 0) {
+          return;
+        }
+        const remaining =
+          element.scrollHeight - (element.scrollTop + element.clientHeight);
+        if (remaining <= 1200) {
+          void loadMoreCatalogTitles();
+        }
+        return;
+      }
+
+      const scrollElement = document.documentElement;
+      const remaining =
+        scrollElement.scrollHeight - (window.scrollY + window.innerHeight);
+      if (remaining <= 1200) {
+        void loadMoreCatalogTitles();
+      }
+    };
+
+    maybeLoadNextPage();
+    const scrollElement = selectedTitlePosterLayoutActive
+      ? selectedTitleListDrawerRef.current
+      : window;
+    scrollElement?.addEventListener("scroll", maybeLoadNextPage, {
+      passive: true,
+    });
+    window.addEventListener("resize", maybeLoadNextPage);
+    return () => {
+      scrollElement?.removeEventListener("scroll", maybeLoadNextPage);
+      window.removeEventListener("resize", maybeLoadNextPage);
+    };
+  }, [
+    catalogHasMoreTitles,
+    catalogLoadingMoreTitles,
+    collectionViewMode,
+    deferredMonitoredTitles.length,
+    isTitleCatalogView,
+    loadMoreCatalogTitles,
+    selectedTitlePosterLayoutActive,
+  ]);
+
+  const selectedTitleListDrawerId =
+    activeOverviewTitleId !== null
+      ? `title-context-list-drawer-${activeOverviewTitleId}`
+      : "title-context-list-drawer";
+  const selectedTitleContextPanelId =
+    activeOverviewTitleId !== null
+      ? `title-context-panel-${activeOverviewTitleId}`
+      : "title-context-panel";
   const contextPanelSelectedTitleId = contextPanelAvailable
     ? activeOverviewTitleId
     : null;
-  const onSelectTitleForContextPanel = contextPanelAvailable
-    ? handleSelectOverviewTitle
-    : undefined;
+  const onSelectTitleForContextPanel = handleSelectOverviewTitle;
   const handleOpenOverviewFromContext = React.useCallback(
     (targetView: ViewId, overviewTarget: OverviewTitleTarget) => {
       if (effectiveViewMode === "poster") {
@@ -2078,54 +3586,98 @@ export function MediaContentView({
                     disabled={librariesLoading || libraries.length === 0}
                     triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none lg:w-[180px]"
                   />
-                  {!isMobile ? (
-                    <ToggleGroup
-                      type="single"
-                      value={viewMode}
-                      onValueChange={(v) => {
-                        if (
-                          v === "compact" ||
-                          v === "poster-table" ||
-                          v === "poster"
-                        ) {
-                          setViewMode(v);
-                        }
-                      }}
+                  <ToggleGroup
+                    type="single"
+                    value={effectiveViewMode}
+                    onValueChange={(v) => {
+                      if (
+                        v === "compact" ||
+                        v === "poster-table" ||
+                        v === "poster"
+                      ) {
+                        setViewMode(v);
+                      }
+                    }}
+                    size="sm"
+                    aria-label={t("title.viewModeToggle")}
+                    className="h-10 shrink-0 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                  >
+                    <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "compact")}
+                      value="compact"
                       size="sm"
-                      aria-label={t("title.viewModeToggle")}
-                      className="h-10 shrink-0 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] p-1 shadow-none"
+                      aria-label={t("title.viewModeCompact")}
+                      title={t("title.viewModeCompact")}
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
                     >
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "compact")}
-                        value="compact"
-                        size="sm"
-                        aria-label={t("title.viewModeCompact")}
-                        title={t("title.viewModeCompact")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
+                      <CompactTableIcon />
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "poster-table")}
+                      value="poster-table"
+                      size="sm"
+                      aria-label={t("title.viewModePosterTable")}
+                      title={t("title.viewModePosterTable")}
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
+                    >
+                      <LayoutList className="h-4 w-4" />
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      id={titleOverviewViewModeId(view, "poster")}
+                      value="poster"
+                      size="sm"
+                      aria-label={t("title.viewModePoster")}
+                      title={t("title.viewModePoster")}
+                      className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
+                    >
+                      <LayoutGrid className="h-4 w-4" />
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                  {effectiveViewMode !== "poster" ? (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] shadow-none lg:w-auto"
+                          aria-label={t("title.columns")}
+                        >
+                          <Columns3 className="h-4 w-4" />
+                          <span>{t("title.columns")}</span>
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        className="w-56 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-2 shadow-[0_18px_44px_rgba(0,0,0,0.24)]"
                       >
-                        <CompactTableIcon />
-                      </ToggleGroupItem>
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "poster-table")}
-                        value="poster-table"
-                        size="sm"
-                        aria-label={t("title.viewModePosterTable")}
-                        title={t("title.viewModePosterTable")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
-                      >
-                        <LayoutList className="h-4 w-4" />
-                      </ToggleGroupItem>
-                      <ToggleGroupItem
-                        id={titleOverviewViewModeId(view, "poster")}
-                        value="poster"
-                        size="sm"
-                        aria-label={t("title.viewModePoster")}
-                        title={t("title.viewModePoster")}
-                        className="h-8 w-8 rounded-lg px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent-grad)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-[0_8px_18px_rgba(var(--scry-accent-rgb),0.24)]"
-                      >
-                        <LayoutGrid className="h-4 w-4" />
-                      </ToggleGroupItem>
-                    </ToggleGroup>
+                        <div className="space-y-1">
+                          {titleTableColumnOptions.map((columnKey) => (
+                            <label
+                              key={columnKey}
+                              className="flex min-h-9 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 text-[12px] font-medium text-[var(--scry-body)] transition hover:bg-[var(--scry-hover)]"
+                            >
+                              <Checkbox
+                                checked={visibleTitleTableColumns[columnKey]}
+                                onCheckedChange={(checked) =>
+                                  toggleTitleTableColumn(
+                                    columnKey,
+                                    checked === true,
+                                  )
+                                }
+                                aria-label={titleTableColumnLabel(
+                                  columnKey,
+                                  t,
+                                )}
+                                className="size-4 rounded-[5px] [&_svg]:size-3"
+                              />
+                              <span className="min-w-0 truncate">
+                                {titleTableColumnLabel(columnKey, t)}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                   ) : null}
                   <Button
                     id={`title-overview-refresh-${view === "movies" ? "movie" : view === "series" ? "series" : "anime"}`}
@@ -2152,8 +3704,9 @@ export function MediaContentView({
                   onToggleStatus={toggleTitleQuickStatusFilter}
                   onClear={clearTitleQuickFilters}
                   trailingContent={
-                    effectiveViewMode === "compact" ||
-                    effectiveViewMode === "poster-table" ? (
+                    !selectedTitleCompactLayoutActive &&
+                    (collectionViewMode === "compact" ||
+                      collectionViewMode === "poster-table") ? (
                       compactSelectedVisibleCount > 0 ? (
                         <div className="flex h-12 w-full items-center justify-end gap-2 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:w-[20rem]">
                           <span className="mr-1 whitespace-nowrap text-sm text-[var(--scry-muted3)]">
@@ -2218,7 +3771,14 @@ export function MediaContentView({
                 />
               </div>
             </div>
-            <div className="min-h-0 flex-1 bg-transparent p-3 sm:p-4 lg:p-5">
+            <div
+              className={cn(
+                "flex min-h-0 flex-1 flex-col bg-transparent",
+                selectedTitleLayoutActive
+                  ? "overflow-hidden p-2 sm:p-3 lg:p-4"
+                  : "p-3 sm:p-4 lg:p-5",
+              )}
+            >
               {(() => {
                 const isMovieView = view === "movies";
                 const overviewTargetView = isMovieView
@@ -2242,7 +3802,7 @@ export function MediaContentView({
                 })();
                 let titleCollectionView: React.ReactNode;
 
-                if (effectiveViewMode === "poster") {
+                if (collectionViewMode === "poster") {
                   titleCollectionView = (
                     <PosterGrid
                       key={`${view}-poster-grid`}
@@ -2254,6 +3814,7 @@ export function MediaContentView({
                       qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
+                      contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
                       onDelete={handleDeleteCatalogTitle}
                       onAutoQueue={queueExisting}
@@ -2273,24 +3834,31 @@ export function MediaContentView({
                       scanLibraryNotice={libraryScanNotice}
                     />
                   );
-                } else if (effectiveViewMode === "compact") {
+                } else if (collectionViewMode === "compact") {
                   titleCollectionView = (
                     <CompactTitleTable
-                      key={`${view}-compact-title-table`}
+                      key={`${view}-${selectedTitleCompactLayoutActive ? "selected" : "full"}-compact-title-table`}
                       view={view}
                       titles={deferredMonitoredTitles}
                       titleLoading={titleLoading || catalogBootstrapLoading}
                       catalogHasMoreTitles={catalogHasMoreTitles}
                       catalogLoadingMoreTitles={catalogLoadingMoreTitles}
+                      catalogPagingEnabled={
+                        !selectedTitleCompactLayoutActive ||
+                        selectedTitleListInlineActive ||
+                        selectedTitleListDrawerOpen
+                      }
                       onCatalogEndReached={loadMoreCatalogTitles}
                       sortKey={titleCatalogSortKey}
                       sortDirection={titleCatalogSortDirection}
                       onSortChange={updateTitleCatalogSort}
+                      visibleColumns={visibleTitleTableColumns}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
+                      contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
                       onDelete={handleDeleteCatalogTitle}
                       onAutoQueue={queueExisting}
@@ -2333,11 +3901,14 @@ export function MediaContentView({
                       sortKey={titleCatalogSortKey}
                       sortDirection={titleCatalogSortDirection}
                       onSortChange={updateTitleCatalogSort}
+                      visibleColumns={visibleTitleTableColumns}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
+                      selectedPaneMode={selectedTitleFullTableInlineActive}
+                      contextPanelId={selectedTitleContextPanelId}
                       onSelectTitle={onSelectTitleForContextPanel}
                       onDelete={handleDeleteCatalogTitle}
                       onAutoQueue={queueExisting}
@@ -2368,43 +3939,93 @@ export function MediaContentView({
                     />
                   );
                 }
-                const contextPanelGridTemplateColumns = contextPanelAvailable
-                  ? activeOverviewTitle
-                    ? "minmax(300px,0.72fr) minmax(560px,min(56vw,920px))"
-                    : effectiveViewMode === "poster"
-                      ? "minmax(0,1fr) minmax(320px,min(30vw,440px))"
-                      : "minmax(0,1fr) minmax(520px,min(48vw,860px))"
-                  : undefined;
+                const contextPanelGridTemplateColumns =
+                  contextPanelAvailable && !selectedTitleLayoutActive
+                    ? collectionViewMode === "poster"
+                      ? "minmax(0,1fr) clamp(320px,30%,440px)"
+                      : "minmax(0,1fr) clamp(700px,50%,1030px)"
+                    : undefined;
+                const selectedTitleGridTemplateColumns =
+                  selectedTitleListInlineActive || selectedTitlePosterLayoutActive
+                    ? "minmax(0,1fr) clamp(700px,50%,1030px)"
+                    : undefined;
 
                 return (
                   <div
+                    ref={titleLayoutRef}
                     className={cn(
-                      "grid min-h-0 gap-4",
-                      effectiveViewMode === "poster" ? "items-start" : "h-full",
+                      selectedTitleLayoutActive
+                        ? cn(
+                            "relative min-h-0 gap-4",
+                            selectedTitleListInlineActive ||
+                              selectedTitlePosterLayoutActive
+                              ? "grid h-full items-stretch"
+                              : "flex min-h-0 flex-1 flex-col overflow-hidden",
+                          )
+                        : "grid min-h-0 gap-4",
+                      !selectedTitleLayoutActive &&
+                        (collectionViewMode === "poster"
+                          ? "items-start"
+                          : "h-full"),
                     )}
                     style={
+                      selectedTitleGridTemplateColumns ||
                       contextPanelGridTemplateColumns
                         ? {
                             gridTemplateColumns:
+                              selectedTitleGridTemplateColumns ??
                               contextPanelGridTemplateColumns,
                           }
                         : undefined
                     }
                   >
+                    {selectedTitleCompactLayoutActive &&
+                    selectedTitleListDrawerOpen &&
+                    !selectedTitleListInlineActive ? (
+                      <button
+                        type="button"
+                        className="absolute inset-0 z-10 bg-black/45 backdrop-blur-[2px]"
+                        aria-label={t("label.close")}
+                        onClick={() => setSelectedTitleListDrawerOpen(false)}
+                      />
+                    ) : null}
                     <div
+                      id={selectedTitleListDrawerId}
+                      ref={selectedTitleListDrawerRef}
+                      role={
+                        selectedTitleListDrawerModeActive ? "dialog" : "region"
+                      }
+                      aria-modal={
+                        selectedTitleListDrawerModeActive ? true : undefined
+                      }
+                      aria-label={t("title.contextTitleList")}
+                      tabIndex={selectedTitleListDrawerModeActive ? -1 : undefined}
                       className={cn(
                         "min-w-0",
-                        effectiveViewMode === "poster" ? "" : "min-h-0",
+                        collectionViewMode === "poster"
+                          ? selectedTitlePosterLayoutActive
+                            ? "h-full min-h-0 overflow-y-auto pr-1"
+                            : ""
+                          : "min-h-0",
+                        selectedTitleCompactLayoutActive &&
+                          (selectedTitleListInlineActive
+                            ? "block min-h-0"
+                            : selectedTitleListDrawerOpen
+                              ? "absolute bottom-3 left-3 top-16 z-30 flex w-[min(360px,82%)] min-w-0 flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.62)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-left-3"
+                              : "hidden"),
                       )}
                     >
                       {titleCollectionView}
                     </div>
                     <TitleContextPanel
+                      id={selectedTitleContextPanelId}
                       title={activeOverviewTitle}
                       titles={deferredMonitoredTitles}
                       view={view}
                       overviewTargetView={overviewTargetView}
                       resolvedProfileName={resolvedProfileName}
+                      blocklistEntries={selectedOverviewBlocklistEntries}
+                      externalSubtitles={selectedOverviewExternalSubtitles}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
                       isTogglingMonitored={
@@ -2424,6 +4045,11 @@ export function MediaContentView({
                       onOpenOverview={handleOpenOverviewFromContext}
                       onToggleMonitored={toggleTitleMonitored}
                       onAutoQueue={queueExisting}
+                      onRefreshTitles={handleRefreshTitles}
+                      onRefreshSubtitles={refreshSelectedOverviewExternalSubtitles}
+                      onPreviewRename={previewTitleRename}
+                      onApplyRename={applyTitleRename}
+                      refreshLoading={titleLoading || catalogBootstrapLoading}
                       onInteractiveSearch={runInteractiveSearchForTitle}
                       onQueueFromInteractive={queueExistingFromRelease}
                       onQueueAdditionalFromInteractive={
@@ -2433,10 +4059,46 @@ export function MediaContentView({
                       onDelete={handleDeleteCatalogTitle}
                       onClearSelection={clearSelectedOverviewTitle}
                       onSelectTitle={handleSelectOverviewTitle}
+                      titleListDisclosure={
+                        selectedTitleCompactLayoutActive &&
+                        !selectedTitleListInlineActive ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-2 rounded-[8px] border-[var(--scry-border2)] bg-[var(--scry-soft)] px-3 text-[12px] shadow-none"
+                            aria-expanded={selectedTitleListDrawerOpen}
+                            aria-controls={selectedTitleListDrawerId}
+                            aria-label={
+                              selectedTitleListDrawerOpen
+                                ? t("title.hideTitleList")
+                                : t("title.showTitleList")
+                            }
+                            title={
+                              selectedTitleListDrawerOpen
+                                ? t("title.hideTitleList")
+                                : t("title.showTitleList")
+                            }
+                            onClick={() =>
+                              setSelectedTitleListDrawerOpen((open) => !open)
+                            }
+                          >
+                            <PanelLeftOpen className="h-4 w-4" />
+                            <span>{t("title.contextListDisclosure")}</span>
+                          </Button>
+                        ) : undefined
+                      }
                       className={
-                        effectiveViewMode === "poster"
-                          ? "xl:sticky xl:top-4 xl:max-h-[calc(100vh-11rem)]"
-                          : "xl:h-full"
+                        selectedTitleLayoutActive
+                          ? selectedTitleListInlineActive ||
+                            selectedTitlePosterLayoutActive
+                            ? "flex h-full min-h-0"
+                            : "flex min-h-0 flex-1"
+                          : contextPanelAvailable
+                            ? collectionViewMode === "poster"
+                              ? "sticky top-4 flex max-h-[calc(100vh-11rem)]"
+                              : "flex h-full"
+                            : "hidden"
                       }
                     />
                   </div>

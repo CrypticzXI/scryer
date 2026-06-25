@@ -20,11 +20,29 @@ import {
 } from "@/components/ui/popover";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import {
-  filterRouteCommandItems,
   groupRouteCommandItems,
   routeCommandDisplayLabel,
   type RouteCommandItem,
 } from "@/components/common/route-command-types";
+import {
+  buildCatalogSearchSections,
+  buildGlobalSearchTabs,
+  buildMetadataResultCounts,
+  buildMetadataSearchActionState,
+  countHiddenCatalogResults,
+  countHiddenMetadataResults,
+  countHiddenRouteCommandResults,
+  countMetadataResults,
+  countVisibleCatalogResults,
+  filterGlobalSearchRouteCommands,
+  GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT,
+  getMetadataSectionFacets,
+  getVisibleCatalogFacets,
+  getVisibleCatalogResults,
+  getVisibleMetadataResults,
+  getVisibleRouteCommandResults,
+  type GlobalSearchTabKey,
+} from "@/components/root/global-search-model";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
@@ -61,12 +79,6 @@ type MobileSearchOverlayProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
 };
-
-type SearchTabKey = "all" | "library" | "actions" | Facet;
-
-function catalogFacetFromString(facet: string): Facet {
-  return facet === "movie" ? "movie" : facet === "anime" ? "anime" : "series";
-}
 
 function SearchSectionLoading({ label }: { label: string }) {
   return (
@@ -120,9 +132,9 @@ export function MobileSearchOverlay({
   const inputRef = React.useRef<HTMLInputElement>(null);
   const mobileSearchResultsRef = React.useRef<HTMLDivElement>(null);
   const mobileSearchTabRefs = React.useRef<
-    Partial<Record<SearchTabKey, HTMLButtonElement | null>>
+    Partial<Record<GlobalSearchTabKey, HTMLButtonElement | null>>
   >({});
-  const [activeTab, setActiveTab] = React.useState<SearchTabKey>("all");
+  const [activeTab, setActiveTab] = React.useState<GlobalSearchTabKey>("all");
   const [addDialogTarget, setAddDialogTarget] = React.useState<{
     result: MetadataTvdbSearchItem;
     facet: Facet;
@@ -158,173 +170,81 @@ export function MobileSearchOverlay({
     };
   }, []);
 
-  const catalogSearchSections = React.useMemo(() => {
-    const results = catalogSearchResults;
-    const query = globalSearch.trim().toLowerCase();
-    const rank = (title: import("@/lib/types").TitleRecord) => {
-      const name = title.name.trim().toLowerCase();
-      if (!query || name === query) return 0;
-      if (name.startsWith(query)) return 1;
-      const matchIndex = name.indexOf(query);
-      return matchIndex >= 0 ? 2 + matchIndex : 3 + name.length;
-    };
-
-    const buckets = Object.fromEntries(
-      FACET_REGISTRY.map((f) => [
-        f.id,
-        [] as import("@/lib/types").TitleRecord[],
-      ]),
-    ) as Record<Facet, import("@/lib/types").TitleRecord[]>;
-    for (const title of results) {
-      const facet = catalogFacetFromString(title.facet);
-      buckets[facet].push(title);
-    }
-    if (query) {
-      for (const facet of FACET_REGISTRY) {
-        buckets[facet.id].sort((a, b) => rank(a) - rank(b));
-      }
-    }
-    return buckets;
-  }, [catalogSearchResults, globalSearch]);
+  const catalogSearchSections = React.useMemo(
+    () => buildCatalogSearchSections(catalogSearchResults, globalSearch),
+    [catalogSearchResults, globalSearch],
+  );
 
   const metadataResultCounts = React.useMemo(
-    () =>
-      Object.fromEntries(
-        FACET_REGISTRY.map((f) => [
-          f.id,
-          (metadataSearchResults[f.metadataKey] ?? []).length,
-        ]),
-      ) as Record<Facet, number>,
+    () => buildMetadataResultCounts(metadataSearchResults),
     [metadataSearchResults],
   );
 
-  const metadataResultCount = FACET_REGISTRY.reduce(
-    (total, f) => total + metadataResultCounts[f.id],
-    0,
+  const metadataResultCount = React.useMemo(
+    () => countMetadataResults(metadataResultCounts),
+    [metadataResultCounts],
   );
   const routeCommandResults = React.useMemo(
-    () => filterRouteCommandItems(routeCommandItems, globalSearch),
+    () => filterGlobalSearchRouteCommands(routeCommandItems, globalSearch),
     [globalSearch, routeCommandItems],
   );
   const visibleRouteCommandResults = React.useMemo(
-    () =>
-      activeTab === "all"
-        ? routeCommandResults.slice(0, 6)
-        : activeTab === "actions"
-          ? routeCommandResults
-          : [],
+    () => getVisibleRouteCommandResults(activeTab, routeCommandResults),
     [activeTab, routeCommandResults],
   );
-  const hiddenRouteCommandResultCount = Math.max(
-    routeCommandResults.length - visibleRouteCommandResults.length,
-    0,
-  );
-  const visibleCatalogFacets = React.useMemo(() => {
-    if (!canViewCatalog || activeTab === "actions") {
-      return [];
-    }
-
-    return activeTab === "all" || activeTab === "library"
-      ? FACET_REGISTRY
-      : FACET_REGISTRY.filter((f) => f.id === activeTab);
-  }, [activeTab, canViewCatalog]);
-
-  const visibleMetadataFacets = React.useMemo(
-    () =>
-      activeTab === "library" || activeTab === "actions"
-        ? []
-        : activeTab === "all"
-          ? FACET_REGISTRY
-          : FACET_REGISTRY.filter((f) => f.id === activeTab),
-    [activeTab],
+  const visibleCatalogFacets = React.useMemo(
+    () => getVisibleCatalogFacets(activeTab, canViewCatalog),
+    [activeTab, canViewCatalog],
   );
   const metadataSectionFacets = React.useMemo(
     () =>
-      metadataSearchLoading
-        ? visibleMetadataFacets
-        : visibleMetadataFacets.filter((f) => metadataResultCounts[f.id] > 0),
-    [metadataResultCounts, metadataSearchLoading, visibleMetadataFacets],
+      getMetadataSectionFacets({
+        activeTab,
+        metadataSearchLoading,
+        metadataResultCounts,
+      }),
+    [activeTab, metadataResultCounts, metadataSearchLoading],
   );
 
-  const visibleCatalogCount = visibleCatalogFacets.reduce(
-    (total, f) => total + catalogSearchSections[f.id].length,
-    0,
+  const visibleCatalogCount = React.useMemo(
+    () =>
+      countVisibleCatalogResults(visibleCatalogFacets, catalogSearchSections),
+    [catalogSearchSections, visibleCatalogFacets],
   );
 
   const visibleCatalogResults = React.useMemo(() => {
-    const picked: import("@/lib/types").TitleRecord[] = [];
-    if (!canViewCatalog || activeTab === "actions") {
-      return picked;
-    }
-
-    if (activeTab !== "all" && activeTab !== "library") {
-      return catalogSearchSections[activeTab];
-    }
-
-    const indices: Record<string, number> = {};
-    const maxItems = activeTab === "all" ? 4 : Number.POSITIVE_INFINITY;
-    while (picked.length < maxItems) {
-      let added = false;
-      for (const f of visibleCatalogFacets) {
-        if (picked.length >= maxItems) break;
-        const bucket = catalogSearchSections[f.id];
-        const idx = indices[f.id] ?? 0;
-        if (idx < bucket.length) {
-          picked.push(bucket[idx]);
-          indices[f.id] = idx + 1;
-          added = true;
-        }
-      }
-      if (!added) break;
-    }
-    return picked;
+    return getVisibleCatalogResults({
+      activeTab,
+      canViewCatalog,
+      catalogSearchSections,
+      visibleCatalogFacets,
+      allLimit:
+        activeTab === "all"
+          ? GLOBAL_SEARCH_ALL_CATALOG_RESULT_LIMIT
+          : Number.POSITIVE_INFINITY,
+    });
   }, [activeTab, canViewCatalog, catalogSearchSections, visibleCatalogFacets]);
   const visibleCatalogResultCount = canViewCatalog
     ? catalogSearchResults.length
     : 0;
-  const hiddenCatalogResultCount = Math.max(
-    visibleCatalogCount - visibleCatalogResults.length,
-    0,
+  const hiddenCatalogResultCount = countHiddenCatalogResults(
+    activeTab,
+    visibleCatalogCount,
+    visibleCatalogResults,
   );
 
   const mobileSearchTabs = React.useMemo(
-    () => [
-      {
-        key: "all" as SearchTabKey,
-        label: t("search.tabAll"),
-        count:
-          visibleCatalogResultCount +
-          metadataResultCount +
-          routeCommandResults.length,
-      },
-      ...(canViewCatalog
-        ? [
-            {
-              key: "library" as SearchTabKey,
-              label: t("search.tabLibrary"),
-              count: visibleCatalogResultCount,
-            },
-          ]
-        : []),
-      ...FACET_REGISTRY.map((f) => ({
-        key: f.id as SearchTabKey,
-        label: t(f.navLabelKey),
-        count:
-          (canViewCatalog ? catalogSearchSections[f.id].length : 0) +
-          metadataResultCounts[f.id],
-      })),
-      ...(routeCommandResults.length > 0 || activeTab === "actions"
-        ? [
-            {
-              key: "actions" as SearchTabKey,
-              label: t("search.tabActions"),
-              count: routeCommandResults.length,
-            },
-          ]
-        : []),
-    ],
+    () =>
+      buildGlobalSearchTabs({
+        canViewCatalog,
+        catalogSearchSections,
+        metadataResultCount,
+        metadataResultCounts,
+        routeCommandResultCount: routeCommandResults.length,
+        visibleCatalogResultCount,
+        t,
+      }),
     [
-      activeTab,
       canViewCatalog,
       catalogSearchSections,
       metadataResultCount,
@@ -377,17 +297,20 @@ export function MobileSearchOverlay({
     visibleCatalogResultCount,
   ]);
 
-  const focusMobileSearchTab = React.useCallback((nextTab: SearchTabKey) => {
-    setActiveTab(nextTab);
-    const nextTabElement = mobileSearchTabRefs.current[nextTab];
-    nextTabElement?.focus();
-    nextTabElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, []);
+  const focusMobileSearchTab = React.useCallback(
+    (nextTab: GlobalSearchTabKey) => {
+      setActiveTab(nextTab);
+      const nextTabElement = mobileSearchTabRefs.current[nextTab];
+      nextTabElement?.focus();
+      nextTabElement?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+    [],
+  );
 
   const handleMobileSearchTabKeyDown = React.useCallback(
     (
       event: React.KeyboardEvent<HTMLButtonElement>,
-      currentTab: SearchTabKey,
+      currentTab: GlobalSearchTabKey,
     ) => {
       const tabKeys = mobileSearchTabs.map((tab) => tab.key);
       if (tabKeys.length === 0) {
@@ -396,7 +319,7 @@ export function MobileSearchOverlay({
 
       const currentIndex = tabKeys.indexOf(currentTab);
       const safeIndex = currentIndex === -1 ? 0 : currentIndex;
-      let nextTab: SearchTabKey | null = null;
+      let nextTab: GlobalSearchTabKey | null = null;
 
       if (event.key === "ArrowRight") {
         nextTab = tabKeys[(safeIndex + 1) % tabKeys.length] ?? null;
@@ -806,13 +729,14 @@ export function MobileSearchOverlay({
         .find((externalId) => externalId.source.toLowerCase() === "tvdb")
         ?.value.trim();
       const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
-      const libraryLabel =
-        title.libraryName?.trim() || sectionLabelForFacet(t, facet);
+      const facetLabel = sectionLabelForFacet(t, facet);
+      const libraryLabel = title.libraryName?.trim() || null;
       const qualityLabel =
         title.currentQualityTier?.trim() || title.qualityTier?.trim() || null;
       const statusLabel = title.contentStatus?.trim() || null;
       const secondaryParts = [
         title.year ? String(title.year) : null,
+        libraryLabel && libraryLabel !== facetLabel ? libraryLabel : null,
         statusLabel,
         tvdbId ? `TVDB ${tvdbId}` : null,
       ].filter(Boolean);
@@ -852,10 +776,10 @@ export function MobileSearchOverlay({
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/70 to-transparent" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-foreground">
+            <p className="truncate text-sm font-semibold text-[var(--scry-ink2)]">
               {title.name}
             </p>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            <p className="mt-0.5 truncate text-xs text-[var(--scry-muted)]">
               {title.monitored
                 ? t("search.monitored")
                 : t("search.unmonitored")}
@@ -864,8 +788,8 @@ export function MobileSearchOverlay({
               ) : null}
             </p>
             <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-              <span className="max-w-[8rem] truncate rounded-md bg-primary/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
-                {libraryLabel}
+              <span className="max-w-[8rem] truncate rounded-md bg-[rgba(var(--scry-accent-rgb),0.16)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--scry-accent-text)]">
+                {facetLabel}
               </span>
               <span className="inline-flex min-w-0 max-w-[8rem] items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-300">
                 <CircleCheck className="h-3 w-3 shrink-0" />
@@ -887,30 +811,22 @@ export function MobileSearchOverlay({
 
   const renderMetadataItem = React.useCallback(
     (result: MetadataTvdbSearchItem, facet: "movie" | "series" | "anime") => {
-      const isInCatalog = isMetadataSearchResultInCatalog(facet, result);
-      const hasCatalogAddConfig =
-        catalogQualityProfileOptions.length > 0 &&
-        librariesByFacet[facet].length > 0;
-      const canAdd = hasCatalogAddConfig;
-      const canRequest = requestableLibrariesByFacet[facet].length > 0;
-      const opensRequestDialog = !canAdd && canRequest;
-      const isUnavailable = !isInCatalog && !canAdd && !canRequest;
-      const disabled = isInCatalog || isUnavailable;
-      const actionLabel = isInCatalog
-        ? t("search.alreadyCataloged")
-        : isUnavailable
-          ? t("search.unavailable")
-          : opensRequestDialog
-            ? t("search.request")
-            : t("search.configureAdd");
-      const actionTitle = `${actionLabel}: ${result.name}`;
-      const inlineActionLabel = isInCatalog
-        ? t("search.cataloged")
-        : isUnavailable
-          ? t("search.unavailable")
-          : opensRequestDialog
-            ? t("search.request")
-            : t("search.add");
+      const {
+        actionTitle,
+        disabled,
+        inlineActionLabel,
+        isInCatalog,
+        isUnavailable,
+        opensRequestDialog,
+      } = buildMetadataSearchActionState({
+        isInCatalog: isMetadataSearchResultInCatalog(facet, result),
+        canAdd:
+          catalogQualityProfileOptions.length > 0 &&
+          librariesByFacet[facet].length > 0,
+        canRequest: requestableLibrariesByFacet[facet].length > 0,
+        resultName: result.name,
+        t,
+      });
       const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
       const actionId = opensRequestDialog
         ? globalSearchRequestId(facet, result)
@@ -933,7 +849,7 @@ export function MobileSearchOverlay({
           id={globalSearchMetadataResultId(facet, result)}
           key={`${facet}-${result.tvdbId}-${result.name}`}
           type="button"
-          className="group w-[7.25rem] flex-none rounded-[12px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
+          className="group w-[124px] flex-none rounded-[12px] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-75"
           data-mobile-global-search-result="true"
           onClick={handleMetadataAction}
           onKeyDown={handleMobileSearchResultKeyDown}
@@ -941,7 +857,7 @@ export function MobileSearchOverlay({
           aria-label={actionTitle}
           title={actionTitle}
         >
-          <div className="group relative mb-2 aspect-[2/3] overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-surfA)] shadow-[0_10px_24px_rgba(2,6,23,0.28)] transition group-active:border-[var(--scry-bhover)] group-active:bg-[var(--scry-hover)]">
+          <div className="relative mb-2 h-[184px] overflow-hidden rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-surfA)] shadow-[0_8px_20px_rgba(0,0,0,0.40)] transition group-active:border-[var(--scry-bhover2)] group-active:shadow-[0_12px_26px_rgba(0,0,0,0.50)]">
             <TitlePosterSlot
               src={posterUrl}
               alt={t("media.posterAlt", { name: result.name })}
@@ -954,36 +870,18 @@ export function MobileSearchOverlay({
             <p className="pointer-events-none absolute inset-x-2 bottom-2 line-clamp-2 text-[12px] font-bold leading-tight text-white shadow-black drop-shadow">
               {result.name}
             </p>
-            <span
-              id={actionId}
-              className={
-                disabled
-                  ? "absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-card-foreground shadow-lg"
-                  : "absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-lg transition group-hover:bg-primary/90"
-              }
-              aria-hidden="true"
-            >
-              {isInCatalog ? (
-                <CircleCheck className="h-4 w-4" />
-              ) : isUnavailable ? (
-                <SearchX className="h-4 w-4" />
-              ) : opensRequestDialog ? (
-                <Send className="h-4 w-4" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-            </span>
           </div>
           <div className="min-w-0 px-1">
             <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[11px] text-muted-foreground">
+              <span className="truncate text-[11px] text-[var(--scry-muted)]">
                 {result.year ? result.year : t("label.yearUnknown")}
               </span>
               <span
+                id={actionId}
                 className={
                   disabled
-                    ? "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold text-muted-foreground"
-                    : "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold text-primary transition group-active:text-primary/80"
+                    ? "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold text-[var(--scry-muted3)]"
+                    : "inline-flex min-w-0 items-center gap-1 rounded-md text-[11px] font-semibold text-[var(--scry-accent-text)] transition group-active:text-primary"
                 }
               >
                 {isInCatalog ? (
@@ -1020,8 +918,12 @@ export function MobileSearchOverlay({
     loading: boolean,
   ) => {
     if (!loading && items.length === 0) return null;
-    const visibleItems = activeTab === "all" ? items.slice(0, 6) : items;
-    const hiddenItemCount = Math.max(items.length - visibleItems.length, 0);
+    const visibleItems = getVisibleMetadataResults(activeTab, items);
+    const hiddenItemCount = countHiddenMetadataResults(
+      activeTab,
+      items,
+      visibleItems,
+    );
     const facetConfig = FACET_REGISTRY.find((f) => f.id === facet);
     const facetLabel = facetConfig
       ? t(facetConfig.navLabelKey)
@@ -1070,6 +972,11 @@ export function MobileSearchOverlay({
   const showMetadataSection =
     activeTab !== "library" && metadataSectionFacets.length > 0;
   const showRouteCommandSection = visibleRouteCommandResults.length > 0;
+  const hiddenRouteCommandResultCount = countHiddenRouteCommandResults(
+    activeTab,
+    routeCommandResults,
+    visibleRouteCommandResults,
+  );
   const showSectionResults =
     showCatalogSection || showMetadataSection || showRouteCommandSection;
 
@@ -1079,8 +986,8 @@ export function MobileSearchOverlay({
       ref={overlayRef}
       data-slot="mobile-global-search-overlay"
       className="fixed inset-0 z-50 flex flex-col items-center bg-[rgba(2,4,10,0.66)] px-3 pb-safe pt-safe-comfort text-foreground backdrop-blur-md"
-      role="dialog"
-      aria-modal="true"
+      role={isNestedSearchDialogOpen ? undefined : "dialog"}
+      aria-modal={isNestedSearchDialogOpen ? undefined : true}
       aria-label={t("search.title")}
       aria-describedby="mobile-global-search-description"
       tabIndex={-1}
@@ -1105,43 +1012,41 @@ export function MobileSearchOverlay({
       </p>
       <div
         data-slot="mobile-global-search-panel"
-        className="flex min-h-0 w-full max-w-[920px] flex-1 flex-col overflow-hidden rounded-[18px] border border-[#1f2c46] bg-[linear-gradient(180deg,var(--scry-soft),#080d1a)] shadow-[0_30px_90px_rgba(0,0,0,0.62)]"
+        className="flex min-h-0 w-full max-w-[920px] flex-1 flex-col overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] shadow-[0_30px_90px_rgba(0,0,0,0.62)]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         {/* Sticky search header */}
         <div
           data-slot="mobile-global-search-header"
-          className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[14px] py-3"
+          className="flex items-center gap-[13px] border-b border-[var(--scry-border)] px-[14px] py-4"
         >
-          <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-[var(--scry-accent-ring)]" />
-            <Input
-              ref={setMobileSearchInputRef}
-              value={globalSearch}
-              onChange={(e) => setGlobalSearch(e.target.value)}
-              onKeyDown={handleMobileSearchInputKeyDown}
-              className="h-10 w-full rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] pl-10 pr-10 text-[16px] text-[var(--scry-ink2)] shadow-none placeholder:text-[var(--scry-faint)] focus-visible:border-[var(--scry-accent-ring)] focus-visible:ring-primary/20"
-              placeholder={searchOverlayPlaceholder}
-              aria-label={searchOverlayPlaceholder}
-              aria-controls="mobile-global-search-results-panel"
-              aria-describedby="mobile-global-search-description mobile-global-search-status"
-              autoFocus
-            />
-            {globalSearch ? (
-              <button
-                type="button"
-                className="absolute right-2 top-1/2 flex h-[26px] w-[26px] -translate-y-1/2 items-center justify-center rounded-[7px] bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition active:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-                onClick={() => {
-                  clearGlobalSearch();
-                  inputRef.current?.focus();
-                }}
-                aria-label={t("label.clear")}
-                title={t("label.clear")}
-              >
-                <Eraser className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
+          <Search className="h-[21px] w-[21px] shrink-0 text-[var(--scry-accent-ring)]" />
+          <Input
+            ref={setMobileSearchInputRef}
+            value={globalSearch}
+            onChange={(e) => setGlobalSearch(e.target.value)}
+            onKeyDown={handleMobileSearchInputKeyDown}
+            className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-[16px] text-[var(--scry-ink2)] shadow-none placeholder:text-[16px] placeholder:text-[var(--scry-muted3)] focus-visible:ring-0"
+            placeholder={searchOverlayPlaceholder}
+            aria-label={searchOverlayPlaceholder}
+            aria-controls="mobile-global-search-results-panel"
+            aria-describedby="mobile-global-search-description mobile-global-search-status"
+            autoFocus
+          />
+          {globalSearch ? (
+            <button
+              type="button"
+              className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[7px] bg-[var(--scry-kbdbg)] text-[var(--scry-muted2)] transition active:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+              onClick={() => {
+                clearGlobalSearch();
+                inputRef.current?.focus();
+              }}
+              aria-label={t("label.clear")}
+              title={t("label.clear")}
+            >
+              <Eraser className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
           <kbd
             aria-hidden="true"
             className="flex h-[30px] flex-none items-center rounded-[7px] border border-[var(--scry-kbdbd)] bg-[var(--scry-kbdbg)] px-2 text-[11px] font-medium leading-none text-[var(--scry-faint2)]"
@@ -1251,11 +1156,8 @@ export function MobileSearchOverlay({
                     </p>
                   ) : (
                     <div className="space-y-2">
-                      {visibleCatalogResults.map((title) =>
-                        renderCatalogItem(
-                          title,
-                          catalogFacetFromString(title.facet),
-                        ),
+                      {visibleCatalogResults.map(({ facet, title }) =>
+                        renderCatalogItem(title, facet),
                       )}
                     </div>
                   )}
@@ -1286,16 +1188,16 @@ export function MobileSearchOverlay({
                           ? t("search.resultCountOne")
                           : t("search.resultCountOther", {
                               count: String(routeCommandResults.length),
-                            })}
+                        })}
                       </p>
                     </div>
-                    {activeTab === "all" &&
-                    hiddenRouteCommandResultCount > 0 ? (
+                    {hiddenRouteCommandResultCount > 0 ? (
                       <button
                         type="button"
-                        className="text-xs font-medium text-[var(--scry-accent-ring)]"
+                        className="shrink-0 text-xs font-medium text-[var(--scry-accent-ring)]"
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => focusMobileSearchTab("actions")}
+                        aria-label={`${t("search.viewAll")} ${t("search.actionsAndSettings")}`}
                       >
                         {t("search.viewAll")}
                       </button>
@@ -1371,27 +1273,6 @@ export function MobileSearchOverlay({
                   ? searchMinimumQueryHint
                   : searchEmptyHint}
               </p>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="mt-3 text-xs font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
-                  >
-                    {t("search.searchTips")}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  align="center"
-                  sideOffset={8}
-                  className="z-[70] w-72 max-w-[calc(100vw-2rem)] border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.32)]"
-                >
-                  <div className="space-y-2 text-[var(--scry-muted3)]">
-                    <p>{searchTipTitles}</p>
-                    <p>{searchTipTabs}</p>
-                    {canViewCatalog ? <p>{t("search.tipIndexers")}</p> : null}
-                  </div>
-                </PopoverContent>
-              </Popover>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -1404,27 +1285,6 @@ export function MobileSearchOverlay({
               <p className="mt-1 max-w-sm text-sm leading-6 text-[var(--scry-muted3)]">
                 {searchEmptyHint}
               </p>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="mt-3 text-xs font-medium text-[var(--scry-accent-ring)] transition hover:text-[var(--scry-accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
-                  >
-                    {t("search.searchTips")}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  align="center"
-                  sideOffset={8}
-                  className="z-[70] w-72 max-w-[calc(100vw-2rem)] border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.32)]"
-                >
-                  <div className="space-y-2 text-[var(--scry-muted3)]">
-                    <p>{searchTipTitles}</p>
-                    <p>{searchTipTabs}</p>
-                    {canViewCatalog ? <p>{t("search.tipIndexers")}</p> : null}
-                  </div>
-                </PopoverContent>
-              </Popover>
             </div>
           )}
         </div>

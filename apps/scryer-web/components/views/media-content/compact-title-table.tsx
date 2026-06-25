@@ -19,7 +19,9 @@ import {
   Zap,
 } from "lucide-react";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
+import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   TableBody,
@@ -39,6 +41,7 @@ import {
 } from "@/lib/utils/dom-ids";
 import {
   bytesToReadable,
+  formatTitleDate,
   resolveDisplayedQualityLabel,
   resolveOverviewTargetView,
   TitleEpisodeProgressBar,
@@ -46,8 +49,10 @@ import {
   TitleTableEmptyState,
   TitleTableLazyTooltipActionButton,
   TitleTableLoadingState,
+  DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   type TitleTableSortDirection,
   type TitleTableSortKey,
+  type TitleTableVisibleColumns,
   useTitleTableVirtualizerRebuild,
 } from "./title-table-shared";
 
@@ -57,10 +62,12 @@ type CompactTitleTableProps = {
   titleLoading: boolean;
   catalogHasMoreTitles?: boolean;
   catalogLoadingMoreTitles?: boolean;
+  catalogPagingEnabled?: boolean;
   onCatalogEndReached?: () => Promise<void> | void;
   sortKey: TitleTableSortKey;
   sortDirection: TitleTableSortDirection;
   onSortChange: (key: TitleTableSortKey) => void;
+  visibleColumns?: TitleTableVisibleColumns;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
   qualityProfilesLoading: boolean;
@@ -69,6 +76,7 @@ type CompactTitleTableProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
   selectedTitleId?: string | null;
+  contextPanelId?: string;
   onSelectTitle?: (title: TitleRecord) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => Promise<void> | void;
@@ -104,15 +112,18 @@ export function CompactTitleTable({
   titleLoading,
   catalogHasMoreTitles = false,
   catalogLoadingMoreTitles = false,
+  catalogPagingEnabled = true,
   onCatalogEndReached,
   sortKey,
   sortDirection,
   onSortChange,
+  visibleColumns = DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
   resolvedProfileName,
   qualityProfiles,
   qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
+  contextPanelId,
   onSelectTitle,
   onDelete,
   onAutoQueue,
@@ -140,7 +151,26 @@ export function CompactTitleTable({
   const t = useTranslate();
   const isMovieView = view === "movies";
   const overviewTargetView: ViewId = resolveOverviewTargetView(view);
-  const columnCount = isMovieView ? 7 : 8;
+  const selectedPaneMode =
+    selectedTitleId !== null && onSelectTitle !== undefined;
+  const showLibraryColumn = !selectedPaneMode && visibleColumns.library;
+  const showMonitoredColumn = selectedPaneMode || visibleColumns.monitored;
+  const showQualityColumn = !selectedPaneMode && visibleColumns.quality;
+  const showEpisodesColumn =
+    !selectedPaneMode && !isMovieView && visibleColumns.episodes;
+  const showSizeColumn = selectedPaneMode || visibleColumns.size;
+  const showAddedColumn = !selectedPaneMode && visibleColumns.added;
+  const showActionsColumn = !selectedPaneMode && visibleColumns.actions;
+  const columnCount = selectedPaneMode
+    ? 3
+    : 2 +
+      (showLibraryColumn ? 1 : 0) +
+      (showMonitoredColumn ? 1 : 0) +
+      (showQualityColumn ? 1 : 0) +
+      (showEpisodesColumn ? 1 : 0) +
+      (showSizeColumn ? 1 : 0) +
+      (showAddedColumn ? 1 : 0) +
+      (showActionsColumn ? 1 : 0);
   const selectedVisibleCount = titles.filter((title) =>
     selectedTitleIds.has(title.id),
   ).length;
@@ -151,17 +181,23 @@ export function CompactTitleTable({
     : selectedVisibleCount > 0
       ? "indeterminate"
       : false;
-
-  const titleTableColGroup = (
+  const titleTableColGroup = selectedPaneMode ? (
+    <colgroup>
+      <col />
+      <col style={{ width: "44px" }} />
+      <col style={{ width: "76px" }} />
+    </colgroup>
+  ) : (
     <colgroup>
       <col style={{ width: "3rem" }} />
       <col />
-      <col style={{ width: "8rem" }} />
-      <col style={{ width: "5.5rem" }} />
-      <col style={{ width: "9rem" }} />
-      {!isMovieView ? <col style={{ width: "8.5rem" }} /> : null}
-      <col style={{ width: "7.5rem" }} />
-      <col style={{ width: "10rem" }} />
+      {showLibraryColumn ? <col style={{ width: "8rem" }} /> : null}
+      {showMonitoredColumn ? <col style={{ width: "5.5rem" }} /> : null}
+      {showQualityColumn ? <col style={{ width: "9rem" }} /> : null}
+      {showEpisodesColumn ? <col style={{ width: "8.5rem" }} /> : null}
+      {showSizeColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showAddedColumn ? <col style={{ width: "7.5rem" }} /> : null}
+      {showActionsColumn ? <col style={{ width: "10rem" }} /> : null}
     </colgroup>
   );
 
@@ -178,22 +214,27 @@ export function CompactTitleTable({
 
   const titleTableScrollRef = React.useRef<HTMLDivElement>(null);
   const sortedTitles = titles;
+  const scrollStorageKeySuffix = selectedPaneMode
+    ? "compact-selected"
+    : "compact";
   const initialScrollOffset = React.useMemo(
-    () => readOverviewSavedScroll(location.pathname, "compact") ?? 0,
-    [location.pathname],
+    () =>
+      readOverviewSavedScroll(location.pathname, scrollStorageKeySuffix) ?? 0,
+    [location.pathname, scrollStorageKeySuffix],
   );
 
   const titleVirtualizer = useVirtualizer({
     count: sortedTitles.length,
     getScrollElement: () => titleTableScrollRef.current,
     getItemKey: (index) => sortedTitles[index]?.id ?? index,
-    estimateSize: () => 48,
+    estimateSize: () => (selectedPaneMode ? 68 : 48),
     initialOffset: initialScrollOffset,
     overscan: 8,
   });
   const getTitleTableMaxScrollTop = useTitleTableVirtualizerRebuild({
     itemCount: sortedTitles.length,
     loading: titleLoading,
+    rebuildKey: selectedPaneMode ? "selected-pane" : "full-table",
     scrollRef: titleTableScrollRef,
     titleVirtualizer,
   });
@@ -206,16 +247,56 @@ export function CompactTitleTable({
   useOverviewElementScrollRestoration({
     enabled: true,
     ready: !titleLoading && titles.length > 0,
-    storageKeySuffix: "compact",
+    storageKeySuffix: scrollStorageKeySuffix,
     scrollRef: titleTableScrollRef,
     getMaxScrollTop: getTitleTableMaxScrollTop,
     restoreScrollTop: restoreTitleTableScroll,
   });
 
+  const selectedTitleScrollKey = selectedTitleId
+    ? `${selectedTitleId}:${sortKey}:${sortDirection}`
+    : null;
+  const autoScrolledSelectedTitleKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!selectedTitleId || !selectedTitleScrollKey) {
+      autoScrolledSelectedTitleKeyRef.current = null;
+      return;
+    }
+    if (
+      autoScrolledSelectedTitleKeyRef.current === selectedTitleScrollKey ||
+      titleLoading ||
+      sortedTitles.length === 0
+    ) {
+      return;
+    }
+
+    const selectedIndex = sortedTitles.findIndex(
+      (title) => title.id === selectedTitleId,
+    );
+    if (selectedIndex < 0) {
+      return;
+    }
+
+    autoScrolledSelectedTitleKeyRef.current = selectedTitleScrollKey;
+    const frameId = window.requestAnimationFrame(() => {
+      titleVirtualizer.scrollToIndex(selectedIndex, { align: "center" });
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [
+    selectedTitleId,
+    selectedTitleScrollKey,
+    sortedTitles,
+    titleLoading,
+    titleVirtualizer,
+  ]);
+
   React.useEffect(() => {
     const element = titleTableScrollRef.current;
     if (
       !element ||
+      !catalogPagingEnabled ||
       !catalogHasMoreTitles ||
       catalogLoadingMoreTitles ||
       !onCatalogEndReached
@@ -224,6 +305,9 @@ export function CompactTitleTable({
     }
 
     const maybeLoadNextPage = () => {
+      if (element.clientHeight <= 0) {
+        return;
+      }
       const remaining =
         element.scrollHeight - (element.scrollTop + element.clientHeight);
       if (remaining <= 1200) {
@@ -237,6 +321,7 @@ export function CompactTitleTable({
       element.removeEventListener("scroll", maybeLoadNextPage);
     };
   }, [
+    catalogPagingEnabled,
     catalogHasMoreTitles,
     catalogLoadingMoreTitles,
     onCatalogEndReached,
@@ -247,7 +332,7 @@ export function CompactTitleTable({
     (item: OverviewTitleTarget) => {
       persistOverviewScrollValue(
         location.pathname,
-        "compact",
+        scrollStorageKeySuffix,
         titleVirtualizer.scrollOffset ?? titleTableScrollRef.current?.scrollTop,
       );
       onOpenOverview(overviewTargetView, item);
@@ -256,6 +341,7 @@ export function CompactTitleTable({
       location.pathname,
       onOpenOverview,
       overviewTargetView,
+      scrollStorageKeySuffix,
       titleVirtualizer.scrollOffset,
     ],
   );
@@ -265,7 +351,7 @@ export function CompactTitleTable({
       if (onSelectTitle) {
         persistOverviewScrollValue(
           location.pathname,
-          "compact",
+          scrollStorageKeySuffix,
           titleVirtualizer.scrollOffset ??
             titleTableScrollRef.current?.scrollTop,
         );
@@ -278,8 +364,44 @@ export function CompactTitleTable({
       handleOpenOverview,
       location.pathname,
       onSelectTitle,
+      scrollStorageKeySuffix,
       titleVirtualizer.scrollOffset,
     ],
+  );
+
+  const isInteractiveTitleRowTarget = React.useCallback(
+    (target: EventTarget | null) =>
+      target instanceof Element &&
+      target.closest(
+        'a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [role="menuitem"]',
+      ) !== null,
+    [],
+  );
+
+  const handleTitleRowClick = React.useCallback(
+    (event: React.MouseEvent<HTMLTableRowElement>, item: TitleRecord) => {
+      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+        return;
+      }
+      handleActivateTitle(item);
+    },
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
+  );
+
+  const handleTitleRowKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLTableRowElement>, item: TitleRecord) => {
+      if (!onSelectTitle || isInteractiveTitleRowTarget(event.target)) {
+        return;
+      }
+
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+
+      event.preventDefault();
+      handleActivateTitle(item);
+    },
+    [handleActivateTitle, isInteractiveTitleRowTarget, onSelectTitle],
   );
 
   const handleSort = React.useCallback(
@@ -431,6 +553,144 @@ export function CompactTitleTable({
     const deleteLoading = isDeletingById[item.id] === true;
     const monitorToggleLoading = isTogglingMonitoredById?.[item.id] === true;
     const isSelected = selectedTitleId === item.id;
+    const addedLabel = formatTitleDate(item.createdAt) ?? t("label.unknown");
+
+    if (selectedPaneMode) {
+      const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
+      const yearLabel = item.year ? String(item.year) : null;
+      const libraryLabel = item.libraryName ?? item.libraryId ?? null;
+      const qualityLabel = qualityProfilesLoading
+        ? null
+        : resolveDisplayedQualityLabel(
+            item,
+            qualityProfiles,
+            resolvedProfileName,
+            t("label.unknown"),
+          );
+      const totalEpisodes = item.episodesTotal ?? item.episodesMonitored ?? 0;
+      const episodeLabel =
+        !isMovieView && totalEpisodes > 0
+          ? `${item.episodesOwned ?? 0}/${totalEpisodes} ${t("title.table.episodes")}`
+          : null;
+      const hasSubline = Boolean(
+        yearLabel || episodeLabel || qualityLabel || libraryLabel,
+      );
+      const contextPanelControlsId = selectedPaneMode
+        ? contextPanelId
+        : undefined;
+      const selectedContextPanelControlsId = isSelected
+        ? contextPanelControlsId
+        : undefined;
+
+      return (
+        <TableRow
+          id={titleOverviewRowId(item.id)}
+          data-ui="compact-title-table-row"
+          data-selected={isSelected ? "true" : undefined}
+          aria-selected={selectedPaneMode ? isSelected : undefined}
+          aria-current={isSelected ? "true" : undefined}
+          aria-controls={selectedContextPanelControlsId}
+          aria-label={
+            selectedPaneMode
+              ? t("title.selectTitle", { name: item.name })
+              : undefined
+          }
+          aria-keyshortcuts={selectedPaneMode ? "Enter Space" : undefined}
+          tabIndex={selectedPaneMode ? 0 : undefined}
+          onClick={(event) => handleTitleRowClick(event, item)}
+          onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
+          className={cn(
+            "h-[68px] border-b border-[var(--scry-line2)] bg-[var(--scry-card2)] transition-colors hover:bg-[var(--scry-hover)]",
+            isSelected &&
+              "bg-[rgba(var(--scry-accent-rgb),0.11)] shadow-[inset_3px_0_0_var(--scry-accent)]",
+          )}
+        >
+          <TableCell className="align-middle overflow-hidden py-2 pl-3 pr-2">
+            <button
+              id={titleOverviewOpenButtonId(item.id)}
+              type="button"
+              onClick={() => handleActivateTitle(item)}
+              data-ui="title-name"
+              aria-current={isSelected ? "true" : undefined}
+              aria-controls={selectedContextPanelControlsId}
+              tabIndex={selectedPaneMode ? -1 : undefined}
+              className="flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[8px] p-1 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="h-12 w-8 shrink-0 overflow-hidden rounded-[6px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] shadow-[0_6px_14px_rgba(0,0,0,0.26)]">
+                <TitlePosterSlot
+                  src={posterUrl}
+                  sourceSrc={item.posterSourceUrl}
+                  metadataFetchedAt={item.metadataFetchedAt}
+                  createdAt={item.createdAt}
+                  alt={t("media.posterAlt", { name: item.name })}
+                  className="h-full w-full object-cover"
+                  placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[8px] text-muted-foreground"
+                  emptyLabel={t("label.noArt")}
+                  loading="lazy"
+                  decoding="async"
+                />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold text-[var(--scry-ink2)]">
+                  {item.name}
+                </span>
+                {hasSubline ? (
+                  <span className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10.5px] font-medium text-[var(--scry-muted3)]">
+                    {yearLabel ? (
+                      <span className="shrink-0 tabular-nums">{yearLabel}</span>
+                    ) : null}
+                    {episodeLabel ? (
+                      <span className="shrink-0 rounded-[5px] bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--scry-muted2)]">
+                        {episodeLabel}
+                      </span>
+                    ) : null}
+                    {qualityLabel ? (
+                      <span className="max-w-[5.5rem] shrink-0 truncate rounded-[5px] bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300">
+                        {qualityLabel}
+                      </span>
+                    ) : null}
+                    {libraryLabel ? (
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <span
+                          aria-hidden="true"
+                          className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)] shadow-[0_0_0_2px_rgba(var(--scry-accent-rgb),0.16)]"
+                        />
+                        <span className="min-w-0 truncate">{libraryLabel}</span>
+                      </span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span className="mt-1 block text-[11px] text-[var(--scry-muted3)]">
+                    {t("label.unknown")}
+                  </span>
+                )}
+              </span>
+            </button>
+          </TableCell>
+          <TableCell className="text-center align-middle">
+            <span
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] border border-[var(--scry-line3)] bg-[var(--scry-inset)]"
+              title={`${t("title.table.monitored")}: ${item.name}`}
+              aria-label={`${t("title.table.monitored")}: ${item.name}`}
+            >
+              {item.monitored ? (
+                <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+              ) : (
+                <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
+              )}
+            </span>
+          </TableCell>
+          <TableCell className="align-middle whitespace-nowrap py-2 text-right text-[12px] font-semibold tabular-nums">
+            {bytesToReadable(item.sizeBytes)}
+          </TableCell>
+        </TableRow>
+      );
+    }
+
+    const contextPanelControlsId = selectedPaneMode ? contextPanelId : undefined;
+    const selectedContextPanelControlsId = isSelected
+      ? contextPanelControlsId
+      : undefined;
 
     return (
       <React.Fragment key={item.id}>
@@ -438,6 +698,18 @@ export function CompactTitleTable({
           id={titleOverviewRowId(item.id)}
           data-ui="compact-title-table-row"
           data-selected={isSelected ? "true" : undefined}
+          aria-selected={selectedPaneMode ? isSelected : undefined}
+          aria-current={isSelected ? "true" : undefined}
+          aria-controls={selectedContextPanelControlsId}
+          aria-label={
+            selectedPaneMode
+              ? t("title.selectTitle", { name: item.name })
+              : undefined
+          }
+          aria-keyshortcuts={selectedPaneMode ? "Enter Space" : undefined}
+          tabIndex={selectedPaneMode ? 0 : undefined}
+          onClick={(event) => handleTitleRowClick(event, item)}
+          onKeyDown={(event) => handleTitleRowKeyDown(event, item)}
           className={cn(
             "h-12 transition-colors hover:bg-muted/35",
             isSelected && "bg-primary/10 ring-1 ring-inset ring-primary/30",
@@ -458,113 +730,133 @@ export function CompactTitleTable({
               type="button"
               onClick={() => handleActivateTitle(item)}
               data-ui="title-name"
+              aria-current={isSelected ? "true" : undefined}
+              aria-controls={selectedContextPanelControlsId}
+              tabIndex={selectedPaneMode ? -1 : undefined}
               className="block w-full overflow-hidden text-left text-[13px] font-medium hover:text-foreground hover:underline"
             >
               <span className="block truncate">{item.name}</span>
             </button>
           </TableCell>
-          <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-muted-foreground">
-            <span className="block truncate">
-              {item.libraryName ?? item.libraryId}
-            </span>
-          </TableCell>
-          <TableCell className="text-center align-middle">
-            <span
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-              title={`${t("title.table.monitored")}: ${item.name}`}
-              aria-label={`${t("title.table.monitored")}: ${item.name}`}
-            >
-              {item.monitored ? (
-                <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
-              ) : (
-                <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
-              )}
-            </span>
-          </TableCell>
-          <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
-            {qualityProfilesLoading
-              ? null
-              : resolveDisplayedQualityLabel(
-                  item,
-                  qualityProfiles,
-                  resolvedProfileName,
-                  t("label.unknown"),
+          {showLibraryColumn ? (
+            <TableCell className="align-middle overflow-hidden py-1.5 text-[12px] text-muted-foreground">
+              <span className="block truncate">
+                {item.libraryName ?? item.libraryId}
+              </span>
+            </TableCell>
+          ) : null}
+          {showMonitoredColumn ? (
+            <TableCell className="text-center align-middle">
+              <span
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                title={`${t("title.table.monitored")}: ${item.name}`}
+                aria-label={`${t("title.table.monitored")}: ${item.name}`}
+              >
+                {item.monitored ? (
+                  <Eye className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+                ) : (
+                  <EyeOff className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
                 )}
-          </TableCell>
-          {!isMovieView ? (
+              </span>
+            </TableCell>
+          ) : null}
+          {showQualityColumn ? (
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
+              {qualityProfilesLoading
+                ? null
+                : resolveDisplayedQualityLabel(
+                    item,
+                    qualityProfiles,
+                    resolvedProfileName,
+                    t("label.unknown"),
+                  )}
+            </TableCell>
+          ) : null}
+          {showEpisodesColumn ? (
             <TableCell className="align-middle whitespace-nowrap py-1.5">
               <TitleEpisodeProgressBar item={item} t={t} compact />
             </TableCell>
           ) : null}
-          <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
-            {bytesToReadable(item.sizeBytes)}
-          </TableCell>
-          <TableCell className="text-center align-middle py-1.5">
-            <div
-              data-ui="row-actions"
-              className="inline-flex items-center justify-end gap-1"
-            >
-              <TitleTableLazyTooltipActionButton
-                id={titleOverviewSearchButtonId(item.id)}
-                tone="auto"
-                label={t("label.search")}
-                tooltip={t("help.autoSearchTooltip")}
-                onClick={() => handleQueueExisting(item)}
-                disabled={autoQueueLoading || bulkActionBusy}
-                className="size-7 rounded-sm"
+          {showSizeColumn ? (
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[13px]">
+              {bytesToReadable(item.sizeBytes)}
+            </TableCell>
+          ) : null}
+          {showAddedColumn ? (
+            <TableCell className="align-middle whitespace-nowrap py-1.5 text-[12px] text-muted-foreground">
+              {addedLabel}
+            </TableCell>
+          ) : null}
+          {showActionsColumn ? (
+            <TableCell className="text-center align-middle py-1.5">
+              <div
+                data-ui="row-actions"
+                className="inline-flex items-center justify-end gap-1"
               >
-                {autoQueueLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
-                ) : (
-                  <Zap className="h-3.5 w-3.5" />
-                )}
-              </TitleTableLazyTooltipActionButton>
-              <TitleTableLazyTooltipActionButton
-                tone="search"
-                label={t("label.interactiveSearch")}
-                tooltip={t("help.interactiveSearchTooltip")}
-                onClick={() => handleToggleInteractiveSearch(item)}
-                disabled={bulkActionBusy}
-                className="size-7 rounded-sm"
-              >
-                <Search className="h-3.5 w-3.5" />
-              </TitleTableLazyTooltipActionButton>
-              {onToggleMonitored ? (
-                <TitleTableActionButton
-                  tone={item.monitored ? "disabled" : "enabled"}
-                  label={t(
-                    item.monitored
-                      ? "title.unmonitorAction"
-                      : "title.monitorAction",
-                  )}
-                  onClick={() => onToggleMonitored(item, !item.monitored)}
-                  disabled={monitorToggleLoading || bulkActionBusy}
+                <TitleTableLazyTooltipActionButton
+                  id={titleOverviewSearchButtonId(item.id)}
+                  tone="auto"
+                  label={t("label.search")}
+                  tooltip={t("help.autoSearchTooltip")}
+                  onClick={() => handleQueueExisting(item)}
+                  disabled={autoQueueLoading || bulkActionBusy}
                   className="size-7 rounded-sm"
                 >
-                  {monitorToggleLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : item.monitored ? (
-                    <EyeOff className="h-3.5 w-3.5" />
+                  {autoQueueLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
                   ) : (
-                    <Eye className="h-3.5 w-3.5" />
+                    <Zap className="h-3.5 w-3.5" />
+                  )}
+                </TitleTableLazyTooltipActionButton>
+                {selectedPaneMode ? null : (
+                  <TitleTableLazyTooltipActionButton
+                    tone="search"
+                    label={t("label.interactiveSearch")}
+                    tooltip={t("help.interactiveSearchTooltip")}
+                    onClick={() => handleToggleInteractiveSearch(item)}
+                    disabled={bulkActionBusy}
+                    className="size-7 rounded-sm"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                  </TitleTableLazyTooltipActionButton>
+                )}
+                {onToggleMonitored ? (
+                  <TitleTableActionButton
+                    tone={item.monitored ? "disabled" : "enabled"}
+                    label={t(
+                      item.monitored
+                        ? "title.unmonitorAction"
+                        : "title.monitorAction",
+                    )}
+                    onClick={() => onToggleMonitored(item, !item.monitored)}
+                    disabled={monitorToggleLoading || bulkActionBusy}
+                    className="size-7 rounded-sm"
+                  >
+                    {monitorToggleLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : item.monitored ? (
+                      <EyeOff className="h-3.5 w-3.5" />
+                    ) : (
+                      <Eye className="h-3.5 w-3.5" />
+                    )}
+                  </TitleTableActionButton>
+                ) : null}
+                <TitleTableActionButton
+                  tone="delete"
+                  label={t("label.delete")}
+                  onClick={() => onDelete(item)}
+                  disabled={deleteLoading || bulkActionBusy}
+                  className="size-7 rounded-sm"
+                >
+                  {deleteLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
                   )}
                 </TitleTableActionButton>
-              ) : null}
-              <TitleTableActionButton
-                tone="delete"
-                label={t("label.delete")}
-                onClick={() => onDelete(item)}
-                disabled={deleteLoading || bulkActionBusy}
-                className="size-7 rounded-sm"
-              >
-                {deleteLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-              </TitleTableActionButton>
-            </div>
-          </TableCell>
+              </div>
+            </TableCell>
+          ) : null}
         </TableRow>
         {isPanelOpen ? (
           <TableRow data-ui="compact-title-table-panel-row">
@@ -641,7 +933,30 @@ export function CompactTitleTable({
     );
   };
 
-  const titleTableHeader = (
+  const titleTableHeader = selectedPaneMode ? (
+    <TableHeader>
+      <TableRow className="sticky top-0 z-10 h-9 border-b border-[var(--scry-line3)] bg-[var(--scry-surfD)] shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
+        {renderSortableHeader(
+          "name",
+          t("label.title"),
+          "pl-3 text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]",
+          "uppercase tracking-normal text-[var(--scry-faint2)]",
+        )}
+        <TableHead
+          className="whitespace-nowrap text-center text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]"
+          title={t("title.table.monitored")}
+        >
+          MON.
+        </TableHead>
+        {renderSortableHeader(
+          "size",
+          t("title.table.size"),
+          "whitespace-nowrap pr-3 text-right text-[10.5px] font-bold uppercase tracking-normal text-[var(--scry-faint2)]",
+          "justify-end text-right uppercase tracking-normal text-[var(--scry-faint2)]",
+        )}
+      </TableRow>
+    </TableHeader>
+  ) : (
     <TableHeader>
       <TableRow className="sticky top-0 z-10 bg-background">
         <TableHead className="w-12 text-center">
@@ -654,33 +969,54 @@ export function CompactTitleTable({
           />
         </TableHead>
         {renderSortableHeader("name", t("label.name"))}
-        <TableHead className="whitespace-nowrap">Library</TableHead>
-        {renderSortableHeader(
-          "monitored",
-          t("title.table.monitored"),
-          "text-center whitespace-nowrap",
-          "justify-center text-center",
-        )}
-        {renderSortableHeader(
-          "quality",
-          t("title.table.qualityTier"),
-          "whitespace-nowrap",
-        )}
-        {!isMovieView
+        {showLibraryColumn
+          ? renderSortableHeader(
+              "library",
+              t("title.table.library"),
+              "whitespace-nowrap",
+            )
+          : null}
+        {showMonitoredColumn
+          ? renderSortableHeader(
+              "monitored",
+              t("title.table.monitored"),
+              "text-center whitespace-nowrap",
+              "justify-center text-center",
+            )
+          : null}
+        {showQualityColumn
+          ? renderSortableHeader(
+              "quality",
+              t("title.table.qualityTier"),
+              "whitespace-nowrap",
+            )
+          : null}
+        {showEpisodesColumn
           ? renderSortableHeader(
               "episodes",
               t("title.table.episodes"),
               "whitespace-nowrap",
             )
           : null}
-        {renderSortableHeader(
-          "size",
-          t("title.table.size"),
-          "whitespace-nowrap",
-        )}
-        <TableHead className="text-center whitespace-nowrap">
-          {t("label.actions")}
-        </TableHead>
+        {showSizeColumn
+          ? renderSortableHeader(
+              "size",
+              t("title.table.size"),
+              "whitespace-nowrap",
+            )
+          : null}
+        {showAddedColumn
+          ? renderSortableHeader(
+              "added",
+              t("title.contextAdded"),
+              "whitespace-nowrap",
+            )
+          : null}
+        {showActionsColumn ? (
+          <TableHead className="text-center whitespace-nowrap">
+            {t("label.actions")}
+          </TableHead>
+        ) : null}
       </TableRow>
     </TableHeader>
   );
@@ -697,8 +1033,14 @@ export function CompactTitleTable({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <div
+        data-slot="title-list-scroll"
         ref={titleTableScrollRef}
-        className="relative min-h-[22rem] flex-1 overflow-auto rounded-lg border border-border bg-background/40"
+        className={cn(
+          "relative flex-1 overflow-auto rounded-lg border border-border bg-background/40",
+          selectedPaneMode
+            ? "min-h-0 rounded-[12px] border-[var(--scry-border2)] bg-[var(--scry-card2)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            : "min-h-[22rem]",
+        )}
       >
         <table
           data-ui="compact-title-table"

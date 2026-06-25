@@ -1,8 +1,10 @@
 import * as React from "react";
 import { RequestsContainer } from "@/components/containers/requests-container";
 import { MediaContentView } from "@/components/views/media-content-view";
+import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import {
   addTitleMutation,
+  applyMediaRenameMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
   createLibraryMutation,
@@ -24,9 +26,13 @@ import {
   librariesQuery,
   libraryDownloadClientsQuery,
   librarySettingsQuery,
+  externalSubtitlesQuery,
+  mediaRenamePreviewQuery,
   ruleSetsQuery,
   routingPageInitQuery,
   searchForTitleQuery,
+  titlePanelDetailQuery,
+  titleReleaseBlocklistQuery,
   titlesQuery,
 } from "@/lib/graphql/queries";
 import {
@@ -63,9 +69,11 @@ import type {
   LibrarySettingsRecord,
   Release,
   RootFolderOption,
+  TitleReleaseBlocklistEntry,
   TitleRecord,
   RuleSetRecord,
 } from "@/lib/types";
+import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { DeletePreview } from "@/lib/types/delete-preview";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -117,7 +125,6 @@ const TITLE_DELETION_JOB_FALLBACK_DELAYS_MS = [
   10_000, 60_000, 180_000,
 ] as const;
 const TITLE_CATALOG_PAGE_SIZE = 300;
-const TITLE_CATALOG_PREFETCH_DISTANCE_PX = 1200;
 const ALL_LIBRARIES_VALUE = "__all__";
 
 type MediaContentContainerProps = {
@@ -163,6 +170,8 @@ function titleCatalogSortInput(sort: TitleCatalogSortState) {
   const key =
     sort.key === "name"
       ? "title"
+      : sort.key === "library"
+        ? "library"
       : sort.key === "monitored"
         ? "monitored"
         : sort.key === "quality"
@@ -171,7 +180,9 @@ function titleCatalogSortInput(sort: TitleCatalogSortState) {
             ? "episodes"
             : sort.key === "status"
               ? "status"
-              : "size";
+              : sort.key === "added"
+                ? "added"
+                : "size";
 
   return {
     key,
@@ -222,6 +233,60 @@ function mergePreferLoadedImageFields(
     backgroundSourceUrl: incomingHasBackground
       ? incoming.backgroundSourceUrl
       : (current.backgroundSourceUrl ?? null),
+    overview:
+      incoming.overview === undefined ? current.overview : incoming.overview,
+    runtimeMinutes:
+      incoming.runtimeMinutes === undefined
+        ? current.runtimeMinutes
+        : incoming.runtimeMinutes,
+    genres: incoming.genres === undefined ? current.genres : incoming.genres,
+    language:
+      incoming.language === undefined ? current.language : incoming.language,
+    firstAired:
+      incoming.firstAired === undefined
+        ? current.firstAired
+        : incoming.firstAired,
+    network:
+      incoming.network === undefined ? current.network : incoming.network,
+    studio: incoming.studio === undefined ? current.studio : incoming.studio,
+    country:
+      incoming.country === undefined ? current.country : incoming.country,
+    metadataLanguage:
+      incoming.metadataLanguage === undefined
+        ? current.metadataLanguage
+        : incoming.metadataLanguage,
+    monitorType:
+      incoming.monitorType === undefined
+        ? current.monitorType
+        : incoming.monitorType,
+    useSeasonFolders:
+      incoming.useSeasonFolders === undefined
+        ? current.useSeasonFolders
+        : incoming.useSeasonFolders,
+    monitorSpecials:
+      incoming.monitorSpecials === undefined
+        ? current.monitorSpecials
+        : incoming.monitorSpecials,
+    interSeasonMovies:
+      incoming.interSeasonMovies === undefined
+        ? current.interSeasonMovies
+        : incoming.interSeasonMovies,
+    fillerPolicy:
+      incoming.fillerPolicy === undefined
+        ? current.fillerPolicy
+        : incoming.fillerPolicy,
+    recapPolicy:
+      incoming.recapPolicy === undefined
+        ? current.recapPolicy
+        : incoming.recapPolicy,
+    collections:
+      incoming.collections === undefined
+        ? current.collections
+        : incoming.collections,
+    mediaFiles:
+      incoming.mediaFiles === undefined
+        ? current.mediaFiles
+        : incoming.mediaFiles,
     metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
   };
 }
@@ -343,6 +408,35 @@ function isPendingHydrationPosterTitle(
   }
 
   return nowMs - createdAtMs <= HYDRATION_POSTER_REFRESH_WINDOW_MS;
+}
+
+function hasSelectedTitlePanelDetails(title: TitleRecord): boolean {
+  return Boolean(
+    title.overview?.trim() ||
+    title.backgroundUrl ||
+    title.backgroundSourceUrl ||
+    title.runtimeMinutes ||
+    (title.genres && title.genres.length > 0) ||
+    title.language ||
+    title.firstAired ||
+    title.network ||
+    title.studio ||
+    title.country ||
+    title.metadataLanguage ||
+    title.monitorType ||
+    title.useSeasonFolders != null ||
+    title.monitorSpecials != null ||
+    title.interSeasonMovies != null ||
+    title.fillerPolicy ||
+    title.recapPolicy,
+  );
+}
+
+function hasSelectedTitleEpisodeDetails(title: TitleRecord): boolean {
+  return (
+    title.mediaFiles !== undefined &&
+    (title.facet === "movie" || title.collections !== undefined)
+  );
 }
 
 function sameIdSet(
@@ -671,6 +765,26 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [selectedOverviewTitleId, setSelectedOverviewTitleId] = React.useState<
     string | null
   >(null);
+  const [selectedOverviewBlocklistState, setSelectedOverviewBlocklistState] =
+    React.useState<{
+      titleId: string | null;
+      entries: TitleReleaseBlocklistEntry[];
+    }>({ titleId: null, entries: [] });
+  const selectedOverviewBlocklistEntries =
+    selectedOverviewBlocklistState.titleId === selectedOverviewTitleId
+      ? selectedOverviewBlocklistState.entries
+      : [];
+  const [
+    selectedOverviewExternalSubtitleState,
+    setSelectedOverviewExternalSubtitleState,
+  ] = React.useState<{
+    titleId: string | null;
+    entries: ExternalSubtitleRecord[];
+  }>({ titleId: null, entries: [] });
+  const selectedOverviewExternalSubtitles =
+    selectedOverviewExternalSubtitleState.titleId === selectedOverviewTitleId
+      ? selectedOverviewExternalSubtitleState.entries
+      : [];
   const [titleQuickFilters, setTitleQuickFilters] =
     React.useState<TitleQuickFilters>({
       monitored: false,
@@ -723,6 +837,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const catalogPageLoadInFlightRef = React.useRef(false);
   const catalogQueryKeyRef = React.useRef("");
   const latestCriticalMutationEpochRef = React.useRef(0);
+  const selectedPanelHydrationKeyRef = React.useRef<string | null>(null);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
   const [catalogPaginationState, setCatalogPaginationState] =
     React.useState<TitleCatalogState>(emptyTitleCatalogState);
@@ -1447,29 +1562,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     latestCriticalMutationEpochRef.current = reactiveRefreshEpoch();
   }, []);
 
-  React.useEffect(() => {
-    if (!shouldLoadCatalogTitles || effectiveViewMode !== "poster") {
-      return;
-    }
-
-    const maybeLoadNextPage = () => {
-      const scrollElement = document.documentElement;
-      const remaining =
-        scrollElement.scrollHeight - (window.scrollY + window.innerHeight);
-      if (remaining <= TITLE_CATALOG_PREFETCH_DISTANCE_PX) {
-        void loadMoreCatalogTitles();
-      }
-    };
-
-    maybeLoadNextPage();
-    window.addEventListener("scroll", maybeLoadNextPage, { passive: true });
-    window.addEventListener("resize", maybeLoadNextPage);
-    return () => {
-      window.removeEventListener("scroll", maybeLoadNextPage);
-      window.removeEventListener("resize", maybeLoadNextPage);
-    };
-  }, [effectiveViewMode, loadMoreCatalogTitles, shouldLoadCatalogTitles]);
-
   const clearDeletionFallbackTimers = React.useCallback(() => {
     for (const timer of deletionFallbackTimersRef.current) {
       clearTimeout(timer);
@@ -1689,6 +1781,354 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     pause: !shouldLoadCatalogTitles,
     onTitleRefreshed: applyRefreshedTitleRecord,
   });
+
+  const previewTitleRename = React.useCallback(
+    async (title: TitleRecord): Promise<MediaRenamePlan | null> => {
+      try {
+        const { data, error } = await client
+          .query<{ mediaRenamePreview: MediaRenamePlan }>(
+            mediaRenamePreviewQuery,
+            {
+              input: {
+                facet: title.facet,
+                titleId: title.id,
+                dryRun: true,
+              },
+            },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+
+        const plan = data?.mediaRenamePreview ?? null;
+        if (plan) {
+          setGlobalStatus(
+            t("status.renamePreviewGenerated", {
+              total: plan.total,
+              renamable: plan.renamable,
+            }),
+          );
+        }
+        return plan;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.apiError"),
+        );
+        return null;
+      }
+    },
+    [client, setGlobalStatus, t],
+  );
+
+  const applyTitleRename = React.useCallback(
+    async (title: TitleRecord, plan: MediaRenamePlan) => {
+      try {
+        recordCriticalCatalogMutation();
+        const { data, error } = await client
+          .mutation<{
+            applyMediaRename: {
+              applied: number;
+              skipped: number;
+              failed: number;
+            };
+          }>(applyMediaRenameMutation, {
+            input: {
+              facet: title.facet,
+              titleId: title.id,
+              fingerprint: plan.fingerprint,
+            },
+          })
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+
+        const result = data?.applyMediaRename;
+        setGlobalStatus(
+          t("status.renameApplied", {
+            applied: result?.applied ?? 0,
+            skipped: result?.skipped ?? 0,
+            failed: result?.failed ?? 0,
+          }),
+        );
+        const requestEpoch = reactiveRefreshEpoch();
+        const detailResult = await client
+          .query<{ title?: TitleRecord | null }>(
+            titlePanelDetailQuery,
+            { id: title.id },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (detailResult.error) {
+          throw detailResult.error;
+        }
+        if (detailResult.data?.title) {
+          applyRefreshedTitleRecord(
+            title.id,
+            detailResult.data.title,
+            requestEpoch,
+          );
+        }
+        return true;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.apiError"),
+        );
+        return false;
+      }
+    },
+    [
+      applyRefreshedTitleRecord,
+      client,
+      recordCriticalCatalogMutation,
+      setGlobalStatus,
+      t,
+    ],
+  );
+
+  const selectedOverviewTitleForPanelHydration = React.useMemo(
+    () =>
+      selectedOverviewTitleId
+        ? (monitoredTitles.find(
+            (title) => title.id === selectedOverviewTitleId,
+          ) ?? null)
+        : null,
+    [monitoredTitles, selectedOverviewTitleId],
+  );
+  const selectedPanelHydrationTitleId =
+    selectedOverviewTitleForPanelHydration?.id ?? null;
+  const selectedPanelHydrationMetadataFetchedAt =
+    selectedOverviewTitleForPanelHydration?.metadataFetchedAt ?? "";
+  const selectedPanelHydrationCreatedAt =
+    selectedOverviewTitleForPanelHydration?.createdAt ?? "";
+  const selectedPanelNeedsPanelDetails =
+    selectedOverviewTitleForPanelHydration !== null
+      ? !hasSelectedTitlePanelDetails(selectedOverviewTitleForPanelHydration)
+      : false;
+  const selectedPanelNeedsEpisodeDetails =
+    selectedOverviewTitleForPanelHydration !== null
+      ? !hasSelectedTitleEpisodeDetails(selectedOverviewTitleForPanelHydration)
+      : false;
+  const loadSelectedOverviewExternalSubtitles = React.useCallback(
+    async (titleId: string) => {
+      const { data, error } = await client
+        .query<{ externalSubtitles?: ExternalSubtitleRecord[] }>(
+          externalSubtitlesQuery,
+          { titleId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      return data?.externalSubtitles ?? [];
+    },
+    [client],
+  );
+  const refreshSelectedOverviewExternalSubtitles = React.useCallback(
+    async () => {
+      const titleId = selectedPanelHydrationTitleId;
+      if (!shouldLoadCatalogTitles || !titleId) {
+        setSelectedOverviewExternalSubtitleState({
+          titleId: null,
+          entries: [],
+        });
+        return;
+      }
+
+      try {
+        const entries = await loadSelectedOverviewExternalSubtitles(titleId);
+        setSelectedOverviewExternalSubtitleState((current) =>
+          current.titleId === titleId ? { titleId, entries } : current,
+        );
+      } catch (error) {
+        console.error(
+          "[selected-title-external-subtitles-refresh] refresh failed:",
+          error,
+        );
+        setSelectedOverviewExternalSubtitleState((current) =>
+          current.titleId === titleId ? { titleId, entries: [] } : current,
+        );
+      }
+    },
+    [
+      loadSelectedOverviewExternalSubtitles,
+      selectedPanelHydrationTitleId,
+      shouldLoadCatalogTitles,
+    ],
+  );
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
+      selectedPanelHydrationKeyRef.current = null;
+      return;
+    }
+
+    if (!selectedPanelNeedsPanelDetails && !selectedPanelNeedsEpisodeDetails) {
+      selectedPanelHydrationKeyRef.current = null;
+      return;
+    }
+
+    const titleId = selectedPanelHydrationTitleId;
+    const requestKey = [
+      titleId,
+      selectedPanelHydrationMetadataFetchedAt,
+      selectedPanelHydrationCreatedAt,
+      selectedPanelNeedsEpisodeDetails ? "episodes" : "panel",
+    ].join(":");
+    if (selectedPanelHydrationKeyRef.current === requestKey) {
+      return;
+    }
+    selectedPanelHydrationKeyRef.current = requestKey;
+
+    let cancelled = false;
+    const requestEpoch = reactiveRefreshEpoch();
+    void client
+      .query<{ title?: TitleRecord | null }>(titlePanelDetailQuery, {
+        id: titleId,
+      })
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          console.error(
+            "[selected-title-panel-refresh] refresh failed:",
+            error,
+          );
+          if (selectedPanelHydrationKeyRef.current === requestKey) {
+            selectedPanelHydrationKeyRef.current = null;
+          }
+          return;
+        }
+        if (data?.title) {
+          applyRefreshedTitleRecord(titleId, data.title, requestEpoch);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error(
+            "[selected-title-panel-refresh] refresh failed:",
+            error,
+          );
+          if (selectedPanelHydrationKeyRef.current === requestKey) {
+            selectedPanelHydrationKeyRef.current = null;
+          }
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (selectedPanelHydrationKeyRef.current === requestKey) {
+        selectedPanelHydrationKeyRef.current = null;
+      }
+    };
+  }, [
+    applyRefreshedTitleRecord,
+    client,
+    selectedPanelHydrationCreatedAt,
+    selectedPanelHydrationMetadataFetchedAt,
+    selectedPanelHydrationTitleId,
+    selectedPanelNeedsEpisodeDetails,
+    selectedPanelNeedsPanelDetails,
+    shouldLoadCatalogTitles,
+  ]);
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
+      setSelectedOverviewExternalSubtitleState({ titleId: null, entries: [] });
+      return;
+    }
+
+    let cancelled = false;
+    const titleId = selectedPanelHydrationTitleId;
+    setSelectedOverviewExternalSubtitleState((current) =>
+      current.titleId === titleId ? current : { titleId, entries: [] },
+    );
+    void loadSelectedOverviewExternalSubtitles(titleId)
+      .then((entries) => {
+        if (!cancelled) {
+          setSelectedOverviewExternalSubtitleState({ titleId, entries });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error(
+            "[selected-title-external-subtitles-refresh] refresh failed:",
+            error,
+          );
+          setSelectedOverviewExternalSubtitleState((current) =>
+            current.titleId === titleId ? { titleId, entries: [] } : current,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loadSelectedOverviewExternalSubtitles,
+    selectedPanelHydrationTitleId,
+    shouldLoadCatalogTitles,
+  ]);
+
+  React.useEffect(() => {
+    if (!shouldLoadCatalogTitles || !selectedPanelHydrationTitleId) {
+      setSelectedOverviewBlocklistState({ titleId: null, entries: [] });
+      return;
+    }
+
+    let cancelled = false;
+    const titleId = selectedPanelHydrationTitleId;
+    setSelectedOverviewBlocklistState((current) =>
+      current.titleId === titleId ? current : { titleId, entries: [] },
+    );
+    void client
+      .query<{ titleReleaseBlocklist?: TitleReleaseBlocklistEntry[] }>(
+        titleReleaseBlocklistQuery,
+        {
+          titleId,
+          limit: 6,
+        },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          console.error(
+            "[selected-title-blocklist-refresh] refresh failed:",
+            error,
+          );
+          setSelectedOverviewBlocklistState((current) =>
+            current.titleId === titleId ? { titleId, entries: [] } : current,
+          );
+          return;
+        }
+        setSelectedOverviewBlocklistState({
+          titleId,
+          entries: data?.titleReleaseBlocklist ?? [],
+        });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error(
+            "[selected-title-blocklist-refresh] refresh failed:",
+            error,
+          );
+          setSelectedOverviewBlocklistState((current) =>
+            current.titleId === titleId ? { titleId, entries: [] } : current,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, selectedPanelHydrationTitleId, shouldLoadCatalogTitles]);
 
   React.useEffect(() => {
     if (
@@ -3239,6 +3679,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           deleteLibrary,
           onOpenOverview,
           selectedOverviewTitleId,
+          selectedOverviewBlocklistEntries,
+          selectedOverviewExternalSubtitles,
+          refreshSelectedOverviewExternalSubtitles,
+          previewTitleRename,
+          applyTitleRename,
           setSelectedOverviewTitleId: selectOverviewTitle,
           clearSelectedOverviewTitle,
           scanLibrary: handleLibraryScan,

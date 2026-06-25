@@ -24,11 +24,44 @@ const QP_TAG_PREFIX = "scryer:quality-profile:";
 
 export type TitleTableSortKey =
   | "name"
+  | "library"
   | "monitored"
   | "quality"
   | "episodes"
   | "status"
-  | "size";
+  | "size"
+  | "added";
+
+export type TitleTableColumnKey =
+  | "library"
+  | "monitored"
+  | "quality"
+  | "episodes"
+  | "size"
+  | "added"
+  | "actions";
+
+export type TitleTableVisibleColumns = Record<TitleTableColumnKey, boolean>;
+
+export const DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS: TitleTableVisibleColumns = {
+  library: true,
+  monitored: true,
+  quality: true,
+  episodes: true,
+  size: true,
+  added: false,
+  actions: true,
+};
+
+export const TITLE_TABLE_COLUMN_KEYS: readonly TitleTableColumnKey[] = [
+  "library",
+  "monitored",
+  "quality",
+  "episodes",
+  "size",
+  "added",
+  "actions",
+];
 export type TitleTableSortDirection = "asc" | "desc";
 
 type TitleTableVirtualizer = {
@@ -41,11 +74,13 @@ type TitleTableVirtualizer = {
 export function useTitleTableVirtualizerRebuild<TElement extends HTMLElement>({
   itemCount,
   loading,
+  rebuildKey,
   scrollRef,
   titleVirtualizer,
 }: {
   itemCount: number;
   loading: boolean;
+  rebuildKey?: React.Key;
   scrollRef: React.RefObject<TElement | null>;
   titleVirtualizer: TitleTableVirtualizer;
 }) {
@@ -107,7 +142,14 @@ export function useTitleTableVirtualizerRebuild<TElement extends HTMLElement>({
       window.clearTimeout(timeoutId);
       resizeObserver?.disconnect();
     };
-  }, [getMaxScrollTop, itemCount, loading, scrollRef, titleVirtualizer]);
+  }, [
+    getMaxScrollTop,
+    itemCount,
+    loading,
+    rebuildKey,
+    scrollRef,
+    titleVirtualizer,
+  ]);
 
   return getMaxScrollTop;
 }
@@ -411,6 +453,7 @@ export function defaultSortDirectionForTitleKey(
     case "monitored":
     case "episodes":
     case "size":
+    case "added":
       return "desc";
     default:
       return "asc";

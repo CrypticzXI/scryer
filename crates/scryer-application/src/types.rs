@@ -606,11 +606,13 @@ pub enum SortDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitleCatalogSortKey {
     Title,
+    Library,
     Monitored,
     Quality,
     Episodes,
     Status,
     Size,
+    Added,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

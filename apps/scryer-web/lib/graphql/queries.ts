@@ -823,8 +823,14 @@ export const TITLE_LIST_FIELDS = `
     librarySlug
     monitored
     tags
+    externalIds {
+      source
+      value
+    }
     slug
+    sortTitle
     imdbId
+    year
     posterUrl
     posterSourceUrl
     rootFolderId
@@ -837,6 +843,31 @@ export const TITLE_LIST_FIELDS = `
     contentStatus
     metadataFetchedAt
     createdAt`;
+
+export const TITLE_PANEL_FIELDS = `${TITLE_LIST_FIELDS}
+    overview
+    backgroundUrl
+    backgroundSourceUrl
+    runtimeMinutes
+    genres
+    language
+    firstAired
+    network
+    studio
+    country
+    metadataLanguage
+    monitorType
+    useSeasonFolders
+    monitorSpecials
+    interSeasonMovies
+    fillerPolicy
+    recapPolicy`;
+
+export const TITLE_SELECTED_PANEL_FIELDS = `${TITLE_PANEL_FIELDS}
+    collections {${TITLE_COLLECTION_FIELDS}
+    }
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }`;
 
 export const TITLE_COMMAND_PALETTE_FIELDS = `
     id
@@ -869,11 +900,7 @@ export const TITLE_CATALOG_SEARCH_FIELDS = `
       value
     }`;
 
-export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = `${TITLE_LIST_FIELDS}
-    externalIds {
-      source
-      value
-    }`;
+export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = TITLE_LIST_FIELDS;
 
 export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permission: LibraryPermissionValue) {
   libraries(facet: $facet, permission: $permission) {
@@ -1022,7 +1049,13 @@ ${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
 
 export const titleListEntryQuery = `query TitleListEntry($id: ID!) {
   title(id: $id) {
-${TITLE_LIST_FIELDS}
+${TITLE_PANEL_FIELDS}
+  }
+}`;
+
+export const titlePanelDetailQuery = `query TitlePanelDetail($id: ID!) {
+  title(id: $id) {
+${TITLE_SELECTED_PANEL_FIELDS}
   }
 }`;
 
@@ -1115,7 +1148,7 @@ export function buildReactiveRefreshQuery(
         const titleIdVariableName = `catalogTitleId${index}`;
         variableDefinitions.push(`$${titleIdVariableName}: ID!`);
         fields.push(
-          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_LIST_FIELDS}\n  }`,
+          `  ${titleAlias}: title(id: $${titleIdVariableName}) {\n${TITLE_PANEL_FIELDS}\n  }`,
         );
         variables[titleIdVariableName] = action.titleId;
         actionPlans.push({ key: action.key, kind: action.kind, titleAlias });

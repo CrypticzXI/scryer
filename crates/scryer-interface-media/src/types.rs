@@ -68,11 +68,13 @@ pub struct TitlePayload {
 #[graphql(rename_items = "snake_case")]
 pub enum TitleCatalogSortKeyValue {
     Title,
+    Library,
     Monitored,
     Quality,
     Episodes,
     Status,
     Size,
+    Added,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]

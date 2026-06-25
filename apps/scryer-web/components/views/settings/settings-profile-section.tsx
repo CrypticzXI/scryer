@@ -16,7 +16,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { TotpQrCode } from "@/components/common/totp-qr-code";
@@ -131,18 +130,26 @@ function LinkedAccountAvatar({ account }: { account: LinkedAccount }) {
     <img
       src={account.avatarUrl}
       alt=""
-      className="h-9 w-9 shrink-0 rounded-full border border-border object-cover"
+      className="h-9 w-9 shrink-0 rounded-full border border-[var(--scry-border2)] object-cover"
       loading="lazy"
     />
   ) : (
     <span
       aria-hidden="true"
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-sm font-medium text-muted-foreground"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-sm font-medium text-[var(--scry-muted2)]"
     >
       {label.trim().slice(0, 1).toUpperCase() || "?"}
     </span>
   );
 }
+
+const PROFILE_CARD_CLASS =
+  "space-y-4 rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const PROFILE_CARD_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const PROFILE_MUTED_TEXT_CLASS = "text-sm text-[var(--scry-muted3)]";
+const PROFILE_ROW_CARD_CLASS =
+  "flex flex-col gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:flex-row md:items-center md:justify-between";
 
 export function SettingsProfileSection({
   username,
@@ -204,9 +211,11 @@ export function SettingsProfileSection({
   onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
-  const [pendingTotpAction, setPendingTotpAction] = useState<TotpProfileAction>(null);
+  const [pendingTotpAction, setPendingTotpAction] =
+    useState<TotpProfileAction>(null);
   const [submittedTotpAction, setSubmittedTotpAction] = useState(false);
-  const passwordMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
+  const passwordMismatch =
+    confirmPassword.length > 0 && newPassword !== confirmPassword;
   const canSubmit =
     (!requiresCurrentPassword || currentPassword.length > 0) &&
     newPassword.length > 0 &&
@@ -229,7 +238,8 @@ export function SettingsProfileSection({
     linkAccountUsername.trim().length > 0 &&
     linkAccountPassword.length > 0 &&
     !linkAccountBusy;
-  const canSubmitPlexLink = Boolean(linkAccountConnectionId) && !linkAccountBusy;
+  const canSubmitPlexLink =
+    Boolean(linkAccountConnectionId) && !linkAccountBusy;
   const closeTotpActionDialog = () => {
     setPendingTotpAction(null);
     setSubmittedTotpAction(false);
@@ -267,27 +277,35 @@ export function SettingsProfileSection({
   }, [pendingTotpAction, submittedTotpAction, totpActionCode.length, totpBusy]);
 
   return (
-    <div id="settings-profile-section" className="space-y-6 text-sm">
-      <div className="space-y-2">
-        <h3 className="text-base font-medium">{t("profile.accountInfo")}</h3>
-        <div className="flex items-center gap-2 text-muted-foreground">
+    <div
+      id="settings-profile-section"
+      className="space-y-4 text-sm text-[var(--scry-body)]"
+    >
+      <div className={PROFILE_CARD_CLASS}>
+        <h3 className={PROFILE_CARD_TITLE_CLASS}>{t("profile.accountInfo")}</h3>
+        <div className="flex items-center gap-2 text-[var(--scry-muted3)]">
           <span>{t("settings.username")}:</span>
-          <span id="settings-profile-username" className="font-medium text-foreground">
+          <span
+            id="settings-profile-username"
+            className="font-medium text-[var(--scry-ink2)]"
+          >
             {username ?? "—"}
           </span>
         </div>
       </div>
 
       {canChangePassword ? (
-        <>
-          <Separator />
-
+        <div className={PROFILE_CARD_CLASS}>
           <div className="space-y-4">
-            <h3 className="text-base font-medium">{t("profile.changePassword")}</h3>
+            <h3 className={PROFILE_CARD_TITLE_CLASS}>
+              {t("profile.changePassword")}
+            </h3>
             <div className="grid max-w-sm gap-3">
               {requiresCurrentPassword ? (
                 <div className="space-y-1.5">
-                  <Label htmlFor="current-password">{t("profile.currentPassword")}</Label>
+                  <Label htmlFor="current-password">
+                    {t("profile.currentPassword")}
+                  </Label>
                   <Input
                     id="current-password"
                     type="password"
@@ -308,7 +326,9 @@ export function SettingsProfileSection({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="confirm-password">{t("profile.confirmPassword")}</Label>
+                <Label htmlFor="confirm-password">
+                  {t("profile.confirmPassword")}
+                </Label>
                 <Input
                   id="confirm-password"
                   type="password"
@@ -317,7 +337,9 @@ export function SettingsProfileSection({
                   onChange={(e) => onConfirmPasswordChange(e.target.value)}
                 />
                 {passwordMismatch ? (
-                  <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
+                  <p className="text-xs text-destructive">
+                    {t("profile.passwordMismatch")}
+                  </p>
                 ) : null}
               </div>
               <Button
@@ -326,22 +348,27 @@ export function SettingsProfileSection({
                 disabled={!canSubmit}
                 className="w-fit"
               >
-                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {saving ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.changePassword")}
               </Button>
             </div>
           </div>
-        </>
+        </div>
       ) : null}
 
       {showPasskeys ? (
-        <>
-          <Separator />
+        <div className={PROFILE_CARD_CLASS}>
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <div className="space-y-1">
-                <h3 className="text-base font-medium">{t("profile.passkeys")}</h3>
-                <p className="text-sm text-muted-foreground">{t("profile.passkeysDescription")}</p>
+                <h3 className={PROFILE_CARD_TITLE_CLASS}>
+                  {t("profile.passkeys")}
+                </h3>
+                <p className={PROFILE_MUTED_TEXT_CLASS}>
+                  {t("profile.passkeysDescription")}
+                </p>
               </div>
               {canAddPasskey ? (
                 <Button
@@ -350,34 +377,38 @@ export function SettingsProfileSection({
                   disabled={addingPasskey}
                   className="w-fit"
                 >
-                  {addingPasskey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  {addingPasskey ? t("profile.passkeyAdding") : t("profile.passkeyAdd")}
+                  {addingPasskey ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  {addingPasskey
+                    ? t("profile.passkeyAdding")
+                    : t("profile.passkeyAdd")}
                 </Button>
               ) : null}
             </div>
 
             {loadingPasskeys ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>{t("label.loading")}</span>
               </div>
             ) : passkeys.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t("profile.passkeysEmpty")}</p>
+              <p className={PROFILE_MUTED_TEXT_CLASS}>
+                {t("profile.passkeysEmpty")}
+              </p>
             ) : (
               <div className="space-y-3">
                 {passkeys.map((passkey) => (
-                  <div
-                    key={passkey.id}
-                    className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
-                  >
+                  <div key={passkey.id} className={PROFILE_ROW_CARD_CLASS}>
                     <div className="space-y-1">
-                      <div className="font-medium text-foreground">
+                      <div className="font-medium text-[var(--scry-ink2)]">
                         {passkey.friendlyName || t("profile.passkeyLabel")}
                       </div>
-                      <div className="text-sm text-muted-foreground">
-                        {t("profile.passkeyCreatedAt")}: {formatTimestamp(passkey.createdAt)}
+                      <div className={PROFILE_MUTED_TEXT_CLASS}>
+                        {t("profile.passkeyCreatedAt")}:{" "}
+                        {formatTimestamp(passkey.createdAt)}
                       </div>
-                      <div className="text-sm text-muted-foreground">
+                      <div className={PROFILE_MUTED_TEXT_CLASS}>
                         {t("profile.passkeyLastUsedAt")}:{" "}
                         {passkey.lastUsedAt
                           ? formatTimestamp(passkey.lastUsedAt)
@@ -385,7 +416,9 @@ export function SettingsProfileSection({
                       </div>
                     </div>
                     <Button
-                      id={selectorId(`settings-profile-delete-passkey-${passkey.id}`)}
+                      id={selectorId(
+                        `settings-profile-delete-passkey-${passkey.id}`,
+                      )}
                       variant="outline"
                       onClick={() => onDeletePasskey(passkey.id)}
                       disabled={deletingPasskeyId === passkey.id}
@@ -401,25 +434,27 @@ export function SettingsProfileSection({
               </div>
             )}
           </div>
-        </>
+        </div>
       ) : null}
 
-      <Separator />
-      <div className="space-y-4">
+      <div className={PROFILE_CARD_CLASS}>
         <div className="space-y-1">
-          <h3 className="text-base font-medium">Connected apps</h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className={PROFILE_CARD_TITLE_CLASS}>Connected apps</h3>
+          <p className={PROFILE_MUTED_TEXT_CLASS}>
             OAuth integrations authorized to access Scryer as you.
           </p>
         </div>
 
         {loadingOauthApps ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
         ) : oauthApps.length === 0 ? (
-          <p id="settings-profile-oauth-apps-empty" className="text-sm text-muted-foreground">
+          <p
+            id="settings-profile-oauth-apps-empty"
+            className={PROFILE_MUTED_TEXT_CLASS}
+          >
             No connected apps.
           </p>
         ) : (
@@ -428,25 +463,36 @@ export function SettingsProfileSection({
               <div
                 id={selectorId("settings-profile-oauth-app-row", app.clientId)}
                 key={app.grantId}
-                className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+                className={PROFILE_ROW_CARD_CLASS}
               >
                 <div className="space-y-1">
-                  <div className="font-medium text-foreground">{app.clientName}</div>
+                  <div className="font-medium text-[var(--scry-ink2)]">
+                    {app.clientName}
+                  </div>
                   <div
-                    id={selectorId("settings-profile-oauth-app-authorized-at", app.clientId)}
-                    className="text-sm text-muted-foreground"
+                    id={selectorId(
+                      "settings-profile-oauth-app-authorized-at",
+                      app.clientId,
+                    )}
+                    className={PROFILE_MUTED_TEXT_CLASS}
                   >
                     Authorized: {formatTimestamp(app.authorizedAt)}
                   </div>
                   <div
-                    id={selectorId("settings-profile-oauth-app-last-used", app.clientId)}
-                    className="text-sm text-muted-foreground"
+                    id={selectorId(
+                      "settings-profile-oauth-app-last-used",
+                      app.clientId,
+                    )}
+                    className={PROFILE_MUTED_TEXT_CLASS}
                   >
                     Last used: {formatTimestamp(app.lastUsedAt)}
                   </div>
                 </div>
                 <Button
-                  id={selectorId("settings-profile-revoke-oauth-app", app.clientId)}
+                  id={selectorId(
+                    "settings-profile-revoke-oauth-app",
+                    app.clientId,
+                  )}
                   variant="outline"
                   onClick={() => onRevokeOauthApp(app.grantId)}
                   disabled={revokingOauthGrantId === app.grantId}
@@ -463,42 +509,54 @@ export function SettingsProfileSection({
         )}
       </div>
 
-      <Separator />
-      <div className="space-y-4">
+      <div className={PROFILE_CARD_CLASS}>
         <div className="space-y-1">
-          <h3 className="text-base font-medium">{t("profile.totp")}</h3>
-          <p className="text-sm text-muted-foreground">{t("profile.totpDescription")}</p>
+          <h3 className={PROFILE_CARD_TITLE_CLASS}>{t("profile.totp")}</h3>
+          <p className={PROFILE_MUTED_TEXT_CLASS}>
+            {t("profile.totpDescription")}
+          </p>
         </div>
 
         {loadingTotp ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
         ) : totpStatus?.enabled ? (
-          <div className="space-y-3 rounded-md border border-border bg-background/60 p-4">
-            <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+          <div className="space-y-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4">
+            <div className="grid gap-2 text-sm text-[var(--scry-muted3)] sm:grid-cols-3">
               <div>
-                <span className="text-foreground">{t("profile.totpEnabledAt")}: </span>
+                <span className="text-[var(--scry-ink2)]">
+                  {t("profile.totpEnabledAt")}:{" "}
+                </span>
                 {formatTimestamp(totpStatus.createdAt)}
               </div>
               <div>
-                <span className="text-foreground">{t("profile.totpLastUsedAt")}: </span>
+                <span className="text-[var(--scry-ink2)]">
+                  {t("profile.totpLastUsedAt")}:{" "}
+                </span>
                 {formatTimestamp(totpStatus.lastUsedAt)}
               </div>
               <div>
-                <span className="text-foreground">{t("profile.totpRecoveryRemaining")}: </span>
+                <span className="text-[var(--scry-ink2)]">
+                  {t("profile.totpRecoveryRemaining")}:{" "}
+                </span>
                 {totpStatus.recoveryCodesRemaining}
               </div>
             </div>
 
             {totpRecoveryCodes.length > 0 ? (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-                <div className="mb-2 text-sm font-medium">{t("profile.totpRecoveryCodes")}</div>
+                <div className="mb-2 text-sm font-medium">
+                  {t("profile.totpRecoveryCodes")}
+                </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {totpRecoveryCodes.map((code) => (
                     <code
-                      id={selectorId("settings-profile-totp-recovery-code", code)}
+                      id={selectorId(
+                        "settings-profile-totp-recovery-code",
+                        code,
+                      )}
                       key={code}
                       className="rounded bg-background/70 px-2 py-1 font-mono text-xs"
                     >
@@ -511,13 +569,17 @@ export function SettingsProfileSection({
 
             <div className="flex flex-wrap gap-2">
               <Button
-                id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
+                id={selectorId(
+                  "settings-profile-totp-regenerate-recovery-codes",
+                )}
                 type="button"
                 variant="outline"
                 disabled={totpBusy}
                 onClick={() => openTotpActionDialog("regenerateRecoveryCodes")}
               >
-                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {totpBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.totpRegenerateRecoveryCodes")}
               </Button>
               <Button
@@ -527,7 +589,9 @@ export function SettingsProfileSection({
                 disabled={totpBusy}
                 onClick={() => openTotpActionDialog("disable")}
               >
-                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {totpBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.totpDisable")}
               </Button>
             </div>
@@ -559,7 +623,9 @@ export function SettingsProfileSection({
                   inputId="totp-action-code"
                   submitId={
                     pendingTotpAction === "regenerateRecoveryCodes"
-                      ? selectorId("settings-profile-totp-regenerate-recovery-codes-confirm")
+                      ? selectorId(
+                          "settings-profile-totp-regenerate-recovery-codes-confirm",
+                        )
                       : selectorId("settings-profile-totp-disable-confirm")
                   }
                   cancelId={selectorId("settings-profile-totp-action-cancel")}
@@ -581,7 +647,7 @@ export function SettingsProfileSection({
             </Dialog>
           </div>
         ) : totpEnrollment ? (
-          <div className="space-y-4 rounded-md border border-border bg-background/60 p-4">
+          <div className="space-y-4 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4">
             <div className="flex flex-col gap-4 sm:flex-row">
               <TotpQrCode
                 id={selectorId("settings-profile-totp-qr-code")}
@@ -596,7 +662,9 @@ export function SettingsProfileSection({
                   {t("profile.totpOpenSetupLink")}
                 </a>
                 <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t("profile.totpSecret")}
+                  </div>
                   <code
                     id={selectorId("settings-profile-totp-secret")}
                     className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
@@ -607,7 +675,9 @@ export function SettingsProfileSection({
               </div>
             </div>
             <div className="grid max-w-sm gap-2">
-              <Label htmlFor="totp-enrollment-code">{t("profile.totpCode")}</Label>
+              <Label htmlFor="totp-enrollment-code">
+                {t("profile.totpCode")}
+              </Label>
               <Input
                 id="totp-enrollment-code"
                 {...integerInputProps}
@@ -615,16 +685,22 @@ export function SettingsProfileSection({
                 maxLength={TOTP_CODE_LENGTH}
                 autoComplete="one-time-code"
                 value={totpEnrollmentCode}
-                onChange={(event) => onTotpEnrollmentCodeChange(event.target.value)}
+                onChange={(event) =>
+                  onTotpEnrollmentCodeChange(event.target.value)
+                }
               />
               <Button
                 id={selectorId("settings-profile-totp-verify-enable")}
                 type="button"
-                disabled={totpBusy || totpEnrollmentCode.length !== TOTP_CODE_LENGTH}
+                disabled={
+                  totpBusy || totpEnrollmentCode.length !== TOTP_CODE_LENGTH
+                }
                 onClick={onCompleteTotpEnrollment}
                 className="w-fit"
               >
-                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {totpBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.totpVerifyAndEnable")}
               </Button>
             </div>
@@ -637,24 +713,27 @@ export function SettingsProfileSection({
             disabled={totpBusy}
             className="w-fit"
           >
-            {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {totpBusy ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
             {t("profile.totpStartEnrollment")}
           </Button>
         )}
       </div>
 
-      <Separator />
-      <div className="space-y-4">
+      <div className={PROFILE_CARD_CLASS}>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="space-y-1">
-            <h3 className="text-base font-medium">{t("profile.linkedAccounts")}</h3>
-            <p className="text-sm text-muted-foreground">
+            <h3 className={PROFILE_CARD_TITLE_CLASS}>
+              {t("profile.linkedAccounts")}
+            </h3>
+            <p className={PROFILE_MUTED_TEXT_CLASS}>
               {t("profile.linkedAccountsDescription")}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {loadingLinkOptions ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>{t("label.loading")}</span>
               </div>
@@ -663,14 +742,17 @@ export function SettingsProfileSection({
               <Button
                 id="settings-profile-link-jellyfin-start"
                 type="button"
-                variant={linkingProvider === "jellyfin" ? "secondary" : "outline"}
+                variant={
+                  linkingProvider === "jellyfin" ? "secondary" : "outline"
+                }
                 onClick={() => onStartLinkAccount("jellyfin")}
                 disabled={linkAccountBusy}
               >
                 {t("profile.linkJellyfinAccount")}
               </Button>
             ) : null}
-            {isVisibleExternalAccountProvider("plex") && linkablePlexConnections.length > 0 ? (
+            {isVisibleExternalAccountProvider("plex") &&
+            linkablePlexConnections.length > 0 ? (
               <Button
                 id="settings-profile-link-plex-start"
                 type="button"
@@ -686,7 +768,7 @@ export function SettingsProfileSection({
 
         {linkingProvider === "jellyfin" ? (
           <form
-            className="grid gap-3 rounded-md border border-border bg-background/60 p-4 md:max-w-xl"
+            className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
             onSubmit={onSubmitJellyfinLink}
           >
             <div className="space-y-1.5">
@@ -699,7 +781,10 @@ export function SettingsProfileSection({
                   onValueChange={onLinkAccountConnectionChange}
                   disabled={linkAccountBusy}
                 >
-                  <SelectTrigger id="profile-link-jellyfin-connection" className="w-full">
+                  <SelectTrigger
+                    id="profile-link-jellyfin-connection"
+                    className="w-full"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -728,7 +813,9 @@ export function SettingsProfileSection({
                   type="text"
                   autoComplete="username"
                   value={linkAccountUsername}
-                  onChange={(event) => onLinkAccountUsernameChange(event.target.value)}
+                  onChange={(event) =>
+                    onLinkAccountUsernameChange(event.target.value)
+                  }
                   disabled={linkAccountBusy}
                 />
               </div>
@@ -741,13 +828,18 @@ export function SettingsProfileSection({
                   type="password"
                   autoComplete="current-password"
                   value={linkAccountPassword}
-                  onChange={(event) => onLinkAccountPasswordChange(event.target.value)}
+                  onChange={(event) =>
+                    onLinkAccountPasswordChange(event.target.value)
+                  }
                   disabled={linkAccountBusy}
                 />
               </div>
             </div>
             {linkAccountError ? (
-              <p id="settings-profile-link-jellyfin-error" className="text-sm text-destructive">
+              <p
+                id="settings-profile-link-jellyfin-error"
+                className="text-sm text-destructive"
+              >
                 {linkAccountError}
               </p>
             ) : null}
@@ -758,7 +850,9 @@ export function SettingsProfileSection({
                 disabled={!canSubmitJellyfinLink}
                 className="w-fit"
               >
-                {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {linkAccountBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.linkAccountSubmit")}
               </Button>
               <Button
@@ -774,9 +868,10 @@ export function SettingsProfileSection({
           </form>
         ) : null}
 
-        {isVisibleExternalAccountProvider("plex") && linkingProvider === "plex" ? (
+        {isVisibleExternalAccountProvider("plex") &&
+        linkingProvider === "plex" ? (
           <form
-            className="grid gap-3 rounded-md border border-border bg-background/60 p-4 md:max-w-xl"
+            className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
             onSubmit={onSubmitPlexLink}
           >
             <div className="space-y-1.5">
@@ -789,7 +884,10 @@ export function SettingsProfileSection({
                   onValueChange={onLinkAccountConnectionChange}
                   disabled={linkAccountBusy}
                 >
-                  <SelectTrigger id="profile-link-plex-connection" className="w-full">
+                  <SelectTrigger
+                    id="profile-link-plex-connection"
+                    className="w-full"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -809,7 +907,10 @@ export function SettingsProfileSection({
               )}
             </div>
             {linkAccountError ? (
-              <p id="settings-profile-link-plex-error" className="text-sm text-destructive">
+              <p
+                id="settings-profile-link-plex-error"
+                className="text-sm text-destructive"
+              >
                 {linkAccountError}
               </p>
             ) : null}
@@ -820,7 +921,9 @@ export function SettingsProfileSection({
                 disabled={!canSubmitPlexLink}
                 className="w-fit"
               >
-                {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {linkAccountBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {t("profile.signInWithPlexToLink")}
               </Button>
               <Button
@@ -837,12 +940,14 @@ export function SettingsProfileSection({
         ) : null}
 
         {loadingLinkedAccounts ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
         ) : visibleLinkedAccounts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t("profile.linkedAccountsEmpty")}</p>
+          <p className={PROFILE_MUTED_TEXT_CLASS}>
+            {t("profile.linkedAccountsEmpty")}
+          </p>
         ) : (
           <div className="space-y-3">
             {visibleLinkedAccounts.map((account) => (
@@ -853,21 +958,22 @@ export function SettingsProfileSection({
                   account.username,
                 )}
                 key={account.id}
-                className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+                className={PROFILE_ROW_CARD_CLASS}
               >
                 <div className="flex min-w-0 items-start gap-3">
                   <LinkedAccountAvatar account={account} />
                   <div className="min-w-0 space-y-1">
-                    <div className="truncate font-medium text-foreground">
-                      {providerLabel(account.provider)} · {account.displayName || account.username}
+                    <div className="truncate font-medium text-[var(--scry-ink2)]">
+                      {providerLabel(account.provider)} ·{" "}
+                      {account.displayName || account.username}
                     </div>
-                    <div className="text-sm text-muted-foreground">
+                    <div className={PROFILE_MUTED_TEXT_CLASS}>
                       {t("profile.linkedAccountConnection")}:{" "}
                       {linkedAccountConnectionLabels[
                         `${account.provider}:${account.connectionId}`
                       ] ?? t("profile.linkedAccountUnknownConnection")}
                     </div>
-                    <div className="text-sm text-muted-foreground">
+                    <div className={PROFILE_MUTED_TEXT_CLASS}>
                       {t("profile.linkedAccountStatus")}: {account.status}
                     </div>
                   </div>

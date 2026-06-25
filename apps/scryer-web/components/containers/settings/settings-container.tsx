@@ -211,7 +211,10 @@ export const SettingsContainer = memo(function SettingsContainer({
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent md:flex-row">
       {showPrimarySettingsSubnav ? (
-        <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
+        <aside
+          data-slot="settings-subnav-scroll"
+          className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]"
+        >
           <div className="mb-3 flex items-center gap-2 px-2 text-[var(--scry-ink2)] md:mb-4">
             <Settings2 className="h-[18px] w-[18px] text-[var(--scry-accent-text)]" />
             <span className="text-[16px] font-bold">{t("nav.settings")}</span>
@@ -243,7 +246,10 @@ export const SettingsContainer = memo(function SettingsContainer({
           </nav>
         </aside>
       ) : null}
-      <main className="min-w-0 flex-1 overflow-y-auto bg-transparent">
+      <main
+        data-slot="settings-main-scroll"
+        className="min-w-0 flex-1 overflow-y-auto bg-transparent"
+      >
         <div className="mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{t("nav.settings")}</span>

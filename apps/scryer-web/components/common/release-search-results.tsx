@@ -17,8 +17,10 @@ import {
 } from "@/lib/utils/dom-ids";
 import type { Release } from "@/lib/types";
 
-type SortKey = "score" | "size";
-type SortDirection = "asc" | "desc";
+export type ReleaseSearchSortKey = "score" | "size";
+export type ReleaseSearchSortDirection = "asc" | "desc";
+type SortKey = ReleaseSearchSortKey;
+type SortDirection = ReleaseSearchSortDirection;
 
 function getScoreText(score: number | undefined) {
   if (score == null) {
@@ -534,6 +536,10 @@ export function SearchResultBuckets({
   disabled = false,
   requireCandidateToken = false,
   compact = false,
+  sortKey: controlledSortKey,
+  sortDirection: controlledSortDirection,
+  onSortChange,
+  hideInlineSortControls = false,
 }: {
   results: Release[];
   onQueue: (r: Release) => Promise<void> | void;
@@ -542,6 +548,10 @@ export function SearchResultBuckets({
   disabled?: boolean;
   requireCandidateToken?: boolean;
   compact?: boolean;
+  sortKey?: SortKey;
+  sortDirection?: SortDirection;
+  onSortChange?: (key: SortKey, direction: SortDirection) => void;
+  hideInlineSortControls?: boolean;
 }) {
   const t = useTranslate();
   const considered = React.useMemo(
@@ -559,9 +569,11 @@ export function SearchResultBuckets({
     [results],
   );
   const [showBlocked, setShowBlocked] = React.useState(false);
-  const [sortKey, setSortKey] = React.useState<SortKey>("score");
-  const [sortDirection, setSortDirection] =
+  const [localSortKey, setLocalSortKey] = React.useState<SortKey>("score");
+  const [localSortDirection, setLocalSortDirection] =
     React.useState<SortDirection>("desc");
+  const sortKey = controlledSortKey ?? localSortKey;
+  const sortDirection = controlledSortDirection ?? localSortDirection;
 
   const sortedConsidered = React.useMemo(
     () => sortBy(considered, sortKey, sortDirection),
@@ -574,15 +586,22 @@ export function SearchResultBuckets({
 
   const handleSort = React.useCallback(
     (next: SortKey) => {
-      if (sortKey === next) {
-        setSortDirection((previous) => (previous === "asc" ? "desc" : "asc"));
-        return;
-      }
+      const nextDirection: SortDirection =
+        sortKey === next
+          ? sortDirection === "asc"
+            ? "desc"
+            : "asc"
+          : "desc";
 
-      setSortKey(next);
-      setSortDirection("desc");
+      if (controlledSortKey === undefined) {
+        setLocalSortKey(next);
+      }
+      if (controlledSortDirection === undefined) {
+        setLocalSortDirection(nextDirection);
+      }
+      onSortChange?.(next, nextDirection);
     },
-    [sortKey],
+    [controlledSortDirection, controlledSortKey, onSortChange, sortDirection, sortKey],
   );
 
   const renderSortIcon = React.useCallback(
@@ -603,29 +622,31 @@ export function SearchResultBuckets({
     (entries: Release[], isBlocked: boolean) => {
       return (
         <div className="space-y-3">
-          <div
-            className={cn(
-              "flex flex-wrap items-center gap-2",
-              !compact && "md:hidden",
-            )}
-          >
-            <Button
-              type="button"
-              size="xs"
-              variant={sortKey === "score" ? "secondary" : "outline"}
-              onClick={() => handleSort("score")}
+          {hideInlineSortControls ? null : (
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2",
+                !compact && "md:hidden",
+              )}
             >
-              Score {renderSortIcon("score")}
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant={sortKey === "size" ? "secondary" : "outline"}
-              onClick={() => handleSort("size")}
-            >
-              Size {renderSortIcon("size")}
-            </Button>
-          </div>
+              <Button
+                type="button"
+                size="xs"
+                variant={sortKey === "score" ? "secondary" : "outline"}
+                onClick={() => handleSort("score")}
+              >
+                Score {renderSortIcon("score")}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant={sortKey === "size" ? "secondary" : "outline"}
+                onClick={() => handleSort("size")}
+              >
+                Size {renderSortIcon("size")}
+              </Button>
+            </div>
+          )}
 
           <div className={cn("space-y-2", !compact && "md:hidden")}>
             {entries.map((result) => (
@@ -710,6 +731,7 @@ export function SearchResultBuckets({
       compact,
       disabled,
       handleSort,
+      hideInlineSortControls,
       onQueue,
       onQueueAdditional,
       renderSortIcon,

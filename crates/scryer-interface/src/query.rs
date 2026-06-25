@@ -118,11 +118,13 @@ fn title_catalog_sort_from_input(sort: Option<TitleCatalogSortInput>) -> TitleCa
     };
     let key = match sort.key {
         TitleCatalogSortKeyValue::Title => TitleCatalogSortKey::Title,
+        TitleCatalogSortKeyValue::Library => TitleCatalogSortKey::Library,
         TitleCatalogSortKeyValue::Monitored => TitleCatalogSortKey::Monitored,
         TitleCatalogSortKeyValue::Quality => TitleCatalogSortKey::Quality,
         TitleCatalogSortKeyValue::Episodes => TitleCatalogSortKey::Episodes,
         TitleCatalogSortKeyValue::Status => TitleCatalogSortKey::Status,
         TitleCatalogSortKeyValue::Size => TitleCatalogSortKey::Size,
+        TitleCatalogSortKeyValue::Added => TitleCatalogSortKey::Added,
     };
     let direction = sort
         .direction

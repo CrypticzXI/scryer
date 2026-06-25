@@ -1675,6 +1675,11 @@ fn build_title_catalog_sort_join_sql(
     dialect: TitleCatalogSqlDialect,
 ) -> String {
     match key {
+        TitleCatalogSortKey::Library => " LEFT JOIN (
+                SELECT id AS sort_library_id, name AS sort_library_name
+                  FROM libraries
+            ) title_catalog_library ON title_catalog_library.sort_library_id = titles.library_id"
+            .to_string(),
         TitleCatalogSortKey::Size => format!(
             " LEFT JOIN ({}) catalog_media_size ON catalog_media_size.title_id = titles.id",
             title_catalog_media_size_subquery(dialect)
@@ -1686,7 +1691,8 @@ fn build_title_catalog_sort_join_sql(
         TitleCatalogSortKey::Title
         | TitleCatalogSortKey::Monitored
         | TitleCatalogSortKey::Quality
-        | TitleCatalogSortKey::Status => String::new(),
+        | TitleCatalogSortKey::Status
+        | TitleCatalogSortKey::Added => String::new(),
     }
 }
 
@@ -1702,6 +1708,10 @@ fn build_title_catalog_order_sql(
         TitleCatalogSortKey::Title => format!(
             "ORDER BY LOWER(COALESCE(NULLIF(TRIM(sort_title), ''), name)) {direction}, \
              CASE WHEN year IS NULL THEN 1 ELSE 0 END ASC, year {direction}, id {direction}"
+        ),
+        TitleCatalogSortKey::Library => format!(
+            "ORDER BY LOWER(COALESCE(NULLIF(TRIM(title_catalog_library.sort_library_name), ''), titles.library_id)) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
         ),
         TitleCatalogSortKey::Monitored => format!(
             "ORDER BY monitored {direction}, {}",
@@ -1743,6 +1753,10 @@ fn build_title_catalog_order_sql(
         }
         TitleCatalogSortKey::Size => format!(
             "ORDER BY COALESCE(catalog_media_size.total_size_bytes, -1) {direction}, {}",
+            title_catalog_ascending_tie_order_sql()
+        ),
+        TitleCatalogSortKey::Added => format!(
+            "ORDER BY created_at {direction}, {}",
             title_catalog_ascending_tie_order_sql()
         ),
     }

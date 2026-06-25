@@ -8,6 +8,115 @@ export type ExternalId = {
   value: string;
 };
 
+export type TitleCollectionEpisodeRecord = {
+  id: string;
+  titleId: string;
+  collectionId?: string | null;
+  episodeType?: string | null;
+  episodeNumber?: string | number | null;
+  seasonNumber?: string | number | null;
+  episodeLabel?: string | null;
+  title?: string | null;
+  overview?: string | null;
+  airDate?: string | null;
+  durationSeconds?: number | null;
+  hasMultiAudio?: boolean | null;
+  hasSubtitle?: boolean | null;
+  isFiller?: boolean | null;
+  isRecap?: boolean | null;
+  absoluteNumber?: string | number | null;
+  imageUrl?: string | null;
+  monitored?: boolean | null;
+  createdAt?: string | null;
+};
+
+export type TitleCollectionRecord = {
+  id: string;
+  titleId: string;
+  collectionType?: string | null;
+  collectionIndex?: string | number | null;
+  label?: string | null;
+  orderedPath?: string | null;
+  narrativeOrder?: string | number | null;
+  fileSizeBytes?: number | null;
+  firstEpisodeNumber?: string | number | null;
+  lastEpisodeNumber?: string | number | null;
+  monitored?: boolean | null;
+  episodes?: TitleCollectionEpisodeRecord[] | null;
+  createdAt?: string | null;
+};
+
+export type TitleMediaFileRecord = {
+  id: string;
+  titleId: string;
+  episodeId?: string | null;
+  seriesMovieLinkIds?: string[] | null;
+  role?: string | null;
+  filePath?: string | null;
+  sizeBytes?: number | null;
+  qualityLabel?: string | null;
+  scanStatus?: string | null;
+  createdAt?: string | null;
+  videoCodec?: string | null;
+  videoWidth?: number | null;
+  videoHeight?: number | null;
+  videoBitrateKbps?: number | null;
+  videoBitDepth?: number | null;
+  videoHdrFormat?: string | null;
+  videoFrameRate?: string | null;
+  videoProfile?: string | null;
+  audioCodec?: string | null;
+  audioChannels?: number | null;
+  audioBitrateKbps?: number | null;
+  audioLanguages?: string[] | null;
+  audioStreams?:
+    | {
+        codec: string | null;
+        channels: number | null;
+        language: string | null;
+        bitrateKbps: number | null;
+      }[]
+    | null;
+  subtitleLanguages?: string[] | null;
+  subtitleCodecs?: string[] | null;
+  subtitleStreams?:
+    | {
+        codec: string | null;
+        language: string | null;
+        name: string | null;
+        forced: boolean | null;
+        default: boolean | null;
+      }[]
+    | null;
+  hasMultiaudio?: boolean | null;
+  durationSeconds?: number | null;
+  numChapters?: number | null;
+  containerFormat?: string | null;
+  sceneName?: string | null;
+  releaseGroup?: string | null;
+  sourceType?: string | null;
+  resolution?: string | null;
+  videoCodecParsed?: string | null;
+  audioCodecParsed?: string | null;
+  acquisitionScore?: number | null;
+  scoringLog?: string | null;
+  indexerSource?: string | null;
+  grabbedReleaseTitle?: string | null;
+  grabbedAt?: string | null;
+  edition?: string | null;
+  originalFilePath?: string | null;
+  releaseHash?: string | null;
+};
+
+export type TitleReleaseBlocklistEntry = {
+  id: string;
+  sourceHint: string | null;
+  sourceTitle: string | null;
+  errorMessage: string | null;
+  attemptedAt: string;
+  episodeIds: string[];
+};
+
 export type TitleRecord = {
   id: string;
   name: string;
@@ -55,6 +164,8 @@ export type TitleRecord = {
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
   recapPolicy?: string | null;
+  collections?: TitleCollectionRecord[] | null;
+  mediaFiles?: TitleMediaFileRecord[] | null;
 };
 
 export type RootFolderOption = {

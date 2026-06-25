@@ -7,7 +7,6 @@ import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scr
 import type { TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { cn } from "@/lib/utils";
 import {
@@ -66,6 +65,7 @@ type PosterGridProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
   selectedTitleId?: string | null;
+  contextPanelId?: string;
   onSelectTitle?: (title: TitleRecord) => void;
   onDelete: (title: TitleRecord) => void;
   onAutoQueue: (title: TitleRecord) => void;
@@ -90,6 +90,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
+  contextPanelId,
   onSelectTitle,
   overviewTargetView,
   showScanLibraryAction = false,
@@ -102,7 +103,6 @@ export const PosterGrid = React.memo(function PosterGrid({
   scanLibraryNotice,
 }: PosterGridProps) {
   const t = useTranslate();
-  const isMobile = useIsMobile();
 
   if (!catalogInitialLoadComplete) {
     return <TitleCollectionLoadingState />;
@@ -136,9 +136,9 @@ export const PosterGrid = React.memo(function PosterGrid({
           qualityProfilesLoading={qualityProfilesLoading}
           onOpenOverview={onOpenOverview}
           selected={selectedTitleId === title.id}
+          contextPanelId={contextPanelId}
           onSelectTitle={onSelectTitle}
           overviewTargetView={overviewTargetView}
-          isMobile={isMobile}
         />
       ))}
     </div>
@@ -156,9 +156,9 @@ type PosterCardProps = {
     overviewTarget: OverviewTitleTarget,
   ) => void;
   selected: boolean;
+  contextPanelId?: string;
   onSelectTitle?: (title: TitleRecord) => void;
   overviewTargetView: ViewId;
-  isMobile: boolean;
 };
 
 const PosterCard = React.memo(function PosterCard({
@@ -169,9 +169,9 @@ const PosterCard = React.memo(function PosterCard({
   qualityProfilesLoading,
   onOpenOverview,
   selected,
+  contextPanelId,
   onSelectTitle,
   overviewTargetView,
-  isMobile,
 }: PosterCardProps) {
   const location = useLocation();
   const t = useTranslate();
@@ -179,9 +179,17 @@ const PosterCard = React.memo(function PosterCard({
   const qualityLabel = qualityProfilesLoading
     ? null
     : resolveDisplayedQualityLabel(title, qualityProfiles, resolvedProfileName);
-  const posterClassName = isMobile
-    ? "h-full w-full object-cover"
-    : "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
+  const posterClassName =
+    "h-full w-full object-cover transition-transform duration-150 group-hover:scale-105 group-hover:brightness-[0.78] group-hover:saturate-[0.9] group-focus-within:scale-105 group-focus-within:brightness-[0.78] group-focus-within:saturate-[0.9]";
+  const contextPanelControlsId =
+    selected && onSelectTitle ? contextPanelId : undefined;
+  const yearLabel =
+    typeof title.year === "number" ? title.year.toString() : null;
+  const posterMetaLabel =
+    [yearLabel, qualityLabel].filter(Boolean).join(" / ") ||
+    title.libraryName ||
+    title.libraryId ||
+    t("label.unknown");
   const handleActivate = React.useCallback(() => {
     if (onSelectTitle) {
       persistOverviewWindowScroll(location.pathname);
@@ -216,7 +224,8 @@ const PosterCard = React.memo(function PosterCard({
           <button
             type="button"
             onClick={handleActivate}
-            aria-pressed={selected}
+            aria-current={selected ? "true" : undefined}
+            aria-controls={contextPanelControlsId}
             className="block w-full overflow-hidden rounded-[calc(var(--radius)-1px)] bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={title.name}
           >
@@ -234,27 +243,36 @@ const PosterCard = React.memo(function PosterCard({
                 decoding="async"
               />
 
-              {!isMobile ? (
-                <>
-                  <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
-                    <div
-                      aria-hidden="true"
-                      className="absolute inset-0 rounded-[calc(var(--radius)-1px)] border border-white/15 bg-gradient-to-t from-black/55 via-black/24 to-white/18"
-                    />
-                  </div>
-                  <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[calc(var(--radius)-1px)] px-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    <p
-                      className="line-clamp-3 origin-center text-center text-lg font-semibold leading-tight tracking-tight text-white drop-shadow-md transition-transform duration-200 group-hover:scale-[1.05] group-focus-within:scale-[1.05]"
-                      style={{
-                        fontFamily:
-                          "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
-                      }}
-                    >
-                      {title.name}
-                    </p>
-                  </div>
-                </>
-              ) : null}
+              <div
+                className={cn(
+                  "pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-[calc(var(--radius)-1px)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
+                  selected && "opacity-100",
+                )}
+              >
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-[calc(var(--radius)-1px)] border border-white/15 bg-gradient-to-t from-black/82 via-black/18 to-transparent"
+                />
+              </div>
+              <div
+                className={cn(
+                  "pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3 pb-3 pt-10 text-left opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100",
+                  selected && "opacity-100",
+                )}
+              >
+                <p
+                  className="line-clamp-2 text-[13px] font-semibold leading-tight tracking-normal text-white drop-shadow-md"
+                  style={{
+                    fontFamily:
+                      "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
+                  }}
+                >
+                  {title.name}
+                </p>
+                <p className="mt-1 line-clamp-1 text-[10.5px] font-medium text-white/78">
+                  {posterMetaLabel}
+                </p>
+              </div>
 
               <div className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/80 shadow-sm">
                 {title.monitored ? (
@@ -276,7 +294,12 @@ const PosterCard = React.memo(function PosterCard({
                   {t("title.ended")}
                 </div>
               ) : null}
-              <div className="absolute bottom-1.5 left-1.5 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+              <div
+                className={cn(
+                  "absolute left-1.5 top-10 z-20 max-w-[calc(100%-0.75rem)] rounded border border-white/10 bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
+                  selected && "opacity-100",
+                )}
+              >
                 <span className="block truncate">
                   {title.libraryName ?? title.libraryId}
                 </span>
